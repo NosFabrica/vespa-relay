@@ -24,9 +24,11 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
+import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.client.EmptyNostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -293,20 +295,16 @@ class AliasFoldingTest {
         }
 
     @Test
-    fun `urls that answered DIFFERENTLY are still folded together`() =
+    fun `a refusal of our key is no evidence two urls are one relay`() =
         runBlocking {
-            // Pins a limit, not a virtue: a credential refusal and an empty EOSE count as the same answer.
+            // A NIP-42 rejection reads the same from any server, so the shared-name fold may not rest on it.
             val store = newStore()
-            val up =
-                Upstreams(
-                    serves = { false },
-                    refuses = { RelayAliases.pathOf(it.url).isNotEmpty() },
-                ) { emptyList() }
-            val fold = folding(store, up)
             val group = listOf(canonical, alias)
-
-            assertEquals(1, fold.measure("t", group, canDial = { true }))
-            assertEquals(listOf(canonical), fold.applyVerdicts(group).dial, "current behaviour: a refusal and an EOSE fold together")
+            for (refuses in listOf<(NormalizedRelayUrl) -> Boolean>({ RelayAliases.pathOf(it.url).isNotEmpty() }, { true })) {
+                val fold = folding(store, Upstreams(serves = { false }, refuses = refuses) { emptyList() })
+                assertEquals(0, fold.measure("t", group, canDial = { true }))
+                assertEquals(group, fold.applyVerdicts(group).dial, "a host refusing our key was folded on its name")
+            }
         }
 
     @Test
@@ -318,6 +316,60 @@ class AliasFoldingTest {
 
             assertEquals(0, fold.measure("t", group, canDial = { true }))
             assertEquals(group, fold.applyVerdicts(group).dial)
+        }
+
+    @Test
+    fun `a known alias is graded alias whatever else is in the batch`() =
+        runBlocking {
+            // The fast lane hands fitness only the urls named since its last look, often without the canonical.
+            val store = newStore()
+            val up = upstreams()
+            val fold = folding(store, up)
+            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
+            assertEquals(mapOf(alias to canonical), AliasFolding.foldsAmong(RelayVerdictRecord(store, signer).load(listOf(alias)), listOf(alias)))
+
+            val fitness =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+            for (batch in listOf(listOf(alias), listOf(canonical, alias), listOf(alias))) {
+                fitness.measure("t", batch, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                assertEquals(Verdict.ALIAS.value, gradeOf(store, alias), "graded on batch ${batch.map { it.url }}")
+            }
+        }
+
+    /** The fitness grade on [url]'s record, or null. */
+    private suspend fun gradeOf(
+        store: NostrSemanticsStore,
+        url: NormalizedRelayUrl,
+    ): String? =
+        store
+            .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))))
+            .flatMap { it.tags.toList() }
+            .firstOrNull { it.size >= 3 && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE }
+            ?.get(1)
+
+    @Test
+    fun `a read over a narrower set leaves what the fold holds untouched`() =
+        runBlocking {
+            // The mirror's roster reads one stream's urls at a time, outside the monitor's pass gate.
+            val aliases = RelayAliases()
+            val fold = folding(newStore(), upstreams(), aliases = aliases)
+            val group = listOf(canonical, alias)
+            assertEquals(1, fold.measure("t", group, canDial = { true }))
+            val held = aliases.verdicts()
+            val measured = group.map { aliases.measured(it) }
+
+            assertEquals(mapOf(alias to canonical), fold.applyVerdicts(group).aliases)
+            fold.applyVerdicts(listOf(canonical))
+            fold.applyVerdicts(listOf(alias))
+
+            assertEquals(held, aliases.verdicts(), "a read changed the fold's verdicts")
+            assertEquals(measured, group.map { aliases.measured(it) }, "a read dropped a canonical the fold had measured")
         }
 
     @Test

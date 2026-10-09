@@ -240,7 +240,7 @@ class SyncableRelaysTest {
                             arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "old rules", nowSeconds().toString(), "0"),
                             // `l` is shared ground, so owning the tag name would delete a foreign label.
                             arrayOf("l", "CA", "countryCode"),
-                            arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), "2"),
+                            arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), RelayVerdictRecord.FOLD_EPOCH),
                         ),
                         "",
                     ),
@@ -279,7 +279,7 @@ class SyncableRelaysTest {
                             arrayOf("d", good.url),
                             // `syncable`, not `prime`: the fixture is what the old build signed.
                             arrayOf("s", "syncable", "answered at a settled anchor", nowSeconds().toString(), "1"),
-                            arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), "2"),
+                            arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), RelayVerdictRecord.FOLD_EPOCH),
                         ),
                         "",
                     ),

@@ -130,7 +130,8 @@ const runEl = document.getElementById("run");
 const fmt = (n) => n.toLocaleString();
 
 /** `display_name` first, `name` as the fallback, whitespace-only meaning blank. Same rule as the search page. */
-const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
+const str = (v) => (typeof v === "string" ? v : "");
+const displayName = (c) => (c && (str(c.display_name).trim() || str(c.name).trim())) || "";
 
 /**
  * HTML escaping, inlined because this page must work when the app's modules do
@@ -410,7 +411,7 @@ async function run() {
     const o = byPk.get(ev.pubkey);
     if (!o) continue;
     let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-    o.hasProfile = true; o.name = displayName(c); o.picture = c.picture || "";
+    o.hasProfile = true; o.name = displayName(c); o.picture = str(c && c.picture);
   }
   for (const o of observers) paintWho(o);
 

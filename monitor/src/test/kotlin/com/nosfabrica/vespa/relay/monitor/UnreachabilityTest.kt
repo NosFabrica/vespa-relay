@@ -35,9 +35,21 @@ class UnreachabilityTest {
 
     @Test
     fun `a connection that never opened is unreachable`() {
-        assertTrue(proves(UnknownHostException("no such host")))
+        assertTrue(proves(UnknownHostException("relay.example: Name or service not known")))
+        assertTrue(proves(UnknownHostException("relay.example: No address associated with hostname")))
         assertTrue(proves(ConnectException("connection refused")))
         assertTrue(proves(SSLHandshakeException("cert expired")))
+    }
+
+    @Test
+    fun `our own resolver or route failing is not the relay's`() {
+        // EAI_AGAIN is the resolver not answering, which is every host at once.
+        assertFalse(proves(UnknownHostException("relay.example: Temporary failure in name resolution")))
+        assertFalse(proves(ConnectException("Network is unreachable")))
+        assertTrue(proves(UnknownHostException("relay.example: Name or service not known")))
+        // A failed lookup the JVM answers from its cache carries the name and no reason.
+        assertFalse(proves(UnknownHostException("relay.example")))
+        assertTrue(Unreachability.ourSide(UnknownHostException("relay.example: Temporary failure in name resolution")))
     }
 
     @Test

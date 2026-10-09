@@ -99,12 +99,11 @@ class StatsRollupTest {
             val queries = FakeQueries()
             rollup(queries).compute(StatsTier.COUNTERS)
 
-            assertTrue(queries.asked.isNotEmpty(), "the counters tier does query the engine")
-            for ((pipeline, where, _) in queries.asked) {
+            for ((pipeline, where, source) in queries.asked) {
                 assertFalse(pipeline.contains(StatsYql.TAG), "tag_index is a per-tag emission, not a counter: `$pipeline`")
                 assertFalse(pipeline.contains("each(all(group("), "a set per bucket is the shape that OOMs: `$pipeline`")
-                // A count() materialises nothing; everything that groups does.
-                if (!pipeline.startsWith("all(group(")) continue
+                assertFalse(source == StatsYql.REPUTATION, "the reputation store holds a document per scored pubkey: `$pipeline`")
+                // A count() materialises nothing but still walks every document it matches.
                 val windowed = where.contains("created_at >=")
                 val kinds = KIND_FILTER.findAll(where).map { it.groupValues[1].toInt() }.toSet()
                 assertTrue(windowed || kinds.isNotEmpty(), "a grouping over the whole store cannot run every minute: `$pipeline` where `$where`")
@@ -130,6 +129,11 @@ class StatsRollupTest {
                 "the store's distinct authors are counted here, once every slow pass",
             )
             assertTrue(asked.any { it.pipeline == StatsYql.countsBy("kind") && it.where == "true" }, "the kind histogram walks the whole store")
+            assertTrue(asked.any { it.pipeline == StatsYql.TOTAL && it.where == "true" }, "the event total walks the whole store")
+            assertTrue(
+                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where.contains("kind = 30382") },
+                "the score providers walk every stored score",
+            )
             assertTrue(asked.any { it.pipeline.contains("each(all(group(pubkey)") }, "distinct authors per bucket is a charts cost")
             assertTrue(asked.any { it.pipeline.contains(StatsYql.TAG) }, "the relay distribution groups tag_index")
             assertTrue(
@@ -164,28 +168,31 @@ class StatsRollupTest {
     @Test
     fun `a pass states its own cadence`() {
         runBlocking {
-            val doc = rollup(FakeQueries()).compute(StatsTier.COUNTERS, previous = null, everySeconds = 60)
-            val tier = assertNotNull(doc["tiers"]).jsonObject["counters"]!!.jsonObject
+            val doc = rollup(FakeQueries()).compute(StatsTier.CHARTS, previous = null, everySeconds = 900)
+            val tier = assertNotNull(doc["tiers"]).jsonObject["charts"]!!.jsonObject
 
-            assertEquals(60, tier["everySeconds"]!!.jsonPrimitive.content.toInt())
+            assertEquals(900, tier["everySeconds"]!!.jsonPrimitive.content.toInt())
             assertNotNull(tier["generatedAt"], "a pass is dated on its own, not only through the document")
             assertNotNull(tier["tookMs"])
             assertEquals(sectionsOf(doc).toList().sorted(), tier["sections"]!!.jsonArray.map { it.jsonPrimitive.content }.sorted())
-            assertNull(doc["tiers"]!!.jsonObject["charts"], "a pass claims nothing about the other half of the document")
+            assertNull(doc["tiers"]!!.jsonObject["counters"], "a pass claims nothing about the other half of the document")
             // A document computed in two passes has no one duration.
             assertNull(doc["tookMs"])
         }
     }
 
-    /** A section carries one `generatedAt`, so a slow-cadence number cannot sit in a fast-cadence section. */
+    /** The page's tiles read these members, so they keep their places whichever pass computes them. */
     @Test
-    fun `the corpus section is the cheap half of what it used to be`() {
+    fun `the corpus and trust totals keep the members the page reads`() {
         runBlocking {
-            val counters = rollup(FakeQueries()).compute(StatsTier.COUNTERS)
-            val corpus = counters["corpus"]!!.jsonObject["data"]!!.jsonObject
+            val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
+            val corpus = charts["corpus"]!!.jsonObject["data"]!!.jsonObject
 
             assertEquals(setOf("events", "futureDated", "newestEvent", "asOf"), corpus.keys)
-            val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
+            assertEquals(
+                setOf("scoredPubkeys", "observers", "providers", "scores"),
+                charts["trust"]!!.jsonObject["data"]!!.jsonObject.keys,
+            )
             assertEquals(
                 setOf("pubkeys"),
                 charts["authors"]!!.jsonObject["data"]!!.jsonObject.keys,
@@ -195,43 +202,44 @@ class StatsRollupTest {
         }
     }
 
-    // ---- the one number that crosses the boundary ----------------------------
+    // ---- the newest event -----------------------------------------------------
 
-    /** The histogram's `spanBy(kind)`, bounded at both ends so the match set is days, not the store. */
+    /** Read off the histogram's own spans, so the most optimistically dated spam is not the newest. */
     @Test
-    fun `the newest event is asked for over days, not over the store`() {
+    fun `the newest event is bounded at the present`() {
         runBlocking {
             val queries = FakeQueries()
-            rollup(queries).compute(StatsTier.COUNTERS)
-            val ask = assertNotNull(queries.asked.firstOrNull { it.pipeline == StatsYql.spanBy("kind") })
+            val doc = rollup(queries).compute(StatsTier.CHARTS)
+            val spans = queries.asked.filter { it.pipeline == StatsYql.spanBy("kind") }
 
-            assertEquals(StatsYql.window(NOW - 2 * 86_400L, NOW), ask.where, "two days back, and bounded at the present")
+            assertEquals(listOf(StatsYql.upTo(NOW)), spans.map { it.where }, "one span query, and it stops at now")
+            assertEquals(1_754_581_422L, doc.newestEvent())
         }
     }
 
     /**
      * `newestEvent` is an absolute timestamp, so the maximum of the previous
-     * document's two copies and the fresh window is as true as when it was taken.
+     * document's two copies and the fresh spans is as true as when it was taken.
      */
     @Test
     fun `the newest event survives a quiet window and never goes backwards`() {
         runBlocking {
             val quiet = rollup(FakeQueries(spans = EMPTY_GROUPS))
             assertNull(
-                quiet.compute(StatsTier.COUNTERS)["corpus"]!!.jsonObject["data"]!!.jsonObject["newestEvent"],
+                quiet.compute(StatsTier.CHARTS)["corpus"]!!.jsonObject["data"]!!.jsonObject["newestEvent"],
                 "nothing measured and nothing known is an absent number, not a zero",
             )
 
-            val carried = quiet.compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_900_000_000L))
+            val carried = quiet.compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_900_000_000L))
             assertEquals(1_900_000_000L, carried.newestEvent())
 
-            // The charts tier's per-kind spans are all that exists before the first counters pass.
-            val fromKinds = quiet.compute(StatsTier.COUNTERS, previousWith(kindsLastSeen = 1_800_000_000L))
+            // A document missing `corpus` still carries the newest in its per-kind spans.
+            val fromKinds = quiet.compute(StatsTier.CHARTS, previousWith(kindsLastSeen = 1_800_000_000L))
             assertEquals(1_800_000_000L, fromKinds.newestEvent())
 
-            // A fresh window beats an older carry and loses to a newer one.
-            assertEquals(1_754_581_422L, rollup(FakeQueries()).compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_700_000_000L)).newestEvent())
-            assertEquals(1_900_000_000L, rollup(FakeQueries()).compute(StatsTier.COUNTERS, previousWith(corpusNewest = 1_900_000_000L)).newestEvent())
+            // Fresh spans beat an older carry and lose to a newer one.
+            assertEquals(1_754_581_422L, rollup(FakeQueries()).compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_700_000_000L)).newestEvent())
+            assertEquals(1_900_000_000L, rollup(FakeQueries()).compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_900_000_000L)).newestEvent())
         }
     }
 
@@ -242,12 +250,12 @@ class StatsRollupTest {
     fun `every query is timed, including the ones that fail`() {
         runBlocking {
             val queries = FakeQueries(failing = setOf(StatsYql.TOTAL))
-            val corpus = rollup(queries).compute(StatsTier.COUNTERS)["corpus"]!!.jsonObject
+            val corpus = rollup(queries).compute(StatsTier.CHARTS)["corpus"]!!.jsonObject
 
-            assertEquals("partial", corpus["status"]!!.jsonPrimitive.content)
+            assertEquals("failed", corpus["status"]!!.jsonPrimitive.content, "both of the section's own queries were refused")
             assertTrue(corpus["errors"]!!.jsonObject.keys.containsAll(setOf("events", "futureDated")), "both counts use that pipeline")
             val timings = assertNotNull(corpus["queryMs"]).jsonObject
-            assertEquals(setOf("events", "futureDated", "newestEvent"), timings.keys, "every attempt is timed, under the key its error would carry")
+            assertEquals(setOf("events", "futureDated"), timings.keys, "every attempt is timed, under the key its error would carry")
             assertNull(corpus["data"]!!.jsonObject["events"], "a refused count is absent rather than zero")
         }
     }
@@ -317,7 +325,7 @@ class StatsRollupTest {
          * The kinds a counters query may lean on as its only bound. A kind filter bounds the
          * group set, not the walk, so only sparse kinds qualify.
          */
-        val SELECTIVE_KINDS = setOf(10040, 30382)
+        val SELECTIVE_KINDS = setOf(10040)
 
         // Vespa 8.733, the captures StatsYqlTest asserts the readers against.
         const val TOTAL =

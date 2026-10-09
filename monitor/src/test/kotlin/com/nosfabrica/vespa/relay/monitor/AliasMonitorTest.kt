@@ -54,7 +54,7 @@ class AliasMonitorTest {
         override suspend fun measure(
             label: String,
             candidates: List<NormalizedRelayUrl>,
-            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            reach: suspend (NormalizedRelayUrl) -> Reach,
             onEvent: suspend (Event) -> Unit,
             sockets: Sockets,
         ): Int {
@@ -87,7 +87,7 @@ class AliasMonitorTest {
             return urls
         }
 
-        override suspend fun canDial(url: NormalizedRelayUrl) = true
+        override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
 
         override suspend fun onEvent(event: Event) = Unit
 
@@ -208,7 +208,7 @@ class AliasMonitorTest {
 
                     override suspend fun candidates() = if (asked.incrementAndGet() > 1) listOf(a, b) else emptyList()
 
-                    override suspend fun canDial(url: NormalizedRelayUrl) = true
+                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
 
                     override suspend fun onEvent(event: Event) = Unit
 

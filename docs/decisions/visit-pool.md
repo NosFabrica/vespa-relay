@@ -96,3 +96,48 @@ window later, having cost the relay a handshake and a REQ for nothing — per
 unit, per revisit, 96 at a time, for as long as the store is behind. Skipped
 like a refused dial permit and counted as `visitsHeldByIngest`; open tails stay
 open, since a tail that is not draining is honest backpressure.
+
+**A cut visit resumes where it stopped.** Restarting every visit at the first
+ask meant a unit cut at ask `k` never reached the asks after it. The next
+visit starts at the ask that gave up, or just past the one that was refused.
+
+**The tail offers an event only its author's asks.** Scope is re-derived per
+event, and a discovery unit holds one ask per bound author, so a full scan
+matched hundreds of filters that named someone else. Authors compare exactly,
+so the index finds what the scan did.
+
+**An eviction hands its permit over.** Releasing the evicted tail's permit and
+then asking for one let another worker's `trySpare` take it in between, so the
+eviction cost a tail and the evicting unit still had none.
+
+**A band's drain settles it at the band's own floor.** `drainSettlesThePast`
+compared every chunk with the stream filter's floor, and a younger re-fetch
+band's legs stop at its window edge, so no younger band could ever record
+`complete`: its bottom was re-walked on every visit and the prime-relays table
+held every banded pair at `paging`. The walk now passes the ask bounded by the
+band's older edge. Nothing below that edge is ever the band's to owe, because
+the edge only rises with `now`; the oldest band's edge is the filter's own, so
+an unbanded stream is unchanged.
+
+**A visit turned away before it dialled retries within seconds.** The workers
+are the streams' visit shares summed and draw from one queue, so a worker that
+draws a unit whose stream's share is full is routine, and so is a full ingest
+queue. Both returned, and the unit then waited out a revisit timer sized for a
+relay that had just been visited: five minutes at no yield. Live, a roster
+admitting 76 units at once was refused 103 visits in its first ten minutes, and
+49 of the 76 ended the run with no band. Nothing was dialled, so nothing is owed
+a wait: the unit retries after `TURNED_AWAY_RETRY_MS`, and a timer standing from
+an earlier visit is disarmed so it cannot hold the unit to the longer one. Each
+try counts in `deferred` or `visitsHeldByIngest`, so both now count tries rather
+than units. The next live run with both fixes ended with 13 of 65 units
+unbanded.
+
+**An evicted unit's prompt visit does not evict in turn.** Eviction requeues the
+loser at once so it catches up on what its tail would have carried, and that
+visit ended in `openTail`, where `earnTail` compared yields again. A visit's own
+catch-up adds to its relay's yield, re-delivered events included, so between two
+low-yield relays the one just visited always won: live, the pool counted 279
+evictions in ten minutes, nearly all of them three quiet relays trading one
+tail. The prompt visit now takes only a spare permit; its next ordinary visit
+may evict again, so a pair can still trade a tail, at the revisit cadence rather
+than back to back. The next live run counted 25 evictions.

@@ -83,6 +83,42 @@ at 94% replaced-or-duplicate. Addressables stay the store's business: their
 version query is an (authors x d-tags) cross product, silently truncated where
 hits are capped, and a truncated answer here is a dropped event.
 
+**Only a verified event shadows another inside a batch.** Winners were first
+picked before verification, by id and by address: a forged kind 0 with a later
+`created_at` and a junk signature beat the genuine one, which was dropped and
+reported `replaced` to the refusal sink, and then the forgery failed its
+check, so the address lost its real version and the real id was on its way to
+suppression. A bad-signature copy arriving first likewise shadowed a good copy
+of the same id from another relay. Now each id's copies and each address's
+versions (newest first) are one contest, verified in that order until one
+passes; the rest drop unverified. The common case still costs one
+verification per contest, and the store-version probe still runs first, since
+the version it compares against is already verified.
+
+**A group of copies is placed by a copy whose id hashes its content.** Copies
+were grouped by their claimed id and the group placed by its first copy's
+kind, author and stamp, none of them checked. A forged copy carrying a genuine
+note's id while claiming an old kind 0 by an author with a stored profile took
+the note down with it: 130 such copies ahead of 130 genuine notes stored none
+and reported all 130 `replaced`, on the way to suppressing them. The leader is
+now the first copy passing `verifyId`, and the copies ahead of it count as bad
+signatures. Copies that share a checked id share their content, so the leader
+speaks for the group, and its signature check skips the hash it already paid:
+the common case costs what it did. A trusted stream's copy leads unhashed and
+is hashed only before it is reported.
+
+**A batch pass that throws loses its batch, not its worker.** The worker loop
+was guarded only by its caller, so a `StackOverflowError` from the parse audit
+on deeply nested content ended a worker for the life of the process, and every
+batch after it waited on the survivors. The pass now catches `Exception` and
+`StackOverflowError`, counts what it had not yet tallied as an `ingest fault`
+rejection, and continues; any other `Error` still ends the worker loudly.
+Refusal bookkeeping (the sink, the outcome loop) is caught on its own, because
+a throw there used to read as a failed write and rewrite an accepted batch.
+An outcome loop that dies partway (only an `Error` gets past the sink's guard)
+books the outcomes it had not reached as an `ingest fault`, so
+`accepted + rejected` still meets `submitted`.
+
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store
 refusal, and the fast path exists to stop the store producing it for the
@@ -190,6 +226,24 @@ epoch entirely below the lowest `since` any stream asks for can be dropped
 exactly, where a timer-based rotation is a lossy guess. Epochs are opened
 lazily by `record`, so after a restart every lookup missed until a fresh
 refusal reopened the partition; the partitions on disk are adopted in `init`.
+
+**Only a stamp a walk can ask for opens an epoch.** `retireBelow` once had no
+production caller, so epochs only accumulated, and any validly signed event
+with an attacker-chosen `created_at` opened a fresh pair of tables. An epoch
+now opens only for a stamp between the floor (the lowest `since` any stream
+asks for, never above quartz's `PLAUSIBLE_FLOOR`) and a day past now, with
+`MAX_EPOCHS` as a backstop for a short `SYNC_REFUSED_EPOCH_SECONDS`; anything
+else is `OUT_OF_RANGE` and costs at most one re-download. The window only
+widens upward while the process runs, so retirement happens once, at boot,
+over what is on disk.
+
+**Only the floor deletes an epoch at boot.** Boot also retired every epoch
+above a day past now, files and all, so a container started before NTP set its
+clock deleted current epochs and their suppressions. An epoch ahead of the
+clock is now left on disk unopened, and the first refusal that reaches it once
+the clock catches up adopts its tables. Skipping rather than loading keeps an
+epoch a forged stamp opened before the bound out of memory and out of
+`MAX_EPOCHS`, at the cost of re-downloads until that first refusal.
 
 **`suppressedInWindow` walks the epochs that exist.** An open-ended window
 (`since = null`, the ordinary `deleteMissing` case) starts at epoch 0, so

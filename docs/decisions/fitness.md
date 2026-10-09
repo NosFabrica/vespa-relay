@@ -254,3 +254,170 @@ mints one url per user on a filtering relay, so a per-url counter never reaches
 a threshold. The authority is `host[:port]`: a subdomain is not folded into its
 parent, and two ports are two relays. A host that delivered anything this cycle
 is never treated as dead, whatever its siblings did.
+
+**A dial's connect word earns `silent`, not `dead`.** `Silence` reads text,
+and `dead` is a signed public claim that hides the url from discovery, so it
+rests on what proves it: the typed pre-probe (`Unreachability.proves`), or
+the server taking the connect and refusing TLS or the websocket upgrade. A
+name, refusal or route word from a dial the pre-probe had just let through
+is as likely our resolver or route as the relay, and read as `dead` it put
+"temporary failure in name resolution" on someone else's server.
+`FITNESS_EPOCH` went to 3 with it, so the verdicts signed under the old rule
+are taken back at boot.
+
+**The pre-probe says whose side a refusal is on.** It answered one Boolean,
+and with Tor's SOCKS port down that `false` covered every `.onion` (every url
+under `SYNC_TOR_ALL`), which the fitness pass signed as `dead`. `Reach`
+separates the relay's host proved unreachable from our transport not
+answering; the second is unmeasured and feeds the batch guard's blind share,
+as it always did in the stability gate.
+
+**Pre-probe proof is believed only beside a network that reaches others.**
+Our resolver failing (`EAI_AGAIN`, an `UnknownHostException`) or our egress
+rejecting (a `ConnectException`) proves every host gone at once, and the blind
+guard never saw it because those urls landed in a verdict. `Unreachability`
+now reads a temporary resolver failure and an unreachable network as our side,
+and the batch withholds its pre-probe `dead` when no dial reached a server (at
+any size, so the fast lane too) or when the pre-probe failed more than
+`DEAD_GUARD_SHARE` of a batch past `GUARD_FLOOR`. Three quarters sits well
+above the near-half share of name and refusal failures a real sweep has shown
+(the funnel in router-internals.md). Only the `dead` verdicts are withheld: a
+false trip costs those urls a cheap re-probe, not every grade in the batch.
+
+**Fitness grades `alias` off every stored fold, not off the batch's collapse.**
+It read `Collapsed.aliases`, which holds a fold only when its canonical is in
+the same set. The fast lane passes only the urls named since its last look, so
+a known alias arriving without its canonical became a stand-in, was dialled
+and signed `prime`, and the next sweep re-signed it `alias`. `foldsAmong`
+answers from the stored verdicts alone.
+
+**The first hand-over is graded on page one.** `settled` handed over `prime`
+before compliance was decided, so a per-url deadline firing during page two
+published `prime` for a relay whose first page alone was `noncompliant`. Page
+one is now judged before the hand-over; the final grade on both pages still
+replaces it when the dial finishes.
+
+**A fitness batch reads its standing verdicts once.** The folds, the stability
+refusals and the grades it must not re-sign were three loads of the same
+records, each a chunked `#d` query over the batch. They are one
+`RelayVerdictRecord.load` now, taken after the earlier passes have written, so
+nothing they decided is missed. A load that fails measures nothing that batch
+rather than dialling aliases blind. The per-write `currentRecord` read stays:
+the edit is a read-modify-write and must see what the record holds at write
+time. The sweep's other reads (the dead set, our records, the fold's world, the
+stability gate's load) are per pass and were left alone.
+
+**Verdict writes run several at a time.** Each was a whole record edit (read,
+sign, insert) done one after another while the pass gate was held, so a sweep
+of thousands of verdicts spent most of its write phase waiting on round trips.
+`writeEach` runs `WRITE_CONCURRENCY` of them at once, safe because each url is
+its own record. The per-write deadline is unchanged; "in a row" is counted by
+start order, so a slow write landing after quick answers to later ones is not a
+run, and each wedged write charges the budget its share of the slots rather
+than its whole wall time. The cursor still stops on the write that tripped the
+limit.
+
+**The stability gate writes after its dials, not inside them.**
+`publishConsistency` ran inside `dialEach`'s per-url deadline while holding the
+dial permit, so a store slower than the relay's deadline had the write
+cancelled: the verdict was lost and the url filed `ABANDONED` after `decided`
+had counted it. The pass now keeps each decided url's numbers and writes them
+after the dials through `writeEach`, under the write deadline the fitness pass
+uses.
+
+**The pre-probe looks a host up once, and only a resolver's "no such name" is
+proof.** Run in a network namespace with no route out, every lookup failed with
+EAI_AGAIN, yet the retry read it as proof: the JVM caches a failed lookup and
+answers the second one with the bare hostname, so the reason was gone. The probe
+now resolves and connects itself in one go, a temporary failure or an unreachable
+network is our transport being down, and an `UnknownHostException` proves
+nothing unless its words say the name does not exist.
+
+**A batch where nothing reached a server withholds its `silent` too.** The same
+dark run published `silent` for every IP-literal url, because only the
+pre-probe's `dead` was withheld; a transport word in a batch nobody answered is
+our network's word.
+
+**A refused upgrade is graded by its status.** Against real relays every
+"upgrade refused" `dead` was a 502/503, a Cloudflare 530, an auth or payment
+wall, or a missing path, and relay.damus.io answered 503 and then 101 seconds
+apart. A 5xx earns no verdict and is measured again, 401/402/403 is
+`restricted`, and only the rest is `dead`.
+
+**The pre-probe judges a host over all of its addresses.** It kept only the
+last address's failure, so the order the resolver listed them in decided the
+verdict: IPv4 refusing and our IPv6 route missing read as our outage, an IPv4
+timeout and an IPv6 refusal as proof. Now one open socket is `REACHABLE`, proof
+needs every address to fail with proof, our side needs every address to fail on
+ours, and any mix is left to the dial. The addresses share one 8s deadline (5s
+each at most) rather than 5s apiece, and the probe stops once its answer can
+only be `REACHABLE`. It blocks on its own view of the IO pool sized to the dial
+concurrency, so the guard in front of 128 dials does not hold the shared 64
+threads.
+
+**A lookup with no reason left in it decides nothing.** The JVM answers a
+cached failed lookup with the bare hostname, so the pre-probe could not place it
+and let the url through, and the dial, hitting the same cache, published
+`silent` "the name does not resolve". A bare `UnknownHostException` is now
+`Reach.UNEXPLAINED` and the url is not dialled; and since the pre-probe has just
+resolved every name it lets through, a name word from the dial is our resolver
+and earns no verdict either.
+
+**A status line outranks the words in its reason phrase.** `Silence` matched
+TLS words before upgrade words, so a CDN's "Expected HTTP 101 response but was
+'526 Invalid SSL Certificate'" read as our handshake failing and was signed
+`dead`. A response that carries a status is an HTTP answer and is graded by the
+status: 429 is rate limiting, anything else an upgrade refusal, so a 526 is a
+5xx and earns no verdict.
+
+**A url set aside is not a dial that went blind.** A 5xx, an `.onion` behind
+our Tor proxy not answering, and a lookup with no reason in it all landed in
+`unmeasured`, which is the batch guard's blind share, so a CDN incident or Tor
+going down refused every clearnet verdict in the batch and the log blamed this
+router's dialling. They are now `deferred`: reported on their own line, never
+published, and outside the blind share, which is taken over the dials that went
+out (a 5xx went out and was answered, so it stays in the denominator). A 5xx
+also counts as a server reached for the dark-network guard. `unmeasured` keeps
+the dials that got no answer at all, our clearnet transport failing included.
+
+**An unexplained lookup counts as blind once per host.** Setting it aside
+outside the blind share took the batch guard's alarm away exactly where it is
+needed: live, in a network namespace with no route out, 484 of 498 urls failed
+their lookup with no reason in them, the guard saw 4 dials go out, and the pass
+logged them as set aside and "NOT counted as this router failing to dial". On
+healthy live passes no url failed that way. One host's cached failure still
+repeats across every path it serves, so the share counts distinct hosts, and the
+pass names the lookups on their own line.
+
+**A dial's TLS failure is believed only when our own handshake fails too.**
+Through an intercepting TLS proxy on our egress, fourteen relays were signed
+`dead` "the TLS handshake failed" while a direct handshake to each succeeded,
+and since a TLS failure counted as a server answering, neither the dark guard
+nor the blind guard could catch it. Now the pass opens its own handshake on the
+pre-probe's direct route under the default trust, checking the name on the
+certificate as the dial's client does: a certificate failure or a server's
+refusal there makes `dead`; a success is our transport and earns nothing; a
+dropped connection, a timeout, or a Tor-routed url (not checkable from here)
+earns nothing either. Those two are deferred, not blind. A TLS failure never
+counts as reaching a server, and when the confirmed ones pass a quarter of the
+batch's direct wss dials they are withheld as our truststore or clock, which
+fail every handshake at once where real certificate faults are a small
+minority. At any batch size, so a fast-lane batch rarely signs a TLS `dead`
+and leaves it to the sweep.
+
+**Below the guard floor, proof needs more servers reached than urls proved
+gone.** A batch under `GUARD_FLOOR` was held to `reached == 0` alone, so one
+success (an onion, an IP literal, a name still in our cache) vouched for every
+other url the pre-probe failed, which is exactly what our resolver answering
+NXDOMAIN for everything looks like. A small batch now withholds its pre-probe
+`dead` (and its `silent`) when more urls were proved gone than reached a
+server. The fast lane pays for it with a delay: those urls are graded by the
+sweep, whose batch is past the floor.
+
+**A stopped batch resumes at the earliest write that did not land.** The
+cursor was the write that tripped the limit, which with sixteen in flight is
+whichever wedged write happened to finish third, so writes started before it
+that never landed were skipped to the back of the rotation. `writeEach` now
+records which writes were stored and hands back the earliest one that was not
+(wedged, declined or never started). No write is launched once a limit has
+tripped; those already in flight may finish.

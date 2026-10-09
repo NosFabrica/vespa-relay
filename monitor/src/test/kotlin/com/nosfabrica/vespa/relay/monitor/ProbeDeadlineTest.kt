@@ -99,27 +99,141 @@ class ProbeDeadlineTest {
                             if (url in fine) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = null)
                         },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("blind batch", blind + fine, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure("blind batch", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
 
             for (url in blind + fine) {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
             }
 
-            // A refused connection is a fact about the host, so a dead corpus still publishes.
-            val dead = newStore()
+            // A transport word beside servers that answered is a fact about that relay, and publishes.
+            val refused = newStore()
+
+            fun refusedCorpus(answering: List<NormalizedRelayUrl>) =
+                FitnessPass(
+                    record = RelayVerdictRecord(refused, signer),
+                    probe =
+                        probe { url, want, until, _ ->
+                            if (url in answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)")
+                        },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                )
+            refusedCorpus(fine).measure("refused corpus", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
+
+            // The same words from every dial, with nothing answering, are our own network's.
+            val dark = newStore()
             FitnessPass(
-                record = RelayVerdictRecord(dead, signer),
+                record = RelayVerdictRecord(dark, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("dead corpus", blind, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
-            assertEquals(Verdict.DEAD.value, gradeOf(dead, blind.first()), "a transport word is evidence and must still publish")
+            ).measure("dark corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertNull(gradeOf(dark, blind.first()), "a batch where nothing reached a server publishes no `silent`")
+        }
+
+    @Test
+    fun `a proxy that does not answer grades nothing, however many urls sit behind it`() =
+        runBlocking {
+            // Under SYNC_TOR_ALL a dead SOCKS port declines every url; none of that is about the relays.
+            for (size in listOf(1, 60)) {
+                val store = newStore()
+                val urls = (0 until size).map { RelayUrlNormalizer.normalize("wss://behind$it.example") }
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure("proxy down", urls, reach = { Reach.TRANSPORT_DOWN }, onEvent = {}, sockets = Sockets.NONE)
+                for (url in urls) assertNull(gradeOf(store, url), "our proxy being down was signed onto ${url.url}")
+            }
+        }
+
+    @Test
+    fun `pre-probe proof is withheld from a batch where our network looks dark`() =
+        runBlocking {
+            // Our resolver or egress failing proves every host gone at once; a network does not go dark at once.
+            suspend fun graded(
+                gone: Int,
+                answering: Int,
+            ): Pair<List<String?>, List<String?>> {
+                val store = newStore()
+                val dead = (0 until gone).map { RelayUrlNormalizer.normalize("wss://gone$it.example") }
+                val live = (0 until answering).map { RelayUrlNormalizer.normalize("wss://live$it.example") }
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure(
+                    "dark",
+                    dead + live,
+                    reach = { if (it in dead) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                    onEvent = {},
+                    sockets = Sockets.NONE,
+                )
+                return dead.map { gradeOf(store, it) } to live.map { gradeOf(store, it) }
+            }
+
+            val (outage, _) = graded(gone = 60, answering = 0)
+            assertTrue(outage.all { it == null }, "a batch with no server reached signed `dead` onto ${outage.count { it != null }} url(s)")
+
+            val (small, _) = graded(gone = 2, answering = 0)
+            assertTrue(small.all { it == null }, "a fast-lane batch with no server reached must not sign `dead` either")
+
+            val (mostly, mostlyLive) = graded(gone = 50, answering = 10)
+            assertTrue(mostly.all { it == null }, "a pre-probe failing past the dead share must be doubted")
+            assertTrue(mostlyLive.all { it == Verdict.PRIME.value }, "the relays that answered are still graded")
+
+            val (some, _) = graded(gone = 20, answering = 40)
+            assertTrue(some.all { it == Verdict.DEAD.value }, "proof beside a working network is published")
+        }
+
+    @Test
+    fun `dead is published on proof or on the server's own refusal, never on a connect word the pre-probe contradicts`() =
+        runBlocking {
+            val url = RelayUrlNormalizer.normalize("wss://gone.example")
+
+            suspend fun grade(
+                reason: String,
+                reachable: Boolean,
+            ): String? {
+                val store = newStore()
+                // Beside a url that answers: a pre-probe proof is believed only where our network reaches others.
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure(
+                    "one",
+                    listOf(url, answering),
+                    reach = { if (it == url && !reachable) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                    onEvent = {},
+                    sockets = Sockets.NONE,
+                )
+                return gradeOf(store, url)
+            }
+
+            // The pre-probe resolved the name, so a dial that could not is our resolver and earns nothing.
+            assertNull(grade("cannot: java.net.UnknownHostException: Temporary failure in name resolution", reachable = true))
+            assertNull(grade("cannot: java.net.UnknownHostException: gone.example", reachable = true))
+            // A routing or refusal word from the dial is at most `silent`.
+            assertEquals(Verdict.SILENT.value, grade("cannot: connect: Network is unreachable", reachable = true))
+            assertEquals(Verdict.SILENT.value, grade("cannot: java.net.ConnectException: Connection refused", reachable = true))
+            // A dial's TLS failure no direct handshake has checked is not the server's (FitnessGuardTest has the rest).
+            assertNull(grade("cannot: javax.net.ssl.SSLHandshakeException: PKIX path building failed", reachable = true))
+            // The server answered the connect and refused the protocol.
+            assertEquals(Verdict.DEAD.value, grade("cannot: Expected HTTP 101 response but was '404 Not Found'", reachable = true))
+            // A server or CDN error is a moment, and an auth or payment wall is a live relay.
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '503 Service Unavailable'", reachable = true))
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '530 <none>'", reachable = true))
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '526 Invalid SSL Certificate'", reachable = true))
+            assertEquals(Verdict.RESTRICTED.value, grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '402 Payment Required'", reachable = true))
+            // The typed pre-probe's proof stands on its own.
+            assertEquals(Verdict.DEAD.value, grade("unused", reachable = false))
         }
 
     @Test
@@ -146,8 +260,6 @@ class ProbeDeadlineTest {
                     record = record,
                     probe = probe(stalling()),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = processors.of("fitness"),
                 )
 
@@ -156,7 +268,7 @@ class ProbeDeadlineTest {
                 pass.measure(
                     "deadline",
                     listOf(wedged, answering),
-                    canDial = { true },
+                    reach = { Reach.REACHABLE },
                     onEvent = {},
                     sockets = Sockets.NONE,
                 )
@@ -249,8 +361,6 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(newStore(), signer),
                     probe = probe(stalling()),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = handle,
                 )
             // A suspended coroutine has no stack frame to dump, so the held set is how a stall is diagnosed.
@@ -270,7 +380,7 @@ class ProbeDeadlineTest {
                 }
             watcher.start()
             withTimeout(deadlineMs() * 20) {
-                pass.measure("deadline", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("deadline", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             watcher.interrupt()
             watcher.join()
@@ -291,11 +401,9 @@ class ProbeDeadlineTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = null) },
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("silence", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure("silence", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
             // A relay that closes every rung has spoken and is read as a drain; `restricted` is unreachable
@@ -305,10 +413,8 @@ class ProbeDeadlineTest {
                 record = RelayVerdictRecord(refusing, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = emptyList(), reason = "closed: blocked: can't handle empty filters") },
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("refusal", listOf(wedged), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure("refusal", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertEquals(Verdict.PRIME.value, gradeOf(refusing, wedged))
         }
 

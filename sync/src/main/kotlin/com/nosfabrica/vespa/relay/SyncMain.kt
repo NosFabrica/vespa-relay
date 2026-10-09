@@ -51,11 +51,17 @@ import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
+import com.nosfabrica.vespa.relay.util.exitOnBootFailure
+import com.nosfabrica.vespa.relay.util.strictChoice
+import com.nosfabrica.vespa.relay.util.strictFlag
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
 // Enough attempts to outlast the relay's own boot deploy.
@@ -70,12 +76,8 @@ private const val DEFAULT_MONITOR_STATUS_PORT = 7779
 /** Matched to the mirror's own progress tick. */
 private const val DEFAULT_STATUS_INTERVAL_SECONDS = 30L
 
-/** `SYNC_STATUS_INTERVAL_SECONDS`, refused rather than defaulted when it is not a number. */
-private fun statusInterval(env: Map<String, String>): Long =
-    env["SYNC_STATUS_INTERVAL_SECONDS"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-        it.toLongOrNull()?.takeIf { n -> n > 0 }
-            ?: error("SYNC_STATUS_INTERVAL_SECONDS='$it' is not a positive number of seconds. Unset SYNC_STATUS_PORT to serve no page.")
-    } ?: DEFAULT_STATUS_INTERVAL_SECONDS
+/** `SYNC_STATUS_INTERVAL_SECONDS`. */
+private fun statusInterval(env: Map<String, String>): Long = env.strictLong("SYNC_STATUS_INTERVAL_SECONDS", 1L..Long.MAX_VALUE) ?: DEFAULT_STATUS_INTERVAL_SECONDS
 
 /**
  * A page's markup, off the classpath; `/stats.html` serves all three services. Missing means
@@ -91,6 +93,7 @@ private fun statusPage(resource: String = "/stats.html"): String =
  * entirely from the environment; `docs/configuration.md` documents every variable.
  */
 fun main() {
+    exitOnBootFailure()
     val env = System.getenv()
 
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
@@ -132,7 +135,7 @@ fun main() {
 
     // This is the process whose writes a drifted schema silently discards, so it deploys too.
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
-    if (env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() != false) {
+    if (env.strictFlag("AUTO_DEPLOY") != false) {
         System.err.println("schema: deploying the bundled application package to $configUrl")
         // Compose starts both processes together, so two deploys can race one config server
         // session; the loser retries.
@@ -157,13 +160,10 @@ fun main() {
     // STORE_WRITERS: the relay's inserts are checked against tombstones this process stores.
     // The pulse detail flag is read before the store opens: the slow-read ring is a
     // constructor setting.
-    val pulseClientDetail = env["SYNC_PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    val pulseClientDetail = env.strictFlag("SYNC_PULSE_CLIENT_DETAIL") ?: false
     // Off by default, unlike the two status pages: with SYNC_PULSE_CLIENT_DETAIL on this
     // document quotes slow queries and is not public.
-    val pulsePort =
-        env["SYNC_PULSE_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            it.toIntOrNull() ?: error("SYNC_PULSE_PORT='$it' is not a port number. Unset it to serve no pulse page.")
-        } ?: 0
+    val pulsePort = env.strictInt("SYNC_PULSE_PORT", 0..65_535) ?: 0
     // Refuses the pair: a public pulse must be the operational half only.
     val pulseIsPublic = pulsePublic(env, pulseClientDetail, "SYNC_PULSE_PUBLIC", "SYNC_PULSE_CLIENT_DETAIL")
     // Resolved here so a port set with no administrator named refuses before boot has spent
@@ -215,16 +215,16 @@ fun main() {
     val storeCalls = StoreCalls.fromEnv(env)
 
     val sweepState = SweepState.fromEnv(env)
-    val refusedIds = RefusedIds.fromEnv(env)
+    // Nothing walks below a stream's own `since`, nor below the plausible floor without one.
+    val refusedFloor = config.streams.mapNotNull { it.filter.since }.fold(SyncCoverage.PLAUSIBLE_FLOOR, ::minOf)
+    val refusedIds = RefusedIds.fromEnv(env, refusedFloor)
 
     // Opt-in: a sync running without a relay has no readers to yield to.
     val pressureUrl = env["SYNC_PRESSURE_URL"]?.trim()?.takeIf { it.isNotEmpty() }
     val servingPressure =
         pressureUrl?.let {
             ServingPressure(
-                thresholdMs =
-                    env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100)
-                        ?: ServingPressure.DEFAULT_THRESHOLD_MS,
+                thresholdMs = env.strictLong("SERVING_PRESSURE_THRESHOLD_MS", 100L..Long.MAX_VALUE) ?: ServingPressure.DEFAULT_THRESHOLD_MS,
             )
         }
     val poller = servingPressure?.let { PressurePoller(pressureUrl, it).start() }
@@ -241,7 +241,7 @@ fun main() {
             sweepState = sweepState,
             refusedIds = refusedIds,
             signer = identity,
-            wireLogMode = env["SYNC_WIRE_LOG"]?.trim()?.lowercase() ?: "",
+            wireLogMode = env.strictChoice("SYNC_WIRE_LOG", setOf("sent", "full")) ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
             progress = progress,
@@ -261,15 +261,9 @@ fun main() {
     // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
     // exactly the state they exist to show.
 
-    val statusPort =
-        env["SYNC_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            it.toIntOrNull() ?: error("SYNC_STATUS_PORT='$it' is not a port number. Unset it to serve no status page.")
-        } ?: DEFAULT_STATUS_PORT
+    val statusPort = env.strictInt("SYNC_STATUS_PORT", 0..65_535) ?: DEFAULT_STATUS_PORT
     // The monitor's page has its own port: a different question on a different clock.
-    val monitorPort =
-        env["MONITOR_STATUS_PORT"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            it.toIntOrNull() ?: error("MONITOR_STATUS_PORT='$it' is not a port number. Set it to 0 to serve no monitor page.")
-        } ?: DEFAULT_MONITOR_STATUS_PORT
+    val monitorPort = env.strictInt("MONITOR_STATUS_PORT", 0..65_535) ?: DEFAULT_MONITOR_STATUS_PORT
     val statusSite =
         if (statusPort <= 0) {
             System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
@@ -319,7 +313,7 @@ fun main() {
     engine.start()
 
     // Both processes log this, so load can be attributed to a role without scaling one to zero.
-    StoreMetricsLog.startLogging("sync", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
+    StoreMetricsLog.startLogging("sync", store, env.strictInt("STORE_METRICS_LOG_SECONDS") ?: 300)
 
     // Administrators only, against the same RELAY_ADMIN_PUBKEYS the relay's NIP-86 RPC
     // uses; a port set with no administrator named stops the boot.

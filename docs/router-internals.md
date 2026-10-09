@@ -190,8 +190,8 @@ false forever of the ones at the back: the loop walked `outcomes`, a
 passes for a stable url set. Every cut batch therefore dropped the SAME tail,
 and a healthy relay whose url happened to hash late could never be re-graded
 however often the sweep ran. So
-the loop walks the urls in URL order and starts at the write the last batch's
-wedge stopped on (`FitnessPass.writeCursors`, in memory — a restart starts at
+the loop walks the urls in URL order and starts at the earliest write the last
+batch's wedge left unstored (`FitnessPass.writeCursors`, in memory — a restart starts at
 the top, which is the same guarantee from a different offset). What a wedge
 costs this pass is the next pass's head.
 
@@ -238,9 +238,10 @@ untested verdict becomes immortal — the trap that header already describes for
 the event clock, one field over. So an inherited verdict is written only when it
 would CHANGE something: the record carries no such grade, carries a different
 one, or carries it under a superseded epoch or aged past the TTL.
-`RelayVerdictRecord.fitnessGrades` is the one chunked read that answers it, and
-a read that FAILS falls back to writing everything — skipping a write the record
-needs is the worse of the two mistakes. It is also most of a third of the loop:
+The batch's one `RelayVerdictRecord.load` answers it (`Verdicts.fitness`),
+beside the folds and the stability refusals; a load that FAILS measures nothing
+that batch, since without the standing folds an alias would be dialled and
+signed as its own relay. It is also most of a third of the loop:
 6,192 of the 20,075 graded records on staging are `alias` or `inconsistent`.
 
 **Two things about #172 that are NOT the fix, recorded so they are not tried
@@ -408,8 +409,8 @@ capacity and never started, including a producer outside the pool.
 
 **And a visit is not dialled into a queue that cannot take it.** `visit` reads
 `IngestPipeline.isFull` before the dial permit and returns if so — skipped, not
-queued, exactly as a refused permit is, counted as `visitsHeldByIngest` on the
-visits row. A download into a full queue does one thing: parks its first event,
+queued, exactly as a refused permit is, and tried again within seconds;
+counted, per try, as `visitsHeldByIngest` on the visits row. A download into a full queue does one thing: parks its first event,
 stalls the socket for everyone on it, and comes back `abortedBackpressured`
 thirty seconds later, having cost the relay a handshake and a REQ for nothing —
 per unit, per revisit, 96 at a time, for as long as the store is behind. The

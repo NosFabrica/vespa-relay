@@ -1,5 +1,6 @@
 import assert from 'assert';
-const { npub, noteId, naddr: mintAddr, nevent: mintEvent, shortAddr, pubkeyParam, nip19Parse } =
+import { createHash } from 'crypto';
+const { npub, noteId, naddr: mintAddr, nevent: mintEvent, shortAddr, pubkeyParam, nip19Parse, answers, idHolds } =
   await import(new URL("../../main/resources/web/shared/nip19.js", import.meta.url));
 
 // A test-side bech32+TLV encoder, independent of the page's decoder so the two check each other.
@@ -104,5 +105,32 @@ assert.strictEqual(pubkeyParam(npub(pk)), pk);
 assert.strictEqual(pubkeyParam(pk), pk);
 assert.strictEqual(pubkeyParam(npub(pk).toUpperCase()), pk);
 assert.strictEqual(pubkeyParam("npub1qqqq"), null);
+
+// A relay hint is a third party: what it hands back must be what the identifier names.
+{
+  const author = "a".repeat(64), other = "b".repeat(64);
+  const sealed = (ev) => ({ ...ev, id: createHash("sha256")
+    .update(JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content])).digest("hex") });
+  const note = sealed({ pubkey: author, created_at: 1_700_000_000, kind: 1, tags: [["t", "x"]], content: "héllo \"q\"\n" });
+  const ev = nip19Parse(mintEvent(note.id, { relays: ["wss://hint.example"] }));
+  assert.ok(answers(note, ev), "the event the nevent names");
+  assert.ok(!answers(sealed({ ...note, content: "other" }), ev), "an nevent is answered only by its own id");
+
+  const article = sealed({ pubkey: author, created_at: 1, kind: 30023, tags: [["d", "post"]], content: "" });
+  const addr = nip19Parse(mintAddr(`30023:${author}:post`));
+  assert.ok(answers(article, addr));
+  assert.ok(!answers({ ...article, pubkey: other }, addr), "another author's article at the same d");
+  assert.ok(!answers({ ...article, kind: 30024 }, addr), "another kind at the same d");
+  assert.ok(!answers({ ...article, tags: [["d", "other"]] }, addr), "another d");
+  assert.ok(answers({ ...article, kind: 10002, tags: [] }, nip19Parse(mintAddr(`10002:${author}:`))), "an absent d is the empty one");
+
+  assert.ok(answers({ kind: 0, pubkey: author }, nip19Parse(npub(author))));
+  assert.ok(!answers({ kind: 1, pubkey: author }, nip19Parse(npub(author))), "a profile link wants the kind 0");
+  assert.ok(!answers({ kind: 0, pubkey: other }, nip19Parse(npub(author))));
+
+  assert.strictEqual(await idHolds(note), true, "the id is the NIP-01 hash of the event");
+  assert.strictEqual(await idHolds({ ...note, content: "tampered" }), false, "content altered under a real id");
+  assert.strictEqual(await idHolds({ ...note, pubkey: other }), false, "an author swapped under a real id");
+}
 
 console.log("nip19: all assertions passed");

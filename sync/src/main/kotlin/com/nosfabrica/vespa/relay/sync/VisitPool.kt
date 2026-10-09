@@ -68,8 +68,8 @@ internal class VisitPool(
     private val retraction: RetractionAudit? = null,
     private val sockets: Sockets,
     private val scope: CoroutineScope,
-    /** Decides what to sync; the pool asks it to [RosterBuilder.rebuild] on the roster clock. */
-    private val rosterBuilder: RosterBuilder,
+    /** Decides what to sync; the pool asks it to [RosterSource.rebuild] on the roster clock. */
+    private val rosterBuilder: RosterSource,
     /** The visit-mode streams: every relaySource entry a kind-30166 verdict source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
@@ -84,6 +84,8 @@ internal class VisitPool(
      * Shared with the pager so the audit's fallback REQs are chunked the same way.
      */
     private val widths: FilterWidths = FilterWidths(),
+    /** Silence between asks that ends a visit; a seam for tests. */
+    private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
 ) {
     /** When each stream's audits and re-fetches come due. */
     private val schedule = AuditSchedule(streams, bands, retraction)
@@ -182,11 +184,20 @@ internal class VisitPool(
 
         val events = AtomicLong()
 
-        /** Any sign of life: an event, a negentropy frame, a window opening. */
+        /** Any sign of life: an event, an answered ask, a negentropy frame, a window opening. */
         @Volatile var lastActivityMs: Long = startedMs
     }
 
     private val ongoing = ConcurrentHashMap<VisitKey, OngoingVisit>()
+
+    /** Where a unit's next visit starts, after one cut short; absent starts at the first ask. */
+    private val resumeAt = ConcurrentHashMap<VisitKey, Int>()
+
+    /** Units turned away before dialling: they retry after [TURNED_AWAY_RETRY_MS], not a revisit's wait. */
+    private val turnedAway = ConcurrentHashMap.newKeySet<VisitKey>()
+
+    /** Units whose tail was just evicted: the prompt visit catches up and does not evict in turn. */
+    private val evicted = ConcurrentHashMap.newKeySet<VisitKey>()
 
     /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
     private fun arrived(
@@ -242,6 +253,9 @@ internal class VisitPool(
         // One pass for the whole table; the same question asked per row would scan the map
         // thousands of times.
         val cannotReconcile = bands.cannotReconcileByUnit()
+        val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
+        // A banded stream's audit files its reconcile under the bare name, which no band key is.
+        val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
         val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
@@ -252,6 +266,7 @@ internal class VisitPool(
                         relay = url.url,
                         stream = stream,
                         // The same strings the bands are keyed under, so the report joins on them.
+                        coverageKeys = coverageKeys[stream] ?: listOf(stream),
                         askKeys = unit.identity,
                         visiting = ongoing.containsKey(key),
                         live = tails.containsKey(key),
@@ -264,6 +279,7 @@ internal class VisitPool(
                         abortReason = abort?.reason?.says,
                         abortSaid = abort?.said,
                         abortAtSec = abort?.atSec ?: 0,
+                        auditKey = auditKeys[stream],
                     )
             }
         }
@@ -432,7 +448,11 @@ internal class VisitPool(
                     stillWanted = { key -> wantedBy(currentRoster, key) },
                     // Read, never getOrPut: a finishing visit must not resurrect a pruned yield.
                     revisitDelayMs = { key ->
-                        revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
+                        if (turnedAway.remove(key)) {
+                            TURNED_AWAY_RETRY_MS
+                        } else {
+                            revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
+                        }
                     },
                     visit = ::guardedVisit,
                 )
@@ -473,6 +493,9 @@ internal class VisitPool(
         for (url in previous.keys - next.keys) {
             yields.remove(url)
         }
+        resumeAt.keys.removeIf { !wantedBy(built, it) }
+        turnedAway.removeIf { !wantedBy(built, it) }
+        evicted.removeIf { !wantedBy(built, it) }
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -488,6 +511,29 @@ internal class VisitPool(
             )
         }
         phasesChanged()
+        // Last, and on its own: a failed prune must not keep the new roster's units unqueued.
+        try {
+            bands.retain(ownedState(built))
+            pager.retain(next.keys.mapTo(HashSet()) { it.url })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: could not prune state off the roster: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+        }
+    }
+
+    /** Everything a unit of [roster] files state under: its catch-up bands, its audit clocks, its retraction's ask. */
+    private fun ownedState(roster: RosterBuilder.Roster): Set<SyncBands.Held> {
+        val keysOf = streams.associate { it.name to (SyncBands.coverageKeys(it) + it.name).distinct() }
+        val out = HashSet<SyncBands.Held>()
+        for ((url, byStream) in roster.asks) {
+            for ((name, unit) in byStream) {
+                val keys = keysOf[name] ?: listOf(name)
+                val filters = unit.identity + unit.asks.mapNotNull { retraction?.ownedAskOf(it.stream, it.filter)?.toJson() }
+                for (key in keys) for (filter in filters) out += SyncBands.Held(key, filter, url.url)
+            }
+        }
+        return out
     }
 
     /** One visit with its failure recorded as an abort. */
@@ -532,28 +578,42 @@ internal class VisitPool(
         val snapshot = currentRoster
         val wanted = asksFor(snapshot, key)
         // A download into a full queue parks its first event and silences the
-        // socket; skipped like a refused permit, and the revisit brings it back.
+        // socket; skipped like a refused permit, and retried shortly.
         if (ingest.isFull()) {
             visitsHeldByIngest.incrementAndGet()
+            turnAway(key)
             return
         }
         // Taken before the socket claim, so `visitConcurrency` bounds simultaneous dials.
-        val permit = limits.tryHold(key.stream, JOB_VISITING) ?: return
+        // Workers are shared across streams, so a full share is routine and retried shortly.
+        val permit =
+            limits.tryHold(key.stream, JOB_VISITING) ?: run {
+                turnAway(key)
+                return
+            }
         visitsRun.incrementAndGet()
+        // A prompt requeue can reach here past an earlier turn-away; this visit's own wait applies.
+        turnedAway.remove(key)
+        val mayEvict = !evicted.remove(key)
         val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         ongoingVisit.stream = key.stream
         ongoing[key] = ongoingVisit
         sockets.claim(url)
         try {
-            for (ask in wanted) {
+            // A cut visit resumes where it stopped, so the asks behind the cut are not starved.
+            val start = if (wanted.isEmpty()) 0 else (resumeAt.remove(key) ?: 0) % wanted.size
+            for (step in wanted.indices) {
+                val at = (start + step) % wanted.size
+                val ask = wanted[at]
                 // Give up on silence, not on a deadline: a delivering visit is never cut.
-                if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
+                if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > quietGiveUpMs) {
+                    resumeAt[key] = at
                     aborts
                         .record(
                             key.stream,
                             url,
                             VisitAborts.Reason.GAVE_UP,
-                            asked = "${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s), ${VisitAborts.asked(ask.filter)}",
+                            asked = "${quietGiveUpMs / 60_000} quiet minute(s), ${VisitAborts.asked(ask.filter)}",
                             said = null,
                         )?.let(System.err::println)
                     return
@@ -564,6 +624,7 @@ internal class VisitPool(
                 val refusal = catchUp(ask, url, ongoingVisit)
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
+                    resumeAt[key] = at + 1
                     aborts
                         .record(
                             key.stream,
@@ -588,13 +649,19 @@ internal class VisitPool(
             aborts.cleared(key.stream, url)
             ongoingVisit.stage = FINISHING
             healer.drain(url)
-            openTail(key)
+            openTail(key, mayEvict)
         } finally {
             ongoing.remove(key)
             sockets.release(url)
             // The heal drain and the tail open still count as visiting.
             permit.release()
         }
+    }
+
+    /** Nothing was dialled, so the next try needs no revisit's wait; a standing timer would hold it to one. */
+    private fun turnAway(key: VisitKey) {
+        turnedAway += key
+        queue.disarm(key)
     }
 
     /** One refused walk: the ending, the chunk the relay actually saw, and when it was asked. */
@@ -621,7 +688,7 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
-        val tiers = ask.stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = SyncBands.NEVER)) }
+        val tiers = SyncBands.catchUpBands(ask.stream)
         val now = nowSeconds()
         // Oldest-last, so the catch-up of recent history is never queued behind a re-page of
         // the tail. Each band keeps its own coverage: a band expires, and only its legs re-open.
@@ -659,6 +726,7 @@ internal class VisitPool(
         val stream = ask.stream
         // Read before the first `record` below widens it; it tells a catch-up from a re-fetch.
         val covered = bands.band(key, url, ask.filter)
+        val floor = ask.filter.bandFloor(bandSince)
         for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
@@ -674,7 +742,7 @@ internal class VisitPool(
             try {
                 var narrowings = 0
                 while (true) {
-                    val refusal = walkLeg(ask, url, key, flooredLeg, ongoingVisit) ?: break
+                    val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
                     if (!refusal.ours &&
                         narrowings < MAX_NARROWINGS &&
@@ -706,6 +774,8 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         key: String,
         flooredLeg: Filter,
+        /** The ask bounded below by its band, whose floor a drained chunk must reach to settle it. */
+        floor: Filter,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
         val stream = ask.stream
@@ -750,16 +820,22 @@ internal class VisitPool(
                     ours = stalledByUs(walked.end) && heldByUs(url),
                 )
             }
-            bands.record(
-                key,
-                url,
-                ask.filter,
-                seenMin,
-                seenMax,
-                paged = true,
-                observedByKind = seenByKind,
-                drained = drainSettlesThePast(walked, chunk, ask.filter),
-            )
+            if (readToTheEnd(walked)) {
+                // An answered ask is the relay responding, whether or not it had anything to send.
+                ongoingVisit.lastActivityMs = System.currentTimeMillis()
+                bands.record(
+                    key,
+                    url,
+                    ask.filter,
+                    seenMin,
+                    seenMax,
+                    paged = true,
+                    observedByKind = seenByKind,
+                    drained = drainSettlesThePast(walked, chunk, floor),
+                )
+            } else {
+                bands.recordCut(key, url, ask.filter, seenByKind, walkedTop = chunk.until ?: (askedAtMs / 1000))
+            }
         }
         return null
     }
@@ -828,6 +904,7 @@ internal class VisitPool(
         val auditStarted = now
         var received = 0
         ongoingVisit.stage = NEGENTROPY
+        val window = ask.filter.windowed(olderEdge, newerEdge, now)
         val outcome =
             pager.sweep(
                 // The cursor's identity. Band-qualified, or every band of a stream would resume
@@ -836,7 +913,7 @@ internal class VisitPool(
                 url,
                 // Shape stays the whole ask, so the cursor survives the window sliding with `now`.
                 ask.filter,
-                ask.filter.windowed(olderEdge, newerEdge, now),
+                window,
                 // A clean audit downloads nothing, so frames must count as activity.
                 onProgress = { _, _ -> ongoingVisit.lastActivityMs = System.currentTimeMillis() },
                 // The window's `since`: how far back the audit has got, like a paging cursor.
@@ -874,14 +951,13 @@ internal class VisitPool(
         }
         if (outcome.complete) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
-            bands.record(
+            bands.recordAudit(
                 stream.name,
                 url,
                 ask.filter,
-                observedMin = null,
-                observedMax = null,
-                paged = false,
-                reconciledThrough = auditStarted - pager.slackSeconds,
+                window,
+                reachesFloor = olderEdge == null,
+                verifiedAt = auditStarted - pager.slackSeconds,
                 band = band,
             )
         }
@@ -900,6 +976,9 @@ internal class VisitPool(
                 ", last verified ${verifiedBefore?.let { "${auditStarted - it}s ago" } ?: "never"}",
         )
     }
+
+    /** [this] with the band's older edge as its floor: the ground below belongs to an older band. */
+    private fun Filter.bandFloor(bandSince: Long?): Filter = if (bandSince == null) this else copy(since = maxOf(since ?: bandSince, bandSince))
 
     /** [this] intersected with a band's window, or null where nothing is left of it. */
     private fun Filter.clampedTo(
@@ -948,9 +1027,13 @@ internal class VisitPool(
     /**
      * Opens this unit's live tail, `since` [TAIL_OVERLAP_SECONDS] behind now so the seam with
      * the catch-up cannot drop an event. A sitting tail whose asks or kind cap changed is
-     * re-opened. The socket claim lives until the roster drops the unit.
+     * re-opened. The socket claim lives until the roster drops the unit. Without [mayEvict] it
+     * takes only a spare permit: a unit just evicted would otherwise evict back.
      */
-    private suspend fun openTail(key: VisitKey) {
+    private suspend fun openTail(
+        key: VisitKey,
+        mayEvict: Boolean,
+    ) {
         val url = key.url
         val snapshot = currentRoster
         val urlAsks = asksFor(snapshot, key)
@@ -964,7 +1047,7 @@ internal class VisitPool(
         }
         // A spare permit within the stream's budget, or one earned by evicting its weakest tail.
         // `trySpare` does not count a deferral: a full live budget is normal, not refused work.
-        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: earnTail(key) ?: return
+        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: (if (mayEvict) earnTail(key) else null) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // Built before the listener closes over it, so the first burst lands on the counters.
         val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
@@ -985,11 +1068,8 @@ internal class VisitPool(
                 var allTrusted = true
                 var healContent = false
                 var healRetractions = false
-                for (ask in currentRoster.asks[url]
-                    ?.get(key.stream)
-                    ?.asks
-                    .orEmpty()) {
-                    if (!ask.filter.match(event)) continue
+                currentRoster.asks[url]?.get(key.stream)?.forEachCandidate(event.pubKey) { ask ->
+                    if (!ask.filter.match(event)) return@forEachCandidate
                     any = true
                     allTrusted = allTrusted && ask.stream.trusted
                     healContent = healContent || ask.stream.healContent
@@ -1019,7 +1099,8 @@ internal class VisitPool(
 
     /**
      * Earns this unit a live permit by evicting the same stream's weakest tail, or returns
-     * null. The candidate must win on yield, not tie, so a pool of equals does not churn.
+     * null. The candidate must win on yield, not tie, so a pool of equals does not churn. The
+     * evicted tail's permit is handed over, never released, so no other worker can take it between.
      */
     private fun earnTail(candidate: VisitKey): PoolLimits.Hold? {
         val nowMs = System.currentTimeMillis()
@@ -1036,20 +1117,29 @@ internal class VisitPool(
             }
         }
         if (weakest == null || weakestScore >= mine) return null
+        // Another path dropped it first and released its permit; ask for one like anyone else.
+        val handedOver = detachTail(weakest) ?: return limits.tryHold(candidate.stream, POOL_LIVE)
         evictedTails.incrementAndGet()
-        dropTail(weakest)
-        if (wantedBy(currentRoster, weakest)) queue.offer(weakest)
-        return limits.tryHold(candidate.stream, POOL_LIVE)
+        if (wantedBy(currentRoster, weakest)) {
+            evicted += weakest
+            queue.offer(weakest)
+        }
+        return handedOver
     }
 
     private fun dropTail(key: VisitKey) {
-        val tail = tails.remove(key) ?: return
+        detachTail(key)?.release()
+    }
+
+    /** Takes [key]'s tail down and returns its live permit unreleased, or null when none was up. */
+    private fun detachTail(key: VisitKey): PoolLimits.Hold? {
+        val tail = tails.remove(key) ?: return null
         reads.untail(tail.subId)
         sockets.release(key.url)
-        tail.hold.release()
         // The revisit timer was armed on the tailed cadence; let the next visit arm the untailed one.
         queue.disarm(key)
         phasesChanged()
+        return tail.hold
     }
 
     companion object {
@@ -1060,16 +1150,21 @@ internal class VisitPool(
          * Whether a walk ended in a way that makes the next leg futile: nothing delivered, and
          * an ending that is the relay declining rather than an empty page or our own limit.
          */
-        internal fun refusedOutright(walked: PagedFetchResult): Boolean =
-            walked.downloaded == 0 &&
-                when (walked.end) {
-                    PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> false
+        internal fun refusedOutright(walked: PagedFetchResult): Boolean = walked.downloaded == 0 && !readToTheEnd(walked)
 
-                    PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
-                    PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
-                    PagedFetchResult.End.UNPAGEABLE,
-                    -> true
-                }
+        /**
+         * Whether a walk read its filter to the end: the relay drained it, or the filter's own
+         * limit stopped it. Any other ending leaves ground below the oldest event unread.
+         */
+        internal fun readToTheEnd(walked: PagedFetchResult): Boolean =
+            when (walked.end) {
+                PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> true
+
+                PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
+                PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
+                PagedFetchResult.End.UNPAGEABLE,
+                -> false
+            }
 
         /**
          * The endings a socket parked in one of our hooks can manufacture: silence, and a first
@@ -1208,6 +1303,9 @@ internal class VisitPool(
         const val REVISIT_TAILED_MS = 30L * 60 * 1000
         const val REVISIT_UNTAILED_MS = 5L * 60 * 1000
         const val REVISIT_FLOOR_MS = 60_000L
+
+        /** A visit turned away before dialling retries this soon; it cost nothing, so it earns no wait. */
+        const val TURNED_AWAY_RETRY_MS = 5_000L
 
         const val YIELD_HALVES_THE_WAIT = 50.0
 

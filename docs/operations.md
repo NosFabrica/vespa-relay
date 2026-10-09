@@ -220,7 +220,12 @@ client read latency into `ServingPressure` and serves the mean on
 `GET /pressure`; the sync process polls it (`SYNC_PRESSURE_URL`) and yields
 ingest between batches past the threshold. Three failed polls reset the
 throttle — a relay that is down has no clients to protect — and both the feed
-being off and the feed being lost are said out loud in the sync log.
+being off and the feed being lost are said out loud in the sync log. A relay
+that is up but unread is the same case: past a minute with no read in flight
+and none finished, the mean halves every 30 seconds, so a slow burst followed
+by silence cannot hold ingest back for good. A read that hangs is the opposite
+case: while one is in flight the mean holds, and past the threshold it counts
+at its age, so a stalled store throttles ingest before any read returns.
 
 **The trust reconcile runs in the background.** It used to be
 `runBlocking { reconcileTrustWithRetry(store) }` between opening the store and

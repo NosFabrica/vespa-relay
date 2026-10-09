@@ -300,7 +300,7 @@ async function search(text, limit, deep, signal) {
   const filters = buildFilters(text, limit);
   // Through the cache, so Enter reuses the popup's answer. [signal] is the popup's, so an
   // overtaken type-ahead is closed at the relay.
-  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }));
+  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }), relay.authed ? me : null);
   // `complete` is EOSE, not the timeout. shared/relay.js marks the array and uniqueById
   // returns a new one, so read it first.
   return {
@@ -478,6 +478,7 @@ function enrichProvenance(events) {
 // score is a fact about a subject, and the authenticated socket is gated.
 const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
+let scoring = new Set();           // pubkeys whose rank read is in flight under that lens
 
 /**
  * The `30382:rank` services an observer trusts, all of them in the reader's order; a `followers`
@@ -494,13 +495,26 @@ async function rankServicesOf(observer) {
  */
 async function paintScores() {
   const lens = viewingAs || me;
-  if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
+  if (scoreLensKey !== lens) { scores.clear(); scoring = new Set(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
   const svc = lens ? await rankServicesOf(lens) : [];
+  // A lens change while the services were read belongs to the newer call, which paints the chips.
+  if (scoreLensKey !== lens) return;
   // Nobody to rank by, or a lens that ranks nothing: answered, with no number.
   if (!svc.length) { paintChips(chips); return; }
-  const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
+  // A pubkey another call is already reading is painted when that read lands.
+  const pending = scoring;
+  const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk) && !pending.has(pk));
+  for (const pk of need) pending.add(pk);
+  try { await readScores(lens, svc, need); } finally { for (const pk of need) pending.delete(pk); }
+  if (scoreLensKey !== lens) return;
+  // The chips on the page now, which a re-render while the read was out has replaced.
+  paintChips([...document.querySelectorAll(".score-chip[data-pk]")]);
+}
+
+/** Read the rank cards for [need] under [lens] into `scores`. */
+async function readScores(lens, svc, need) {
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
   const conn = batches.length ? await refConn().catch(() => null) : null;
@@ -529,7 +543,6 @@ async function paintScores() {
     // "No card for this pubkey" is a fact only after EOSE; a null cached here is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
-  paintChips(chips);
 }
 
 /** The chips themselves, from whatever `scores` now knows. */
@@ -826,11 +839,12 @@ document.addEventListener("keydown", (e) => {
  * Who the picker offers for a half-typed `from:`/`to:`: a NIP-50 profile search on the
  * authenticated socket, ranked by the reader. A pasted hex key resolves to itself.
  */
-async function lookupAuthors(partial) {
+async function lookupAuthors(partial, signal) {
   const direct = pubkeyParam(partial);
   if (direct) { await enrichProfiles([direct]).catch(() => {}); return [direct]; }
   await ensureLogin();
-  const events = await relay.req({ kinds: [0], search: askString(partial), limit: 12 });
+  // [signal] is the picker retiring this lookup; an aborted REQ is never sent, or is CLOSEd.
+  const events = await relay.req({ kinds: [0], search: askString(partial), limit: 12 }, undefined, { signal });
   seedProfiles(events);
   return [...new Set(events.map((e) => e.pubkey))];
 }
@@ -935,7 +949,7 @@ function groupLockState() {
  * NIP-50 search over kind 39000, never folded into one row (shared/groups.js). The decrypt
  * prompt is raised here, on first use of `group:`, not on page load.
  */
-async function lookupGroups(partial) {
+async function lookupGroups(partial, signal) {
   await ensureLogin().catch(() => {});
   const own = await ownGroupCandidates().catch(() => []);
   // Started, not awaited: the public rows return now, and the picker re-asks when the dialog is answered.
@@ -944,7 +958,7 @@ async function lookupGroups(partial) {
   let found = [];
   try {
     // `group:` alone is "show me my groups", not a match-all over every 39000.
-    if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 });
+    if (partial) found = await relay.req({ kinds: [39000], search: askString(partial), limit: 12 }, undefined, { signal });
   } catch (e) { found = []; }
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
@@ -983,6 +997,7 @@ const s = {
   exhausted: false,  // the relay proved there is nothing past what we hold (paging.js's drained)
   more: null,        // this view's query, re-askable at a longer limit; null on a view that cannot page
   preloading: false, // one widening ask at a time
+  pages: 0,          // bumped by resetPages(); a widening begun before it writes nothing
 };
 
 /**
@@ -1277,13 +1292,14 @@ async function preload() {
   const want = askLimit(s.page);
   if (want <= s.asked) return;
   const myId = s.requestId;
+  const gen = s.pages;
   const ask = s.more;
   // Only the success path asks again; an error that re-kicked would loop.
   let again = false;
   s.preloading = true;
   try {
     const found = await ask(want);
-    if (myId !== s.requestId) return;
+    if (myId !== s.requestId || gen !== s.pages) return;
     const grown = mergePages(s.hits, found.events);
     // Did the reader outrun us? Asked of the old buffer.
     const waiting = !pageOf(s.hits, s.page).length;
@@ -1307,16 +1323,17 @@ async function preload() {
   } catch (e) {
     // A failed widening is not a failed search; nothing is marked exhausted, so Next tries again.
   } finally {
-    s.preloading = false;
+    // After a reset the flag belongs to the newer view's widening, if one started.
+    if (gen === s.pages) s.preloading = false;
   }
   // Once more, in case the reader moved during the round trip; each pass asks for strictly more, so
   // this terminates.
-  if (again && myId === s.requestId) preload();
+  if (again && myId === s.requestId && gen === s.pages) preload();
 }
 
 /** The pager, back to a view that has no pages: the hero, the feed, an entity. */
 function resetPages() {
-  s.page = 0; s.asked = 0; s.exhausted = false; s.more = null; s.preloading = false;
+  s.page = 0; s.asked = 0; s.exhausted = false; s.more = null; s.preloading = false; s.pages++;
 }
 
 /** Whether the list already on screen survives the wait for the next answer. */
@@ -1326,6 +1343,7 @@ const REPLACE = false, KEEP = true;
 // the timing, the skeleton and the late repaints are the same for every caller.
 async function run(st, fetch, keep, render) {
   const myId = ++st.requestId;
+  st.running = myId;
   st.loading = true; st.error = null;
   if (!keep) { st.hits = []; st.hitsFor = null; }
   render();
@@ -1333,7 +1351,7 @@ async function run(st, fetch, keep, render) {
   let late = [];
   try {
     const found = await fetch();
-    if (myId !== st.requestId) return;
+    if (myId !== st.requestId) return superseded(st, myId);
     // The feed's `hitsFor` is null, so focus can never reopen the popup on it.
     st.hits = found.events; st.hitsFor = found.text ?? null;
     // What the pager needs: how far this ask reached, and whether the relay ran out first (EOSE,
@@ -1346,7 +1364,7 @@ async function run(st, fetch, keep, render) {
     // After the guard: the row seed replaces rather than adds. See rowSeed.
     late = [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean);
   } catch (e) {
-    if (myId !== st.requestId) return;
+    if (myId !== st.requestId) return superseded(st, myId);
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;
   }
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
@@ -1357,19 +1375,41 @@ async function run(st, fetch, keep, render) {
 }
 
 /**
+ * A run whose answer was dropped. A bump from outside run() starts no ask, so the last run to
+ * start still owns `loading` and clears it; otherwise the popup queues behind it forever.
+ */
+function superseded(st, myId) {
+  if (st.running === myId) st.loading = false;
+  return false;
+}
+
+/**
  * The lookups that land after the list, each painting when it arrives and only if it learned
  * something. Skipped while a raw event is expanded, since a re-render would collapse it.
  */
 function paintLate(st, myId, late, render) {
   for (const lookup of late) {
     lookup.then((learned) => {
-      if (!learned || myId !== st.requestId) return;
-      // The field's chips are named from the same cache.
-      field.repaint();
-      if (document.querySelector(".raw-body:not([hidden])")) return;
-      render();
+      if (learned && myId === st.requestId) repaintSoon(st, myId, render);
     }).catch(() => {});
   }
+}
+
+// render -> the answer it last landed for; lookups that land within a frame share one repaint.
+const lateRepaints = new Map();
+function repaintSoon(st, myId, render) {
+  const queued = lateRepaints.has(render);
+  lateRepaints.set(render, { st, myId });
+  if (queued) return;
+  requestAnimationFrame(() => {
+    const last = lateRepaints.get(render);
+    lateRepaints.delete(render);
+    if (last.myId !== last.st.requestId) return;
+    // The field's chips are named from the same cache.
+    field.repaint();
+    if (document.querySelector(".raw-body:not([hidden])")) return;
+    render();
+  });
 }
 
 function openPopup() {

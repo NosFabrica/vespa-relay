@@ -6,20 +6,24 @@ import { shortNpub } from "./nip19.js";
 
 export const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
 
+// Kind-0 content is anyone's JSON: a field that is not a string reads as absent.
+const str = (v) => (typeof v === "string" ? v : "");
+
 /** The one name to show: `display_name`, else `name`; a whitespace value falls through. */
-export const displayName = (p) => (p && (p.display_name || "").trim()) || (p && (p.name || "").trim()) || "";
+export const displayName = (p) => (p && (str(p.display_name).trim() || str(p.name).trim())) || "";
 
 export function parseProfile(ev) {
   let c = {};
-  try { c = JSON.parse(ev.content) || {}; } catch (e) {}
+  try { c = JSON.parse(ev.content); } catch (e) {}
+  if (!c || typeof c !== "object") c = {};
   return {
-    name: c.name || c.username || "",
-    display_name: c.display_name || c.displayName || "",
-    picture: c.picture || "",
-    nip05: c.nip05 || "",
-    about: c.about || "",
-    website: c.website || "",
-    lud16: c.lud16 || "",
+    name: str(c.name) || str(c.username),
+    display_name: str(c.display_name) || str(c.displayName),
+    picture: str(c.picture),
+    nip05: str(c.nip05),
+    about: str(c.about),
+    website: str(c.website),
+    lud16: str(c.lud16),
     created_at: ev.created_at,
   };
 }
@@ -32,13 +36,30 @@ export function seedProfiles(events) {
   }
 }
 
+const inFlight = new Map(); // pubkey -> the kind-0 read that will settle it
+
 /**
  * Load the uncached profiles among [pubkeys]; returns how many it learned, so a caller
  * knows whether to repaint.
  */
 export async function enrichProfiles(pubkeys) {
-  const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
-  if (!missing.length) return 0;
+  const want = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
+  if (!want.length) return 0;
+  // A pubkey already being read waits on that read instead of asking twice.
+  const reads = new Set(want.map((p) => inFlight.get(p)).filter(Boolean));
+  const missing = want.filter((p) => !inFlight.has(p));
+  if (missing.length) {
+    const read = askProfiles(missing).finally(() => {
+      for (const p of missing) if (inFlight.get(p) === read) inFlight.delete(p);
+    });
+    for (const p of missing) inFlight.set(p, read);
+    reads.add(read);
+  }
+  await Promise.all(reads);
+  return want.filter((p) => profiles.get(p)).length;
+}
+
+async function askProfiles(missing) {
   let asked = false;
   try {
     // Anonymous: the authenticated socket gates kind 0 to authors the reader has scored.
@@ -49,9 +70,7 @@ export async function enrichProfiles(pubkeys) {
     asked = found.complete === true;
   } catch (e) { asked = false; }
   // "No profile" is cached only when the relay answered.
-  const learned = missing.filter((p) => profiles.get(p)).length;
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
-  return learned;
 }
 
 export function authorOf(ev) {

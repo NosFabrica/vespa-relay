@@ -176,12 +176,8 @@ internal class AuditSchedule(
         return rows
     }
 
-    /**
-     * A stream's re-fetch bands as the pool walks them: its own, else the one unbounded band
-     * that a bare period — the stream's or the router's — resolves to. Must match `catchUp`'s,
-     * or the page reports on a coverage nothing writes.
-     */
-    private fun refetchBandsOf(stream: SyncStream): List<SyncTier> = stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = SyncBands.NEVER)) }
+    /** The same bands `catchUp` walks, or the page reports on a coverage nothing writes. */
+    private fun refetchBandsOf(stream: SyncStream): List<SyncTier> = SyncBands.catchUpBands(stream)
 
     /** The pool word, band-qualified where a stream has more than one. */
     private fun jobOf(

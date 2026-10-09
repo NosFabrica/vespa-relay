@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
+import com.nosfabrica.vespa.relay.util.strictFlag
+
 /**
  * The store's slow-read threshold in milliseconds, or null for none. Honoured only where the
  * page will show the client sections, since the ring retains query strings; otherwise it says so
@@ -75,7 +77,7 @@ fun pulsePublic(
     key: String = "PULSE_PUBLIC",
     detailKey: String = "PULSE_CLIENT_DETAIL",
 ): Boolean {
-    val public = env[key]?.trim()?.toBooleanStrictOrNull() ?: false
+    val public = env.strictFlag(key) ?: false
     require(!(public && clientDerived)) {
         "$key and $detailKey are both on — the client-derived half of the pulse names observer lenses and quotes " +
             "what people searched for, and must not be served to anyone who asks. Turn $detailKey off to serve the " +

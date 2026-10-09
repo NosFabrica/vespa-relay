@@ -67,6 +67,8 @@ class RelayVerdictRecord(
          * freshness, and an epoch bump or a lapsed TTL empties that without narrowing this.
          */
         val recorded: Set<NormalizedRelayUrl> = emptySet(),
+        /** The fitness grade this monitor currently stands behind, per url; stale grades are absent. */
+        val fitness: Map<NormalizedRelayUrl, StandingGrade> = emptyMap(),
     )
 
     /** One chunked record read, booked as the monitor's. */
@@ -98,32 +100,14 @@ class RelayVerdictRecord(
      * is not re-signed with a fresh measured-at stamp. Stale grades do not appear. Throws when
      * the store cannot answer.
      */
-    suspend fun fitnessGrades(candidates: Collection<NormalizedRelayUrl>): Map<NormalizedRelayUrl, StandingGrade> {
-        val self = signer?.pubKey ?: return emptyMap()
-        if (candidates.isEmpty()) return emptyMap()
-        val floor = nowSeconds() - ttlSeconds
-        val grades = HashMap<NormalizedRelayUrl, StandingGrade>()
-        // Newest wins: a store should hold one record per address, and "should" is not a guarantee.
-        val newestAt = HashMap<NormalizedRelayUrl, Long>()
-        for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
-            val held = readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
-            for (event in held) {
-                val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
-                val url = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
-                if (event.createdAt < (newestAt[url] ?: Long.MIN_VALUE)) continue
-                val label = event.tags.firstOrNull(::isFitnessLabel) ?: continue
-                if (!currentLabel(label, floor)) continue
-                newestAt[url] = event.createdAt
-                grades[url] = StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX))
-            }
-        }
-        return grades
-    }
+    suspend fun fitnessGrades(candidates: Collection<NormalizedRelayUrl>): Map<NormalizedRelayUrl, StandingGrade> = load(candidates).fitness
 
     /** The grade and the evidence beside it; `alias` onto a different canonical is a different statement. */
     data class StandingGrade(
         val value: String,
         val evidence: String?,
+        /** The unix second the grade was measured, from the label's own stamp. */
+        val measuredAt: Long? = null,
     )
 
     /** Every verdict this monitor still stands behind, paged over the corpus. Throws for [load]'s reason. */
@@ -149,8 +133,12 @@ class RelayVerdictRecord(
         val speaksNegentropy = HashMap<NormalizedRelayUrl, Boolean>()
         val measured = HashSet<NormalizedRelayUrl>()
         val recorded = HashSet<NormalizedRelayUrl>()
+        val fitness = HashMap<NormalizedRelayUrl, StandingGrade>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded)
+        /** Newest wins: a store should hold one record per address, and "should" is not a guarantee. */
+        val fitnessFrom = HashMap<NormalizedRelayUrl, Long>()
+
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded, fitness)
     }
 
     /** A page of records, folded into the sets. */
@@ -203,7 +191,14 @@ class RelayVerdictRecord(
         event.tags
             .firstOrNull(::isFitnessLabel)
             ?.takeIf { currentLabel(it, floor) }
-            ?.let { measured += from }
+            ?.let { label ->
+                measured += from
+                if (event.createdAt >= (fitnessFrom[from] ?: Long.MIN_VALUE)) {
+                    fitnessFrom[from] = event.createdAt
+                    fitness[from] =
+                        StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX), label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull())
+                }
+            }
         event.tags
             .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
             ?.takeIf { current(it, FITNESS_EPOCH, floor) }
@@ -484,7 +479,7 @@ class RelayVerdictRecord(
          * The version of the fold's decision rules. Bump it in the same commit as any change to
          * what a fingerprint concludes; the cost is a full re-fingerprint of the store.
          */
-        const val FOLD_EPOCH = "2"
+        const val FOLD_EPOCH = "3"
 
         /** The same lever for the stability verdict, a separate measurement. */
         const val CONSISTENCY_EPOCH = "1"
@@ -539,7 +534,7 @@ class RelayVerdictRecord(
         const val NIP77_TAG = "nip77"
 
         /** The fitness verdict's rules version; `FitnessPass.retireStaleEpochs` takes back older ones at boot. */
-        const val FITNESS_EPOCH = "2"
+        const val FITNESS_EPOCH = "3"
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 

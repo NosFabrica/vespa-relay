@@ -31,6 +31,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -75,24 +78,38 @@ object BanListFile {
                 putInts("allowedKinds", banStore.listAllowedKinds())
                 putInts("disallowedKinds", banStore.listDisallowedKinds())
             }
+        val bytes =
+            json
+                .encodeToString(
+                    kotlinx.serialization.json.JsonObject
+                        .serializer(),
+                    doc,
+                ).toByteArray(Charsets.UTF_8)
         val target = File(path)
-        target.absoluteFile.parentFile?.mkdirs()
         val tmp = File(path + ".tmp")
-        tmp.writeText(
-            json.encodeToString(
-                kotlinx.serialization.json.JsonObject
-                    .serializer(),
-                doc,
-            ),
-        )
-        runCatching {
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        }.recoverCatching {
-            // Some filesystems do not support ATOMIC_MOVE.
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }.onFailure { e ->
-            // A ban acknowledged over NIP-86 but not persisted vanishes on restart.
-            System.err.println("nip86: could not persist ban lists to $path: ${e.message}")
+        try {
+            target.absoluteFile.parentFile?.mkdirs()
+            writeSynced(tmp, bytes)
+            try {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (e: IOException) {
+            // Not thrown: the ban is already enforced in memory. It vanishes on restart, so said aloud.
+            tmp.delete()
+            System.err.println("nip86: could not persist ban lists to $path (${e.message}) — the change holds until restart; the previous file is kept")
+        }
+    }
+
+    /** [bytes] at [file], on the device before this returns, so a rename never publishes an empty file. */
+    private fun writeSynced(
+        file: File,
+        bytes: ByteArray,
+    ) {
+        FileOutputStream(file).use { out ->
+            out.write(bytes)
+            out.fd.sync()
         }
     }
 }

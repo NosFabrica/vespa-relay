@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -68,6 +71,7 @@ class IngestDedupTest {
         preload: List<Event>,
         offer: List<Event>,
         probe: Boolean = true,
+        refusals: RefusalSink = RefusalSink.None,
     ): Triple<IngestPipeline, NostrSemanticsStore, Long> =
         runBlocking {
             val index = InMemoryEventIndex()
@@ -98,6 +102,7 @@ class IngestDedupTest {
                                     }
                             }
                         },
+                    refusals = refusals,
                 )
             // Queued before the workers start, so the whole offer drains as one batch.
             offer.forEach { pipeline.submit(it, skipVerify = false) }
@@ -249,6 +254,104 @@ class IngestDedupTest {
         val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0))) }
         assertEquals(listOf(v1.id), kept.map { it.id }, "the replay's outcome was changed by collapsing the batch")
         assertTrue(pipeline.accepted.get() >= 2, pipeline.rejectionBreakdown())
+    }
+
+    @Test
+    fun `a bad copy arriving first does not shadow the genuine copy behind it`() {
+        val real = (0 until 150).map { note(it) }
+        // Each event forged first, as if a hostile relay answered before an honest one.
+        val (pipeline, store, stored) = ingest(preload = emptyList(), offer = real.map { forge(it) } + real)
+
+        assertEquals(150, pipeline.accepted.get(), pipeline.rejectionBreakdown())
+        assertEquals(150, stored)
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(1))) }
+        assertEquals(real.map { it.id }.toSet(), kept.map { it.id }.toSet())
+    }
+
+    /** Every refusal the pipeline reports, by id. */
+    private class Refusals : RefusalSink {
+        override val tracksOrigins = true
+
+        val ids: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
+
+        override fun isSuppressed(event: Event) = false
+
+        override fun onRefused(
+            event: Event,
+            origin: IngestOrigin,
+            reason: String,
+        ) {
+            ids.add(event.id to reason)
+        }
+    }
+
+    @Test
+    fun `a forged newer version cannot displace the genuine one in the same batch`() {
+        val people = (0 until 3).map { NostrSignerSync() }
+        val genuine = people.map { profile(it, 1_700_000_000L) }
+        // A real hash over newer content, signed by nobody: newer, id-valid, unverifiable.
+        val forged = people.map { forge(profile(it, 1_800_000_000L)) }
+        // Both orders, so arrival position cannot be what saves the genuine one.
+        val offer = genuine.zip(forged).flatMapIndexed { i, (g, f) -> if (i % 2 == 0) listOf(g, f) else listOf(f, g) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) = ingest(preload = emptyList(), offer = offer, refusals = sink)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0))) }
+        assertEquals(genuine.map { it.id }.toSet(), kept.map { it.id }.toSet(), pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in genuine.map { it.id } }, "a genuine version was reported refused: $blamed")
+        assertTrue(pipeline.rejectionBreakdown().contains("bad signature"), pipeline.rejectionBreakdown())
+    }
+
+    /** [event]'s id over content it does not hash: a kind 0 by [author] stamped [at]. */
+    private fun idClone(
+        event: Event,
+        author: NostrSignerSync,
+        at: Long,
+    ) = Event(
+        id = event.id,
+        pubKey = author.pubKey,
+        createdAt = at,
+        kind = 0,
+        tags = emptyArray(),
+        content = "",
+        sig = "f".repeat(128),
+    )
+
+    @Test
+    fun `a forged copy claiming a beaten address does not take the genuine event with it`() {
+        // Wide enough for both probes, so the stored profiles are read and compared.
+        val people = (0 until 130).map { NostrSignerSync() }
+        val notes = (0 until 130).map { note(it) }
+        val clones = notes.zip(people).map { (n, p) -> idClone(n, p, at = 1) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) =
+            ingest(preload = people.map { profile(it, 1_700_000_000L) }, offer = clones + notes, refusals = sink)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(1))) }
+        assertEquals(notes.map { it.id }.toSet(), kept.map { it.id }.toSet(), pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in notes.map { it.id } }, "a genuine note was reported refused: $blamed")
+    }
+
+    @Test
+    fun `a forged copy claiming a newer version cannot supersede the genuine one`() {
+        val people = (0 until 130).map { NostrSignerSync() }
+        val profiles = people.map { profile(it, 1_700_000_000L) }
+        val notes = (0 until 130).map { note(it) }
+        // Each note's id over a kind 0 newer than its author's real profile, arriving ahead of the note.
+        val clones = notes.zip(people).map { (n, p) -> idClone(n, p, at = 1_800_000_000L) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) = ingest(preload = emptyList(), offer = profiles + clones + notes, refusals = sink)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0, 1))) }.map { it.id }.toSet()
+        val genuine = (profiles + notes).map { it.id }.toSet()
+        assertEquals(genuine, kept, pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in genuine }, "a genuine event was reported refused: $blamed")
     }
 
     private companion object {

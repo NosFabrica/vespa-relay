@@ -26,45 +26,65 @@ import kotlinx.coroutines.CancellationException
 
 /**
  * Write [events] through [write]; if that throws, split the batch and write the halves, down
- * to the single event the writer cannot take, which goes to [onPoison]. Re-writing a good
- * half is safe: an already-applied event comes back as a duplicate.
+ * to the single event the writer cannot take, which goes to [onPoison]. Only a failed write
+ * splits: a throw from [onOutcomes] goes to [onOutcomesFailed], and nothing is written twice.
  */
 internal suspend fun insertBisecting(
     events: List<Event>,
     write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
     onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
+    onOutcomesFailed: (List<Event>, Throwable) -> Unit,
     onPoison: (Event, Throwable) -> Unit,
     onGaveUp: (List<Event>, Throwable) -> Unit = { _, _ -> },
-) = bisect(events, write, onOutcomes, onPoison, onGaveUp, intArrayOf(ISOLATION_WRITE_BUDGET))
+) = Bisection(write, onOutcomes, onOutcomesFailed, onPoison, onGaveUp).run(events)
 
-private suspend fun bisect(
-    events: List<Event>,
-    write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
-    onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
-    onPoison: (Event, Throwable) -> Unit,
-    onGaveUp: (List<Event>, Throwable) -> Unit,
-    budget: IntArray,
+private class Bisection(
+    val write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
+    val onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
+    val onOutcomesFailed: (List<Event>, Throwable) -> Unit,
+    val onPoison: (Event, Throwable) -> Unit,
+    val onGaveUp: (List<Event>, Throwable) -> Unit,
 ) {
-    if (events.isEmpty()) return
-    try {
-        // Outcomes are positionally aligned with the batch.
-        onOutcomes(events, write(events))
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Throwable) {
+    private var budget = ISOLATION_WRITE_BUDGET
+
+    suspend fun run(events: List<Event>) {
+        if (events.isEmpty()) return
+        val outcomes =
+            try {
+                write(events)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                split(events, e)
+                return
+            }
+        try {
+            // Outcomes are positionally aligned with the batch.
+            onOutcomes(events, outcomes)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            onOutcomesFailed(events, e)
+        }
+    }
+
+    private suspend fun split(
+        events: List<Event>,
+        e: Throwable,
+    ) {
         if (events.size == 1) {
             onPoison(events.single(), e)
             return
         }
         // When the store itself is refusing every half fails; the budget bounds those writes.
-        if (budget[0] <= 0) {
+        if (budget <= 0) {
             onGaveUp(events, e)
             return
         }
-        budget[0] -= 2
+        budget -= 2
         val mid = events.size / 2
-        bisect(events.subList(0, mid), write, onOutcomes, onPoison, onGaveUp, budget)
-        bisect(events.subList(mid, events.size), write, onOutcomes, onPoison, onGaveUp, budget)
+        run(events.subList(0, mid))
+        run(events.subList(mid, events.size))
     }
 }
 

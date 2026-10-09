@@ -30,10 +30,12 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -81,6 +83,14 @@ class MonitorEngine(
     /** How often the fast lane looks, or null for a lane that is off. */
     private val fastLaneSeconds = fastLaneSecondsFor(settings)
 
+    private val sweepSeconds = settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS
+
+    /** Of [urls], those carrying a fitness grade of ours taken within the last sweep period. */
+    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> {
+        val s = signer ?: return emptySet()
+        return StreamWorld.gradedSince(RelayVerdictRecord(store, s), urls, nowSeconds() - sweepSeconds)
+    }
+
     /**
      * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
      * call order and the document draws in that order.
@@ -122,7 +132,7 @@ class MonitorEngine(
             probeIdleMs(url, tor, connectionTimeoutMs)
         }
 
-    private val probe = ReachabilityProbe(tor)
+    private val probe = ReachabilityProbe(tor, threads = monitorConcurrency)
 
     /** What the passes measure. */
     private val world =
@@ -143,6 +153,7 @@ class MonitorEngine(
             sockets = sockets,
             onProbeEvent = onProbeEvent,
             progress = sourceProgress,
+            recentlyGraded = ::recentlyGraded,
         )
 
     /**
@@ -155,36 +166,36 @@ class MonitorEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
-                // `aliases` only: this pass signs `l=alias` for every entry, and a stand-in was never measured.
-                foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
-                inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
+                // The fold and the stability gate are read off the pass's one load of the record.
                 progress = processors.of(FITNESS_PROCESSOR),
                 // The per-url transport, so a `.onion` document is fetched inside the circuit.
                 document = RelayDocument(peers::httpFor),
                 tor = tor,
                 concurrency = monitorConcurrency,
+                tlsCheck = probe::tls,
             )
         }
 
     /** One pass as [AliasMonitor] sees it: the work, plus the row it reports on. */
     private fun entry(
         handle: Processors.Handle?,
-        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Boolean, suspend (Event) -> Unit, Sockets) -> Int,
+        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int,
     ) = object : AliasMonitor.Pass {
         override val progress = handle
 
         override suspend fun measure(
             label: String,
             candidates: List<NormalizedRelayUrl>,
-            canDial: suspend (NormalizedRelayUrl) -> Boolean,
+            reach: suspend (NormalizedRelayUrl) -> Reach,
             onEvent: suspend (Event) -> Unit,
             sockets: Sockets,
-        ): Int = run(label, candidates, canDial, onEvent, sockets)
+        ): Int = run(label, candidates, reach, onEvent, sockets)
     }
 
-    private val foldEntry = folding?.let { f -> entry(f.progress, f::measure) }
+    /** The fold and the stability gate learn nothing from why a url was declined, only that it was. */
+    private val foldEntry = folding?.let { f -> entry(f.progress) { l, c, reach, e, s -> f.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
 
-    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress, g::measure) }
+    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
 
     private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::measure) }
 
@@ -195,7 +206,7 @@ class MonitorEngine(
                 AliasMonitor(
                     passes,
                     scope,
-                    intervalMs = (settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
+                    intervalMs = sweepSeconds * 1000L,
                     source = world,
                     // Stability then fitness, so a first `prime` waits on the stability answer; the fold
                     // needs a host's whole group and rides the sweep.
@@ -269,10 +280,22 @@ class MonitorEngine(
         signer?.let { s ->
             val record = RelayVerdictRecord(store, s)
             // Two guards: a throw in the first must not skip the second.
-            runCatching { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
-            runCatching { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
+            guarded("stale-epoch verdicts") { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
+            guarded("legacy `s` grades") { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+        }
+    }
+
+    /** One boot retraction, its failure logged and contained; a cancellation still ends the boot. */
+    private suspend fun guarded(
+        what: String,
+        retire: suspend () -> Unit,
+    ) {
+        try {
+            retire()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: could not retire $what: ${e.message}")
         }
     }
 

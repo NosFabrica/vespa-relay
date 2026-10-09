@@ -136,6 +136,37 @@ class IngestAttributionTest {
         }
     }
 
+    @Test
+    fun `an outcome loop that dies partway still counts every event it was handed`() =
+        runBlocking {
+            // Only an Error gets past the sink's own guard, and it leaves the loop mid-batch.
+            val sink =
+                object : RefusalSink {
+                    override val tracksOrigins = true
+
+                    override fun isSuppressed(event: Event) = false
+
+                    override fun onRefused(
+                        event: Event,
+                        origin: IngestOrigin,
+                        reason: String,
+                    ): Unit = throw OutOfMemoryError("sink")
+                }
+            val scope = CoroutineScope(SupervisorJob())
+            val pipeline = IngestPipeline(Rejecting(base()), config(), null, null, scope, null, null, sink)
+            try {
+                pipeline.start()
+                repeat(8) { pipeline.submit(event(it), skipVerify = true, IngestOrigin.Local) }
+                var spins = 0
+                while (pipeline.accepted.get() + pipeline.rejected.get() < 8 && spins++ < 200) delay(25)
+            } finally {
+                pipeline.close()
+                scope.cancel()
+            }
+
+            assertEquals(pipeline.submitted.get(), pipeline.accepted.get() + pipeline.rejected.get(), pipeline.rejectionBreakdown())
+        }
+
     /** A real id hash with a junk signature: the fast path runs before verification, so the id gates it. */
     private fun hashed(
         n: Int,

@@ -81,11 +81,27 @@ class AliasFolding(
         val standIns: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
-    /** Urls in, deduplicated urls out, without dialling anything. */
+    /** Urls in, deduplicated urls out, without dialling anything or changing what the fold holds. */
     suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
         if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
-        adopt(candidates)
-        return collapse(candidates)
+        return collapse(candidates, view(candidates))
+    }
+
+    /**
+     * The stored verdicts over [candidates] in a map of their own: a narrower set replaced into
+     * [aliases] would drop the canonicals of aliases outside it mid-fold. Only [measure] replaces.
+     */
+    private suspend fun view(candidates: List<NormalizedRelayUrl>): RelayAliases {
+        val held =
+            try {
+                record.load(candidates)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A store that cannot answer is not "no verdict": read what the fold holds.
+                return aliases
+            }
+        return RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
     }
 
     /**
@@ -129,244 +145,247 @@ class AliasFolding(
                 // Widest group first, so the pass's wall clock clears the most pollution earliest.
                 for (group in groups.sortedByDescending { it.size }) {
                     launch {
-                        val wanted = aliases.toProbe(group)
-                        val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
-                        // One anchor for the whole group, taken before any of it is dialled.
-                        val anchor = AliasProbe.settledAnchor(nowSeconds())
+                        try {
+                            val wanted = aliases.toProbe(group)
+                            val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
+                            // One anchor for the whole group, taken before any of it is dialled.
+                            val anchor = AliasProbe.settledAnchor(nowSeconds())
 
-                        // The yardstick goes first, alone: it decides the filter the whole group is asked
-                        // through. The search walks down the preference order while urls stay silent.
-                        var dialled = false
-                        var spent = 0
-                        var found: NormalizedRelayUrl? = null
-                        var foundPrint: AliasProbe.Leader? = null
-                        // Answered, but too thinly to be a yardstick; held for the scheme-twin exit.
-                        var thin: NormalizedRelayUrl? = null
-                        var thinPrint: AliasProbe.Leader? = null
-                        // Asked to be the yardstick and answered nothing; a url the transport
-                        // declined was never asked.
-                        val exhausted = HashSet<NormalizedRelayUrl>()
-                        // Urls this pass asked, and the subset that answered: what
-                        // foldUnreadableGroups turns on.
-                        val askedUrls = HashSet<NormalizedRelayUrl>()
-                        val spoke = HashSet<NormalizedRelayUrl>()
-                        for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
-                            var asked = false
-                            val attempt =
-                                gate.withPermit(candidate) {
-                                    if (!canDial(candidate)) return@withPermit null
-                                    asked = true
-                                    dialled = true
-                                    spent++
-                                    taken.incrementAndGet()
-                                    dial(candidate, sockets) { probe.leaderPrint(candidate, anchor, onEvent) }
+                            // The yardstick goes first, alone: it decides the filter the whole group is asked
+                            // through. The search walks down the preference order while urls stay silent.
+                            var dialled = false
+                            var spent = 0
+                            var found: NormalizedRelayUrl? = null
+                            var foundPrint: AliasProbe.Leader? = null
+                            // Answered, but too thinly to be a yardstick; held for the scheme-twin exit.
+                            var thin: NormalizedRelayUrl? = null
+                            var thinPrint: AliasProbe.Leader? = null
+                            // Asked to be the yardstick and answered nothing; a url the transport
+                            // declined was never asked.
+                            val exhausted = HashSet<NormalizedRelayUrl>()
+                            // Urls this pass asked, and the subset that answered other than by
+                            // refusing our key: what foldUnreadableGroups turns on.
+                            val askedUrls = HashSet<NormalizedRelayUrl>()
+                            val spoke = HashSet<NormalizedRelayUrl>()
+                            for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
+                                var asked = false
+                                val attempt =
+                                    gate.withPermit(candidate) {
+                                        if (!canDial(candidate)) return@withPermit null
+                                        asked = true
+                                        dialled = true
+                                        spent++
+                                        taken.incrementAndGet()
+                                        dial(candidate, sockets) { probe.leaderPrint(candidate, anchor, onEvent) }
+                                    }
+                                if (asked) askedUrls += candidate
+                                if (attempt?.answeredForFold == true) spoke += candidate
+                                val print = attempt?.leader
+                                // Asked and silent, or cut by the deadline: a second dial this pass
+                                // buys the same silence.
+                                if (asked && print == null) exhausted += candidate
+                                if (print != null) {
+                                    // It answered, so the search stops whether or not the window is usable: a
+                                    // thin window is a fact about the host, silence about the url.
+                                    if (aliases.usableWindow(print.ids, print.kinds)) {
+                                        found = candidate
+                                        foundPrint = print
+                                    } else {
+                                        thin = candidate
+                                        thinPrint = print
+                                    }
+                                    break
                                 }
-                            if (asked) askedUrls += candidate
-                            if (attempt?.spoke == true) spoke += candidate
-                            val print = attempt?.leader
-                            // Asked and silent, or cut by the deadline: a second dial this pass
-                            // buys the same silence.
-                            if (asked && print == null) exhausted += candidate
-                            if (print != null) {
-                                // It answered, so the search stops whether or not the window is usable: a
-                                // thin window is a fact about the host, silence about the url.
-                                if (aliases.usableWindow(print.ids, print.kinds)) {
-                                    found = candidate
-                                    foundPrint = print
+                            }
+                            var members = wanted
+                            // A window too thin to be a yardstick still settles its own scheme twin, and no
+                            // further: nothing else can be measured against it.
+                            val thinLeader = thin
+                            val thinLead = thinPrint
+                            if (found == null && thinLeader != null && thinLead != null) {
+                                aliases.plainTwinIn(group, thinLeader)?.let { twin ->
+                                    found = thinLeader
+                                    foundPrint = thinLead
+                                    members = listOf(twin)
+                                }
+                            }
+                            // A group nothing would read from folds onto its preferred survivor: a policy, not
+                            // a measurement, and only while every url asked so far answered.
+                            if (found == null &&
+                                thinLeader == null &&
+                                foldUnreadableGroups &&
+                                askedUrls.isNotEmpty() &&
+                                askedUrls.all { it in spoke }
+                            ) {
+                                // The rest of the group, asked before anything is concluded about the whole of it.
+                                val rest = wanted.filter { it !in askedUrls }
+                                val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
+                                coroutineScope {
+                                    for (url in rest) {
+                                        launch {
+                                            gate.withPermit(url) {
+                                                if (!canDial(url)) return@withPermit
+                                                taken.incrementAndGet()
+                                                dial(url, sockets) { probe.leaderPrint(url, anchor, onEvent) }?.let { swept[url] = it }
+                                            }
+                                        }
+                                    }
+                                }
+                                for ((url, attempt) in swept) {
+                                    if (attempt.answeredForFold) spoke += url
+                                    if (attempt.leader == null) exhausted += url
+                                }
+                                // A usable window the sweep found is a yardstick, taken in preference order so the
+                                // leader does not depend on which dial finished first.
+                                val usable =
+                                    wanted.firstOrNull { url ->
+                                        swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true
+                                    }
+                                usable?.let { better ->
+                                    found = better
+                                    foundPrint = swept.getValue(better).leader
+                                    exhausted -= better
+                                }
+                                // Anything served, thin windows included, disqualifies the shared-name default.
+                                val servedSomething = swept.values.any { it.leader != null }
+                                if (found == null && !servedSomething) {
+                                    // Every url, not most: one our transport could not reach makes this
+                                    // "we do not know".
+                                    val everyUrlAnswered = wanted.all { it in spoke }
+                                    if (everyUrlAnswered && wanted.size > 1) {
+                                        val survivor = wanted.first()
+                                        val folds = aliases.foldUnreadable(wanted, survivor)
+                                        for (alias in folds.keys) {
+                                            guarded { record.publishUnreadable(alias, survivor, wanted.size) }
+                                        }
+                                        if (folds.isNotEmpty()) {
+                                            newVerdicts += folds.keys
+                                            clearUndecidable(survivor)
+                                            System.err.println(
+                                                "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
+                                                    "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
+                                                    "on the shared name, WITHOUT a measurement",
+                                            )
+                                        }
+                                        return@launch
+                                    }
+                                }
+                            }
+                            if (found == null || foundPrint == null) {
+                                // Cooled down only when something was asked: a group the transport
+                                // declined was never measured.
+                                if (dialled) {
+                                    markUndecidable(group.first(), startedAtMs)
+                                    undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_YARDSTICK
                                 } else {
-                                    thin = candidate
-                                    thinPrint = print
+                                    undecided[RelayAliases.hostOf(group.first().url)] = Undecided.TRANSPORT
                                 }
-                                break
+                                return@launch
                             }
-                        }
-                        var members = wanted
-                        // A window too thin to be a yardstick still settles its own scheme twin, and no
-                        // further: nothing else can be measured against it.
-                        val thinLeader = thin
-                        val thinLead = thinPrint
-                        if (found == null && thinLeader != null && thinLead != null) {
-                            aliases.plainTwinIn(group, thinLeader)?.let { twin ->
-                                found = thinLeader
-                                foundPrint = thinLead
-                                members = listOf(twin)
-                            }
-                        }
-                        // A group nothing would read from folds onto its preferred survivor: a policy, not
-                        // a measurement, and only while every url asked so far answered.
-                        if (found == null &&
-                            thinLeader == null &&
-                            foldUnreadableGroups &&
-                            askedUrls.isNotEmpty() &&
-                            askedUrls.all { it in spoke }
-                        ) {
-                            // The rest of the group, asked before anything is concluded about the whole of it.
-                            val rest = wanted.filter { it !in askedUrls }
-                            val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
+                            // Kotlin will not smart cast a captured `var` inside the lambdas below.
+                            val leader = found
+                            val lead = foundPrint
+                            prints[leader] = lead.ids
+
                             coroutineScope {
-                                for (url in rest) {
+                                // Not the yardstick or the exhausted; a url the transport declined is
+                                // still worth a dial.
+                                for (url in members.filter { it != leader && it !in exhausted }) {
                                     launch {
                                         gate.withPermit(url) {
                                             if (!canDial(url)) return@withPermit
                                             taken.incrementAndGet()
-                                            dial(url, sockets) { probe.leaderPrint(url, anchor, onEvent) }?.let { swept[url] = it }
+                                            dial(url, sockets) { probe.fingerprint(url, anchor, lead.kinds, onEvent) }?.let { prints[url] = it }
                                         }
                                     }
                                 }
                             }
-                            for ((url, attempt) in swept) {
-                                if (attempt.spoke) spoke += url
-                                if (attempt.leader == null) exhausted += url
-                            }
-                            // A usable window the sweep found is a yardstick, taken in preference order so the
-                            // leader does not depend on which dial finished first.
-                            val usable =
-                                wanted.firstOrNull { url ->
-                                    swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true
-                                }
-                            usable?.let { better ->
-                                found = better
-                                foundPrint = swept.getValue(better).leader
-                                exhausted -= better
-                            }
-                            // Anything served, thin windows included, disqualifies the shared-name default.
-                            val servedSomething = swept.values.any { it.leader != null }
-                            if (found == null && !servedSomething) {
-                                // Every url, not most: one our transport could not reach makes this
-                                // "we do not know".
-                                val everyUrlAnswered = wanted.all { it in spoke }
-                                if (everyUrlAnswered && wanted.size > 1) {
-                                    val survivor = wanted.first()
-                                    val folds = aliases.foldUnreadable(wanted, survivor)
-                                    for (alias in folds.keys) {
-                                        guarded { record.publishUnreadable(alias, survivor, wanted.size) }
+                            val leaderPrint = lead.ids
+                            val result = aliases.learn(group, leader, prints, lead.kinds)
+                            // Prove the yardstick before making a negative claim: a second walk from the same
+                            // anchor through the same filter, paid only where a negative claim is about to be made.
+                            if (result.distinct.isNotEmpty()) {
+                                val again =
+                                    gate.withPermit(leader) {
+                                        if (!canDial(leader)) return@withPermit null
+                                        taken.incrementAndGet()
+                                        dial(leader, sockets) { probe.fingerprint(leader, anchor, lead.kinds, onEvent) }
                                     }
-                                    if (folds.isNotEmpty()) {
-                                        newVerdicts += folds.keys
-                                        clearUndecidable(survivor)
-                                        System.err.println(
-                                            "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
-                                                "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
-                                                "on the shared name, WITHOUT a measurement",
-                                        )
-                                    }
+                                if (again == null || !aliases.reproducible(leaderPrint, again)) {
+                                    val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
+                                    // Back to what the store says; `forget` would also drop the
+                                    // verdicts adopted moments ago.
+                                    grouped.held
+                                        ?.let { aliases.replace(group, it.aliases, it.distinct) }
+                                        ?: aliases.forget(group)
+                                    markUndecidable(leader, startedAtMs)
+                                    undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
+                                    System.err.println(
+                                        "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
+                                            "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
+                                            "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
+                                            "separate relay(s)",
+                                    )
                                     return@launch
                                 }
                             }
-                        }
-                        if (found == null || foundPrint == null) {
-                            // Cooled down only when something was asked: a group the transport
-                            // declined was never measured.
-                            if (dialled) {
-                                markUndecidable(group.first(), startedAtMs)
-                                undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_YARDSTICK
-                            } else {
-                                undecided[RelayAliases.hostOf(group.first().url)] = Undecided.TRANSPORT
+                            val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
+                            val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
+                            for ((alias, canonical) in result.folded) {
+                                val print = prints[alias].orEmpty()
+                                // Against the url it folded onto, which is not always the leader.
+                                val shared = prints[canonical].orEmpty().count { it in print }
+                                newVerdicts += alias
+                                verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
                             }
-                            return@launch
-                        }
-                        // Kotlin will not smart cast a captured `var` inside the lambdas below.
-                        val leader = found
-                        val lead = foundPrint
-                        prints[leader] = lead.ids
+                            // A cleared url was held up against the leader and every other head; the
+                            // count names real comparisons.
+                            for (url in result.distinct) {
+                                val print = prints[url].orEmpty()
+                                val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
+                                val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
+                                cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
+                            }
 
-                        coroutineScope {
-                            // Not the yardstick or the exhausted; a url the transport declined is
-                            // still worth a dial.
-                            for (url in members.filter { it != leader && it !in exhausted }) {
-                                launch {
-                                    gate.withPermit(url) {
-                                        if (!canDial(url)) return@withPermit
-                                        taken.incrementAndGet()
-                                        dial(url, sockets) { probe.fingerprint(url, anchor, lead.kinds, onEvent) }?.let { prints[url] = it }
+                            // Written as this group finishes, not when the pass does, so a restart mid-pass keeps
+                            // it. A leader that compared nothing ends with no verdict and takes the cooldown.
+                            if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
+                                clearUndecidable(leader)
+                            } else {
+                                markUndecidable(leader, startedAtMs)
+                                undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
+                            }
+                            for ((alias, v) in verdicts) {
+                                guarded {
+                                    // Both flags can be set at once; the twin form wins because the
+                                    // pairing is the argument.
+                                    if (v.secureTwin) {
+                                        record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
+                                    } else if (v.groupList) {
+                                        record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
+                                    } else {
+                                        record.publish(alias, v.canonical, v.sampled, v.shared)
                                     }
                                 }
                             }
-                        }
-                        val leaderPrint = lead.ids
-                        val result = aliases.learn(group, leader, prints, lead.kinds)
-                        // Prove the yardstick before making a negative claim: a second walk from the same
-                        // anchor through the same filter, paid only where a negative claim is about to be made.
-                        if (result.distinct.isNotEmpty()) {
-                            val again =
-                                gate.withPermit(leader) {
-                                    if (!canDial(leader)) return@withPermit null
-                                    taken.incrementAndGet()
-                                    dial(leader, sockets) { probe.fingerprint(leader, anchor, lead.kinds, onEvent) }
-                                }
-                            if (again == null || !aliases.reproducible(leaderPrint, again)) {
-                                val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
-                                // Back to what the store says; `forget` would also drop the
-                                // verdicts adopted moments ago.
-                                grouped.held
-                                    ?.let { aliases.replace(group, it.aliases, it.distinct) }
-                                    ?: aliases.forget(group)
-                                markUndecidable(leader, startedAtMs)
-                                undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
-                                System.err.println(
-                                    "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
-                                        "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
-                                        "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
-                                        "separate relay(s)",
-                                )
-                                return@launch
+                            for ((url, c) in cleared) {
+                                guarded { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
                             }
+                        } finally {
+                            // In the launch, not from `invokeOnCompletion`, which can run after the scope resumes.
+                            progress?.attempted()
                         }
-                        val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
-                        val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
-                        for ((alias, canonical) in result.folded) {
-                            val print = prints[alias].orEmpty()
-                            // Against the url it folded onto, which is not always the leader.
-                            val shared = prints[canonical].orEmpty().count { it in print }
-                            newVerdicts += alias
-                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
-                        }
-                        // A cleared url was held up against the leader and every other head; the
-                        // count names real comparisons.
-                        for (url in result.distinct) {
-                            val print = prints[url].orEmpty()
-                            val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
-                            val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
-                            cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
-                        }
-
-                        // Written as this group finishes, not when the pass does, so a restart mid-pass keeps
-                        // it. A leader that compared nothing ends with no verdict and takes the cooldown.
-                        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
-                            clearUndecidable(leader)
-                        } else {
-                            markUndecidable(leader, startedAtMs)
-                            undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
-                        }
-                        for ((alias, v) in verdicts) {
-                            guarded {
-                                // Both flags can be set at once; the twin form wins because the
-                                // pairing is the argument.
-                                if (v.secureTwin) {
-                                    record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
-                                } else if (v.groupList) {
-                                    record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
-                                } else {
-                                    record.publish(alias, v.canonical, v.sampled, v.shared)
-                                }
-                            }
-                        }
-                        for ((url, c) in cleared) {
-                            guarded { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
-                        }
-                        // From the job's completion, because three of the four exits above are a
-                        // `return@launch`.
-                    }.invokeOnCompletion { progress?.attempted() }
+                    }
                 }
             }
             probed = taken.get()
             learned = newVerdicts.size
         }
 
-        val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates) else null
+        val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates, aliases) else null
         if (cleaned != null && (probed > 0 || learned > 0)) {
             System.err.println(
-                "router: $label measured $probed fingerprint(s) ? $learned new alias(es), " +
+                "router: $label measured $probed fingerprint(s) — $learned new alias(es), " +
                     "${candidates.size} url(s) now fold onto ${cleaned.dial.size} relay(s) " +
                     "(${aliases.size()} known, ${cleaned.unmeasured.size} unmeasured) " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
@@ -568,25 +587,28 @@ class AliasFolding(
     )
 
     /**
-     * The candidate set as the verdicts in memory see it. A fold is applied only where the set
+     * The candidate set as the verdicts in [known] see it. A fold is applied only where the set
      * holds a survivor; an absent survivor re-elects the best present member, through
      * [Collapsed.standIns] and never [Collapsed.aliases], so the group stays one relay.
      */
-    private fun collapse(candidates: List<NormalizedRelayUrl>): Collapsed {
+    private fun collapse(
+        candidates: List<NormalizedRelayUrl>,
+        known: RelayAliases,
+    ): Collapsed {
         val present = candidates.toHashSet()
-        val elected = reElected(candidates, present)
+        val elected = reElected(candidates, present, known)
         val measured = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val inferred = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val dial = ArrayList<NormalizedRelayUrl>(candidates.size)
         val seen = HashSet<NormalizedRelayUrl>(candidates.size)
         for (url in candidates) {
-            val canonical = aliases.canonicalOf(url)
+            val canonical = known.canonicalOf(url)
             val into = if (canonical in present) canonical else elected[canonical] ?: url
             if (seen.add(into)) dial += into
             if (into == url) continue
             if (into == canonical) measured[url] = into else inferred[url] = into
         }
-        return Collapsed(dial, measured, dial.filter { !aliases.measured(it) }, inferred)
+        return Collapsed(dial, measured, dial.filter { !known.measured(it) }, inferred)
     }
 
     /**
@@ -596,22 +618,35 @@ class AliasFolding(
     private fun reElected(
         candidates: List<NormalizedRelayUrl>,
         present: Set<NormalizedRelayUrl>,
+        known: RelayAliases,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         val groups = HashMap<NormalizedRelayUrl, MutableList<NormalizedRelayUrl>>()
         for (url in candidates) {
-            val canonical = aliases.canonicalOf(url)
+            val canonical = known.canonicalOf(url)
             if (canonical == url || canonical in present) continue
             groups.getOrPut(canonical) { ArrayList() } += url
         }
         val elected = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>(groups.size)
         for ((canonical, members) in groups) {
-            aliases.preferred(members)?.let { elected[canonical] = it }
+            known.preferred(members)?.let { elected[canonical] = it }
         }
         return elected
     }
 
     companion object {
         const val DEFAULT_DIAL_CONCURRENCY = MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+
+        /**
+         * Every candidate a fold in [held] names, onto the url it folds onto, whether or not that
+         * url is among them: a known alias is graded `alias` whatever else is in the batch.
+         */
+        fun foldsAmong(
+            held: RelayVerdictRecord.Verdicts,
+            candidates: List<NormalizedRelayUrl>,
+        ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+            val known = RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
+            return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
+        }
 
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"

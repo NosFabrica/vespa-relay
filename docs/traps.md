@@ -94,7 +94,11 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   <label>", and the roster is silently whatever the other sources named. The
   read itself is not the exposure — `scan` always sends an explicit limit and
   never the unbounded sentinel — the COUPLING is. Lower `SCAN_PAGE` with the
-  ceiling, or leave the ceiling above it.
+  ceiling, or leave the ceiling above it. A page that is all one `created_at`
+  grows to span two, but never past `SCAN_PAGE` (or the caller's own page):
+  it once doubled without bound and asked for `Int.MAX_VALUE`. Past the
+  ceiling the rest of that second is skipped with a `scan … TRUNCATED` line,
+  since `created_at` is the only cursor the store pages on.
 
   What a short page CANNOT be is a quiet truncation, and both routes are closed
   deliberately: an over-limit ask is rejected rather than trimmed (above), and

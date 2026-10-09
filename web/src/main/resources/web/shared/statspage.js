@@ -125,8 +125,8 @@ function renderFoot(doc) {
   footEl.appendChild(a);
   footEl.append(` (schema ${doc.schema}).`);
   // A document written by a newer relay may mean things this page does not know.
-  if (doc.schema > schemaFor(doc)) {
-    footEl.appendChild(el("p", "err", `This page was written for schema ${schemaFor(doc)} — some panels may be missing or misread.`));
+  if (doc.schema > schemaFor(doc, schema)) {
+    footEl.appendChild(el("p", "err", `This page was written for schema ${schemaFor(doc, schema)} — some panels may be missing or misread.`));
   }
 }
 
@@ -185,10 +185,11 @@ function settlePoll(doc) {
 }
 
 /**
- * Which schema this document was written against, from the section that names its publisher.
- * An unrecognised document falls back to the relay's, the strictest.
+ * Which of `versions` this document was written against. The mirror's carries `sync` and never names
+ * a relay; the relay's always does, and carries `sync` alone until its charts land. Unrecognised is the relay's.
  */
-const schemaFor = (doc) => (doc.monitor ? schema.monitor : doc.sync && !doc.corpus ? schema.sync : schema.relay);
+export const schemaFor = (doc, versions) =>
+  doc.monitor ? versions.monitor : doc.sync && !doc.relay ? versions.sync : versions.relay;
 
 /**
  * Mount a stats page: lay out its panels, draw the document, and keep it drawn. `panels` is

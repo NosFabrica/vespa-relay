@@ -43,6 +43,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The router's sync bands: file persistence around quartz's [SyncCoverage], one coverage per
@@ -56,7 +57,29 @@ class SyncBands(
     /** Per-stream re-fetch periods. Fixed at construction: a coverage carries its period for the process's life. */
     private val perStream: Map<String, Long> = emptyMap(),
 ) : AutoCloseable {
-    @Volatile private var dirty = false
+    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
+    private val generation = AtomicLong()
+
+    /** The generation the file holds; behind [generation], the next flush writes. */
+    @Volatile private var savedAt = NEVER_SAVED
+
+    /** The last snapshot and the generation it was built at. */
+    private class Built(
+        val generation: Long,
+        val doc: JsonObject,
+    )
+
+    @Volatile private var built: Built? = null
+
+    private val buildLock = Any()
+
+    /** Held for the disk write alone, so a status read never waits on the file. */
+    private val writeLock = Any()
+
+    /** Every mutation of persisted state ends here, after the mutation itself. */
+    private fun changed() {
+        generation.incrementAndGet()
+    }
 
     @Volatile private var flusher: Thread? = null
 
@@ -105,6 +128,50 @@ class SyncBands(
 
     /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
+
+    /** One piece of held state's owner: a coverage or stream key, the filter's JSON, the relay. */
+    data class Held(
+        val key: String,
+        val filter: String,
+        val relay: String,
+    )
+
+    private val unowned = UnownedClock<Held>()
+
+    /**
+     * Forgets the bands, clocks and verdicts no roster unit has owned for
+     * [UnownedClock.UNOWNED_TTL_SECONDS]. [owned] is everything the current roster files under.
+     */
+    fun retain(
+        owned: Set<Held>,
+        now: Long = System.currentTimeMillis() / 1000,
+    ): Int {
+        val held = HashSet<Held>()
+        coverageByStream.forEach { (key, coverage) -> coverage.export().keys.forEach { held += Held(key, it.filter, it.relay) } }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
+        val clocksBefore = unowned.stamps()
+        val doomed = unowned.expired(held, owned, now)
+        if (doomed.isEmpty()) {
+            if (unowned.stamps() != clocksBefore) changed()
+            return 0
+        }
+        val gone = doomed.groupBy { it.key }
+        for ((key, ofKey) in gone) {
+            val old = coverageByStream[key] ?: continue
+            val drop = ofKey.mapTo(HashSet()) { SyncCoverage.BandKey(it.relay, it.filter) }
+            val kept = old.export().filterKeys { it !in drop }
+            // quartz has no removal, so the coverage is rebuilt; a record racing the swap costs a re-walk, never a claim.
+            if (kept.isEmpty()) {
+                coverageByStream.remove(key, old)
+            } else {
+                coverageByStream.replace(key, old, SyncCoverage(refetchThePastSecondsFor(key), onChange = { changed() }).also { it.restore(kept) })
+            }
+        }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
+        changed()
+        System.err.println("router: forgot ${doomed.size} band(s) no roster unit has owned for ${UnownedClock.UNOWNED_TTL_SECONDS / 86_400}d")
+        return doomed.size
+    }
 
     /**
      * The audit gate: due by [auditDueAt] and outside the attempt spacing. True claims the
@@ -172,7 +239,7 @@ class SyncBands(
     ): Int {
         val key = VerifiedKey(stream, filter.toJson(), url.url, band)
         val after = cannot.compute(key) { _, was -> CannotReconcile((was?.strikes ?: 0) + 1, at, why) }!!
-        dirty = true
+        changed()
         return after.strikes
     }
 
@@ -183,7 +250,7 @@ class SyncBands(
         filter: Filter,
         band: String,
     ) {
-        if (cannot.remove(VerifiedKey(stream, filter.toJson(), url.url, band)) != null) dirty = true
+        if (cannot.remove(VerifiedKey(stream, filter.toJson(), url.url, band)) != null) changed()
     }
 
     /**
@@ -240,13 +307,13 @@ class SyncBands(
     init {
         val pruned = load()
         // Reopening a file is not a change; a prune is, and only a write takes the keys off disk.
-        dirty = pruned > 0
+        savedAt = if (pruned > 0) NEVER_SAVED else generation.get()
     }
 
     /** The bands of one stream, created on first use. */
     private fun coverage(stream: String): SyncCoverage =
         coverageByStream.computeIfAbsent(stream) {
-            SyncCoverage(refetchThePastSecondsFor(stream), onChange = { dirty = true })
+            SyncCoverage(refetchThePastSecondsFor(stream), onChange = { changed() })
         }
 
     /** What [stream]'s bands are trusted for: its own period, else the router's. */
@@ -298,13 +365,102 @@ class SyncBands(
         drained: Boolean = false,
         /** The age band [reconciledThrough] verified. Coverage is always recorded against the whole [filter]. */
         band: String = "",
+        now: Long = System.currentTimeMillis() / 1000,
     ) {
-        coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
+        // A future-dated event proves nothing about what is written before its stamp.
+        val present = observedMin == null || observedMin <= now
+        coverage(stream).record(
+            url,
+            filter,
+            observedMin.takeIf { present },
+            observedMax?.coerceAtMost(now).takeIf { present },
+            paged,
+            reconciledThrough,
+            presentOnly(observedByKind, now),
+            drained,
+        )
         if (reconciledThrough != null) {
             verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = reconciledThrough
-            dirty = true
+            changed()
         }
     }
+
+    /**
+     * Records a paged walk the relay cut short. Newest-first, it read from [walkedTop] down to
+     * its oldest event, so a kind whose span would bridge unwalked ground to the band records nothing.
+     */
+    fun recordCut(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        observedByKind: Map<Int, SyncCoverage.Span>,
+        walkedTop: Long,
+        now: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) }
+        // Keyed as quartz files them: a filter naming no kinds holds one span for all of them.
+        val spans =
+            if (filter.kinds.isNullOrEmpty() && observedByKind.isNotEmpty()) {
+                mapOf(SyncCoverage.ALL_KINDS to observedByKind.values.reduce { a, b -> a.widen(b) })
+            } else {
+                observedByKind
+            }
+        val kept = presentOnly(spans, now)!!.filter { (kind, span) -> touches(held?.spans?.get(kind), span.min, walkedTop) }
+        if (kept.isEmpty()) return
+        coverage(stream).record(
+            url,
+            filter,
+            kept.values.minOf { it.min },
+            kept.values.maxOf { it.max },
+            paged = true,
+            reconciledThrough = null,
+            observedByKind = kept,
+            drained = false,
+        )
+    }
+
+    /**
+     * A completed audit: its clock, and coverage only for ground it reconciled. A window short of
+     * the filter's floor claims none, since quartz's reconcile record would close the older leg.
+     */
+    fun recordAudit(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        /** The window the audit reconciled; its `until` caps what may be claimed. */
+        window: Filter,
+        /** The window starts at the filter's own floor, so everything below its `until` was reconciled. */
+        reachesFloor: Boolean,
+        verifiedAt: Long,
+        band: String = "",
+        now: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val through = minOf(window.until ?: verifiedAt, verifiedAt)
+        val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) }
+        // A held span starting above `through` would be joined to it across ground nobody walked.
+        val bridges = held != null && held.spans.values.any { it.min > through }
+        if (reachesFloor && !bridges) {
+            coverage(stream).record(url, filter, null, null, paged = false, reconciledThrough = through, observedByKind = null, drained = false)
+        }
+        verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = verifiedAt
+        changed()
+    }
+
+    /** [spans] cut at [now]; quartz accepts a stamp a day ahead, and a band ending there would skip the present. */
+    private fun presentOnly(
+        spans: Map<Int, SyncCoverage.Span>?,
+        now: Long,
+    ): Map<Int, SyncCoverage.Span>? =
+        spans
+            ?.filterValues { it.min <= now }
+            ?.mapValues { (_, span) -> if (span.max > now) span.copy(max = now) else span }
+
+    /** quartz's own staleness rule: past its period a band is replaced by the next record, not widened. */
+    private fun isStale(
+        stream: String,
+        band: SyncCoverage.Band,
+        now: Long,
+    ): Boolean = now - band.fullAt >= refetchThePastSecondsFor(stream)
 
     fun coveringWindow(
         stream: String,
@@ -353,7 +509,7 @@ class SyncBands(
                 .orEmpty()
         val gone = hidden.count { it in held }
         val back = shown.count { it in held }
-        if (gone > 0 || back > 0) dirty = true
+        if (gone > 0 || back > 0) changed()
         return gone
     }
 
@@ -387,12 +543,13 @@ class SyncBands(
     }
 
     /** Write the map if anything changed since the last write. */
-    @Synchronized
     fun flush() {
-        if (!dirty) return
-        dirty = false
-        // A failed write re-arms the flag, so the next tick retries it.
-        if (!save()) dirty = true
+        synchronized(writeLock) {
+            if (file == null || generation.get() == savedAt) return
+            val current = current()
+            // A failed write leaves [savedAt] behind, so the next tick retries it.
+            if (save(current.doc)) savedAt = current.generation
+        }
     }
 
     /**
@@ -414,6 +571,16 @@ class SyncBands(
                                 byRelay.jsonObject.forEach { (relay, ts) ->
                                     ts.jsonPrimitive.longOrNull?.let { verified[VerifiedKey(stream, filter, relay, band)] = it }
                                 }
+                            }
+                        }
+                    }
+                    return@forEach
+                }
+                if (streamOrFlatKey == UNOWNED_SINCE) {
+                    o.forEach { (key, byFilter) ->
+                        byFilter.jsonObject.forEach { (filter, byRelay) ->
+                            byRelay.jsonObject.forEach { (relay, ts) ->
+                                ts.jsonPrimitive.longOrNull?.let { unowned.restore(Held(key, filter, relay), it) }
                             }
                         }
                     }
@@ -490,7 +657,8 @@ class SyncBands(
 
     /** One band as it is written, or null for an entry too damaged to restore. */
     private fun bandOf(o: JsonObject): SyncCoverage.Band? {
-        val spans = runCatching { spansOf(o) }.getOrNull() ?: return null
+        // Cut on the way in too: a file written before the cut can hold an edge past the present.
+        val spans = runCatching { presentOnly(spansOf(o), System.currentTimeMillis() / 1000) }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
         return SyncCoverage.Band(
             spans,
             o["fullAt"]?.jsonPrimitive?.longOrNull ?: 0L,
@@ -525,8 +693,19 @@ class SyncBands(
     }
 
     /** Every band this router holds, in the one shape [save] writes and the status page reads. */
-    @Synchronized
-    internal fun snapshot(): JsonObject =
+    internal fun snapshot(): JsonObject = current().doc
+
+    private fun current(): Built {
+        built?.takeIf { it.generation == generation.get() }?.let { return it }
+        synchronized(buildLock) {
+            built?.takeIf { it.generation == generation.get() }?.let { return it }
+            // Read before the build: a change landing during it leaves the result marked stale.
+            val at = generation.get()
+            return Built(at, build()).also { built = it }
+        }
+    }
+
+    private fun build(): JsonObject =
         buildJsonObject {
             coverageByStream.forEach { (stream, coverage) ->
                 val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
@@ -556,6 +735,7 @@ class SyncBands(
             }
             putBandClocks()
             putCannotReconcile()
+            putUnownedSince()
         }
 
     /**
@@ -638,15 +818,35 @@ class SyncBands(
         )
     }
 
+    /** The unowned clocks, so a restart does not hand every orphan a fresh grace period. */
+    private fun JsonObjectBuilder.putUnownedSince() {
+        val stamps = unowned.stamps()
+        if (stamps.isEmpty()) return
+        put(
+            UNOWNED_SINCE,
+            buildJsonObject {
+                stamps.entries.groupBy { it.key.key }.forEach { (key, ofKey) ->
+                    put(
+                        key,
+                        buildJsonObject {
+                            ofKey.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
+                                put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, it.value) } })
+                            }
+                        },
+                    )
+                }
+            },
+        )
+    }
+
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
-    @Synchronized
-    private fun save(): Boolean {
+    private fun save(doc: JsonObject): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject = snapshot()
+            val text = json.encodeToString(JsonObject.serializer(), doc)
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.writeText(text)
             // ATOMIC_MOVE asked for explicitly; without it the JVM may fall back to copy+delete.
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
@@ -659,8 +859,21 @@ class SyncBands(
     }
 
     companion object {
+        /** Below every generation, so a store that has never written always has something to write. */
+        private const val NEVER_SAVED = -1L
+
         // Pretty-printed for a human reader.
         private val json = Json { prettyPrint = true }
+
+        /**
+         * Whether ground walked from [walkedTop] down to [walkedMin] meets [held] with no gap,
+         * so widening one by the other claims only walked time. Nothing held always meets.
+         */
+        internal fun touches(
+            held: SyncCoverage.Span?,
+            walkedMin: Long,
+            walkedTop: Long,
+        ): Boolean = held == null || (walkedMin <= held.max && held.min <= walkedTop)
 
         /** The dueness rule as a predicate, for tests. A clock of zero is always due. */
         internal fun auditDue(
@@ -680,6 +893,12 @@ class SyncBands(
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE
 
+        /** A stream's re-fetch bands as the pool walks them: its own, else one unbounded band that never re-fetches. */
+        internal fun catchUpBands(stream: SyncStream): List<SyncTier> = stream.refetchSchedule.ifEmpty { listOf(SyncTier(maxAgeSeconds = null, everySeconds = NEVER)) }
+
+        /** Every key [stream]'s catch-up coverage is filed under, one per band; the report joins on these. */
+        internal fun coverageKeys(stream: SyncStream): List<String> = catchUpBands(stream).let { tiers -> tiers.map { SyncTier.keyFor(stream.name, tiers, it) } }
+
         /**
          * The band-clock section's key in the state file. `#` cannot start a HOCON key that
          * reaches us as a stream name, so it can never collide with one.
@@ -688,6 +907,9 @@ class SyncBands(
 
         /** Where the impossible bands are written, beside [BAND_CLOCKS] and out of the url namespace. */
         private const val CANNOT_RECONCILE = "#cannotReconcile"
+
+        /** Where the unowned clocks are written, out of the stream namespace like the others. */
+        private const val UNOWNED_SINCE = "#unownedSince"
 
         /**
          * First windows a band must lose in a row before it reads as impossible. More than one
@@ -747,8 +969,8 @@ internal fun Filter.flooredForPaging(): Filter = if (since != null) this else co
 
 /**
  * Whether a drained leg says anything about history: the guard between [PagedFetchResult] and
- * [SyncBands.record]. Only the older leg, which reaches the filter's own floor, settles the past.
- * Compared as floors, not for equality: the sweep fallback materialises a null `since`.
+ * [SyncBands.record]. Only the leg reaching [filter]'s floor settles the past; for an age band,
+ * pass the ask bounded by the band's older edge. Compared as floors: the sweep fallback materialises a null `since`.
  */
 internal fun drainSettlesThePast(
     walk: PagedFetchResult?,

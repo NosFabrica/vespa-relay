@@ -49,10 +49,17 @@ internal class FilterWidths {
     ): Boolean {
         val cap = said?.let { capFrom(it, kindsAsked) } ?: return false
         if (cap >= kindsAsked) return false
-        val was = caps[url]
-        if (was != null && was <= cap) return false
-        caps[url] = cap
-        return true
+        // One atomic step: two learners racing must leave the narrower cap, never the later one.
+        var narrowed = false
+        caps.compute(url) { _, was ->
+            if (was != null && was <= cap) {
+                was
+            } else {
+                narrowed = true
+                cap
+            }
+        }
+        return narrowed
     }
 
     /**

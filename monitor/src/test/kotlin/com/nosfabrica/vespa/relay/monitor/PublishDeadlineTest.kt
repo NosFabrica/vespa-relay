@@ -79,7 +79,107 @@ class PublishDeadlineTest {
     }
 
     @Test
-    fun `a fitness pass whose store stops taking writes ENDS, pays for at most the wedge limit, and stamps its clock`() =
+    fun `a wedged store costs the writes already in flight plus the wedge limit, never one deadline per verdict`() =
+        runBlocking {
+            val answering = (0 until 60).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
+            for (concurrency in listOf(1, FitnessPass.WRITE_CONCURRENCY)) {
+                val store = WedgedWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = self))
+                val pass =
+                    FitnessPass(
+                        record = RelayVerdictRecord(store, signer),
+                        probe =
+                            AliasProbe(
+                                fetch = { _, want, until, _ -> paged(corpus(), want, until) },
+                                target = 40,
+                                page = 40,
+                                fallbackPage = 40,
+                                idleMs = { tinyIdleMs },
+                            ),
+                        client = EmptyNostrClient(),
+                        progress = Processors().of("fitness"),
+                        publishDeadlineMs = 100L,
+                        writeConcurrency = concurrency,
+                        reconcile = { _, _ -> },
+                    )
+                withTimeout(30_000) {
+                    pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                }
+                val bound = concurrency + FitnessPass.PUBLISH_WEDGE_LIMIT - 1
+                assertTrue(
+                    store.insertsAttempted.get() in FitnessPass.PUBLISH_WEDGE_LIMIT..bound,
+                    "$concurrency write(s) at a time paid for ${store.insertsAttempted.get()} wedged write(s), over $bound",
+                )
+            }
+        }
+
+    /** Writes for urls naming [declines] fail at once, for [wedges] never answer, and the rest land. */
+    private class MixedWrites(
+        private val inner: NostrSemanticsStore,
+        private val declines: String,
+        private val wedges: String,
+    ) : IEventStore by inner {
+        val insertsAttempted = AtomicInteger()
+
+        override suspend fun insert(event: Event) {
+            insertsAttempted.incrementAndGet()
+            val subject = event.tags.first { it[0] == "d" }[1]
+            if (declines in subject) error("declined")
+            if (wedges in subject) CompletableDeferred<Unit>().await()
+            inner.insert(event)
+        }
+    }
+
+    @Test
+    fun `concurrent writes still account for every earned verdict`() =
+        runBlocking {
+            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val store = MixedWrites(inner, declines = "declines", wedges = "wedges")
+            val urls =
+                (0 until 23).map { RelayUrlNormalizer.normalize("wss://fine$it.example") } +
+                    (0 until 5).map { RelayUrlNormalizer.normalize("wss://declines$it.example") } +
+                    (0 until 2).map { RelayUrlNormalizer.normalize("wss://wedges$it.example") }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, want, until, _ -> paged(corpus(), want, until) },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { tinyIdleMs },
+                        ),
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                    publishDeadlineMs = 200L,
+                    reconcile = { _, _ -> },
+                )
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            System.setErr(PrintStream(captured, true))
+            try {
+                withTimeout(30_000) {
+                    pass.measure("mixed store", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                }
+            } finally {
+                System.setErr(realErr)
+            }
+
+            assertEquals(30, store.insertsAttempted.get(), "two scattered stalls and five declines must not end the batch")
+            val graded =
+                inner
+                    .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey)))
+                    .count { event -> event.tags.any { it.size >= 3 && it[0] == "l" && it[2] == RelayVerdictRecord.FITNESS_NAMESPACE } }
+            assertEquals(23, graded)
+            val err = captured.toString()
+            assertTrue("7 earned verdict(s) NOT written" in err, err)
+            assertTrue("2 write(s) hit the per-write store deadline" in err, err)
+            assertTrue("5 write(s) failed outright" in err, err)
+            assertTrue("dropped" !in err, "every unwritten verdict is a wedge or a decline here; got: $err")
+        }
+
+    @Test
+    fun `a fitness pass whose store stops taking writes ENDS and stamps its clock`() =
         runBlocking {
             val store = WedgedWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = self))
             val processors = Processors()
@@ -97,22 +197,14 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = handle,
                     publishDeadlineMs = 100L,
                 )
 
             // The assertion is the call completing at all.
             withTimeout(30_000) {
-                pass.measure("wedged store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
-
-            assertEquals(
-                FitnessPass.PUBLISH_WEDGE_LIMIT,
-                store.insertsAttempted.get(),
-                "a wedged store must cost the wedge limit, not one deadline per verdict",
-            )
 
             // Clock stamped, position dropped, phase idle: what frees [AliasMonitor]'s gate and the fast lane.
             val row = processors.snapshot().single()
@@ -165,13 +257,25 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { urls -> urls.filter { it in folded }.associateWith { canonical } },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, urls -> urls.filter { it in folded }.associateWith { canonical } },
                     progress = handle,
                 )
 
-            val running = async { pass.measure("writing", dialled + folded, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            val running = async { pass.measure("writing", dialled + folded, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             withTimeout(30_000) { store.reached.await() }
+            // The writes around the paused one land on their own time, several at once.
+            withTimeout(30_000) {
+                while ((
+                        processors
+                            .snapshot()
+                            .single()
+                            .measuring
+                            ?.attempted ?: 0
+                    ) == 0
+                ) {
+                    kotlinx.coroutines.delay(5)
+                }
+            }
 
             val mid = assertNotNull(processors.snapshot().single().measuring, "a pass mid-write holds a position")
             assertEquals(Processors.UNIT_VERDICT, mid.unit, "the write phase counts verdicts, which is what it is doing")
@@ -217,8 +321,6 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                 )
@@ -229,7 +331,7 @@ class PublishDeadlineTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure("declining store", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure("declining store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -274,14 +376,12 @@ class PublishDeadlineTest {
                             idleMs = { tinyIdleMs },
                         ),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                 )
 
             withTimeout(30_000) {
-                pass.measure("one straggler", answering, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("one straggler", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             assertEquals(8, store.insertsAttempted.get(), "a lone straggler must not abandon the batch")

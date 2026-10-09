@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -37,6 +38,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * What [NegentropyPager] must not forget between calls: how big a window a peer will reconcile,
@@ -74,19 +76,44 @@ class SweepState(
     private val peers = ConcurrentHashMap<String, Peer>()
     private val sweeps = ConcurrentHashMap<Cursor, Reconciled>()
 
+    /** Per peer url, when it last left the roster. */
+    private val unowned = UnownedClock<String>()
+
     /**
      * Migration shim: cursors from a file written before the format nested, claimed by the
      * first stream to ask. Delete with [claim] and the flat branches in [load] and [snapshot].
      */
     private val preStream = ConcurrentHashMap<Pair<String, String>, Reconciled>()
 
-    @Volatile private var dirty = false
+    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
+    private val generation = AtomicLong()
+
+    /** The generation the file holds; behind [generation], the next flush writes. */
+    @Volatile private var savedAt = NEVER_SAVED
+
+    /** The last snapshot and the generation it was built at. */
+    private class Built(
+        val generation: Long,
+        val doc: JsonObject,
+    )
+
+    @Volatile private var built: Built? = null
+
+    private val buildLock = Any()
+
+    /** Held for the disk write alone, so a status read never waits on the file. */
+    private val writeLock = Any()
+
+    /** Every mutation of persisted state ends here, after the mutation itself. */
+    private fun changed() {
+        generation.incrementAndGet()
+    }
 
     @Volatile private var flusher: Thread? = null
 
     init {
         load()
-        dirty = false
+        savedAt = generation.get()
     }
 
     // ---- what a peer will reconcile -----------------------------------------
@@ -106,7 +133,7 @@ class SweepState(
         if (peers[url.url]?.target == target) return
         // compute(), so a cap learned on another coroutine at the same moment is not dropped.
         peers.compute(url.url) { _, before -> Peer(target, before?.cap) }
-        dirty = true
+        changed()
     }
 
     /** The peer's own `max_sync_events`, from its rejection. */
@@ -118,7 +145,7 @@ class SweepState(
         val before = peers[url.url]
         if (before?.cap == cap && before.target == target) return
         peers.compute(url.url) { _, _ -> Peer(target, cap) }
-        dirty = true
+        changed()
     }
 
     // ---- how far the current sweep got --------------------------------------
@@ -150,7 +177,7 @@ class SweepState(
                 Reconciled(downTo = before.downTo, upTo = before.upTo, at = nowSeconds())
             }
         }
-        dirty = true
+        changed()
     }
 
     /** Drop the cursor for a finished leg; the band recorded at the same moment is the durable statement. */
@@ -158,16 +185,32 @@ class SweepState(
         val had = sweeps.remove(key) != null
         // The pre-stream cursor for the same pair goes with it, or the next stream to ask would claim it.
         val hadOld = preStream.remove(key.filter to key.relay) != null
-        if (had || hadOld) dirty = true
+        if (had || hadOld) changed()
     }
 
     fun size(): Int = sweeps.size + preStream.size
+
+    /**
+     * Drops cursors too old to resume from and the learned sizes of peers [relays] has not held
+     * for [UnownedClock.UNOWNED_TTL_SECONDS]. [relays] is every url on the current roster.
+     */
+    fun retain(
+        relays: Set<String>,
+        now: Long = nowSeconds(),
+    ) {
+        val stale = sweeps.keys.removeIf { key -> sweeps[key]?.let { now - it.at > staleAfterSeconds } == true }
+        val staleOld = preStream.keys.removeIf { key -> preStream[key]?.let { now - it.at > staleAfterSeconds } == true }
+        val clocksBefore = unowned.stamps()
+        val gone = unowned.expired(peers.keys.toSet(), relays, now)
+        peers.keys.removeAll(gone)
+        if (stale || staleOld || gone.isNotEmpty() || unowned.stamps() != clocksBefore) changed()
+    }
 
     /** Migration shim: adopt a pre-stream cursor for this pair, once, into the stream that asked. */
     private fun claim(key: Cursor): Reconciled? {
         if (preStream.isEmpty()) return null
         val mark = preStream.remove(key.filter to key.relay) ?: return null
-        dirty = true
+        changed()
         // Staleness is absolute: a claim this old is worth nothing to any stream.
         if (nowSeconds() - mark.at > staleAfterSeconds) return null
         // merge(), not put: a sweep may be advancing this cursor on another coroutine right now.
@@ -207,12 +250,13 @@ class SweepState(
         flush()
     }
 
-    @Synchronized
     fun flush() {
-        if (!dirty) return
-        dirty = false
-        // A failed write re-arms the flag, so the next tick retries it.
-        if (!save()) dirty = true
+        synchronized(writeLock) {
+            if (file == null || generation.get() == savedAt) return
+            val current = current()
+            // A failed write leaves [savedAt] behind, so the next tick retries it.
+            if (save(current.doc)) savedAt = current.generation
+        }
     }
 
     private fun load() {
@@ -224,6 +268,7 @@ class SweepState(
                 val o = v.jsonObject
                 peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
             }
+            root[UNOWNED_SINCE]?.jsonObject?.forEach { (url, ts) -> ts.jsonPrimitive.longOrNull?.let { unowned.restore(url, it) } }
             root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
                 // Migration shim, told apart by shape: a filter is serialised JSON and can never be named `downTo`.
@@ -263,8 +308,19 @@ class SweepState(
     }
 
     /** Every cursor and peer cap, in the one shape [save] writes and the status page reads. */
-    @Synchronized
-    internal fun snapshot(): JsonObject =
+    internal fun snapshot(): JsonObject = current().doc
+
+    private fun current(): Built {
+        built?.takeIf { it.generation == generation.get() }?.let { return it }
+        synchronized(buildLock) {
+            built?.takeIf { it.generation == generation.get() }?.let { return it }
+            // Read before the build: a change landing during it leaves the result marked stale.
+            val at = generation.get()
+            return Built(at, build()).also { built = it }
+        }
+    }
+
+    private fun build(): JsonObject =
         buildJsonObject {
             put(
                 "peers",
@@ -308,16 +364,17 @@ class SweepState(
                     preStream.forEach { (pair, r) -> put("${pair.second}|${pair.first}", mark(r)) }
                 },
             )
+            val stamps = unowned.stamps()
+            if (stamps.isNotEmpty()) put(UNOWNED_SINCE, buildJsonObject { stamps.forEach { (url, at) -> put(url, at) } })
         }
 
-    @Synchronized
-    private fun save(): Boolean {
+    private fun save(doc: JsonObject): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject = snapshot()
+            val text = json.encodeToString(JsonObject.serializer(), doc)
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.writeText(text)
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: AtomicMoveNotSupportedException) {
@@ -329,6 +386,9 @@ class SweepState(
     }
 
     companion object {
+        /** Below every generation, so a store that has never written always has something to write. */
+        private const val NEVER_SAVED = -1L
+
         /**
          * The cursor's identity: the stream, the filter with its time bounds removed, and the
          * peer. Taken once per sweep because it serialises the filter.
@@ -344,6 +404,9 @@ class SweepState(
 
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
+        /** Beside `peers` and `sweeps`, which are all the status page reads. */
+        private const val UNOWNED_SINCE = "unownedSince"
+
         /**
          * `SYNC_SWEEP_STATE_FILE`, unset for in-memory; `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS`
          * is how old a resume cursor may be and still be resumed from.
@@ -354,10 +417,7 @@ class SweepState(
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.let(::File),
-                env["SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS"]
-                    ?.trim()
-                    ?.toLongOrNull()
-                    ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+                env.strictLong("SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS", 1L..Long.MAX_VALUE) ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
             ).startPeriodicFlush()
     }
 }

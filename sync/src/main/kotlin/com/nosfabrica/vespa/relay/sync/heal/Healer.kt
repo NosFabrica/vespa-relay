@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishAndCollectResults
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -47,13 +48,22 @@ internal object VanishTargets {
     ): RequestToVanishEvent? = candidates.filter { it.shouldVanishFrom(url) }.maxByOrNull { it.createdAt }
 }
 
-/** How hard the healer is allowed to push. */
+/** How hard the healer is allowed to push. A pass runs inside a visit, so each bound also bounds the visit. */
 data class HealSettings(
     val pacePerPushMs: Long = 40,
     val okTimeoutSeconds: Long = 15,
     /** Repairs one drain pass may attempt before leaving the rest for next time. */
     val maxPerPass: Int = 500,
-)
+    /** Unanswered pushes in a row that end the pass: a relay this quiet will not answer the next one. */
+    val maxSilentInARow: Int = DEFAULT_MAX_SILENT_IN_A_ROW,
+    /** Wall-clock a pass may spend before it leaves the rest queued. */
+    val passBudgetMs: Long = DEFAULT_PASS_BUDGET_MS,
+) {
+    companion object {
+        const val DEFAULT_MAX_SILENT_IN_A_ROW = 3
+        const val DEFAULT_PASS_BUDGET_MS = 2L * 60 * 1000
+    }
+}
 
 /**
  * Hands upstreams the thing that supersedes the stale copy they served us. A repair can only
@@ -68,6 +78,10 @@ class Healer(
     private val refused: RefusedIds,
     private val servingPressure: ServingPressure?,
     private val settings: HealSettings = HealSettings(),
+    /** One push and its `OK`, or null for no answer; quartz's publish unless a test stands in. */
+    private val push: suspend (Event, NormalizedRelayUrl, Long) -> PublishResult? = { event, url, timeoutSeconds ->
+        client.publishAndCollectResults(event, setOf(url), timeoutSeconds)[url]
+    },
 ) {
     val pushed = AtomicLong()
     val accepted = AtomicLong()
@@ -93,11 +107,23 @@ class Healer(
 
         val pass = passes.incrementAndGet()
         val vanishCache = HashMap<String, Boolean>()
+        val entries = work.entries.toList()
+        val startedMs = System.currentTimeMillis()
+        var next = 0
         var attempted = 0
         var accepts = 0
+        var silentInARow = 0
+        // Why the pass stopped before its work ran out; the rest goes back on the queue.
+        var cut: String? = null
 
-        for ((key, stale) in work) {
+        while (next < entries.size) {
             if (caps.isClosed(url)) break
+            if (System.currentTimeMillis() - startedMs >= settings.passBudgetMs) {
+                cut = "its ${settings.passBudgetMs / 1000}s budget ran out"
+                break
+            }
+            val at = next++
+            val (key, stale) = entries[at]
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
 
             try {
@@ -110,10 +136,12 @@ class Healer(
 
                 val event = resolve(key, url) ?: continue
                 attempted++
-                val result = client.publishAndCollectResults(event, setOf(url), settings.okTimeoutSeconds)[url] ?: continue
+                val result = push(event, url, settings.okTimeoutSeconds)
                 pushed.incrementAndGet()
 
-                val verdict = OkClassifier.classify(result.accepted, result.message, result.isTransportFailure)
+                // No answer at all is silence, the same as a timeout.
+                val verdict = result?.let { OkClassifier.classify(it.accepted, it.message, it.isTransportFailure) } ?: PushVerdict.SILENT
+                if (verdict == PushVerdict.SILENT) silentInARow++ else silentInARow = 0
 
                 // Any answer refutes the doubt `strike` accumulates, which is about silence.
                 // CLOSED is excluded because it is a verdict, not a sign of life.
@@ -126,7 +154,7 @@ class Healer(
                     }
 
                     PushVerdict.CLOSED -> {
-                        caps.close(url, result.message)
+                        caps.close(url, result?.message.orEmpty())
                         refusedByPolicy.incrementAndGet()
                         // It will refuse the next repair identically, so the served id is
                         // suppressed without waiting for a second refusal.
@@ -136,6 +164,18 @@ class Healer(
 
                     PushVerdict.SILENT -> {
                         caps.strike(url, pass)
+                        if (silentInARow >= settings.maxSilentInARow) {
+                            cut = "$silentInARow push(es) in a row went unanswered"
+                            // The entry that drew the cut goes back with the rest.
+                            next = at
+                            break
+                        }
+                    }
+
+                    PushVerdict.AUTH -> {
+                        cut = "the relay asked us to authenticate first"
+                        next = at
+                        break
                     }
 
                     PushVerdict.RETRY, PushVerdict.IGNORE -> {
@@ -150,8 +190,15 @@ class Healer(
             }
         }
 
-        if (attempted > 0) {
-            System.err.println("router: heal ${url.url} pushed $attempted repair(s), $accepts accepted")
+        // A closed relay's queue is discarded on its next drain, so only a cut pass gives work back.
+        if (cut != null && !caps.isClosed(url)) {
+            for (i in next until entries.size) queue.offer(url, entries[i].key, entries[i].value)
+        }
+        if (attempted > 0 || cut != null) {
+            System.err.println(
+                "router: heal ${url.url} pushed $attempted repair(s), $accepts accepted" +
+                    (cut?.let { " — stopped because $it; ${entries.size - next} left queued" } ?: ""),
+            )
         }
     }
 

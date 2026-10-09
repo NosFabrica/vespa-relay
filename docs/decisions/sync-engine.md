@@ -310,3 +310,41 @@ due the latter is a backlog that can never drain.
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer
 trustworthy.
+
+**A walk cut short records only what meets the band.** A paged walk is
+newest-first, so one the relay cut after delivering events read only from its
+top down to its oldest event. Recorded as a span, quartz widened the band
+across whatever lay between: after a band `[A,B]`, a cut walk of the newer leg
+that reached `T > B` made the band `[A,now]`, and `(B,T)` was never fetched.
+`recordCut` keeps a kind's span only when it meets the held one, and the
+pager's fallback page no longer claims a window any chunk of which was cut.
+
+**A banded audit claims coverage only through a window that reaches the
+floor.** With banded negentropy and an unbanded re-fetch, the audit and the
+catch-up file under the same key, and quartz's reconcile record is complete
+and ORs on merge: a finished 7-day sweep closed the catch-up's older leg. A
+bounded band's audit now moves its clock and records no coverage; the oldest
+band records through its own newer edge, and only when no held span starts
+above it.
+
+**State no roster unit has owned for thirty days is forgotten.** Bands,
+clocks, attempts, cannot-reconcile verdicts, sweep cursors and learned peer
+sizes only ever grew. Each rebuild stamps what lost its owner and clears what
+regained one; the stamps are in the state files, so a restart does not reset
+the grace. An empty roster, or one under half the last, is a failed read and
+expires nothing. quartz's coverage has no removal, so a pruned one is rebuilt
+and swapped; a record racing the swap costs a re-walk, never a claim.
+
+**The state files are written outside the lock the status page reads under.**
+The status tick built the band document under the same monitor the flusher
+held through the pretty-printed write, so a tick that met a flush waited out
+the disk. A change counter lets both reuse one built document, and the write
+takes a lock of its own.
+
+**The file is behind when the counter is ahead of the last write.** A dirty
+flag set before the counter moved let a flush in between clear the flag and
+write the cached document of the old count, so the change stayed off disk
+until another came, and was lost if it was the last before `close`. The
+counter now moves after the mutation, and a flush writes whenever it is ahead
+of the generation the last successful write held; a failed write simply
+leaves it behind.

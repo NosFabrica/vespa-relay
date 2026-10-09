@@ -292,7 +292,7 @@ object RelayDiscovery {
     /**
      * Walk everything [filter] matches a page at a time, oldest-ward. `until` is inclusive, so
      * events sharing the boundary `created_at` are carried forward and skipped on the next page;
-     * a page that is entirely one timestamp grows until it spans two.
+     * a page that is entirely one timestamp grows until it spans two, or until [maxAsk].
      */
     suspend fun scan(
         store: IEventStore,
@@ -300,6 +300,8 @@ object RelayDiscovery {
         pageSize: Int,
         /** Who the pages are booked to, see [StoreCalls]. */
         caller: String = StoreCalls.CALLER_SOURCE_RELAY_LISTS,
+        /** The widest page ever asked for; past the store's `maxHits` the whole scan is refused. */
+        maxAsk: Int = maxOf(pageSize, SCAN_PAGE),
         onEach: (Event) -> Unit,
     ) {
         // An explicit `limit` is the caller's budget for the whole scan; only events handed to [onEach] spend it.
@@ -308,14 +310,13 @@ object RelayDiscovery {
         var boundaryIds = emptySet<String>()
         while (remaining > 0) {
             val budget = remaining.toLong() + boundaryIds.size
-            var ask = minOf(pageSize.toLong(), budget).toInt()
+            var ask = minOf(minOf(pageSize, maxAsk).toLong(), budget).toInt()
             var page: List<Event> = queryPage(store, caller, filter, until, ask)
             if (page.isEmpty()) return
 
             // A page whose ends share a `created_at` is one timestamp and the cursor has nowhere to go.
-            while (page.size == ask && ask < budget && page.first().createdAt == page.last().createdAt) {
-                // Clamped to Int range before narrowing: a wrapped `ask` is the store's matches-nothing sentinel.
-                ask = minOf(ask.toLong() * 2, budget).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            while (page.size == ask && ask < budget && ask < maxAsk && page.first().createdAt == page.last().createdAt) {
+                ask = minOf(ask.toLong() * 2, budget, maxAsk.toLong()).toInt()
                 page = queryPage(store, caller, filter, until, ask)
             }
 
@@ -333,7 +334,8 @@ object RelayDiscovery {
             val newBoundary = HashSet<String>()
             for (event in page) if (event.createdAt == oldest) newBoundary.add(event.id)
             if (newBoundary.size == page.size) {
-                // Still one timestamp after growing, out of budget to widen: step below it.
+                // Still one timestamp after growing: step below it, and say so when that skips events.
+                if (ask >= maxAsk && ask < budget) reportTruncatedSecond(filter, oldest, ask)
                 until = oldest - 1
                 boundaryIds = emptySet()
             } else {
@@ -344,6 +346,16 @@ object RelayDiscovery {
     }
 
     private const val SCAN_PAGE = 10_000
+
+    /** A `created_at` holding more matches than one page may ask for; it is the only cursor the store pages on. */
+    private fun reportTruncatedSecond(
+        filter: Filter,
+        createdAt: Long,
+        ask: Int,
+    ) = System.err.println(
+        "router: scan of ${StoreCalls.summarise(filter)} TRUNCATED — more than $ask events share created_at $createdAt, " +
+            "the most one page may ask for; the rest of that second is skipped",
+    )
 
     /**
      * Is this event too long to be a relay list? Counted over the tags a select would extract,

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.DataInputStream
@@ -119,6 +120,16 @@ class TorRoutedProbeTest {
             )
         }
     }
+
+    @Test
+    fun `a proxy that does not answer is our transport down, never a relay proved unreachable`() =
+        runBlocking {
+            // Port 1 on loopback: nothing listens. Under SYNC_TOR_ALL that is every url at once.
+            val probe = ReachabilityProbe(TorTransport(settings(port = 1, routeAll = true), OkHttpClient()))
+            assertEquals(Reach.TRANSPORT_DOWN, probe.reach(onion))
+            assertEquals(Reach.TRANSPORT_DOWN, probe.reach(clearnet))
+            assertFalse(probe.canDial(clearnet))
+        }
 
     @Test
     fun `the TCP pre-probe is skipped for onion relays and kept for everything else`() {

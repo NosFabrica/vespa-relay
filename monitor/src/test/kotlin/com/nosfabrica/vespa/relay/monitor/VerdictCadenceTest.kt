@@ -98,8 +98,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     // Longer than the per-url deadline, so the outer clock fires first, as in production.
                     nip77DeadlineMs = deadlineMs() * 100,
@@ -111,7 +109,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(deadlineMs() * 40) {
-                    pass.measure("cut late", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure("cut late", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -145,15 +143,13 @@ class VerdictCadenceTest {
                     // A per-url deadline out of reach, so only the NEG-OPEN's own clock can end the job.
                     probe = answeringProbe(idleMs = 60_000L),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     nip77DeadlineMs = 100L,
                     reconcile = parkingNegOpen(),
                 )
 
             withTimeout(30_000) {
-                pass.measure("neg-open clock", listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("neg-open clock", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
@@ -190,20 +186,18 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
                 )
 
             withTimeout(30_000) {
-                pass.measure("wedged", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("wedged", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             store.wedged = false
             withTimeout(30_000) {
-                pass.measure("recovered", urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure("recovered", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             for (url in urls) {
@@ -221,6 +215,8 @@ class VerdictCadenceTest {
             val urls = (0 until 12).map { RelayUrlNormalizer.normalize("wss://relay%02d.example".format(it)) }
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             val attempted = mutableListOf<String>()
+            // The store takes the first few writes and then stops answering.
+            val landing = AtomicInteger(LANDED_BEFORE_WEDGE)
             val recording =
                 object : IEventStore by store {
                     override suspend fun insert(event: Event) {
@@ -228,6 +224,7 @@ class VerdictCadenceTest {
                             .firstOrNull { it.firstOrNull() == "d" }
                             ?.getOrNull(1)
                             ?.let { synchronized(attempted) { attempted += it } }
+                        if (landing.getAndDecrement() > 0) return store.insert(event)
                         CompletableDeferred<Unit>().await()
                         error("unreachable")
                     }
@@ -237,31 +234,31 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(recording, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
+                    // One write at a time, so the cursor lands on a url this test can name.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
 
             // One label for both sweeps: the resume cursor is per label.
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val first = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val second = synchronized(attempted) { attempted.toList() }
 
-            assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
+            assertEquals(LANDED_BEFORE_WEDGE + FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
             assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, second.size)
-            // The write that tripped the limit did not land, so it is retried.
+            // None of the writes the wedge cut landed, so the next batch starts at the earliest of them.
             assertEquals(
-                first.last(),
+                first[LANDED_BEFORE_WEDGE],
                 second.first(),
-                "the next batch must pick up at the write the wedge stopped on: $first then $second",
+                "the next batch must pick up at the earliest write that did not land: $first then $second",
             )
             assertTrue(
-                first.dropLast(1).none { it in second },
-                "urls a wedged batch already wrote off must not be retried ahead of the ones it never reached: $first then $second",
+                first.take(LANDED_BEFORE_WEDGE).none { it in second },
+                "urls a wedged batch already stored must not be rewritten ahead of the ones it never stored: $first then $second",
             )
         }
 
@@ -276,6 +273,7 @@ class VerdictCadenceTest {
 
             // The write loop runs on whatever dispatcher the insert suspends onto, so a plain local is not safe.
             val wedged = AtomicBoolean(true)
+            val landing = AtomicInteger(LANDED_BEFORE_WEDGE)
             val recording =
                 object : IEventStore by store {
                     override suspend fun insert(event: Event) {
@@ -283,7 +281,7 @@ class VerdictCadenceTest {
                             .firstOrNull { it.firstOrNull() == "d" }
                             ?.getOrNull(1)
                             ?.let { synchronized(attempted) { attempted += it } }
-                        if (wedged.get()) {
+                        if (wedged.get() && landing.getAndDecrement() <= 0) {
                             CompletableDeferred<Unit>().await()
                             error("unreachable")
                         }
@@ -295,15 +293,15 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(recording, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
+                    // One write at a time, so the cursor lands on a url this test can name.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
 
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             val sweptFirst = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
@@ -311,18 +309,18 @@ class VerdictCadenceTest {
             // A healthy lane tick writes its whole batch and so has no resume point of its own.
             wedged.set(false)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.FAST_LANE, laneUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.FAST_LANE, laneUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             synchronized(attempted) { attempted.clear() }
 
             wedged.set(true)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             val sweptAgain = synchronized(attempted) { attempted.toList() }
 
             assertEquals(
-                sweptFirst.last(),
+                sweptFirst[LANDED_BEFORE_WEDGE],
                 sweptAgain.first(),
                 "a lane tick between two sweeps must not move the sweep's cursor: $sweptFirst then $sweptAgain",
             )
@@ -350,14 +348,12 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(alternating, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     reconcile = { _, _ -> },
                 )
             withTimeout(60_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
 
             // Under the time budget, so only the consecutive limit could have ended this early.
@@ -366,6 +362,39 @@ class VerdictCadenceTest {
                 n.get(),
                 "a store answering every other write is not wedged; the batch must not end on the consecutive limit",
             )
+        }
+
+    @Test
+    fun `a batch reads what this monitor stands behind once, whatever it consults`() =
+        runBlocking {
+            // The folds, the stability refusals and the standing grades all come off one read.
+            val alias = RelayUrlNormalizer.normalize("wss://alias.example")
+            val canonical = RelayUrlNormalizer.normalize("wss://canonical.example")
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val queries = AtomicInteger()
+            val counting =
+                object : IEventStore by store {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        queries.incrementAndGet()
+                        return store.query(filter)
+                    }
+                }
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(counting, signer),
+                    probe = answeringProbe(),
+                    client = EmptyNostrClient(),
+                    foldedAway = { _, urls -> urls.filter { it == alias }.associateWith { canonical } },
+                    progress = Processors().of("fitness"),
+                    reconcile = { _, _ -> },
+                )
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
+
+            // Nothing to dial and nothing to re-sign: the one read is the whole cost.
+            queries.set(0)
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(1, queries.get(), "the standing verdicts were read ${queries.get()} times for one batch")
         }
 
     @Test
@@ -390,14 +419,13 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(counting, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { mapOf(alias to canonical) },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, _ -> mapOf(alias to canonical) },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )
 
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled))
@@ -407,7 +435,7 @@ class VerdictCadenceTest {
 
             inserts.set(0)
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(1, inserts.get(), "a pass must re-sign what it dialled and only that")
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled), "the dialled url is still re-graded every pass")
@@ -423,11 +451,9 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(counting, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
-                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.PRIME.value, gradeOf(store, alias), "a verdict that CHANGED must be written whatever the record said")
         }
@@ -446,19 +472,18 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { mapOf(alias to onto) },
-                    inconsistent = { emptySet() },
+                    foldedAway = { _, _ -> mapOf(alias to onto) },
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )
 
             withTimeout(30_000) {
-                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertTrue(first.url in (evidenceOf(store, alias) ?: ""), "the first fold has to name the first canonical")
 
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertTrue(
@@ -468,7 +493,7 @@ class VerdictCadenceTest {
 
             val stamp = stampOf(store, alias)
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             }
             assertEquals(stamp, stampOf(store, alias), "an unchanged inherited verdict must still be left standing")
         }
@@ -483,8 +508,6 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(store, signer),
                     probe = answeringProbe(idleMs = 60_000L),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     nip77DeadlineMs = 100L,
                     reconcile = parkingNegOpen(),
@@ -494,7 +517,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -544,17 +567,17 @@ class VerdictCadenceTest {
                     record = RelayVerdictRecord(alternating, signer),
                     probe = answeringProbe(),
                     client = EmptyNostrClient(),
-                    foldedAway = { emptyMap() },
-                    inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     publishWedgeBudgetMs = 500L,
+                    // One write at a time, so the budget is wall time this test can count.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(60_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
             } finally {
                 System.setErr(realErr)
@@ -591,4 +614,9 @@ class VerdictCadenceTest {
                 Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))),
             ).flatMap { it.tags.toList() }
             .firstOrNull { it.firstOrNull() == name }
+
+    private companion object {
+        /** Writes a wedging store takes before it stops answering. */
+        const val LANDED_BEFORE_WEDGE = 4
+    }
 }

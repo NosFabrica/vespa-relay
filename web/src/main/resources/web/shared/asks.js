@@ -1,6 +1,6 @@
 // The last ranked ask, kept so the next view reuses the answer instead of asking the relay
-// the same question again. One entry, keyed by everything the filters say except the limit,
-// reused only when the limit matches too. Promises are cached, since Enter usually lands
+// the same question again. One entry, keyed by everything the filters say except the limit and
+// by who asked, reused only when the limit matches too. Promises are cached, since Enter usually lands
 // while the popup's ask is still in flight.
 
 /** Ms a kept answer may be reused for: a keystroke-to-Enter gap. */
@@ -29,9 +29,13 @@ export class AskCache {
     this.last = null; // { key, limit, at, promise }
   }
 
-  /** The kept answer when it is the same question at the same width and still fresh, else [ask]'s. */
-  take(filters, ask) {
-    const key = askKey(filters);
+  /**
+   * The kept answer when it is the same question at the same width, from the same [reader], and
+   * still fresh, else [ask]'s. [reader] is whoever the socket authenticated as: a ranked answer
+   * is that reader's, and the filters do not say who it was.
+   */
+  take(filters, ask, reader = null) {
+    const key = JSON.stringify([reader, askKey(filters)]);
     const limit = askLimitOf(filters);
     const at = this.now();
     const kept = this.last;

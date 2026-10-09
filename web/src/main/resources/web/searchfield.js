@@ -32,6 +32,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   let active = -1;      // which one is highlighted
   let timer = null;
   let reqId = 0;
+  let asking = null;    // the AbortController of the picker lookup in flight
   let day = null;       // the since:/until: token being built, from dateAt()
   let month = null;     // the month the grid is showing (a Date on its 1st)
   let cursor = null;    // the day the keyboard is on, or null while the mouse leads
@@ -293,8 +294,25 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
 
   const listOpen = () => list.classList.contains("open");
 
-  function closeList() {
+  /**
+   * Retire the picker lookup in flight, closing its search at the relay, which answers in turn
+   * and would otherwise work through it ahead of the next. Returns the next lookup's id.
+   */
+  function supersede() {
     clearTimeout(timer);
+    if (asking) asking.abort();
+    asking = null;
+    return ++reqId;
+  }
+
+  /** The signal for a lookup whose debounce has just fired, so the next supersede() closes it. */
+  function lookupSignal() {
+    asking = new AbortController();
+    return asking.signal;
+  }
+
+  function closeList() {
+    supersede();
     mention = null;
     hits = [];
     active = -1;
@@ -410,13 +428,12 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     // The last rows stay up while the next answer is fetched.
     if (!sameToken || !next.partial) { hits = []; active = -1; }
     renderList(hits.length ? hits : null);
-    clearTimeout(timer);
+    const id = supersede();
     if (!next.partial) return;
-    const id = ++reqId;
     timer = setTimeout(async () => {
       let found;
       try {
-        found = await lookup(next.partial);
+        found = await lookup(next.partial, lookupSignal());
       } catch (e) {
         // A relay not answering is not evidence that nobody matches.
         return;
@@ -505,12 +522,11 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     group = next;
     if (!sameToken) { groups = []; groupLock = null; active = -1; }
     renderGroupList(groups.length ? groups : null);
-    clearTimeout(timer);
-    const id = ++reqId;
+    const id = supersede();
     timer = setTimeout(async () => {
       let found;
       try {
-        found = await lookupGroup(next.partial);
+        found = await lookupGroup(next.partial, lookupSignal());
       } catch (e) {
         return;
       }
@@ -609,7 +625,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     if (same && day.partial === next.partial) return;
     day = next;
     // Both network pickers stand down, or a late reply lands in a list no longer on screen.
-    if (mention || group) { clearTimeout(timer); mention = null; hits = []; group = null; groups = []; active = -1; }
+    if (mention || group) { supersede(); mention = null; hits = []; group = null; groups = []; active = -1; }
     // The typed month wins; failing that the same token keeps its month.
     setMonth(typedMonth(next.partial) || (same ? month : null) || shiftMonths(midnight(new Date()), 0));
     renderCalendar();

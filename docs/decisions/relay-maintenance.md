@@ -162,10 +162,14 @@ the body names content nodes, container hostnames and internal ports, all of
 which rode out on the first failed aggregation. The YQL stays in the message
 because it is our own and is the whole diagnostic value.
 
-**No client-side read timeout.** The bundled query profile puts Vespa's own
-deadline at its maximum with soft timeout off so a slow aggregation finishes
-rather than returning a quiet half-answer; a timeout here would reintroduce the
-truncation as a retry that keeps failing on a corpus that has simply grown.
+**A client-side timeout far past any answer.** The bundled query profile puts
+Vespa's own deadline at its maximum with soft timeout off so a slow aggregation
+finishes rather than returning a quiet half-answer; a tight timeout here would
+reintroduce the truncation as a retry that keeps failing on a corpus that has
+simply grown. With none at all, an engine that accepted a query and stopped
+answering held that tier's loop forever, with no failure on the page and no
+retry. `StatsVespa.REQUEST_TIMEOUT` (twenty minutes per query) fails that
+attempt instead, and the next tick retries.
 
 ## MirrorReport
 

@@ -183,8 +183,6 @@ class WriteOrderForensicProbe {
                         idleMs = { 20L },
                     ),
                 client = EmptyNostrClient(),
-                foldedAway = { emptyMap() },
-                inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
                 publishDeadlineMs = 50L,
                 reconcile = { _, _ -> },
@@ -197,7 +195,7 @@ class WriteOrderForensicProbe {
         runBlocking {
             for (p in 1..3) {
                 writesThisPass.set(0)
-                pass.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 var covered = 0
                 for (chunk in urls.chunked(500)) {
                     val found =

@@ -133,4 +133,23 @@ class FilterWidthsTest {
         val unkinded = Filter(authors = listOf("a".repeat(64)))
         assertEquals(listOf(unkinded), widths.chunk(url, unkinded))
     }
+
+    @Test
+    fun `learners racing on one relay leave the narrowest cap`() {
+        repeat(200) {
+            val widths = FilterWidths()
+            val caps = (10..40).shuffled()
+            val start = java.util.concurrent.CountDownLatch(1)
+            val threads =
+                caps.map { cap ->
+                    Thread {
+                        start.await()
+                        widths.learn(url, "invalid: too many kinds (max $cap)", kindsAsked = 139)
+                    }.apply { start() }
+                }
+            start.countDown()
+            threads.forEach { it.join() }
+            assertEquals(10, widths.capFor(url), "a later, wider refusal never widens what a narrower one taught")
+        }
+    }
 }

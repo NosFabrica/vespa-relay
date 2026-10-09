@@ -34,7 +34,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
+import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -723,6 +725,38 @@ class RelayDiscoveryTest {
                 found.map { it.url.url }.distinct().size,
                 "no relay repeated across a page boundary",
             )
+        }
+
+    /** Records every page size the scan asks the store for. */
+    private class AskRecording(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        val asks: MutableList<Int?> = Collections.synchronizedList(mutableListOf())
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            asks.add(filter.limit)
+            return inner.query(filter)
+        }
+    }
+
+    @Test
+    fun `a second holding more events than any page never grows the ask past its ceiling`() =
+        runBlocking {
+            // Past the deployed maxHits the store refuses the page, and with it the whole discovery pass.
+            val store = AskRecording(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl))
+            repeat(40) { i ->
+                store.insert(NostrSignerSync().sign<Event>(1_700_000_100L, 10002, arrayOf(arrayOf("r", "wss://tied$i.example")), ""))
+            }
+            repeat(3) { i ->
+                store.insert(NostrSignerSync().sign<Event>(1_700_000_000L - i, 10002, arrayOf(arrayOf("r", "wss://older$i.example")), ""))
+            }
+
+            val seen = mutableListOf<String>()
+            RelayDiscovery.scan(store, Filter(kinds = listOf(10002)), pageSize = 2, maxAsk = 8) { seen += it.id }
+
+            assertTrue(store.asks.all { it != null && it <= 8 }, "asked ${store.asks}")
+            assertEquals(8 + 3, seen.size, "a full page of the tie, then everything older")
+            assertEquals(seen.size, seen.distinct().size, "nothing handed over twice")
         }
 
     @Test

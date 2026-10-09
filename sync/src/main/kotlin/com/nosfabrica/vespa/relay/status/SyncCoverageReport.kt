@@ -46,6 +46,13 @@ internal object SyncCoverageReport {
             isLenient = true
         }
 
+    /**
+     * The filter keys the last [build] parsed. Replaced whole by each build, so it holds exactly
+     * one document's keys: bounded by the document, and never stale for long.
+     */
+    @Volatile
+    private var parsedFilters: Map<String, JsonObject?> = emptyMap()
+
     /** A filter member a discovery narrow can vary per relay: named in `narrowedBy`, never published. */
     private fun varies(member: String) = member == "authors" || member == "ids" || member.startsWith("#")
 
@@ -176,6 +183,11 @@ internal object SyncCoverageReport {
         // shape ids from colliding.
         val groups = LinkedHashMap<String, Group>()
 
+        val lastParsed = parsedFilters
+        val parsed = HashMap<String, JsonObject?>()
+
+        fun parseFilter(json: String): JsonObject? = parsed.getOrPut(json) { if (lastParsed.containsKey(json)) lastParsed[json] else parse(json) }
+
         /** The group a flat, pre-stream key belongs to, by the filter's shape; null is cached too. */
         val shapeCache = HashMap<String, String?>()
 
@@ -184,13 +196,13 @@ internal object SyncCoverageReport {
                 val shape = shapeCache[filterJson] ?: return null
                 return groups.getOrPut("shape:$shape") { Group(null) }
             }
-            val parsed = parse(filterJson)
-            val shape = parsed?.let { shapeOf(it) }
+            val filter = parseFilter(filterJson)
+            val shape = filter?.let { shapeOf(it) }
             shapeCache[filterJson] = shape
-            if (shape == null || parsed == null) return null
+            if (shape == null || filter == null) return null
             val group = groups.getOrPut("shape:$shape") { Group(null) }
             // Folded on the miss only: a plain stream repeats one filter per relay.
-            group.fold(parsed)
+            group.fold(filter)
             return group
         }
 
@@ -206,8 +218,7 @@ internal object SyncCoverageReport {
             for ((filterJson, byRelay) in o) {
                 val relays = byRelay as? JsonObject ?: continue
                 if (relays.isEmpty()) continue
-                val parsed = parse(filterJson) ?: continue
-                group.fold(parsed)
+                group.fold(parseFilter(filterJson) ?: continue)
                 for ((rawRelay, band) in relays) {
                     // One spelling for both inputs and the peer map, so it cannot split a pair.
                     group.band(canonicalRelay(rawRelay), band as? JsonObject ?: continue)
@@ -231,7 +242,7 @@ internal object SyncCoverageReport {
                 val relays = byRelay as? JsonObject ?: continue
                 if (relays.isEmpty()) continue
                 // A stream on its first sweep has no band yet, so its filter comes from the cursor.
-                parse(filterJson)?.let { group.fold(it) }
+                parseFilter(filterJson)?.let { group.fold(it) }
                 for ((rawRelay, mark) in relays) {
                     group.mark(canonicalRelay(rawRelay), mark as? JsonObject ?: continue)
                 }
@@ -247,6 +258,7 @@ internal object SyncCoverageReport {
                 if (d < from) from = d
             }
         }
+        parsedFilters = parsed
         if (from == Long.MAX_VALUE) return null
         // `created_at` is author-signed, so a band can sit ahead of now; the frame must not invert.
         if (from > nowSeconds) from = nowSeconds

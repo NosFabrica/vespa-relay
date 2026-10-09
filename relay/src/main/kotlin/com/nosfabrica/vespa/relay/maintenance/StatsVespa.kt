@@ -56,6 +56,7 @@ internal class StatsVespa(
             .newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build(),
+    private val requestTimeout: Duration = REQUEST_TIMEOUT,
 ) : StatsQueries {
     private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
 
@@ -83,8 +84,7 @@ internal class StatsVespa(
                     HttpRequest
                         .newBuilder(searchUrl)
                         .header("Content-Type", "application/json")
-                        // No read timeout: Vespa's own deadline is at its maximum so a slow
-                        // aggregation finishes rather than answering by halves.
+                        .timeout(requestTimeout)
                         .POST(HttpRequest.BodyPublishers.ofString(body))
                         .build(),
                     HttpResponse.BodyHandlers.ofString(),
@@ -122,5 +122,13 @@ internal class StatsVespa(
     ): Nothing {
         System.err.println("stats: $summary for `$yql` — ${detail.take(500)}")
         error("$summary for `$yql` (engine detail in the relay log)")
+    }
+
+    companion object {
+        /**
+         * Far past any aggregation that finishes, since Vespa's own deadline is what keeps a slow one
+         * whole: this catches an engine that stopped answering, which would otherwise hold the tier.
+         */
+        val REQUEST_TIMEOUT: Duration = Duration.ofMinutes(20)
     }
 }

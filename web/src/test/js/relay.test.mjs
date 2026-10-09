@@ -1,5 +1,5 @@
 import assert from 'assert';
-const { Relay } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
+const { Relay, REFUSED } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
 
 // req()'s retry wiring through a stubbed reqOnce: CLOSED auth-required -> onAuthRequired -> resend once.
 function stubbed(failures, reason) {
@@ -148,7 +148,7 @@ assert.strictEqual(t.calls, 1);
 // count(): every way a COUNT can end must settle the promise, a NOTICE without a subscription
 // id and a dead socket included.
 {
-  const { REFUSED, TIMED_OUT } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
+  const { TIMED_OUT } = await import(new URL("../../main/resources/web/shared/relay.js", import.meta.url));
   const armed = () => {
     const r = new Relay("ws://unused/");
     r.connect = async () => {};
@@ -222,6 +222,68 @@ assert.strictEqual(t.calls, 1);
     r.failCounts(TIMED_OUT);
     assert.strictEqual(await p, TIMED_OUT);
     assert.notStrictEqual(TIMED_OUT, REFUSED, "the two non-answers are never the same value");
+  }
+}
+
+// A picker lookup retired before its REQ went out is never sent; the pickers hand their signal
+// all the way down, or a superseded search still runs at the relay ahead of the real one.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(m) };
+  const ctl = new AbortController();
+  ctl.abort();
+  const got = await r.req({ kinds: [0], search: "ali" }, 5000, { signal: ctl.signal });
+  assert.strictEqual(sent.length, 0, "nothing is sent for an ask already retired");
+  assert.strictEqual(got.complete, false);
+  const { readFileSync } = await import("node:fs");
+  const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
+  for (const fn of ["lookupAuthors", "lookupGroups"]) {
+    const start = app.indexOf(`async function ${fn}(partial, signal)`);
+    assert.ok(start >= 0, `${fn}() must take the picker's signal`);
+    const body = app.slice(start, app.indexOf("\n}", start));
+    assert.ok(/search: askString\(partial\)[^\n]*\{ signal \}/.test(body), `${fn}() must hand the picker's signal to its search`);
+  }
+}
+
+// Sign-out closes the socket and connects again before the old close event lands; what was
+// outstanding on the old socket fails then, not at its own timeout.
+{
+  const saved = globalThis.WebSocket;
+  const sockets = [];
+  class SlowCloseWS {
+    static OPEN = 1;
+    constructor() { this.readyState = 0; this.sent = []; sockets.push(this); setTimeout(() => { this.readyState = 1; this.onopen && this.onopen(); }, 0); }
+    send(m) { if (this.readyState !== 1) throw new Error("not open"); this.sent.push(JSON.parse(m)); }
+    close() { this.readyState = 2; setTimeout(() => { this.readyState = 3; this.onclose && this.onclose(); }, 50); }
+  }
+  globalThis.WebSocket = SlowCloseWS;
+  try {
+    const r = new Relay("ws://unused/");
+    await r.connect();
+    const settled = (p) => p.then(() => null, (e) => e);
+    const asked = settled(r.req({ kinds: [1] }));
+    const counted = r.count({ kinds: [1] });
+    const published = settled(r.publish({ id: "e1" }));
+    await new Promise((res) => setTimeout(res, 0));
+    const t0 = Date.now();
+    r.ws.close();
+    await r.connect();
+    assert.match(String(await asked), /connection closed/, "a REQ on the replaced socket fails");
+    assert.strictEqual(await counted, REFUSED, "a COUNT on it is refused, not timed out");
+    assert.match(String(await published), /connection closed/, "a publish on it is not left waiting for an OK");
+    assert.ok(Date.now() - t0 < 1000, "…all at once, not at their own timeouts");
+    assert.strictEqual(sockets.length, 2);
+    assert.strictEqual(r.ws, sockets[1], "the replacement is the live socket");
+    await new Promise((res) => setTimeout(res, 80));
+    assert.strictEqual(r.ws, sockets[1], "the old close event does not tear it down");
+    const fresh = r.req({ kinds: [1] });
+    await new Promise((res) => setTimeout(res, 0));
+    r.handle(["EOSE", sockets[1].sent.at(-1)[1]]);
+    assert.strictEqual((await fresh).complete, true, "the new socket answers");
+  } finally {
+    globalThis.WebSocket = saved;
   }
 }
 

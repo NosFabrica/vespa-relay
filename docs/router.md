@@ -28,6 +28,13 @@ streams {
 }
 ```
 
+A key the loader does not read, at any level (the top, a stream, a filter, a
+`relaySource` entry, a select, a tier, the monitor), stops the boot and names
+the key: misspelt, it would otherwise leave its setting at the default while
+the file reads as if it were set. The same goes for a `relaySource`-only key
+(`refreshSeconds`, `exclude`, `gatedBy`, `maxRelaysPerList`) on a stream of
+static `urls`.
+
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
 - **`dir`** — `down` mirrors upstream events into our store; `up` publishes our
@@ -522,7 +529,8 @@ is one socket charged to both.
 **A cap is admission, not a queue.** A visit that cannot get a permit skips
 that job and carries on; the work stays due and the next visit takes it. Every
 job here is due-gated and idempotent, so a full cap costs a revisit delay and
-nothing else. Waiting would be worse: a visit holds a socket and one of
+nothing else — and a visit turned away at `visiting` itself, before it dialled,
+is retried within seconds rather than waiting one out. Waiting would be worse: a visit holds a socket and one of
 `visitConcurrency`'s slots for its whole life, so blocking on a permit would
 idle both. Each skip is counted — `deferred`, per stream and job, in
 `/stats.json` and on the status page — because a cap that silently drops work

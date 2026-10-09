@@ -20,11 +20,16 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
+import com.nosfabrica.vespa.relay.sync.PoolFixture
 import com.nosfabrica.vespa.relay.sync.SyncBands
+import com.nosfabrica.vespa.relay.sync.VisitPool
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
@@ -62,6 +67,7 @@ class RelayStatusReportTest {
     ) = RelayStatusReport.PrimeUnit(
         relay = relay,
         stream = stream,
+        coverageKeys = listOf(stream),
         askKeys = askKeys.toSet(),
         visiting = visiting,
         live = live,
@@ -478,13 +484,82 @@ class RelayStatusReportTest {
             rowsOf(
                 RelayStatusReport.build(
                     bands.snapshot(),
-                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", setOf(filter.toJson()), visiting = false, live = false)),
+                    listOf(RelayStatusReport.PrimeUnit(url.url, "content", listOf("content"), setOf(filter.toJson()), visiting = false, live = false)),
                     1_700_000_000,
                 )!!,
             ).single()
         assertEquals("complete", row["syncStatus"]!!.jsonPrimitive.content, "a drained band the real SyncBands wrote must reach its own roster row")
         assertEquals(1, row["settled"]!!.jsonPrimitive.int)
         assertEquals(url.url, row["relay"]!!.jsonPrimitive.content, "and the row names the relay by the url both sides key on")
+    }
+
+    @Test
+    fun `a banded stream's coverage reaches its row, and an ask is settled only once every band is`(): Unit =
+        runBlocking {
+            // Each band files its coverage under its own key; real visits write them, the row must find all of them.
+            val tiers = listOf(SyncTier(maxAgeSeconds = 30L * 86_400, everySeconds = 86_400), SyncTier(maxAgeSeconds = null, everySeconds = 7L * 86_400))
+            val url = RelayUrlNormalizer.normalize("wss://banded.example")
+            val filter = Filter(kinds = listOf(1))
+            val stream = PoolFixture.stream("content", url, filter).copy(refetchTiers = tiers)
+            assertEquals(2, SyncBands.coverageKeys(stream).size, "one coverage key per band")
+            val bands = SyncBands(null)
+            val now = System.currentTimeMillis() / 1000
+            val corpus = listOf(3_600L, 86_400L, 40L * 86_400, 400L * 86_400).mapIndexed { i, age -> PoolFixture.event(i, now - age) }
+            val honest = PoolFixture.holding(corpus)
+
+            fun row(pool: VisitPool) = rowsOf(RelayStatusReport.build(bands.snapshot(), pool.primeUnits(), now)!!).single()
+
+            // The older band's walk goes quiet after its newest event: walked, not to its floor.
+            val cut =
+                PoolFixture.visitOnce(listOf(stream), bands) { leg, onEvent ->
+                    if (leg.until == null) {
+                        honest(leg, onEvent)
+                    } else {
+                        onEvent(corpus.filter { leg.match(it) }.maxBy { it.createdAt })
+                        PagedFetchResult(1, PagedFetchResult.End.IDLE)
+                    }
+                }
+            assertEquals("paging", row(cut)["syncStatus"]!!.jsonPrimitive.content, "the older band is still open")
+            assertEquals(1, row(cut)["bands"]!!.jsonPrimitive.int, "one ask with coverage, however many bands hold it")
+            assertNull(row(cut)["settled"], "settled in the younger band alone is not settled")
+
+            val clean = PoolFixture.visitOnce(listOf(stream), bands, honest)
+            assertEquals("complete", row(clean)["syncStatus"]!!.jsonPrimitive.content)
+            assertEquals(1, row(clean)["settled"]!!.jsonPrimitive.int)
+        }
+
+    @Test
+    fun `a banded stream's audit reconciled to the floor settles the ask on its own`() {
+        // The audit files its reconcile under the bare stream name, which no band key is.
+        val tiers = listOf(SyncTier(maxAgeSeconds = 21_600, everySeconds = 3_600), SyncTier(maxAgeSeconds = null, everySeconds = 86_400))
+        val url = RelayUrlNormalizer.normalize("wss://audited.example")
+        val filter = Filter(kinds = listOf(1))
+        val stream = PoolFixture.stream("content", url, filter).copy(refetchTiers = tiers)
+        val now = System.currentTimeMillis() / 1000
+        val bands = SyncBands(null)
+        bands.recordAudit(stream.name, url, filter, filter.copy(until = now - 120), reachesFloor = true, verifiedAt = now - 60)
+
+        fun row(auditKey: String?) =
+            rowsOf(
+                RelayStatusReport.build(
+                    bands.snapshot(),
+                    listOf(
+                        RelayStatusReport.PrimeUnit(
+                            url.url,
+                            stream.name,
+                            SyncBands.coverageKeys(stream),
+                            setOf(filter.toJson()),
+                            visiting = false,
+                            live = false,
+                            auditKey = auditKey,
+                        ),
+                    ),
+                    now,
+                )!!,
+            ).single()
+
+        assertEquals("complete", row(stream.name)["syncStatus"]!!.jsonPrimitive.content, "a finished reconcile to the floor is settled")
+        assertEquals("notStarted", row(null)["syncStatus"]!!.jsonPrimitive.content, "and it is only found under the key the pool names")
     }
 
     @Test

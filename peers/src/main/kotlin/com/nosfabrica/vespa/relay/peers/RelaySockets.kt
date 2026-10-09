@@ -26,7 +26,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One socket refcount across every stream and every probe pass: a socket closes only when
- * its last holder releases it. Pinned urls are never closed.
+ * its last holder releases it, under the url's lock, so no claim lands between that decision
+ * and the close. Pinned urls are never closed.
  */
 class RelaySockets(
     private val client: NostrClient,
@@ -34,28 +35,29 @@ class RelaySockets(
 ) : Sockets {
     private val held = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
+    /** Striped rather than per url, so the set of locks does not grow with every url ever dialled. */
+    private val locks = Array(LOCK_STRIPES) { Any() }
+
+    private fun lockFor(url: NormalizedRelayUrl): Any = locks[Math.floorMod(url.hashCode(), LOCK_STRIPES)]
+
     override fun claim(url: NormalizedRelayUrl) {
-        held.merge(url, 1, Int::plus)
+        synchronized(lockFor(url)) { held.merge(url, 1, Int::plus) }
     }
 
     override fun release(url: NormalizedRelayUrl) {
-        var released = false
-        held.compute(url) { _, n ->
+        synchronized(lockFor(url)) {
+            val n = held[url]
+            // A release nobody claimed must not disconnect a socket its real holder is still on.
             if (n == null) {
-                null
-            } else {
-                released = true
-                (n - 1).takeIf { it > 0 }
+                System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
+                return
             }
-        }
-        // A release nobody claimed must not disconnect a socket its real holder is still on.
-        if (!released) {
-            System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
-            return
-        }
-        // Re-checked after the compute, so a claim landing in between keeps the socket.
-        if (held[url] == null && url !in pinnedUrls) {
-            close(url)
+            if (n > 1) {
+                held[url] = n - 1
+                return
+            }
+            held.remove(url)
+            if (url !in pinnedUrls) close(url)
         }
     }
 
@@ -66,5 +68,9 @@ class RelaySockets(
     private fun close(url: NormalizedRelayUrl) {
         if (url !in client.availableRelaysFlow().value) return
         runCatching { client.getOrCreateRelay(url).disconnect() }
+    }
+
+    private companion object {
+        const val LOCK_STRIPES = 64
     }
 }

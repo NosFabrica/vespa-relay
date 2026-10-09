@@ -33,6 +33,16 @@ stops the boot: `=0s` and `=off` are the obvious spellings of "turn this off",
 and `?: default` accepted both by running the rollup on the schedule the
 operator was trying to change.
 
+**The totals and the trust chain moved to the charts pass.** The per-minute
+tier assumed a `count()` was cheap because it materialises nothing, and that
+kind 30382 ran to thousands of events. Both were wrong: a `count()` over `true`
+visits every document, and the live store held 28.7M scores, so every minute
+walked the whole corpus once and every score twice (the provider grouping and
+the score count), with a count over the whole reputation store beside them. The members
+kept their places in the document, since the page reads them there. What it
+cost is `newestEvent` at the charts cadence rather than the minute; it is now
+read off the histogram's spans for free, and the page's staleness line is a day.
+
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
 publishes the relay's own `/favicon.ico` url, the doc's `icon` is no longer a
@@ -144,12 +154,15 @@ the TTL was simply lost until store `226db24694` bounded the pass's age
 confidence its pointer expressed needs the pointer's relevance, which
 `IEventStore` does not expose. What this relay owns is the budget. A cap
 `coerceAtLeast(0)` once turned `-1` into a cap of zero, the feature on and
-adding nothing; a negative now keeps the default and zero is honoured as zero.
+adding nothing; a negative now stops the boot and zero is honoured as zero.
 
-**Unparseable booleans fail closed.** `REQUIRE_READ_LENS=treu` looks exactly
-like a relay working, and the failure modes are not symmetric: a typo that
-silently opened the corpus cannot be noticed from outside. The same rule makes
-an unparseable `SEARCH_CONCURRENCY_PER_CONNECTION` the default rather than off.
+**An unparseable setting stops the boot.** `REQUIRE_READ_LENS=treu` once
+failed closed, and before that a typo silently opened the corpus, which cannot
+be noticed from outside. Every number and switch now goes through
+`StrictEnv`, so a value outside its range or not a switch names itself at boot
+instead of running as a default nobody chose. `SWEEP_ORPHAN_SCORES_ON_START`
+is the exception: it deletes data, so anything but exactly `true` is the dry
+run rather than a refused boot or, worse, a `1` read as delete.
 
 **Pubkey settings take npubs only.** Bare hex has no checksum, so one mistyped
 character is a valid-looking key that is nobody. A bad value throws rather
@@ -178,6 +191,34 @@ a short grace, which closes the socket and stops its REQs querying for replies
 nobody reads. The 30s ping and 60s timeout exist because a phone that walked
 off NAT leaves a half-open session whose subscriptions and buffers survive
 until the OS gives up, which can be never.
+
+**Over its character budget, only a client that stopped reading is cut off.**
+8192 frames of large events let one non-reading client pin hundreds of
+megabytes, so the queue has a 16M-character budget. A hard cap on it closed
+healthy clients: quartz pushes a whole REQ answer at store speed, and one page
+of 5000 large follow or relay lists passes the budget while the client drains
+it normally, then retries forever. Past the budget, a connection is closed only
+when the writer has waited 30s on one frame, checked on every offer and once a
+second; a non-reader holds at most what arrives in that window, still under the
+8192-frame bound, and the frame bound is unchanged.
+
+**The websocket's frame cap is the engine's message length, in bytes.** Ktor's
+default is unbounded, and it judges a frame from its header, so an anonymous
+client could declare a gigabyte and have the server try to hold it before
+quartz's character limit ever saw a message. The cap is three bytes per
+character, the same bound the HTTP body cap uses, and a refused frame closes
+with 1009.
+
+**A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
+Every AUTH by a fresh key started a store walk on the maintenance scope; a
+burst of keys was a burst of walks. The notice is a courtesy, so a saturated
+relay sends none rather than holding a queue that grows with the burst.
+
+**The ban list is synced before it is renamed into place, and a failed write is
+said rather than thrown.** Without the sync a power loss could leave the rename
+pointing at an empty file, which loads as no bans at all. A disk that refuses
+the write keeps the previous file and logs; the ban already applies in memory,
+and throwing turned an enforced ban into an RPC 500.
 
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went

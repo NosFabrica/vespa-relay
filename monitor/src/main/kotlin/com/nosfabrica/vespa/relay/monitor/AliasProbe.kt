@@ -77,10 +77,10 @@ class AliasProbe(
         val bare = walk(url, anchor, null, onEvent)
         if (!bare.ids.isNullOrEmpty()) return Attempt(Leader(bare.ids, null), spoke = true)
         // A refused credential is not a refused filter.
-        if (bare.authRefused) return Attempt(null, spoke = true)
+        if (bare.authRefused) return Attempt(null, spoke = true, authRefused = true)
         val general = walk(url, anchor, FALLBACK_KINDS, onEvent)
         if (!general.ids.isNullOrEmpty()) return Attempt(Leader(general.ids, FALLBACK_KINDS), spoke = true)
-        if (general.authRefused) return Attempt(null, spoke = true)
+        if (general.authRefused) return Attempt(null, spoke = true, authRefused = true)
         // `&&`, not `||`: one answer is enough to earn the third rung, since a kinds walk refused
         // beside a bare walk our transport cut is a live server declining the shape of the question.
         if (bare.ids == null && general.ids == null) return Attempt(null, spoke = false)
@@ -95,7 +95,12 @@ class AliasProbe(
         val leader: Leader?,
         /** Did the relay answer at all, with an EOSE or a CLOSED, rather than silence? */
         val spoke: Boolean,
-    )
+        /** It answered by refusing our NIP-42 key: about us, never about its window. */
+        val authRefused: Boolean = false,
+    ) {
+        /** Answered with something a fold may rest on; an auth refusal reads the same from any server. */
+        val answeredForFold: Boolean get() = spoke && !authRefused
+    }
 
     /** What a group's leader answered, and what it had to be asked to get it. */
     data class Leader(

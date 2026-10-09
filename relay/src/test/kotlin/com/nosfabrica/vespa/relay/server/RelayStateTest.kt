@@ -52,6 +52,28 @@ class RelayStateTest {
         }
     }
 
+    /** The NIP-86 call is answered after the ban applies; a disk that refuses the write may not undo either. */
+    @Test
+    fun `a write the disk refuses keeps the ban in force and the previous file whole`() {
+        val file = File.createTempFile("relay-state-refused", ".json").apply { delete() }
+        val blocker = File(file.path + ".tmp")
+        try {
+            val store = openBanStore(file.path)
+            store.banPubkey(a, "spam")
+            // A directory where the temp file goes: opening it for writing fails as a full disk would.
+            assertTrue(blocker.mkdir())
+            store.banPubkey(b, "spam")
+
+            assertTrue(store.isBanned(b), "the ban the caller was told about is enforced")
+            val reloaded = openBanStore(file.path)
+            assertTrue(reloaded.isBanned(a), "the last good write survives the failed one")
+            assertFalse(reloaded.isBanned(b))
+        } finally {
+            file.delete()
+            blocker.delete()
+        }
+    }
+
     @Test
     fun `a missing state file is a clean empty start`() {
         val store = openBanStore("/nonexistent/does-not-exist.json")

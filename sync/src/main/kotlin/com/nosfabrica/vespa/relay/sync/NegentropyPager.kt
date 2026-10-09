@@ -31,7 +31,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLoc
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySync
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -79,9 +78,10 @@ internal interface WindowSync {
     ): PagedWindow
 }
 
-/** What one fallback walk delivered, and whether the relay turned any part of it away. */
+/** What one fallback walk delivered, and whether any part of it went unread. */
 internal class PagedWindow(
     val downloaded: Int,
+    /** The relay refused or cut short some chunk, so the window may not be claimed. */
     val refused: Boolean,
 )
 
@@ -131,6 +131,8 @@ internal class ClientWindowSync(
     private val idleTimeoutMs: Long = NEG_IDLE_MS,
     /** The twice-refused ids, declined before the REQ that would fetch them. */
     private val refused: RefusedIds = RefusedIds.disabled(),
+    /** How a window is paged; quartz's own pager unless a test stands in for the relay. */
+    private val reads: RelayReads = ClientRelayReads(client),
 ) : WindowSync {
     /**
      * The predicate quartz consults for every id the reconcile names. Null when suppression is
@@ -167,7 +169,7 @@ internal class ClientWindowSync(
     /**
      * Pages a window in chunks of the width this relay takes. A page here is a sub-window of a
      * leg, so its drain settles nothing. The NEG-OPEN itself is not chunked: a width-refused
-     * one throws `UNAVAILABLE` and lands here.
+     * one throws `UNAVAILABLE` and lands here. A chunk cut short is unread, even if it delivered.
      */
     override suspend fun page(
         url: NormalizedRelayUrl,
@@ -176,10 +178,10 @@ internal class ClientWindowSync(
     ): PagedWindow {
         var downloaded = 0
         for (chunk in widths.chunk(url, window)) {
-            val walked = client.fetchAllPages(url, listOf(chunk), idleTimeoutMs, onEvent = onEvent)
+            val walked = reads.page(url, chunk, idleTimeoutMs, onEvent)
             downloaded += walked.downloaded
-            // The first refusal ends it; what was delivered is kept.
-            if (VisitPool.refusedOutright(walked)) return PagedWindow(downloaded, refused = true)
+            // The first unread chunk ends it; what was delivered is kept, and the window is not claimed.
+            if (!VisitPool.readToTheEnd(walked)) return PagedWindow(downloaded, refused = true)
         }
         return PagedWindow(downloaded, refused = false)
     }
@@ -216,6 +218,9 @@ internal class NegentropyPager(
 ) {
     /** How far below `now` a sweep stops. */
     internal val slackSeconds: Long get() = tuning.slackSeconds
+
+    /** Lets the sweep state forget what no relay on [relays] can use; see [SweepState.retain]. */
+    fun retain(relays: Set<String>) = state.retain(relays)
 
     /**
      * Reconcile [leg] against [url], one right-sized window at a time. [stream] and [shape]
@@ -306,7 +311,7 @@ internal class NegentropyPager(
                     }
                 if (refusedHere) {
                     refusedWindows++
-                    sayRefused(url, sweepWindow, "a dense slice was refused", askedAtMs)
+                    sayRefused(url, sweepWindow, "a dense slice was refused or cut short", askedAtMs)
                 } else {
                     complete(cursor, sweepWindow)
                 }
@@ -328,7 +333,7 @@ internal class NegentropyPager(
                         // and the drain was served.
                         if (drained.refused) {
                             refusedWindows++
-                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused", askedAtMs)
+                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused or cut short", askedAtMs)
                         } else if (badTo >= sweepWindow.last) {
                             state.advance(cursor, badFrom, sweepWindow.last)
                         }
@@ -358,7 +363,7 @@ internal class NegentropyPager(
                         paged++
                         if (walked.refused) {
                             refusedWindows++
-                            sayRefused(url, sweepWindow, "the fallback page was refused too", askedAtMs)
+                            sayRefused(url, sweepWindow, "the fallback page was refused or cut short too", askedAtMs)
                         } else {
                             complete(cursor, sweepWindow)
                         }

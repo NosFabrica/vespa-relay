@@ -1001,14 +1001,16 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a paging ceiling below the floor is raised to it`() {
-        // Nonsense config must not produce a window size that can never be met.
-        val cfg =
-            RouterConfigLoader.fromEnv(
-                mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_MIN" to "10000", "SYNC_NEG_PAGE_MAX" to "100"),
-            )
-        assertEquals(10_000, cfg!!.negPageMin)
-        assertEquals(10_000, cfg.negPageMax)
+    fun `a paging ceiling below the floor is refused, not raised to it`() {
+        // A window size that can never be met is a config to fix, not one to quietly rewrite.
+        val e =
+            assertFailsWith<IllegalStateException> {
+                RouterConfigLoader.fromEnv(
+                    mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_MIN" to "10000", "SYNC_NEG_PAGE_MAX" to "100"),
+                )
+            }
+        assertTrue("SYNC_NEG_PAGE_MAX='100'" in e.message.orEmpty())
+        assertTrue("at least 10000" in e.message.orEmpty())
     }
 
     @Test
@@ -1586,5 +1588,28 @@ class RouterConfigTest {
             discovery.sources.map { it.filter.kinds },
             "two ways of finding urls; the gate above does not care which is which",
         )
+    }
+
+    @Test
+    fun `a key nothing reads is refused at every level, never left at its default`() {
+        fun refused(
+            hocon: String,
+            monitor: String? = null,
+        ) = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(hocon, monitorHocon = monitor) }.message.orEmpty()
+
+        val static = """streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], %s } }"""
+        val sourced = """streams { s { filter = { "kinds": [1] }, relaySource = [ { filter = { "kinds": [10002] }, select = [ { kind = 10002, tag = "r", %s } ] } ] } }"""
+
+        assertTrue("`negentropySyncThePastSecond`" in refused(static.format("negentropySyncThePastSecond = 86400")), "a misspelt clock would leave the audit off")
+        assertTrue("`connectionTimout`" in refused("connectionTimout = 5\n" + static.format("")), "the root")
+        assertTrue("`kind`" in refused("""streams { s { filter = { "kind": [1] }, urls = ["wss://a.example"] } }"""), "a filter")
+        assertTrue("`author`" in refused(sourced.format("author = 1")), "a select binding nothing")
+        assertTrue("`sweepSecond`" in refused(static.format(""), monitor = "sources = [], sweepSecond = 600"), "the monitor")
+        assertTrue("`maxAg`" in refused(static.format("refetch = [ { every = 3600, maxAg = 86400 } ]")), "a tier")
+        // The keys a relaySource stream reads do nothing on a stream of static urls.
+        assertTrue("only a `relaySource`" in refused(static.format("refreshSeconds = 600")))
+
+        // What is known still parses.
+        RouterConfigLoader.parse(sourced.format("authors = 1, \"#p\" = 1"))
     }
 }

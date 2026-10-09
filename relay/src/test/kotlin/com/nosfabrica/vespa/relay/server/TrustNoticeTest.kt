@@ -28,9 +28,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -170,6 +175,28 @@ class TrustNoticeTest {
             assertEquals(emptyList(), blindToCards.notices(reader.pubKey))
         }
 
+    /** Every fresh key that signs in starts a store walk; a burst of them may not start a burst of walks. */
+    @Test
+    fun `a burst of sign-ins runs a bounded number of checks`() =
+        runBlocking {
+            val stalled = Stalled(store)
+            val bounded = TrustNotice(stalled, CoroutineScope(SupervisorJob()), maxInFlight = 2)
+            val told = Collections.synchronizedList(mutableListOf<String>())
+            val keys = List(4) { NostrSignerSync().pubKey }
+
+            fun signIn(key: String) = bounded.check(key) { told += key }
+
+            keys.take(3).forEach(::signIn)
+            withTimeout(5_000) { while (stalled.entered.get() < 2) delay(10) }
+            stalled.open.complete(Unit)
+            withTimeout(5_000) { while (told.size < 2) delay(10) }
+
+            // The finished checks hand their places back.
+            signIn(keys[3])
+            withTimeout(5_000) { while (keys[3] !in told) delay(10) }
+            assertEquals(setOf(keys[0], keys[1], keys[3]), told.toSet(), "the third sign-in arrived with both places taken, and was not queued")
+        }
+
     @Test
     fun `each ask is addressed to exactly one key`() {
         val provider = TrustNotice.providerListFilter(reader.pubKey)
@@ -193,6 +220,20 @@ class TrustNoticeTest {
             all.all { MachineReadablePrefix.parse(it) == MachineReadablePrefix.RESTRICTED },
             "NIP-01's single-word prefix so a client can react to it, not a word of ours: $all",
         )
+    }
+
+    /** A store whose reads wait for [open]; [entered] counts the reads that started. */
+    private class Stalled(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        val open = CompletableDeferred<Unit>()
+        val entered = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            entered.incrementAndGet()
+            open.await()
+            return inner.query(filter)
+        }
     }
 
     /** A store whose reads for one kind throw; everything else is the real thing. */

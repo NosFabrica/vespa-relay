@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
+import com.nosfabrica.vespa.relay.maintenance.orphanSweepDryRun
 import com.nosfabrica.vespa.relay.maintenance.parseReindexKinds
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
@@ -69,6 +70,9 @@ import com.nosfabrica.vespa.relay.store.deployBundledSchema
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.exitOnBootFailure
+import com.nosfabrica.vespa.relay.util.strictFlag
+import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
@@ -88,6 +92,7 @@ import java.io.File
  * is required. Mirroring into the same store is the sync process's job.
  */
 fun main() {
+    exitOnBootFailure()
     val env = System.getenv()
 
     // A sync or monitor config aimed at this process is a configured component that would run
@@ -120,12 +125,12 @@ fun main() {
             )
         }
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
-    val port = env["RELAY_PORT"]?.toIntOrNull() ?: 7777
+    val port = env.strictInt("RELAY_PORT", 1..65_535) ?: 7777
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — this relay's own ws url (NIP-42 identity / NIP-62 vanish scope).")
     val relayUrl =
         RelayUrlNormalizer.normalizeOrNull(relayUrlRaw)
             ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
-    val autoDeploy = env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() ?: true
+    val autoDeploy = env.strictFlag("AUTO_DEPLOY") ?: true
 
     // Read first so a malformed key stops the boot here. Unset is an anonymous relay.
     val identity = RelayIdentity.fromEnv { env[it] }
@@ -190,7 +195,7 @@ fun main() {
     val banStore = if (adminPubkeys.isNotEmpty()) openBanStore(env["RELAY_STATE_FILE"]) else null
 
     val listener =
-        if (env["LOG_CONNECTIONS"]?.toBooleanStrictOrNull() == true) {
+        if (env.strictFlag("LOG_CONNECTIONS") == true) {
             ConnectionCountListener()
         } else {
             RelayServerListener.None
@@ -204,8 +209,8 @@ fun main() {
     }
 
     // Read before the store opens: the slow-read threshold is a constructor setting.
-    val pulsePort = env["PULSE_PORT"]?.trim()?.toIntOrNull() ?: 0
-    val pulseClientDetail = env["PULSE_CLIENT_DETAIL"]?.trim()?.toBooleanStrictOrNull() ?: false
+    val pulsePort = env.strictInt("PULSE_PORT", 0..65_535) ?: 0
+    val pulseClientDetail = env.strictFlag("PULSE_CLIENT_DETAIL") ?: false
     // Refuses the pair: a public pulse must be the operational half only.
     val pulseIsPublic = pulsePublic(env, pulseClientDetail)
     val slowReadMs = pulseSlowReadMs(env, "PULSE_SLOW_READ_MS", pulseClientDetail, "PULSE_CLIENT_DETAIL")
@@ -235,13 +240,13 @@ fun main() {
 
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
     val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    if (env["REINDEX_FTS_ON_START"]?.toBooleanStrictOrNull() == true) {
+    if (env.strictFlag("REINDEX_FTS_ON_START") == true) {
         launchFtsReindex(maintenanceScope, store, env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt", reindexKinds)
     } else if (reindexKinds != null) {
         System.err.println("relay: REINDEX_FTS_KINDS is set but REINDEX_FTS_ON_START is not true — no reindex runs")
     }
-    env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
-        launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
+    orphanSweepDryRun(env["SWEEP_ORPHAN_SCORES_ON_START"])?.let { dryRun ->
+        launchOrphanScoreSweep(maintenanceScope, store, dryRun)
     }
     // Seeded from the state file so a restart serves the last document until the first rollup.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
@@ -274,9 +279,9 @@ fun main() {
         launchRelayProfile(maintenanceScope, profile, nip11)
     }
     // On by default: the page is gated, these counters are not, and a diagnostic nobody enables is missing.
-    StoreMetricsLog.startLogging("relay", store, env["STORE_METRICS_LOG_SECONDS"]?.toIntOrNull() ?: 300)
+    StoreMetricsLog.startLogging("relay", store, env.strictInt("STORE_METRICS_LOG_SECONDS") ?: 300)
 
-    if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
+    if (env.strictFlag("TRUST_RECONCILE_ON_START") != false) {
         maintenanceScope.launch {
             println("trust: reconciling in the background — ranked search may return less until this finishes")
             val startedMs = System.currentTimeMillis()

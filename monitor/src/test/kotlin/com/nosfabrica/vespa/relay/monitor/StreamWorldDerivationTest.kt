@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -208,6 +209,40 @@ class StreamWorldDerivationTest {
             val after = processors.snapshot().single()
             assertEquals(2, after.measuring?.toProbe, "two sources in one block are two units of work")
             assertEquals(2, after.measuring?.attempted, "and both are behind the walk when it ends")
+        }
+
+    @Test
+    fun `the fast lane skips a url graded within the sweep period and keeps the new one`() =
+        runBlocking {
+            // A hub sits in nearly every relay list, so every tick would otherwise re-dial it.
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(
+                event(
+                    10002,
+                    arrayOf("r", "wss://hub.example", "write"),
+                    arrayOf("r", "wss://newcomer.example", "write"),
+                ),
+            )
+            val record = RelayVerdictRecord(store, monitor)
+            record.publishFitness(RelayUrlNormalizer.normalize("wss://hub.example"), "prime", "answered", pageable = null, nip77 = null)
+
+            fun lane(sweepSeconds: Long) =
+                StreamWorld(
+                    store = store,
+                    sources = sourcesWithExcludes(emptyList()),
+                    probe = ReachabilityProbe(null),
+                    monitorAuthors = listOf(monitor.pubKey),
+                    self = monitor.pubKey,
+                    tor = null,
+                    sockets = Sockets.NONE,
+                    onProbeEvent = { error("no dial runs here") },
+                    recentlyGraded = { urls -> StreamWorld.gradedSince(record, urls, nowSeconds() - sweepSeconds) },
+                )
+
+            assertEquals(listOf("wss://newcomer.example/"), lane(sweepSeconds = 6 * 60 * 60).candidatesSince(0).map { it.url })
+            // A grade older than the period is the sweep's miss, and the lane may take it.
+            assertEquals(2, lane(sweepSeconds = -60).candidatesSince(0).size)
         }
 
     @Test

@@ -31,6 +31,12 @@ enum class PushVerdict {
     /** Refused transiently. Suppresses nothing and closes nothing. */
     RETRY,
 
+    /**
+     * Asked for NIP-42 first. Ends the pass and closes nothing: the client answers the
+     * challenge, so the next pass is authenticated.
+     */
+    AUTH,
+
     /** Answered, but the answer says nothing about the relay's willingness. */
     IGNORE,
 
@@ -54,7 +60,9 @@ object OkClassifier {
         val reason = message.trim().lowercase()
         val prefix = reason.substringBefore(':', missingDelimiterValue = "")
         return when (prefix) {
-            "auth-required", "restricted", "blocked" -> PushVerdict.CLOSED
+            "restricted", "blocked" -> PushVerdict.CLOSED
+
+            "auth-required" -> PushVerdict.AUTH
 
             "rate-limited", "error" -> PushVerdict.RETRY
 
