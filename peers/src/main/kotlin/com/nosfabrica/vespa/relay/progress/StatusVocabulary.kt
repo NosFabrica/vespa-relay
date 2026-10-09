@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.progress
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -34,14 +35,14 @@ object StatusVocabulary {
     /** Every member either status document can publish, defined. Ship it through [termsFor]. */
     val TERMS: JsonObject =
         buildJsonObject {
-            put(
+            term(
                 "scope",
                 "Every count in this section is per STREAM, and a stream is one configured ask. " +
                     "One relay reached by two streams is two rows with two independent verdicts, and them disagreeing " +
                     "is not a contradiction: each stream walks that relay at its own moment and to its own depth, " +
                     "and neither may resume from the other's claim.",
             )
-            put(
+            term(
                 "settled",
                 "Nothing outstanding below the span this stream has walked on this relay — published as `complete` on a " +
                     "row and counted as `reconciled`. Earned two ways: a finished negentropy reconcile, or a paged walk " +
@@ -50,38 +51,38 @@ object StatusVocabulary {
                     "the only thing `syncStatus: complete` may be claimed from. Read as a fraction of `asks` — a unit owes " +
                     "one ask per bound provider, so `paging` covers 39 of 40 and 1 of 40 alike and only this tells them apart.",
             )
-            put(
+            term(
                 "open",
                 "Walked, but not proven exhaustive — published as `paged`. The stream asked and stored what came back; " +
                     "the relay may hold more below where the walk stopped.",
             )
-            put(
+            term(
                 "walkEnvelope",
                 "`min`/`max` on a row: the outer edges of the created_at span this stream has walked on this relay, " +
                     "across every kind in the filter together. AN ENVELOPE, NOT COVERAGE — a long-lived kind's events " +
                     "set the edges for the short-lived kinds beside it.",
             )
-            put(
+            term(
                 "evidence",
                 "`everyKindMin`/`everyKindMax`: the part of the envelope in which EVERY kind in the filter has actually " +
                     "produced an event. Present only when it is narrower than the envelope. Still not a coverage claim in " +
                     "the other direction either — a kind whose floor sits higher may simply have started existing later, " +
                     "which is indistinguishable here from a walk that stopped.",
             )
-            put(
+            term(
                 "holdings",
                 "NOT PUBLISHED HERE, and the distinction that has cost the most. A band is walk STATE — where this stream " +
                     "has asked — and the store's own contents are a different question, answered by the corpus and kinds " +
                     "sections. A band floor newer than the oldest stored event is ordinary: another stream, or an earlier " +
                     "config, put those events there.",
             )
-            put(
+            term(
                 "frame",
                 "APPROXIMATE. `from`/`to` are the drawing frame, not a target: these filters carry no `since`, so " +
                     "\"100% covered\" is not a defined quantity. `from` is the deepest point anything in this document " +
                     "reaches, and it exists to make two relays comparable rather than to grade either.",
             )
-            put(
+            term(
                 "relays",
                 "Relays TOUCHED — never the relays configured. A dynamic stream discovers its list, so there is no " +
                     "configured denominator to publish and \"never asked\" is not knowable from here. On a stream it counts " +
@@ -90,12 +91,12 @@ object StatusVocabulary {
                     "Inside `foldedOnto` and `inFlight` the same name is a LIST rather than a count — those two publish " +
                     "urls, and each is bounded with its own `omitted`.",
             )
-            put(
+            term(
                 "rows",
                 "Rows in the section — one per (stream, relay). Always at least `relays`, and larger whenever a relay is " +
                     "walked by more than one stream. Summing the streams' own `relays` gives this, not `relays`.",
             )
-            put(
+            term(
                 "hosts",
                 "Distinct authorities behind those urls. Most relay software answers on every path, so one server can wear " +
                     "dozens of urls and every url-keyed count is inflated until the alias fold decides them. Arithmetic over " +
@@ -103,23 +104,23 @@ object StatusVocabulary {
                     "`undecided` it is the same unit for the same reason: what a probe pass decides is a SERVER, and one " +
                     "row per url would say the same thing forty times.",
             )
-            put(
+            term(
                 "legs",
                 "How many (filter, relay) bands were folded into a group — present only when a narrow asked one relay more " +
                     "than once. The other counts are per RELAY, and a relay counts as settled only when every leg of it did.",
             )
-            put(
+            term(
                 "sweeping",
                 "Relays with a live reconcile cursor: mid-walk right now. A sweep killed at 80% records no band at all, so " +
                     "without this a relay in progress is indistinguishable from one nobody has touched.",
             )
-            put(
+            term(
                 "unnamed",
                 "A group read from state written before the file nested by stream. Its keys name no stream, so it has no " +
                     "identity beyond its filter. Not a second mirror and not an error — it disappears once every deployment " +
                     "has booted on a build that writes the nested shape.",
             )
-            put(
+            term(
                 "inFlight",
                 "WHICH relays a stream has a worker on right now, QUIETEST FIRST — the names behind `pending`, " +
                     "`busy` and the progress line's `running`, which were counts and nothing else. It spans passes, " +
@@ -134,7 +135,7 @@ object StatusVocabulary {
                     "stream it is on AT THIS INSTANT: a cheap stream showing few rows beside an expensive one is " +
                     "them sharing workers, not that stream running out of relays.",
             )
-            put(
+            term(
                 "heldForSec",
                 "How long a worker has held that relay, measured from the CLAIM — before the strike checks, the TCP " +
                     "pre-probe and the wait for a transfer slot, not just the download. On its own it says only that " +
@@ -142,7 +143,7 @@ object StatusVocabulary {
                     "(is anything still arriving), which is what separates a relay with a real backlog from a walk " +
                     "that will not end.",
             )
-            put(
+            term(
                 "transferringForSec",
                 "How long that leg has held a TRANSFER SLOT — not how long it has been on a socket, because the " +
                     "websocket connect happens inside the slot and a url that never connects at all still holds one " +
@@ -152,14 +153,14 @@ object StatusVocabulary {
                     "with a large `heldForSec` says OUR pool is saturated; present with a large one says a slot is " +
                     "committed to a transfer that is not finishing.",
             )
-            put(
+            term(
                 "events",
                 "Events that leg has received at the socket so far — its own count, where `received` is every leg of " +
                     "the cycle added together. Counted as they ARRIVE rather than when the leg ends, because the leg " +
                     "worth watching is the one that has not ended. Inside `rejections` the same name counts the " +
                     "events refused for one reason, which is the only other place this document counts events.",
             )
-            put(
+            term(
                 "quietForSec",
                 "HOW LONG SINCE THE LAST THING THIS ROW COUNTS ARRIVED, on both of the rows that publish it. On a " +
                     "stream leg it is events: how long since that leg last received one, or since it was claimed if " +
@@ -171,16 +172,25 @@ object StatusVocabulary {
                     "every number on the row agrees with every other one. A production fitness pass read `12373 of " +
                     "12374, ~0s left` for 74 minutes.",
             )
-            put(
+            term(
                 "stage",
-                "WHICH STEP a probe pass is on for the url it is holding, in the pass\'s own words — `pre-probe`, " +
+                "On a probe pass: " +
+                    "WHICH STEP a probe pass is on for the url it is holding, in the pass\'s own words — `pre-probe`, " +
                     "`nip-11 document`, `ask ladder`, `neg-open` for fitness, `paired walk` for the stability gate, " +
                     "`fingerprint` for the fold. `heldForSec` beside it says how long; only this says what for, and " +
                     "the steps stall for unrelated reasons: a name that will not resolve stalls the pre-probe, a " +
                     "relay that never stops sending stalls the ladder, a full ingest queue stalls whichever step is " +
-                    "delivering. It is the stream leg\'s `doing` for a job that is a ladder rather than a transfer.",
+                    "delivering. It is the stream leg\'s `doing` for a job that is a ladder rather than a transfer. " +
+                    "In `ingest stages`: " +
+                    "One named stage inside ingest, as the STORE names it. The router's own are `verify` and " +
+                    "`dedup.pre`/`versions.pre` (its two drop probes); the rest are the store's — `dedup`, " +
+                    "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's " +
+                    "`proj.fetch.derive` (the contact-card recall behind a batch) / `proj.write`, " +
+                    "and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
+                    "mutex versus holding it. Read `wait` against `hold` and `write`, never alone: workers queueing " +
+                    "for a saturated engine show a huge `wait` and are not the reason for anything.",
             )
-            put(
+            term(
                 "doing",
                 "WHAT THAT LEG IS ACTUALLY DOING, which the three clocks beside it cannot say. `held 2h 15m, 3 " +
                     "events` has four readings that want opposite responses: the worker is in the guards deciding " +
@@ -199,7 +209,7 @@ object StatusVocabulary {
                     "reconcile, and a static stream backfills either way. This pool pages its catch-up and " +
                     "reconciles its audits, which is a fact about the pool and not about the words.",
             )
-            put(
+            term(
                 "pool",
                 "WHICH OF THE MIRROR'S FOUR WORKLOADS this relay is in right now, as one word a reader can group " +
                     "by: `live` is a held tail subscription — no worker, events as they exist; `catching-up` is " +
@@ -219,7 +229,7 @@ object StatusVocabulary {
                     "draining the healer's queue on its way out — and such a row is shown under its own `doing` " +
                     "rather than dropped.",
             )
-            put(
+            term(
                 "live",
                 "THE LIVE POOL: every relay holding an open tail subscription right now, named, with the same " +
                     "clocks a visiting leg carries. This is the pool's steady state — `liveHeld` counts it and " +
@@ -231,7 +241,7 @@ object StatusVocabulary {
                     "count alone — a relay that has published nothing in a week, and a subscription that died " +
                     "upstream while we went on holding its socket.",
             )
-            put(
+            term(
                 "schedule",
                 "WHEN THIS STREAM'S TWO RE-READS OF THE PAST COME DUE, over every ask it has. The counters say " +
                     "work HAPPENED; this says whether it was DUE, which is the question they cannot answer. Every " +
@@ -241,21 +251,21 @@ object StatusVocabulary {
                     "`waiting` by its clock running out, so a `waiting` that holds steady while `auditsRun` climbs " +
                     "is the schedule being bypassed, and one that drains at the period is the schedule working.",
             )
-            put(
+            term(
                 "everySec",
                 "The period this job is scheduled on for this stream — `negentropySyncThePastSeconds` for the " +
                     "audit, `refetchThePastSeconds` for the re-fetch. Per STREAM and never router-wide: re-reading " +
                     "a relay's whole history is the most expensive thing scheduled here, and a content mirror over " +
                     "~130 kinds and a five-relay bootstrap cannot want the same number.",
             )
-            put(
+            term(
                 "due",
                 "Asks whose clock has run out and that are waiting for a visit to pick them up. Small and moving " +
                     "is the healthy reading. Large and STUCK is the one to act on: either the pool is not reaching " +
                     "those relays, or this stream's cap for the job is turning the work away — `deferred` beside " +
                     "it says which.",
             )
-            put(
+            term(
                 "neverRun",
                 "Asks with no completed pass behind them, which are due BY DEFINITION rather than by their clock: " +
                     "a zero clock short-circuits the dueness test, so a relay's first audit happens on its first " +
@@ -264,13 +274,13 @@ object StatusVocabulary {
                     "is the wrong conclusion from the right number. It is also what a workload cap is for: the " +
                     "storm is bounded rather than avoided, and it never happens twice for the same ask.",
             )
-            put(
+            term(
                 "waiting",
                 "Asks INSIDE their period — nothing to do, which is what the period is for. On a healthy stream " +
                     "this is almost all of them, and it is the number that certifies the schedule: an ask can only " +
                     "leave here by its clock running out.",
             )
-            put(
+            term(
                 "limits",
                 "WHAT THIS STREAM MAY SPEND on each of the pool's four jobs, and what it has spent. One rotating " +
                     "pool runs every visit-mode stream, and `visitConcurrency` bounds only how many relays are " +
@@ -282,7 +292,7 @@ object StatusVocabulary {
                     "of what each may take, written where the stream that pays it is configured, rather than a " +
                     "second router-wide number to keep in step with them by hand.",
             )
-            put(
+            term(
                 "job",
                 "Which of the pool's workloads a limit row bounds — the same word `pool` carries on a held " +
                     "relay's row, so a cap and the relays it is capping are read with one vocabulary. Plus one a " +
@@ -291,7 +301,7 @@ object StatusVocabulary {
                     "TLS handshakes rather than work — which is why it is budgeted beside the four and drawn " +
                     "with them, and why no relay is ever \"in\" it.",
             )
-            put(
+            term(
                 "streamCap",
                 "How many of the pool's visits may be doing this job FOR THIS STREAM at once, and the only cap " +
                     "on it. Absent means this stream is bounded by the dial width alone — not that it may do " +
@@ -301,13 +311,13 @@ object StatusVocabulary {
                     "ceiling and is not this router's budget at all — one word for two quantities in one document " +
                     "is the confusion this glossary exists to prevent.",
             )
-            put(
+            term(
                 "inUse",
                 "Permits out against `streamCap` right now — this stream's share of the job in use. Sitting at it " +
                     "is not a fault on its own; it is a fault when `deferred` is climbing beside it, which is the " +
                     "cap turning work away rather than merely bounding it.",
             )
-            put(
+            term(
                 "deferred",
                 "How much work this cap has TURNED AWAY since boot: times a visit reached this job for this stream " +
                     "and could not get a permit. Published because a cap that silently " +
@@ -317,7 +327,7 @@ object StatusVocabulary {
                     "visit takes it, so the cost of a full cap is one revisit delay. It is a rate, not a backlog — " +
                     "a relay refused twice counts twice.",
             )
-            put(
+            term(
                 "pagingUntil",
                 "WHERE IN TIME a paging leg has REACHED — the oldest `created_at` it has actually received, walking " +
                     "newest-first towards the filter's floor. Updated per EVENT, not per page: a page boundary is " +
@@ -339,7 +349,7 @@ object StatusVocabulary {
                     "to compare. Absent on a leg that is neither paging nor auditing — one still in the guards has " +
                     "no cursor at all — which is a state and not a gap.",
             )
-            put(
+            term(
                 "omitted",
                 "How many rows a bounded list left out. Never silent and never zero by omission: these lists run to " +
                     "thousands of urls on a document fetched every poll, and a truncation that does not disclose " +
@@ -347,7 +357,7 @@ object StatusVocabulary {
                     "one — because a reader that finds the member missing cannot tell \"nothing was dropped\" from " +
                     "\"this router does not say\".",
             )
-            put(
+            term(
                 "excluded",
                 "Urls dropped by CONFIG — an `exclude` list, or this relay's own url, which is in plenty of " +
                     "other people's relay lists. Its own member because an operator's instruction being obeyed and a " +
@@ -358,7 +368,7 @@ object StatusVocabulary {
                     "union of its sources, where `sourced = excluded + heldOutDead + candidates`. The two planes " +
                     "declare their exclusions separately, and neither number narrows the other.",
             )
-            put(
+            term(
                 "pending",
                 "READ IT AGAINST `inFlight`, not against `outcome` alone. Derived, never counted: it is `taken` minus the " +
                     "nine terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
@@ -370,20 +380,24 @@ object StatusVocabulary {
                     "is the case this cannot distinguish on its own, and the page's own liveness — it is served by this " +
                     "process — is what rules it out.",
             )
-            put(
+            term(
                 "accountedFor",
-                "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + " +
-                    "refusedUnstable + excluded + taken`, and the ten outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
-                    "having, and this is what stops a reader treating a broken partition as a whole one. `balanced` beside " +
-                    "it is the router's own check, kept separate so a disagreement localises the fault.",
+                "Do a probe pass's numbers still add up in THIS document — `candidates = foldedAway + consistent + " +
+                    "inconsistent + unmeasured`, and the `undecided` rows covering every url with no verdict. " +
+                    "Recomputed on this side rather than forwarded, so it describes what is being served rather " +
+                    "than what the router believed, and a mismatch is published rather than hidden: the counts are " +
+                    "still worth having and this is what stops a reader treating a broken partition as a whole one. " +
+                    "Absent on a pass that publishes no partition — the alias fold measures no verdicts, and " +
+                    "\"these add up\" is a claim about numbers that exist. The card draws the shortfall as its own " +
+                    "`not accounted for` row.",
             )
-            put(
+            term(
                 "passesRun",
                 "How many passes a processor has run since this process started. Its own name because a stream's " +
                     "`passes` is a LIST of walks, and one word for a list and a count is exactly the overload this " +
                     "document exists to stop making.",
             )
-            put(
+            term(
                 "processors",
                 "The router's work that is NOT a stream, and the answer to \"what else is running\". Eight of them: " +
                     "the alias source (which walks the store for every url the relay lists name and hands the passes " +
@@ -396,7 +410,7 @@ object StatusVocabulary {
                     "with no signer has no fold and no monitor at all — so an absent row is a fact rather than " +
                     "missing data.",
             )
-            put(
+            term(
                 "candidates",
                 "Urls a stream handed a processor's pass, before anything was decided — the router's own word for the " +
                     "argument it passes (`measure(label, candidates, …)`). The denominator `unmeasured` is counted " +
@@ -406,7 +420,7 @@ object StatusVocabulary {
                     "is what the derivation yielded — `sourced - excluded - heldOutDead`, stated rather than left to " +
                     "a subtraction, because it is the number every count on the passes below is a share of.",
             )
-            put(
+            term(
                 "newUrls",
                 "…of those, how many arrived at the pass with NO verdict at all — the urls it exists to decide, and " +
                     "the number the card draws its position against (`143 of 1,754 new relay(s) checked for aliases`). " +
@@ -416,7 +430,7 @@ object StatusVocabulary {
                     "again until it ages out. Absent on a pass that does not count it, where the card falls back to " +
                     "the whole candidate set.",
             )
-            put(
+            term(
                 "unmeasured",
                 "THE PROGRESS NUMBER for a processor: how many of its `candidates` still have no verdict after the pass " +
                     "that just ran. Falling pass over pass is the fold getting somewhere; standing still while " +
@@ -430,7 +444,7 @@ object StatusVocabulary {
                     "dials, so counting it as checked for consistency overstated that line by every duplicate in the " +
                     "corpus — 12,024 of 16,752 where the honest reading was 595 of 5,323.",
             )
-            put(
+            term(
                 "dialled",
                 "Dials that pass spent: fingerprints for the alias fold, paired walks for the self-consistency gate. " +
                     "A pass measures its whole candidate set — there is no per-pass total — so `unmeasured` falls to " +
@@ -439,7 +453,7 @@ object StatusVocabulary {
                     "was actually opened for: one the transport declined costs no connection and is not counted here, " +
                     "though it IS counted under `unmeasured` and named in `undecided`.",
             )
-            put(
+            term(
                 "sourced",
                 "Every url the relay lists in monitor.conf's own `sources` yielded for a probe pass, before " +
                     "anything was held out — the widest number this router has about the network it can see, and the " +
@@ -447,7 +461,7 @@ object StatusVocabulary {
                     "naming the same url make it one url here. Nothing the STREAMS discover reaches this number: " +
                     "what the monitor measures is its own declaration, never inferred from what the mirror syncs.",
             )
-            put(
+            term(
                 "corpus",
                 "The coverage tree's root: every relay url this router knows of, which is `sourced + recordedOnly` — " +
                     "what a relay list named this round, plus what only our own signed records still know about. Its " +
@@ -456,7 +470,7 @@ object StatusVocabulary {
                     "number for the widest row on the card. Not a published member — the page synthesises it from " +
                     "the two that are.",
             )
-            put(
+            term(
                 "recordedOnly",
                 "Urls this router holds a signed verdict record about that NO relay list named this round — the rest " +
                     "of the funnel's mouth, beside `sourced` rather than inside it, so the tree's root is " +
@@ -467,7 +481,7 @@ object StatusVocabulary {
                     "derivation's yield understated it. Zero on a router with no signer and no named monitors: it " +
                     "holds no records of its own.",
             )
-            put(
+            term(
                 "heldOutDead",
                 "…of those, how many carried a current signed unreachability record and were dropped before either " +
                     "probe pass saw them. `sourced - heldOutDead = candidates`. Not permanent: the record ages out " +
@@ -475,21 +489,21 @@ object StatusVocabulary {
                     "the monitor's own `knownDead`, which is the size of the whole dead set rather than its overlap " +
                     "with what the streams asked for.",
             )
-            put(
+            term(
                 "foldedAway",
                 "Urls of the candidate set an ALIAS FOLD has already taken out of the fan-out, and therefore the " +
                     "first slice of the partition: a folded url is never measured for stability, so it can carry no " +
                     "verdict here whatever it carried before it folded. First in precedence for that reason — a url " +
                     "that was measured and later folded counts once, here.",
             )
-            put(
+            term(
                 "consistent",
                 "Urls of the candidate set that currently carry a STABLE verdict: measured, and they answered one " +
                     "filter at a week-old anchor the same way twice. Standing state, not this pass's work — it " +
                     "includes every verdict read back from the store at boot, which is why it can be large beside a " +
                     "`decided` of zero. These are the urls the fan-out is allowed to hold a cursor against.",
             )
-            put(
+            term(
                 "inconsistent",
                 "…and the ones measured and FAILED: a url that answered the same filter two different ways. Every one " +
                     "of them is refused by every stream's fan-out, because a relay whose window is a fresh slice " +
@@ -497,12 +511,12 @@ object StatusVocabulary {
                     "the same finding is `refusedUnstable`. Expires with its record, so a server that is fixed " +
                     "rejoins on its own.",
             )
-            put(
+            term(
                 "decided",
                 "New verdicts that pass reached AND published. High `measured` with `decided` at zero is a pass that " +
                     "dialled and learned nothing, which is a real and recoverable state — see `undecided`.",
             )
-            put(
+            term(
                 "undecided",
                 "WHY a probe pass left urls with nothing written down, grouped by cause and summing to `unmeasured`. " +
                     "The FOLD ends a group five ways — cooling down from an earlier failed pass, declined by our own " +
@@ -516,18 +530,7 @@ object StatusVocabulary {
                     "`urls` counts them, `hosts` says how many servers those urls are, `examples` names a few, and " +
                     "`omitted` carries whatever either side dropped.",
             )
-            put(
-                "accountedFor",
-                "Do a probe pass's numbers still add up in THIS document — `candidates = foldedAway + consistent + " +
-                    "inconsistent + unmeasured`, and the `undecided` rows covering every url with no verdict. " +
-                    "Recomputed on this side rather than forwarded, so it describes what is being served rather " +
-                    "than what the router believed, and a mismatch is published rather than hidden: the counts are " +
-                    "still worth having and this is what stops a reader treating a broken partition as a whole one. " +
-                    "Absent on a pass that publishes no partition — the alias fold measures no verdicts, and " +
-                    "\"these add up\" is a claim about numbers that exist. The card draws the shortfall as its own " +
-                    "`not accounted for` row.",
-            )
-            put(
+            term(
                 "parent",
                 "The undecided reason this row REFINES, where it refines one. `never answered a REQ` is the largest " +
                     "thing a probe pass reports and it covers four findings with four different responses — a name " +
@@ -539,7 +542,7 @@ object StatusVocabulary {
                     "cannot place is counted as unrecognised rather than forced into a bucket, and sampled to its " +
                     "log so the classification can be extended from real strings.",
             )
-            put(
+            term(
                 "top",
                 "The widest HOSTS under one undecided reason, ranked by how many of their urls ended there, " +
                     "with the name beside the count. It answers the question the pair `urls`/`hosts` raises and " +
@@ -553,19 +556,19 @@ object StatusVocabulary {
                     "remainder as its own slice rather than closing the level, so a list that was cut can never " +
                     "read as the whole one.",
             )
-            put(
+            term(
                 "lastPassAt",
                 "When a processor's last pass ENDED, whatever it achieved and whether or not it threw. Beside " +
                     "`nextInSec` it is what separates a pass that is failing every time from one that stopped running " +
                     "at all: the first keeps this moving, the second freezes it while the phase stays `measuring`.",
             )
-            put(
+            term(
                 "lastPassSec",
                 "How long that pass took. Published beside the timestamp because these are not quick: a first fold " +
                     "over a polluted store dials thousands of relays and runs for a quarter of an hour, and a pass " +
                     "still running is the ordinary reason the fold has said nothing about a host yet.",
             )
-            put(
+            term(
                 "nextInSec",
                 "Seconds until the processor's next pass. The alias monitor's clock is six hours by default, so " +
                     "\"the fold has decided nothing about this host\" reads as broken until you know the next turn is " +
@@ -575,7 +578,7 @@ object StatusVocabulary {
                     "ask of that stream comes due for its audit or its re-fetch. Absent there means nothing is " +
                     "waiting — every ask is already due — which is a state and not a zero countdown.",
             )
-            put(
+            term(
                 "measuring",
                 "WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO, and the only number on a processor's row that moves " +
                     "while one runs — every other one describes the pass that ENDED. Present exactly while a pass is " +
@@ -585,21 +588,21 @@ object StatusVocabulary {
                     "the urls named since its last look while the sweep is still due when it says. Before this, a " +
                     "stability pass spent hours saying `measuring` and nothing else — no size, no position, no end.",
             )
-            put(
+            term(
                 "attempted",
                 "Units of the current pass that are BEHIND it, however they ended — including a url our own transport " +
                     "declined and a host with nothing to compare against. Not a success count: what a pass LEARNED is " +
                     "`decided`, and on a discovered corpus most of a pass is spent on urls that cannot be measured at " +
                     "all, so a position that only moved on success would sit still while the pass worked hardest.",
             )
-            put(
+            term(
                 "toProbe",
                 "How many units the pass now running set out to walk — the denominator `attempted` is a share of. NOT " +
                     "`candidates`: both probe passes drop every url already carrying a current verdict before dialling " +
                     "anything, so on a settled corpus this is a small fraction of the candidate set, and it is the " +
                     "ratio to watch while a pass runs.",
             )
-            put(
+            term(
                 "unit",
                 "What `attempted` and `toProbe` are counts OF, because the passes do not decide the same thing: the " +
                     "stability gate and the fitness pass answer about a `url`, the alias fold answers about a `host` " +
@@ -612,7 +615,7 @@ object StatusVocabulary {
                     "position for both would sit full at the dial count for the whole write, with `quietForSec` " +
                     "climbing on a pass doing thousands of writes.",
             )
-            put(
+            term(
                 "rotating",
                 "A `phase` value, and the one that says least without its numbers. The stream does not walk a relay " +
                     "list at all: its world is the monitor's `prime` grades and its engine is the visit pool, " +
@@ -621,7 +624,7 @@ object StatusVocabulary {
                     "`tails` are what it is doing; a roster of ZERO is a stream waiting on the fitness pass to certify " +
                     "its first relay, which is the state that looked identical to a busy one.",
             )
-            put(
+            term(
                 "queued",
                 "Items waiting in a processor's queue right now — a DEPTH, on both of the queues that publish it. For " +
                     "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
@@ -631,13 +634,13 @@ object StatusVocabulary {
                     "stopped with these events queued for a worker that never comes back. The healer's queue has " +
                     "no ceiling to publish: it coalesces and drops instead of growing, which is what `dropped` counts.",
             )
-            put(
+            term(
                 "dropped",
                 "Repairs the healer's queue threw away rather than backpressure the sweep that found them — it " +
                     "coalesces and drops on purpose, because a dropped heal is a retry and a stalled sweep is not. " +
                     "Published because a silent drop is the one thing a bounded queue must never do.",
             )
-            put(
+            term(
                 "inBatch",
                 "Ingest workers inside a batch pass this instant, against `workers`. The number that tells a FULL " +
                     "queue apart from a STOPPED one, which `queued` alone cannot: full with the workers cycling is " +
@@ -646,7 +649,7 @@ object StatusVocabulary {
                     "been in there. NOT `inFlight`, which is a stream's relays — one word for two quantities is how " +
                     "a reader looks up the wrong one.",
             )
-            put(
+            term(
                 "workers",
                 "Ingest workers this router was CONFIGURED with (`ingestConcurrency`) — the denominator `inBatch` " +
                     "means nothing without. Read the pair as an instant, not a verdict: `inBatch` below this is the " +
@@ -654,55 +657,55 @@ object StatusVocabulary {
                     "number WITH `oldestBatchSec` in the minutes says nothing is draining. `workersRunning` is the " +
                     "one that reports a worker which exited.",
             )
-            put(
+            term(
                 "workersRunning",
                 "Ingest worker loops still looping. Equal to `workers` on a healthy router; BELOW it means one threw " +
                     "and exited, and its share of the queue now has nothing draining it — a partial version of the " +
                     "same stall `wedged` names, and the only one that a restart is the whole remedy for. Zero with a " +
                     "non-empty `queued` is ingest gone entirely.",
             )
-            put(
+            term(
                 "oldestBatchSec",
                 "How long the longest-running ingest batch has been in its pass. Seconds is the healthy shape; " +
                     "minutes means a store round trip that is not coming back, and the events counted in `queued` " +
                     "are waiting on a worker that will not return for them. Nothing cuts that round trip — this " +
                     "number is how the router says so, and the remedy is at the store.",
             )
-            put(
+            term(
                 "capacity",
                 "How deep the ingest queue can go before submitting blocks. Derived from the configured batch size, " +
                     "and the denominator `queued` only means something against.",
             )
-            put(
+            term(
                 "accepted",
                 "Events ingest wrote to the store since this router started. ALWAYS smaller than the streams' " +
                     "`received`, and not by a fault: a mirror is offered the same event once per relay holding it, " +
                     "and dropping the copies before verifying them is the point of the pipeline.",
             )
-            put(
+            term(
                 "rejected",
                 "Events ingest refused since boot — duplicates, superseded versions, bad signatures, events the " +
                     "store would not take. A large number here is the ordinary shape of a wide fan-out, not damage.",
             )
-            put(
+            term(
                 "pushed",
                 "Events this router SENT to somebody else's relay: repairs for the healer, and whatever an upstream " +
                     "configured `dir = up` was missing for the push. The only two paths that write outward.",
             )
-            put(
+            term(
                 "etaSec",
                 "An estimate, from the rate the walks have averaged so far, of how long the paged half of this pass " +
                     "has left. It says nothing about the relays that reconcile rather than page, and nothing about " +
                     "how long the stragglers of the last pass will take.",
             )
-            put(
+            term(
                 "reason",
                 "One cause, in the words the router's own log uses, so a reader meeting both does not have to work " +
                     "out that they are the same finding. On a stream it is what the last attempt threw — a `failed` " +
                     "stream published the word and nothing else. Inside `undecided` it is why a probe pass left hosts " +
                     "alone; inside `rejections` it is why ingest refused events.",
             )
-            put(
+            term(
                 "fatals",
                 "VirtualMachineErrors this router process has survived, almost always an OutOfMemoryError. It kills " +
                     "whichever thread allocates next and is caught by nobody, so the process carries on looking merely " +
@@ -710,20 +713,20 @@ object StatusVocabulary {
                     "above zero means the router is DEGRADED and should be restarted; zero is published too, because " +
                     "a member that appears only on damage cannot be told from a router too old to say.",
             )
-            put(
+            term(
                 "rejections",
                 "What `rejected` is made of, biggest first. The largest number this document carries and the least " +
                     "readable without the split: a mirror is offered the same event once per relay holding it, so " +
                     "\"already have this\" dominating a 7.9M rejection count is the pipeline working exactly as " +
                     "designed. A bad-signature share that is not near zero is not.",
             )
-            put(
+            term(
                 "lostToStore",
                 "THE ONLY COUNTER HERE THAT MEANS DATA LOSS. Events that passed every check — new, verified, wanted — " +
                     "and could not be written: good events, gone. Anything above zero is a store problem to chase " +
                     "(most often a schema the events no longer fit), not a mirror one.",
             )
-            put(
+            term(
                 "store",
                 "WHICH STORE CALLS THIS PROCESS HAS OUTSTANDING, and whose they are — the half of a wedge every " +
                     "other number here was missing. `oldestBatchSec` says two ingest workers have been inside a " +
@@ -733,16 +736,23 @@ object StatusVocabulary {
                     "monitor, since they are one process against one store. Absent — rather than empty — on a " +
                     "router too old to book its calls, which is not the same claim as \"nothing is outstanding\".",
             )
-            put(
+            term(
                 "calls",
-                "The store calls that are out right now, LONGEST-RUNNING FIRST — the opposite of a stream's " +
+                "In `store`: " +
+                    "The store calls that are out right now, LONGEST-RUNNING FIRST — the opposite of a stream's " +
                     "`inFlight` order and the same as a probe pass's `inFlight`, for the same reason: holding a " +
                     "relay for an hour is how this mirror works, while a store call that has not come back is by " +
                     "construction the anomaly. Nothing in this router ends one — the store's query client sets no " +
                     "read timeout on purpose, because it cannot tell \"engine still matching\" from \"connection " +
-                    "dead\" — so these rows are the router saying so rather than something it is about to fix.",
+                    "dead\" — so these rows are the router saying so rather than something it is about to fix. " +
+                    "On an ingest stage: " +
+                    "How many times the stage was ENTERED, where the store timed it as a call. Present only for the " +
+                    "stages that are calls: a lock's `wait`/`hold` pair is booked from one pair of timestamps and " +
+                    "has no call count, and a mean over that denominator would be a fiction. `ms` alone cannot " +
+                    "separate one pathological call from a hundred thousand ordinary ones — the same 24 minutes, " +
+                    "two different faults and two different fixes.",
             )
-            put(
+            term(
                 "caller",
                 "WHO ASKED, in this router's own subsystem names: `ingest.dedup` / `ingest.versions` / " +
                     "`ingest.write` (a batch pass's three calls, told apart at last), `visit.negentropy`, " +
@@ -751,7 +761,7 @@ object StatusVocabulary {
                     "which a category word like \"probe\" would not be. `other callers` is the overflow bucket — a " +
                     "folded tally, never a subsystem.",
             )
-            put(
+            term(
                 "op",
                 "WHAT WAS ASKED, named for the store method verbatim: `existingIds`, `newestVersions`, " +
                     "`batchInsert`, `query`, `count`, `snapshotIdsForNegentropy`, `insert` and `delete`. " +
@@ -759,7 +769,7 @@ object StatusVocabulary {
                     "`snapshotIdsForNegentropy` is the whole difference between a cheap sizing query and a read of " +
                     "gigabytes of ids — and because a bucket is a word nobody can grep their way back from.",
             )
-            put(
+            term(
                 "asked",
                 "A SUMMARY of the filter the call carries — kinds, how many authors, how many ids, the window's " +
                     "width — never the filter itself. The two asks that matter most here are the two that cannot be " +
@@ -768,13 +778,13 @@ object StatusVocabulary {
                     "as the filter OBJECT, echoed verbatim, and one word over two shapes is how a reader looks up " +
                     "the wrong one.",
             )
-            put(
+            term(
                 "issuedAt",
                 "When the call was issued, in epoch seconds — so a row here can be lined up against the " +
                     "`store call SLOW` lines in the log, which is where a wedge that happened while nobody was " +
                     "watching leaves its only timeline.",
             )
-            put(
+            term(
                 "elapsedSec",
                 "How long this store call has been running. THE NUMBER on the row: seconds is the ordinary shape, " +
                     "minutes means a round trip that is not coming back and the events counted in ingest's " +
@@ -782,7 +792,7 @@ object StatusVocabulary {
                     "number beside it and there cannot be — a store call delivers nothing until it delivers " +
                     "everything, so a leg's `quietForSec` has no counterpart here.",
             )
-            put(
+            term(
                 "outstandingAtIssue",
                 "How many store calls this process already had out when this one was issued — the client-side half " +
                     "of \"is the store slow, or is my request waiting in line\". The other half is a service-start " +
@@ -791,7 +801,7 @@ object StatusVocabulary {
                     "slow call issued with a handful outstanding did NOT queue on our side of the wire — which puts " +
                     "the wait at the engine. Same inference an operator was making by hand, now from a measurement.",
             )
-            put(
+            term(
                 "slowAfterSec",
                 "How long a store call may run before the router names it in the log — `SYNC_STORE_SLOW_SEC`, and the " +
                     "bound the status page marks a row at. Published rather than left for a reader to know, because " +
@@ -800,7 +810,7 @@ object StatusVocabulary {
                     "everywhere else by never re-deciding a threshold the router already decided. Zero means the " +
                     "operator turned the LOG off; it says nothing about the report, which costs nothing to keep.",
             )
-            put(
+            term(
                 "callers",
                 "One row per subsystem, whoever is holding the most first — the answer to \"whose requests are " +
                     "filling the queue\", which no number in this document could give while every plane hit one " +
@@ -812,32 +822,32 @@ object StatusVocabulary {
                     "equal it on a busy router, because a call that finished mid-read lands on one side and not the " +
                     "other; it settles when the router goes quiet. Every member is published including its zeroes.",
             )
-            put(
+            term(
                 "outstanding",
                 "Store calls out right now — for the whole process at the top of the section, and for one " +
                     "subsystem on a `callers` row. Read the pair: a large total with one caller holding all of it " +
                     "names the subsystem to look at, and a large total spread evenly is a router asking the engine " +
                     "for more than it can answer.",
             )
-            put(
+            term(
                 "oldestOutstandingSec",
                 "How long this caller's longest-running call has been out. Absent when the caller has nothing " +
                     "outstanding, which is most of them most of the time — a zero would read as a call that just " +
                     "started.",
             )
-            put(
+            term(
                 "issued",
                 "Store calls this router has made since it started — the whole process at the top of the section, " +
                     "one subsystem on a `callers` row. A rate rather than a level: difference two page loads to " +
                     "see how hard this router is leaning on the engine, and compare the callers' shares to see " +
                     "which part of it is doing the leaning.",
             )
-            put(
+            term(
                 "returned",
                 "Store calls that came back WITH AN ANSWER since this router started. Against `issued` it is the " +
                     "throughput of the whole store seam; the gap is `failed`, `cancelled` and whatever is still out.",
             )
-            put(
+            term(
                 "failed",
                 "Store calls that THREW. A different fault from a call that hangs, and it wants the opposite next " +
                     "move: a store whose schema the events no longer fit fails here in milliseconds, where a store " +
@@ -845,14 +855,14 @@ object StatusVocabulary {
                     "Anything above zero on a healthy-looking router is worth chasing — most of ingest's own " +
                     "failures are caught and retried at a lower level, so a count here is one that got past them.",
             )
-            put(
+            term(
                 "cancelled",
                 "Store calls the process STOPPED — shutdown, and a per-write deadline the monitor sets on its own " +
                     "verdict edits. Counted apart from `failed` because a clean stop reported as a failure reads as " +
                     "a store refusing work; it is the same reason the ingest probes rethrow cancellation rather " +
                     "than swallowing it.",
             )
-            put(
+            term(
                 "ages",
                 "The outstanding calls BANDED BY AGE, in bands that partition them and sum back to `outstanding` " +
                     "— which is what makes them a shape rather than six numbers. A thousand calls all under a " +
@@ -860,12 +870,12 @@ object StatusVocabulary {
                     "finding, and the total alone cannot tell those apart. Logarithmic on purpose: the question is " +
                     "which ORDER OF MAGNITUDE a call is in, and even bands would put every healthy call in one row.",
             )
-            put(
+            term(
                 "fromSec",
                 "The floor of one age band — calls at least this old and younger than the next band's floor. The " +
                     "last band is open-ended, which is where a wedged call lives.",
             )
-            put(
+            term(
                 "bottleneck",
                 "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
                     "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
@@ -875,7 +885,7 @@ object StatusVocabulary {
                     "that look identical from every other number here — and so are the two FULL ones, `ingest` and " +
                     "`wedged`, which is why this is one word rather than something to infer.",
             )
-            put(
+            term(
                 "stages",
                 "WHERE THE INGEST TIME WENT, as cumulative milliseconds per named stage since boot, busiest first — " +
                     "the page differences two polls and draws the SHARES, because the poll window varies and a ratio " +
@@ -890,36 +900,18 @@ object StatusVocabulary {
                     "the reading that says eight workers queueing for a saturated engine are the reason for " +
                     "something.",
             )
-            put(
-                "stage",
-                "One named stage inside ingest, as the STORE names it. The router's own are `verify` and " +
-                    "`dedup.pre`/`versions.pre` (its two drop probes); the rest are the store's — `dedup`, " +
-                    "`guards`, `versions`, `supersede`, `write`, `remove`, the projection's " +
-                    "`proj.fetch.derive` (the contact-card recall behind a batch) / `proj.write`, " +
-                    "and `lock.*.wait`/`lock.*.hold` for time spent queueing for the single writer " +
-                    "mutex versus holding it. Read `wait` against `hold` and `write`, never alone: workers queueing " +
-                    "for a saturated engine show a huge `wait` and are not the reason for anything.",
-            )
-            put(
-                "calls",
-                "How many times the stage was ENTERED, where the store timed it as a call. Present only for the " +
-                    "stages that are calls: a lock's `wait`/`hold` pair is booked from one pair of timestamps and " +
-                    "has no call count, and a mean over that denominator would be a fiction. `ms` alone cannot " +
-                    "separate one pathological call from a hundred thousand ordinary ones — the same 24 minutes, " +
-                    "two different faults and two different fixes.",
-            )
-            put(
+            term(
                 "meanMs",
                 "`ms` divided by `calls` — the ordinary call. Read it beside `maxMs`: equal means every call costs " +
                     "the same and the LOOP is the cost, far apart means one call is the cost and the rest are noise.",
             )
-            put(
+            term(
                 "maxMs",
                 "The worst single call to this stage since boot. The number that says whether a stage's total is a " +
                     "steady cost or one outlier — and, for a stage that runs while the store's write lock is held, " +
                     "the longest any other writer can have been made to wait behind it.",
             )
-            put(
+            term(
                 "lockHeldBy",
                 "WHAT HOLDS THE STORE'S SINGLE WRITE LOCK AT THIS INSTANT — absent when nothing does. Every write " +
                     "in the store is serialised behind one mutex, so a stalled mirror is nearly always someone " +
@@ -927,19 +919,19 @@ object StatusVocabulary {
                     "NOW. `heldMs` is how long this holder has had it; `doing` is the holder's own sentence about " +
                     "its work, quoted rather than parsed.",
             )
-            put(
+            term(
                 "heldMs",
                 "How long the CURRENT holder has held the write lock, in milliseconds. Growing across two page " +
                     "loads with the same `stage` means one holder is not letting go — which is the reading that " +
                     "explains a full ingest queue whose workers are idle.",
             )
-            put(
+            term(
                 "ms",
                 "Milliseconds, summed across every worker rather than wall clock — so a stage CAN exceed the time " +
                     "the router has been running, and two of them can each exceed it. That is concurrency, not a " +
                     "fault: the number to compare is one stage against another, not against the clock.",
             )
-            put(
+            term(
                 "feed",
                 "The STORE's own line about its write path, quoted rather than parsed: cumulative acks, the live " +
                     "in-flight window, per-request latency, and transport exceptions. It separates the two readings " +
@@ -947,7 +939,7 @@ object StatusVocabulary {
                     "back, a tiny window with low latency is the CLIENT not pushing — and every question about " +
                     "absorbing a burst faster forks on exactly that.",
             )
-            put(
+            term(
                 "eventsPerSec",
                 "Events LEAVING ingest per second, averaged over the last minute, across every stream. ALL of " +
                     "them: accepted plus rejected, so duplicates and superseded versions count — this is the drain " +
@@ -958,7 +950,7 @@ object StatusVocabulary {
                     "stream's `received`, which is counted at the socket before dedup — the two are counted at " +
                     "different points on purpose and disagreeing is not a fault in either.",
             )
-            put(
+            term(
                 "arrivingPerSec",
                 "Events HANDED TO INGEST per second, averaged over the same minute as `eventsPerSec` — counted " +
                     "as each one enters the queue, where that one is counted as each leaves a batch. The two are " +
@@ -967,37 +959,37 @@ object StatusVocabulary {
                     "the queue and are not here (see `suppressed`), so a suppression storm cannot hold this up " +
                     "while the queue sits empty.",
             )
-            put(
+            term(
                 "heapUsedMb",
                 "The router process's own heap, against `heapMaxMb`. Past about 90% this router is spending its " +
                     "time collecting rather than mirroring, and the negentropy id snapshot — the largest thing it " +
                     "builds — is what usually gets it there.",
             )
-            put(
+            term(
                 "sockets",
                 "Websockets open right now, against `socketCeiling` — the OkHttp dispatcher budget, which is the " +
                     "real concurrency limit for the whole router. At the stock 64 every stream's `concurrency` " +
                     "silently stopped meaning anything; it is 1,024 here, and a fan-out pressed against it is a " +
                     "mirror whose configured widths are fiction.",
             )
-            put(
+            term(
                 "heapMaxMb",
                 "What `heapUsedMb` is measured against — the JVM's maximum heap, which in the compose deployment is " +
                     "a percentage of the container's memory limit rather than a figure anyone set directly.",
             )
-            put(
+            term(
                 "socketCeiling",
                 "What `sockets` is measured against — the OkHttp dispatcher budget shared by every stream. An open " +
                     "websocket holds a slot for its whole life, so this and not any stream's `concurrency` is the " +
                     "router's real ceiling.",
             )
-            put(
+            term(
                 "socketsRunning",
                 "Calls out against `socketCeiling` this instant — the dispatcher's own count, where `sockets` is " +
                     "quartz's count of connected relays. The two measure the same pressure from opposite ends and " +
                     "will not agree exactly: a dial in progress is a running call before it is a connected relay.",
             )
-            put(
+            term(
                 "socketsQueued",
                 "Calls WAITING for a socket budget slot. Zero is the healthy reading and the only one worth acting " +
                     "on is any other: it means the work is admissible and OkHttp is holding it because the budget " +
@@ -1006,27 +998,27 @@ object StatusVocabulary {
                     "mirror; only a full dispatcher queues calls. Raise `socketCeiling` (and check the process's " +
                     "file-descriptor limit) rather than the stream budgets, which are already admitted work.",
             )
-            put(
+            term(
                 "servingMs",
                 "The relay's mean client read latency, which this router YIELDS to: past its threshold ingest " +
                     "deliberately slows so that mirroring does not cost the people reading. A mirror that is " +
                     "throttling itself politely and one that is stuck look identical from throughput alone, and " +
                     "this is the only number that tells them apart. Absent where no pressure feed is configured.",
             )
-            put(
+            term(
                 "at",
                 "The clock each sample in `series` was taken at, in epoch seconds. Published beside the values rather " +
                     "than an interval being assumed: the rollup cadence is an operator's env var, a restart leaves a " +
                     "hole, and a reader spacing points evenly over an uneven series draws a smooth line through a gap.",
             )
-            put(
+            term(
                 "heapPct",
                 "`heapUsedMb` as a percentage of `heapMaxMb`, sampled once per rollup into `series`. Derived here " +
                     "rather than left to the reader because a percentage is what compares across samples, and " +
                     "publishing both halves sixty times over to let a page divide them would cost the document " +
                     "three times as much for the same line.",
             )
-            put(
+            term(
                 "series",
                 "THE LAST HOUR of the four process gauges, one sample per rollup, so the levels above can be read as " +
                     "trends. Every gauge here is an instant and no question asked of one is answerable from a single " +
@@ -1038,7 +1030,7 @@ object StatusVocabulary {
                     "contain one of its passes.",
             )
             // The fitness pass's verdict funnel: one member per NIP-32 label value.
-            put(
+            term(
                 "prime",
                 "Relays the monitor currently grades prime: reachable AND answering AND canonical AND " +
                     "consistent AND pageable AND serving what was asked for AND readable by us, measured on the " +
@@ -1046,46 +1038,46 @@ object StatusVocabulary {
                     "admission decision — a stream's relay list is the store query `#l = prime` and nothing else. " +
                     "Slow is not a refusal, empty is not a refusal, and a small message cap is not a refusal.",
             )
-            put(
+            term(
                 "dead",
                 "The transport itself said no: the name does not resolve, the connection was refused, TLS failed, or " +
                     "the websocket upgrade was turned down. The one refusal about a relay that is actually absent.",
             )
-            put(
+            term(
                 "silent",
                 "Connected, then nothing — no EOSE, no CLOSED, the idle window lapsed. Alive and saying nothing, " +
                     "which is not the same finding as dead and retries on its own terms.",
             )
-            put(
+            term(
                 "alias",
                 "Works fine, and is another record's relay: the fold proved this url and its canonical are one " +
                     "server. Syncing it would double every event, so the certificate goes to the canonical alone.",
             )
-            put(
+            term(
                 "unpageable",
                 "Ignores the `until` cursor, so a paged walk against it cannot terminate — the measured failure mode " +
                     "is ~5.5 pages a second forever. Refused outright in v1 rather than given tail-only treatment.",
             )
-            put(
+            term(
                 "noncompliant",
                 "Answered with events the filter did not ask for — a kind that was not in the ask, a `created_at` " +
                     "above the `until`. Measured by reading the events themselves, which is why it is a separate " +
                     "refusal from `inconsistent`: that one compares two answers to EACH OTHER, so a relay that " +
                     "serves the same wrong events to every REQ passes it perfectly.",
             )
-            put(
+            term(
                 "auth-refused",
                 "Requires NIP-42 and rejected OUR key. A relay whose challenge our signer satisfies is certified like " +
                     "any open one — an auth wall we can clear is no wall.",
             )
-            put(
+            term(
                 "restricted",
                 "Answers only shaped queries this router cannot generally send — a group host demanding an `#h` tag, " +
                     "a filter service minting per-user paths. Probed with the same shaped-ask ladder the fold climbs " +
                     "before the verdict is written.",
             )
             // The rotating pool. A slot is a socket here.
-            put(
+            term(
                 "roster",
                 "Relays currently graded prime and in rotation: the pool's whole world, rebuilt from the " +
                     "monitor's records on half the tightest freshness bound. A relay the monitor stops certifying " +
@@ -1093,7 +1085,7 @@ object StatusVocabulary {
                     "stream's share — the roster relays carrying at least one of its asks — and zero there is a " +
                     "stream with nothing certified for it yet, not a stream that has stopped.",
             )
-            put(
+            term(
                 "rosterVisits",
                 "The roster counted in UNITS OF WORK rather than in relays. The pool's unit is a (relay, stream) " +
                     "PAIR — many streams may work one relay at once, sharing its socket, while each stream sees " +
@@ -1102,7 +1094,7 @@ object StatusVocabulary {
                     "`roster`, and the difference is the whole reason both are published: a mirror whose streams " +
                     "overlap heavily has far more work in flight than it has relays.",
             )
-            put(
+            term(
                 "awaitingVisit",
                 "Units of work — (relay, stream) pairs — queued for a worker right now. NOT ingest's `queued`, " +
                     "which is a depth of events, and not a count of RELAYS: a relay two streams want is queued " +
@@ -1113,14 +1105,14 @@ object StatusVocabulary {
                     "share added up. A row parked here while the stream's in-flight list is short is a stream " +
                     "queueing faster than its `visiting` cap lets it work.",
             )
-            put(
+            term(
                 "visiting",
                 "Visits in flight this instant, counted in (relay, stream) pairs. NOT the socket count it once " +
                     "was: many streams may be visiting one relay at the same time and they share its connection, " +
                     "so this is at least the sockets the workers hold and usually more. The number the old " +
                     "engine's `transferring` could never truthfully be.",
             )
-            put(
+            term(
                 "liveHeld",
                 "Live subscriptions left open after a visit's catch-up, ONE PER (relay, stream) pair, carrying " +
                     "that stream's filters. This is what \"constantly connected\" means: new events arrive the moment they " +
@@ -1130,19 +1122,19 @@ object StatusVocabulary {
                     "the pool's row, every one this router holds. WHICH relays those are is `live` at the " +
                     "document's root — the count and the names, like `roster` and the in-flight rows.",
             )
-            put(
+            term(
                 "liveEvicted",
                 "Live subscriptions closed to give their socket to a relay with more content lately — " +
                     "`maxLiveConcurrency`'s rotation, counted since boot. An evicted unit is requeued promptly and " +
                     "falls back to the untailed revisit cadence; nothing about its certificate changes.",
             )
-            put(
+            term(
                 "visitsRun",
                 "Visits completed since boot — catch-up, audit where due, heal drain, tail. Counted in the pool's " +
                     "units, so one relay three streams want contributes three: read it beside `rosterVisits` for " +
                     "the rotation rate, not beside `roster`.",
             )
-            put(
+            term(
                 "visitsHeldByIngest",
                 "Visits the pool declined to dial because the ingest queue was full at the moment the unit " +
                     "came up — read beside the ingest processor's `queued` against its `capacity`. A download into " +
@@ -1152,7 +1144,7 @@ object StatusVocabulary {
                     "recorded and the revisit timer brings the unit back, as after a refused dial permit. This " +
                     "climbing is the pool standing still on purpose, and the number to fix is the store's.",
             )
-            put(
+            term(
                 "negentropyRunning",
                 "Negentropy syncs of the past RUNNING right now — the gauge beside `negentropyRuns`'s odometer. A deep history's audit " +
                     "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
@@ -1161,13 +1153,13 @@ object StatusVocabulary {
                     "for the retraction comparison, which is the same clock and the same full-past " +
                     "sweep — with how far BACK it has reached.",
             )
-            put(
+            term(
                 "negentropyRuns",
                 "Negentropy syncs of the past run since boot: the windowed pass a stream's " +
                     "`negentropySyncThePastSeconds` schedules when a relay's last verified full pass ages out. Each " +
                     "relay's clock is its own, so this climbs as a trickle — roster over the period — never a herd.",
             )
-            put(
+            term(
                 "negentropySkipped",
                 "Negentropy syncs NOT attempted because the monitor measured that relay as refusing a NEG-OPEN — the " +
                     "`nip77` verdict on the same signed 30166 record the roster admits it by. Both audits are " +
@@ -1177,7 +1169,7 @@ object StatusVocabulary {
                     "with no such period is the router saying that stream's history is never re-read on those " +
                     "relays. UNMEASURED relays are not counted here: no verdict means the ask tries and finds out.",
             )
-            put(
+            term(
                 "negentropyRefused",
                 "WINDOWS AN AUDIT COULD NOT READ, and therefore did not claim. The sweep's last resort for a window " +
                     "it cannot reconcile is a plain REQ, and a relay that refuses that — a filter width it caps, an " +
@@ -1187,7 +1179,7 @@ object StatusVocabulary {
                     "ground nothing had ever been served for. Climbing means an audit is being REFUSED rather than " +
                     "merely running slowly, which is the distinction `negentropyRuns` alone cannot make.",
             )
-            put(
+            term(
                 "retracted",
                 "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
                     "retracted scores, and nothing else — a provider's own profile is another stream's record and " +
@@ -1195,7 +1187,7 @@ object StatusVocabulary {
                     "the router that goes DOWN, decided only by a completed negentropy comparison on the audit's " +
                     "clock; a failed reconcile deletes nothing.",
             )
-            put(
+            term(
                 "abortedVisits",
                 "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
                     "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +
@@ -1205,7 +1197,7 @@ object StatusVocabulary {
                     "and only the split says what would fix it. Each abort is also spoken once per " +
                     "(stream, relay, reason) in the log, with the ask and whatever the relay said for itself.",
             )
-            put(
+            term(
                 "abortedAuthRequired",
                 "Visits ended because the relay refused with `auth-required:` and would not accept our NIP-42 " +
                     "identity. This router DOES answer challenges whenever `RELAY_NSEC` is set — the signer drives " +
@@ -1214,33 +1206,33 @@ object StatusVocabulary {
                     "challenges nobody replied to. Nothing in this router's configuration can take these down; a " +
                     "key the relay accepts is the only fix.",
             )
-            put(
+            term(
                 "abortedClosed",
                 "Visits ended because the relay closed the subscription with nothing delivered — a policy refusal, " +
                     "a rate limit, or a filter it will not serve. Three remedies behind one ending, and the log " +
                     "line carries the relay's own sentence, which is the only thing that tells them apart.",
             )
-            put(
+            term(
                 "abortedQuiet",
                 "Visits ended because the relay went quiet INSIDE a page and never ended it — no EOSE, no CLOSED, " +
                     "just the idle window running out. Silence is not an answer, so nothing is recorded and the " +
                     "leg stays outstanding. Distinct from `abortedGaveUp`, which is the whole SEQUENCE of a " +
                     "relay's asks going quiet rather than one of them.",
             )
-            put(
+            term(
                 "abortedUnreachable",
                 "Visits ended because the dial never landed, so nothing was ever asked. A relay reaching the " +
                     "roster and then failing to connect is the monitor's next sweep's business, not a retry " +
                     "ladder's — but a Tor deployment whose SOCKS proxy has stopped answering shows up here first.",
             )
-            put(
+            term(
                 "abortedUnpageable",
                 "Visits ended because the relay answered but ignored the paging cursor — every event it sent was " +
                     "NEWER than the `until` the page asked for, so the walk cannot advance and proves nothing " +
                     "about what the relay holds. quartz ends such a walk deliberately rather than descending a " +
                     "second at a time forever.",
             )
-            put(
+            term(
                 "abortedGaveUp",
                 "Visits ended because the relay delivered nothing at all for five minutes across the SEQUENCE of " +
                     "its asks, and the remaining ones were left to the revisit. A stream with author-bound asks " +
@@ -1248,13 +1240,13 @@ object StatusVocabulary {
                     "window was measured holding one worker for five hours. Reset by any event that arrives, so a " +
                     "visit that is delivering is never cut.",
             )
-            put(
+            term(
                 "abortedFailed",
                 "Visits ended because the visit itself threw. The exception's class and message are on the log " +
                     "line. This was the only abort that ever emitted one, which is why the other six read as zero " +
                     "before this partition existed rather than as unmeasured.",
             )
-            put(
+            term(
                 "abortedBackpressured",
                 "Visits ended because OUR OWN ingest queue was full and a hook of ours was suspended in it when " +
                     "the walk gave up — so the silence, or the page received and never counted as delivered, was " +
@@ -1265,7 +1257,7 @@ object StatusVocabulary {
                     "is a mirror downloading faster than its store accepts, and the number that was `abortedQuiet` " +
                     "and `abortedUnpageable` before the pool could tell its own stalls from a relay's.",
             )
-            put(
+            term(
                 "syncStatus",
                 "Where this router's sync of one (relay, stream) pair stands. `complete` — every band the pair " +
                     "holds is settled, which is a paged leg the relay EOSEd empty or a finished negentropy " +
@@ -1275,7 +1267,7 @@ object StatusVocabulary {
                     "recorded, so the queue has not reached it yet. The last two are the same absence in the band " +
                     "file and the opposite finding, which is the whole reason this table exists.",
             )
-            put(
+            term(
                 "behind",
                 "HOW CURRENT our copy of this pair is — which bucket the age of the newest event we hold falls in: " +
                     "`current` (within the hour), `today`, `thisWeek`, `older`, or `nothing` where we hold none. " +
@@ -1285,20 +1277,20 @@ object StatusVocabulary {
                     "has its present carried live between visits, so old content there is a quiet relay rather than " +
                     "a mirror falling behind.",
             )
-            put(
+            term(
                 "behindSec",
                 "…and the age itself, in seconds. Off the newest `created_at` any of this pair's bands covers, which " +
                     "is a freshness measure and not a second depth one: the catch-up walks its NEWER leg first, so " +
                     "this reaches now for any pair we have caught up on whatever depth its backfill is still at.",
             )
-            put(
+            term(
                 "fault",
                 "This row needs somebody — the router's own verdict across BOTH axes, so a page cannot rank rows by " +
                     "one of them and disagree with it. True for a refusal, for a pair never reached, and for one " +
                     "with nothing recent AND no tail watching it. A cold pair that IS tailed is excluded: something " +
                     "is listening, so what is old is the relay's content and not our copy of it.",
             )
-            put(
+            term(
                 "unwatched",
                 "Pairs whose relay our OWN monitor holds no current verdict about — the mirror syncs it and nothing " +
                     "grades it. The monitor measures what its own config names (monitor.conf), which is a separate " +
@@ -1307,7 +1299,7 @@ object StatusVocabulary {
                     "these relays, and a stream whose `relaySource` is a verdict query would lose them outright at " +
                     "the next rebuild. Zero is the healthy reading; anything else is a config question, not a relay one.",
             )
-            put(
+            term(
                 "negentropy",
                 "Whether the monitor measured this relay as answering a NEG-OPEN — its signed NIP-77 verdict on the " +
                     "same 30166 record the roster admits it by. A TERM, not a status: against a `false` relay both " +
@@ -1316,14 +1308,14 @@ object StatusVocabulary {
                     "settle from a puzzle into a configuration question. Absent means unmeasured, which is a third " +
                     "reading and not a `false`: the ask tries and finds out.",
             )
-            put(
+            term(
                 "kindCap",
                 "How many kinds this relay accepts in one filter, learned from its own refusal, so this pair's asks " +
                     "go to it in chunks of that many. Absent on every relay that has never complained — which is " +
                     "nearly all of them. Present means this relay would otherwise have refused our whole ask and " +
                     "could never have completed one; see `narrowedRelays` for the count.",
             )
-            put(
+            term(
                 "coveredFrom",
                 "How far BACK the walk of this pair has reached — the oldest `created_at` any of its bands " +
                     "covers. THE number to watch on a `paging` row: unchanged between two polls means the walk " +
@@ -1331,12 +1323,12 @@ object StatusVocabulary {
                     "bound, so there is no date this is finished AT — it means \"as deep as this relay has been " +
                     "walked\", never \"done\".",
             )
-            put(
+            term(
                 "coveredTo",
                 "…and the newest `created_at` covered — how current this pair's copy is. A live tail keeps it at " +
                     "now; a relay whose tail was evicted falls behind it by one revisit.",
             )
-            put(
+            term(
                 "verifiedAgoSec",
                 "How long since the last COMPLETED negentropy reconcile of this pair's history — the closest " +
                     "thing this router has to a `last synced` stamp, because it is the only pass that compares " +
@@ -1344,27 +1336,27 @@ object StatusVocabulary {
                     "finished, which on a young relay is not a fault: the clock is the stream's " +
                     "`negentropySyncThePastSeconds`, a week in the shipped example.",
             )
-            put(
+            term(
                 "relaySaid",
                 "What the relay itself said when it last refused this pair — its `CLOSED` or `NOTICE` text, " +
                     "verbatim and truncated. The router's own `refusedFor` names which WALL was hit; this is the " +
                     "only thing that says what to do about it, because a `CLOSED` covers a policy refusal, a " +
                     "rate limit and a filter the relay thinks is too wide alike.",
             )
-            put(
+            term(
                 "refusedFor",
                 "Which wall this pair's last visit hit, in the router's words — the same reading the " +
                     "`aborted…` counters partition. Present on a row whose bands exist too, where it means the " +
                     "pair has coverage AND its last visit was turned away: a relay that has stopped being " +
                     "maintained rather than one that never started.",
             )
-            put(
+            term(
                 "refusedAgoSec",
                 "How long since that refusal. Read against `verifiedAgoSec` beside it: a refusal newer than the " +
                     "last verified pass is a relay going backwards, and one much older is a wall that has since " +
                     "come down.",
             )
-            put(
+            term(
                 "pairs",
                 "How many (relay, stream) pairs — the roster in the pool's own unit, so a relay two streams sync " +
                     "is two pairs. The pair is what has a status: one relay can be complete for `indexers` and " +
@@ -1372,27 +1364,27 @@ object StatusVocabulary {
                     "those shares partition the total exactly and are published whole even when the row list is " +
                     "cut.",
             )
-            put(
+            term(
                 "bands",
                 "How many of this pair's asks have coverage recorded at all. Read against `asks` beside it: 3 " +
                     "bands against 40 asks is a relay barely begun, and both numbers reading the same is one " +
                     "whose every ask has been walked at least once.",
             )
-            put(
+            term(
                 "asks",
                 "How many separate filters this stream owes this relay. One for a plain stream; one PER BOUND " +
                     "AUTHOR where a `relaySource` select pairs providers with relays, which is the granularity " +
                     "NIP-85's own tags chose. A visit walks them in turn and any single refusal ends it, which " +
                     "is why a high count and a low `bands` is worth looking at.",
             )
-            put(
+            term(
                 "tailed",
                 "This pair is holding a live subscription right now, so its present arrives as it happens and " +
                     "only what a dropped tail missed waits on the next visit. Not a status — a pair can be " +
                     "paging and tailed at once — which is why it rides beside `syncStatus` rather than being one " +
                     "of its values.",
             )
-            put(
+            term(
                 "narrowedRelays",
                 "Relays that have told us how many kinds they will take in one filter, so this router's asks go " +
                     "to them in chunks of that many. Learned from the refusal itself — a relay stating `max 100` " +
@@ -1400,13 +1392,19 @@ object StatusVocabulary {
                     "— because relay limits differ and a static cap is either above somebody's or below " +
                     "everybody's. Zero means no relay on this roster has ever complained about filter width.",
             )
-            put(
+            term(
                 "poolReceived",
                 "Events the pool's visits and tails have delivered to ingest since boot, counted at the socket. The " +
                     "same larger-than-stored caveat as every `received` on this card: ingest drops the copies other " +
                     "relays already delivered.",
             )
         }
+
+    /** One definition per member name: [termsFor] looks names up flat, so a second would silently replace the first. */
+    private fun JsonObjectBuilder.term(
+        name: String,
+        definition: String,
+    ) = check(put(name, definition) == null) { "the glossary defines `$name` twice; one entry must cover every place it is published" }
 
     /** The definitions [document] needs: every member it publishes, at any depth, and no others. */
     fun termsFor(document: JsonObject): JsonObject {
