@@ -80,4 +80,41 @@ await flush();
 frames.splice(0).forEach((f) => f());
 assert.strictEqual(renders, 2, "the landing for the current answer is drawn");
 
+// A lens switched while the first call was still reading its services must not leave the second
+// call believing the first is reading for it.
+{
+  const services = new Map();
+  const asks = [];
+  const lensEnv = {
+    viewingAs: pk("1"), me: null, scores: new Map(), scoring: new Set(), scoreLensKey: null,
+    rankServicesOf: (observer) => new Promise((resolve) => services.set(observer, resolve)),
+    refConn: async () => ({
+      req: async (filter) => {
+        asks.push(...filter["#d"]);
+        const evs = filter["#d"].map((d) => ({ pubkey: filter.authors[0], tags: [["d", d], ["rank", "9"]] }));
+        evs.complete = true;
+        return evs;
+      },
+    }),
+    document: { querySelectorAll: () => chips, querySelector: () => null },
+    paintChips: (cs) => { for (const c of cs) c.textContent = lensEnv.scores.get(c.dataset.pk) ?? ""; },
+    requestAnimationFrame: (f) => f(),
+    field: { repaint: () => {} },
+  };
+  const { paint, setLens } = new Function(...Object.keys(lensEnv),
+    `${src}\nreturn { paint: paintScores, setLens: (v) => { viewingAs = v; } };`)(...Object.values(lensEnv));
+  chips = [chip(pk("a"))];
+  const old = paint();
+  await flush();
+  setLens(pk("2"));
+  const current = paint();
+  await flush();
+  services.get(pk("1"))([pk("s")]);
+  await flush();
+  services.get(pk("2"))([pk("t")]);
+  await Promise.all([old, current]);
+  assert.deepStrictEqual(asks, [pk("a")], "the new lens asked nothing: the old call claimed its pubkey");
+  assert.strictEqual(chips[0].textContent, 9, "the chip under the new lens stayed blank");
+}
+
 console.log("late: one rank read per pubkey in flight, and one repaint per frame of landings");

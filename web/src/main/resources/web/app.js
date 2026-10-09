@@ -499,6 +499,8 @@ async function paintScores() {
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
   const svc = lens ? await rankServicesOf(lens) : [];
+  // A lens change while the services were read belongs to the newer call, which paints the chips.
+  if (scoreLensKey !== lens) return;
   // Nobody to rank by, or a lens that ranks nothing: answered, with no number.
   if (!svc.length) { paintChips(chips); return; }
   // A pubkey another call is already reading is painted when that read lands.
