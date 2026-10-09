@@ -330,3 +330,11 @@ looped until it gave up.
 **Icon links are replaced, not appended.** The pages hint the built-in SVG
 first, and Chrome, Firefox and Edge prefer SVG to `.ico`, so an appended
 override worked only in Safari.
+
+**The fast lane skips a url graded within the last sweep period.** Its
+derivation is every url named by a relay list ingested since the last look,
+and a hub relay is named by nearly every 10002, so each tick re-dialled the
+same hubs while holding the pass gate. A url carrying our fitness grade taken
+within `sweepSeconds` is left to the sweep, which re-grades it on that period
+anyway; one whose grade is older than that is the sweep's miss and the lane
+may take it.

@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
@@ -80,6 +81,14 @@ class MonitorEngine(
 
     /** How often the fast lane looks, or null for a lane that is off. */
     private val fastLaneSeconds = fastLaneSecondsFor(settings)
+
+    private val sweepSeconds = settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS
+
+    /** Of [urls], those carrying a fitness grade of ours taken within the last sweep period. */
+    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> {
+        val s = signer ?: return emptySet()
+        return StreamWorld.gradedSince(RelayVerdictRecord(store, s), urls, nowSeconds() - sweepSeconds)
+    }
 
     /**
      * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
@@ -143,6 +152,7 @@ class MonitorEngine(
             sockets = sockets,
             onProbeEvent = onProbeEvent,
             progress = sourceProgress,
+            recentlyGraded = ::recentlyGraded,
         )
 
     /**
@@ -194,7 +204,7 @@ class MonitorEngine(
                 AliasMonitor(
                     passes,
                     scope,
-                    intervalMs = (settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
+                    intervalMs = sweepSeconds * 1000L,
                     source = world,
                     // Stability then fitness, so a first `prime` waits on the stability answer; the fold
                     // needs a host's whole group and rides the sweep.

@@ -55,6 +55,8 @@ internal class StreamWorld(
     private val onProbeEvent: suspend (Event) -> Unit,
     /** Where this derivation reports. Null in a test asserting the numbers rather than the row. */
     override val progress: Processors.Handle? = null,
+    /** Of these urls, the ones holding a fitness grade younger than a sweep; the fast lane skips them. */
+    private val recentlyGraded: suspend (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
 ) : AliasMonitor.CandidateSource {
     /** What the last derivation started from and dropped. */
     @Volatile
@@ -210,7 +212,17 @@ internal class StreamWorld(
         // Derive first, then ask the hold-out about what was found; most ticks find nothing.
         if (fresh.isEmpty()) return emptyList()
         val dead = ownDead(among = fresh)
-        return fresh.filterNot { it in dead }
+        val live = fresh.filterNot { it in dead }
+        // A hub named in nearly every list is not new; the sweep re-grades it on its own period.
+        val graded =
+            try {
+                recentlyGraded(live)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                emptySet()
+            }
+        return live.filterNot { it in graded }
     }
 
     override suspend fun reach(url: NormalizedRelayUrl): Reach = probe.reach(url)
@@ -220,6 +232,13 @@ internal class StreamWorld(
 
     companion object {
         const val DEAD_TTL_SECONDS = 24L * 60 * 60
+
+        /** Of [urls], those [record] holds a current fitness grade for, measured at or after [floor]. */
+        internal suspend fun gradedSince(
+            record: RelayVerdictRecord,
+            urls: Collection<NormalizedRelayUrl>,
+            floor: Long,
+        ): Set<NormalizedRelayUrl> = record.fitnessGrades(urls).filterValues { (it.measuredAt ?: Long.MIN_VALUE) >= floor }.keys
 
         /** How far a derivation may fall against the round before without being called out. */
         const val SHRINK_SHARE = 0.5
