@@ -365,8 +365,20 @@ class SyncBands(
         drained: Boolean = false,
         /** The age band [reconciledThrough] verified. Coverage is always recorded against the whole [filter]. */
         band: String = "",
+        now: Long = System.currentTimeMillis() / 1000,
     ) {
-        coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
+        // A future-dated event proves nothing about what is written before its stamp.
+        val present = observedMin == null || observedMin <= now
+        coverage(stream).record(
+            url,
+            filter,
+            observedMin.takeIf { present },
+            observedMax?.coerceAtMost(now).takeIf { present },
+            paged,
+            reconciledThrough,
+            presentOnly(observedByKind, now),
+            drained,
+        )
         if (reconciledThrough != null) {
             verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = reconciledThrough
             changed()
@@ -393,7 +405,7 @@ class SyncBands(
             } else {
                 observedByKind
             }
-        val kept = spans.filter { (kind, span) -> touches(held?.spans?.get(kind), span.min, walkedTop) }
+        val kept = presentOnly(spans, now)!!.filter { (kind, span) -> touches(held?.spans?.get(kind), span.min, walkedTop) }
         if (kept.isEmpty()) return
         coverage(stream).record(
             url,
@@ -433,6 +445,15 @@ class SyncBands(
         verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = verifiedAt
         changed()
     }
+
+    /** [spans] cut at [now]; quartz accepts a stamp a day ahead, and a band ending there would skip the present. */
+    private fun presentOnly(
+        spans: Map<Int, SyncCoverage.Span>?,
+        now: Long,
+    ): Map<Int, SyncCoverage.Span>? =
+        spans
+            ?.filterValues { it.min <= now }
+            ?.mapValues { (_, span) -> if (span.max > now) span.copy(max = now) else span }
 
     /** quartz's own staleness rule: past its period a band is replaced by the next record, not widened. */
     private fun isStale(
@@ -636,7 +657,8 @@ class SyncBands(
 
     /** One band as it is written, or null for an entry too damaged to restore. */
     private fun bandOf(o: JsonObject): SyncCoverage.Band? {
-        val spans = runCatching { spansOf(o) }.getOrNull() ?: return null
+        // Cut on the way in too: a file written before the cut can hold an edge past the present.
+        val spans = runCatching { presentOnly(spansOf(o), System.currentTimeMillis() / 1000) }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
         return SyncCoverage.Band(
             spans,
             o["fullAt"]?.jsonPrimitive?.longOrNull ?: 0L,
