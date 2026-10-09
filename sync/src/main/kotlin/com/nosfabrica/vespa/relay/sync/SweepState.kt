@@ -38,6 +38,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * What [NegentropyPager] must not forget between calls: how big a window a peer will reconcile,
@@ -83,6 +84,28 @@ class SweepState(
 
     @Volatile private var dirty = false
 
+    /** Bumped on every change, so a snapshot built since then can be served again. */
+    private val generation = AtomicLong()
+
+    /** The last snapshot and the generation it was built at. */
+    private class Built(
+        val generation: Long,
+        val doc: JsonObject,
+    )
+
+    @Volatile private var built: Built? = null
+
+    private val buildLock = Any()
+
+    /** Held for the disk write alone, so a status read never waits on the file. */
+    private val writeLock = Any()
+
+    /** Every mutation of persisted state ends here. */
+    private fun changed() {
+        dirty = true
+        generation.incrementAndGet()
+    }
+
     @Volatile private var flusher: Thread? = null
 
     init {
@@ -107,7 +130,7 @@ class SweepState(
         if (peers[url.url]?.target == target) return
         // compute(), so a cap learned on another coroutine at the same moment is not dropped.
         peers.compute(url.url) { _, before -> Peer(target, before?.cap) }
-        dirty = true
+        changed()
     }
 
     /** The peer's own `max_sync_events`, from its rejection. */
@@ -119,7 +142,7 @@ class SweepState(
         val before = peers[url.url]
         if (before?.cap == cap && before.target == target) return
         peers.compute(url.url) { _, _ -> Peer(target, cap) }
-        dirty = true
+        changed()
     }
 
     // ---- how far the current sweep got --------------------------------------
@@ -151,7 +174,7 @@ class SweepState(
                 Reconciled(downTo = before.downTo, upTo = before.upTo, at = nowSeconds())
             }
         }
-        dirty = true
+        changed()
     }
 
     /** Drop the cursor for a finished leg; the band recorded at the same moment is the durable statement. */
@@ -159,7 +182,7 @@ class SweepState(
         val had = sweeps.remove(key) != null
         // The pre-stream cursor for the same pair goes with it, or the next stream to ask would claim it.
         val hadOld = preStream.remove(key.filter to key.relay) != null
-        if (had || hadOld) dirty = true
+        if (had || hadOld) changed()
     }
 
     fun size(): Int = sweeps.size + preStream.size
@@ -168,7 +191,7 @@ class SweepState(
     private fun claim(key: Cursor): Reconciled? {
         if (preStream.isEmpty()) return null
         val mark = preStream.remove(key.filter to key.relay) ?: return null
-        dirty = true
+        changed()
         // Staleness is absolute: a claim this old is worth nothing to any stream.
         if (nowSeconds() - mark.at > staleAfterSeconds) return null
         // merge(), not put: a sweep may be advancing this cursor on another coroutine right now.
@@ -208,12 +231,13 @@ class SweepState(
         flush()
     }
 
-    @Synchronized
     fun flush() {
-        if (!dirty) return
-        dirty = false
-        // A failed write re-arms the flag, so the next tick retries it.
-        if (!save()) dirty = true
+        synchronized(writeLock) {
+            if (!dirty) return
+            dirty = false
+            // A failed write re-arms the flag, so the next tick retries it.
+            if (!save()) dirty = true
+        }
     }
 
     private fun load() {
@@ -264,8 +288,17 @@ class SweepState(
     }
 
     /** Every cursor and peer cap, in the one shape [save] writes and the status page reads. */
-    @Synchronized
-    internal fun snapshot(): JsonObject =
+    internal fun snapshot(): JsonObject {
+        built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+        synchronized(buildLock) {
+            built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+            // Read before the build: a change landing during it leaves the result marked stale.
+            val at = generation.get()
+            return build().also { built = Built(at, it) }
+        }
+    }
+
+    private fun build(): JsonObject =
         buildJsonObject {
             put(
                 "peers",
@@ -311,14 +344,13 @@ class SweepState(
             )
         }
 
-    @Synchronized
     private fun save(): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject = snapshot()
+            val text = json.encodeToString(JsonObject.serializer(), snapshot())
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.writeText(text)
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } catch (_: AtomicMoveNotSupportedException) {

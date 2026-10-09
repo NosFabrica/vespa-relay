@@ -43,6 +43,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The router's sync bands: file persistence around quartz's [SyncCoverage], one coverage per
@@ -57,6 +58,28 @@ class SyncBands(
     private val perStream: Map<String, Long> = emptyMap(),
 ) : AutoCloseable {
     @Volatile private var dirty = false
+
+    /** Bumped on every change, so a snapshot built since then can be served again. */
+    private val generation = AtomicLong()
+
+    /** The last snapshot and the generation it was built at. */
+    private class Built(
+        val generation: Long,
+        val doc: JsonObject,
+    )
+
+    @Volatile private var built: Built? = null
+
+    private val buildLock = Any()
+
+    /** Held for the disk write alone, so a status read never waits on the file. */
+    private val writeLock = Any()
+
+    /** Every mutation of persisted state ends here. */
+    private fun changed() {
+        dirty = true
+        generation.incrementAndGet()
+    }
 
     @Volatile private var flusher: Thread? = null
 
@@ -172,7 +195,7 @@ class SyncBands(
     ): Int {
         val key = VerifiedKey(stream, filter.toJson(), url.url, band)
         val after = cannot.compute(key) { _, was -> CannotReconcile((was?.strikes ?: 0) + 1, at, why) }!!
-        dirty = true
+        changed()
         return after.strikes
     }
 
@@ -183,7 +206,7 @@ class SyncBands(
         filter: Filter,
         band: String,
     ) {
-        if (cannot.remove(VerifiedKey(stream, filter.toJson(), url.url, band)) != null) dirty = true
+        if (cannot.remove(VerifiedKey(stream, filter.toJson(), url.url, band)) != null) changed()
     }
 
     /**
@@ -246,7 +269,7 @@ class SyncBands(
     /** The bands of one stream, created on first use. */
     private fun coverage(stream: String): SyncCoverage =
         coverageByStream.computeIfAbsent(stream) {
-            SyncCoverage(refetchThePastSecondsFor(stream), onChange = { dirty = true })
+            SyncCoverage(refetchThePastSecondsFor(stream), onChange = { changed() })
         }
 
     /** What [stream]'s bands are trusted for: its own period, else the router's. */
@@ -302,7 +325,7 @@ class SyncBands(
         coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
         if (reconciledThrough != null) {
             verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = reconciledThrough
-            dirty = true
+            changed()
         }
     }
 
@@ -364,7 +387,7 @@ class SyncBands(
             coverage(stream).record(url, filter, null, null, paged = false, reconciledThrough = through, observedByKind = null, drained = false)
         }
         verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = verifiedAt
-        dirty = true
+        changed()
     }
 
     /** quartz's own staleness rule: past its period a band is replaced by the next record, not widened. */
@@ -421,7 +444,7 @@ class SyncBands(
                 .orEmpty()
         val gone = hidden.count { it in held }
         val back = shown.count { it in held }
-        if (gone > 0 || back > 0) dirty = true
+        if (gone > 0 || back > 0) changed()
         return gone
     }
 
@@ -455,12 +478,13 @@ class SyncBands(
     }
 
     /** Write the map if anything changed since the last write. */
-    @Synchronized
     fun flush() {
-        if (!dirty) return
-        dirty = false
-        // A failed write re-arms the flag, so the next tick retries it.
-        if (!save()) dirty = true
+        synchronized(writeLock) {
+            if (!dirty) return
+            dirty = false
+            // A failed write re-arms the flag, so the next tick retries it.
+            if (!save()) dirty = true
+        }
     }
 
     /**
@@ -593,8 +617,17 @@ class SyncBands(
     }
 
     /** Every band this router holds, in the one shape [save] writes and the status page reads. */
-    @Synchronized
-    internal fun snapshot(): JsonObject =
+    internal fun snapshot(): JsonObject {
+        built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+        synchronized(buildLock) {
+            built?.takeIf { it.generation == generation.get() }?.let { return it.doc }
+            // Read before the build: a change landing during it leaves the result marked stale.
+            val at = generation.get()
+            return build().also { built = Built(at, it) }
+        }
+    }
+
+    private fun build(): JsonObject =
         buildJsonObject {
             coverageByStream.forEach { (stream, coverage) ->
                 val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
@@ -707,14 +740,13 @@ class SyncBands(
     }
 
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
-    @Synchronized
     private fun save(): Boolean {
         val f = file ?: return true
         return runCatching {
-            val snapshot: JsonObject = snapshot()
+            val text = json.encodeToString(JsonObject.serializer(), snapshot())
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.writeText(text)
             // ATOMIC_MOVE asked for explicitly; without it the JVM may fall back to copy+delete.
             try {
                 Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
