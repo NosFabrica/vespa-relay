@@ -369,3 +369,13 @@ TLS words before upgrade words, so a CDN's "Expected HTTP 101 response but was
 `dead`. A response that carries a status is an HTTP answer and is graded by the
 status: 429 is rate limiting, anything else an upgrade refusal, so a 526 is a
 5xx and earns no verdict.
+
+**A url set aside is not a dial that went blind.** A 5xx, an `.onion` behind
+our Tor proxy not answering, and a lookup with no reason in it all landed in
+`unmeasured`, which is the batch guard's blind share, so a CDN incident or Tor
+going down refused every clearnet verdict in the batch and the log blamed this
+router's dialling. They are now `deferred`: reported on their own line, never
+published, and outside the blind share, which is taken over the dials that went
+out (a 5xx went out and was answered, so it stays in the denominator). A 5xx
+also counts as a server reached for the dark-network guard. `unmeasured` keeps
+the dials that got no answer at all, our clearnet transport failing included.

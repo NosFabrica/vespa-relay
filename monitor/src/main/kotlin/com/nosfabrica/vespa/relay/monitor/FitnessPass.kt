@@ -106,6 +106,17 @@ class FitnessPass(
             RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
         }
 
+    /** Why a url was set aside with no verdict, without counting as our dialling gone blind. */
+    private enum class Deferral(
+        val why: String,
+        /** A server answered, which is evidence our own network works. */
+        val serverAnswered: Boolean,
+    ) {
+        SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true),
+        TOR_DOWN("our Tor proxy is not answering", serverAnswered = false),
+        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false),
+    }
+
     /** What the second page came back with, boxed for [Reconciled]'s reason. */
     private class Paged(
         val window: AliasProbe.Compliance?,
@@ -166,6 +177,8 @@ class FitnessPass(
         val pageUnproven = AtomicInteger()
         // Urls this pass asked and got no answer of any kind about. Never published.
         val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
+        // Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published.
+        val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
         try {
             // One read of what this monitor stands behind, after the passes before this one wrote.
             val held =
@@ -206,24 +219,27 @@ class FitnessPass(
                     if (outcomes.containsKey(url)) {
                         // Cut late, and the verdict stands: our clock firing one step later does not un-tell it.
                         cutLate.incrementAndGet()
-                    } else {
+                    } else if (!deferred.containsKey(url)) {
                         // No verdict is written: our timeout is not a fact about the relay.
                         if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
                         abandonedCount.incrementAndGet()
                     }
                 },
             ) { url ->
-                measureOne(url, anchor, reach, sockets, outcomes, unmeasured, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
+                measureOne(url, anchor, reach, sockets, outcomes, unmeasured, deferred, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
             }
 
             // The batch guard: when our own dialling breaks it breaks for every url at once, so
-            // nothing is published, the clean-looking verdicts included.
+            // nothing is published, the clean-looking verdicts included. The share is over the dials
+            // that went out; a url set aside before any server could answer is outside it.
             val dialled = toDial.size
+            val wentOut = dialled - deferred.values.count { !it.serverAnswered }
             val blind = unmeasured.size + abandonedCount.get()
-            if (dialled >= GUARD_FLOOR && blind > dialled * GUARD_SHARE) {
+            val deferredCounts = deferred.values.groupingBy { it.why }.eachCount()
+            if (wentOut >= GUARD_FLOOR && blind > wentOut * GUARD_SHARE) {
                 System.err.println(
-                    "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $dialled dial(s) came back with no " +
-                        "answer at all (${(100.0 * blind / dialled).toInt()}%, over the ${(100 * GUARD_SHARE).toInt()}% " +
+                    "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
+                        "answer at all (${(100.0 * blind / wentOut).toInt()}%, over the ${(100 * GUARD_SHARE).toInt()}% " +
                         "guard). A network does not go dark in one pass — this router could not dial. " +
                         "${outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
                 )
@@ -236,6 +252,7 @@ class FitnessPass(
                     abandoned,
                     unmeasured.size,
                     downloaded.get(),
+                    deferredCounts = deferredCounts,
                     cutLate = cutLate.get(),
                     negOpenCut = negOpenCut.get(),
                     secondPageCut = secondPageCut.get(),
@@ -247,7 +264,7 @@ class FitnessPass(
             // The dark-network guard: a failure is believed only beside proof that our network
             // reaches others, so a batch where too few did withholds every verdict no server spoke for.
             val provedGone = toDial.filter { outcomes[it]?.preProbe == true }
-            val reached = toDial.count { outcomes[it]?.reachedServer == true }
+            val reached = toDial.count { outcomes[it]?.reachedServer == true } + deferred.values.count { it.serverAnswered }
             if (looksDark(dialled, provedGone.size, reached)) {
                 val unspoken = toDial.filter { url -> outcomes[url]?.let { it.tested && !it.reachedServer } == true }
                 if (unspoken.isNotEmpty()) {
@@ -317,6 +334,7 @@ class FitnessPass(
                 abandoned,
                 unmeasured.size,
                 downloaded.get(),
+                deferredCounts = deferredCounts,
                 unwrittenCount = outcomes.size - tally.published - skipped,
                 wedgedWrites = tally.wedged,
                 declinedWrites = tally.declined,
@@ -345,6 +363,7 @@ class FitnessPass(
         sockets: Sockets,
         outcomes: ConcurrentHashMap<NormalizedRelayUrl, Outcome>,
         unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
+        deferred: ConcurrentHashMap<NormalizedRelayUrl, Deferral>,
         readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
         downloaded: AtomicInteger,
         negOpenCut: AtomicInteger,
@@ -373,14 +392,14 @@ class FitnessPass(
                 return
             }
 
-            // Our proxy not answering says nothing about the relay behind it.
+            // Our proxy not answering says nothing about the relay behind it, nor about our clearnet dials.
             Reach.TRANSPORT_DOWN -> {
-                unmeasured[url] = "our own transport is not answering"
+                if (tor?.routes(url) == true) deferred[url] = Deferral.TOR_DOWN else unmeasured[url] = "our own transport is not answering"
                 return
             }
 
             Reach.UNEXPLAINED -> {
-                unmeasured[url] = "the lookup failed with no reason left to read"
+                deferred[url] = Deferral.LOOKUP_UNEXPLAINED
                 return
             }
         }
@@ -398,13 +417,14 @@ class FitnessPass(
                     secondPageCut = secondPageCut,
                     pageUnproven = pageUnproven,
                     unmeasured = { why -> unmeasured[url] = why },
+                    defer = { why -> deferred[url] = why },
                 ) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
                 }
             if (outcome != null) {
                 outcomes[url] = outcome
-            } else {
+            } else if (!deferred.containsKey(url)) {
                 unmeasured.putIfAbsent(url, "no EOSE, no CLOSED and no transport reason on any rung")
             }
         } catch (e: CancellationException) {
@@ -412,7 +432,7 @@ class FitnessPass(
         } catch (e: Exception) {
             // Our instrument giving up, unless the ladder already settled a verdict: a url in both
             // maps would feed the batch guard's blind share on a dial that answered.
-            if (!outcomes.containsKey(url)) {
+            if (!outcomes.containsKey(url) && !deferred.containsKey(url)) {
                 unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
             }
         } finally {
@@ -427,13 +447,13 @@ class FitnessPass(
      */
     private fun upgradeRefused(
         raw: String?,
-        unmeasured: (String) -> Unit,
+        defer: (Deferral) -> Unit,
     ): Outcome? {
         val status = Silence.upgradeStatus(raw)
         val said = status?.let { "the websocket upgrade was refused with HTTP $it" } ?: Silence.UPGRADE.reason
         return when (status) {
             in 500..599 -> {
-                unmeasured("$said, a temporary failure")
+                defer(Deferral.SERVER_ERROR)
                 null
             }
 
@@ -467,6 +487,8 @@ class FitnessPass(
         pageUnproven: AtomicInteger,
         /** Why a url earned no verdict, where the dial knows better than "nothing came back". */
         unmeasured: (String) -> Unit,
+        /** A url set aside on an answer that is neither a verdict nor our dialling failing. */
+        defer: (Deferral) -> Unit,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         var lastReason: String? = null
@@ -502,7 +524,7 @@ class FitnessPass(
                 }
 
                 Silence.UPGRADE -> {
-                    upgradeRefused(lastReason, unmeasured)
+                    upgradeRefused(lastReason, defer)
                 }
 
                 // The pre-probe resolved this name moments ago, so a dial that could not is our resolver.
@@ -685,6 +707,8 @@ class FitnessPass(
         unmeasuredCount: Int,
         /** Events the dials handed to ingest. */
         downloadedCount: Int,
+        /** Urls set aside, by why; outside the counts and outside the blind share. */
+        deferredCounts: Map<String, Int> = emptyMap(),
         /** Earned verdicts that never reached the store. Zero on the guard's refuse-to-publish path. */
         unwrittenCount: Int = 0,
         /** Of which this many hit the per-write deadline. */
@@ -715,7 +739,14 @@ class FitnessPass(
         if (unmeasuredCount > 0) {
             System.err.println(
                 "router: fitness [$label] — $unmeasuredCount url(s) answered nothing at all, no verdict written: " +
-                    "no EOSE, no CLOSED and no transport reason on any rung, or a throw on our side of the socket",
+                    "no EOSE, no CLOSED and no transport reason on any rung, or our own resolver, route or socket layer failing",
+            )
+        }
+        if (deferredCounts.isNotEmpty()) {
+            val why = deferredCounts.entries.sortedByDescending { it.value }.joinToString { "${it.value} x ${it.key}" }
+            System.err.println(
+                "router: fitness [$label] — ${deferredCounts.values.sum()} url(s) set aside, no verdict written and NOT " +
+                    "counted as this router failing to dial: $why",
             )
         }
         if (abandonedCount > 0) {
