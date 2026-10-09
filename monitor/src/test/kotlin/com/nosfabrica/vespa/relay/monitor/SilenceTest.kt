@@ -69,6 +69,14 @@ class SilenceTest {
     }
 
     @Test
+    fun `a status the server answered with outranks the words in its reason phrase`() {
+        // A CDN's 526 names the certificate, but the server answered HTTP: it is an upgrade refusal.
+        assertEquals(Silence.UPGRADE, Silence.of("cannot:WebSocket Failure: Expected HTTP 101 response but was '526 Invalid SSL Certificate'"))
+        assertEquals(Silence.UPGRADE, Silence.of("cannot:WebSocket Failure: Expected HTTP 101 response but was '504 Gateway Timeout'"))
+        assertEquals(Silence.RATE_LIMITED, Silence.of("cannot:WebSocket Failure: Expected HTTP 101 response but was '429 Too Many Requests'"))
+    }
+
+    @Test
     fun `text this table does not recognise is counted, never forced`() {
         assertEquals(Silence.UNKNOWN, Silence.of("cannot: something nobody has seen yet"))
         assertEquals(Silence.UNKNOWN, Silence.of(""))

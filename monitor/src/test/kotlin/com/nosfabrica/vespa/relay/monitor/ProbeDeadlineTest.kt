@@ -229,6 +229,7 @@ class ProbeDeadlineTest {
             // A server or CDN error is a moment, and an auth or payment wall is a live relay.
             assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '503 Service Unavailable'", reachable = true))
             assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '530 <none>'", reachable = true))
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '526 Invalid SSL Certificate'", reachable = true))
             assertEquals(Verdict.RESTRICTED.value, grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '402 Payment Required'", reachable = true))
             // The typed pre-probe's proof stands on its own.
             assertEquals(Verdict.DEAD.value, grade("unused", reachable = false))

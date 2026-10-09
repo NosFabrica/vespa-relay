@@ -362,3 +362,10 @@ and let the url through, and the dial, hitting the same cache, published
 `Reach.UNEXPLAINED` and the url is not dialled; and since the pre-probe has just
 resolved every name it lets through, a name word from the dial is our resolver
 and earns no verdict either.
+
+**A status line outranks the words in its reason phrase.** `Silence` matched
+TLS words before upgrade words, so a CDN's "Expected HTTP 101 response but was
+'526 Invalid SSL Certificate'" read as our handshake failing and was signed
+`dead`. A response that carries a status is an HTTP answer and is graded by the
+status: 429 is rate limiting, anything else an upgrade refusal, so a 526 is a
+5xx and earns no verdict.

@@ -86,9 +86,10 @@ enum class Silence(
 
         private val UPGRADE_STATUS = Regex("""but was '(\d{3})""")
 
-        /** Null is [UNKNOWN], not a cause of its own. */
+        /** Null is [UNKNOWN], not a cause of its own. An HTTP status outranks the words beside it. */
         fun of(raw: String?): Silence {
             val text = raw?.lowercase() ?: return UNKNOWN
+            upgradeStatus(raw)?.let { return if (it == 429) RATE_LIMITED else UPGRADE }
             return PATTERNS.firstOrNull { (_, needles) -> needles.any { it in text } }?.first ?: UNKNOWN
         }
     }
