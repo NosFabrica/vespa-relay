@@ -25,11 +25,19 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.EOFException
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import java.net.UnknownHostException
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * Whether the TCP pre-probe measures the route the dial will take. The pre-probe connects
@@ -54,6 +62,18 @@ enum class Reach {
     UNEXPLAINED,
 }
 
+/** What our own direct handshake says about a dial's TLS failure. */
+enum class TlsAnswer {
+    /** It succeeded under our default trust, so the dial's failure was our transport's. */
+    ACCEPTED,
+
+    /** The server's certificate failed our trust, or the server refused the handshake. */
+    REJECTED,
+
+    /** No handshake could be made or read from here; nothing was learned. */
+    UNCHECKED,
+}
+
 /** Can we open a socket at all: the guard in front of every dial, shared so one url is judged one way. */
 internal class ReachabilityProbe(
     private val tor: TorTransport?,
@@ -63,6 +83,8 @@ internal class ReachabilityProbe(
     /** Opens a socket to one address within the timeout, or throws why not. */
     private val connect: (InetSocketAddress, Int) -> Socket = ::openSocket,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Our default trust; the dial's client trusts the same roots. */
+    private val tlsFactory: SSLSocketFactory = SSLContext.getDefault().socketFactory,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
 
@@ -90,6 +112,43 @@ internal class ReachabilityProbe(
 
     /** Our transport can carry it and something answers. */
     suspend fun canDial(url: NormalizedRelayUrl): Boolean = reach(url) == Reach.REACHABLE
+
+    /**
+     * A direct handshake to [url] under our default trust, on the pre-probe's route, to check a
+     * dial's TLS failure. A url routed through Tor cannot be checked from here.
+     */
+    suspend fun tls(url: NormalizedRelayUrl): TlsAnswer {
+        if (!shouldPreProbe(url, tor) || !url.url.startsWith("wss://", ignoreCase = true)) return TlsAnswer.UNCHECKED
+        val target = Target.of(url) ?: return TlsAnswer.UNCHECKED
+        return withContext(io) {
+            val addresses =
+                try {
+                    resolve(target.host)
+                } catch (_: IOException) {
+                    return@withContext TlsAnswer.UNCHECKED
+                }
+            val socket = open(target, addresses).socket ?: return@withContext TlsAnswer.UNCHECKED
+            socket.use { handshake(it, target) }
+        }
+    }
+
+    private fun handshake(
+        socket: Socket,
+        target: Target,
+    ): TlsAnswer =
+        try {
+            socket.soTimeout = TLS_READ_TIMEOUT_MS
+            (tlsFactory.createSocket(socket, target.host, target.port, true) as SSLSocket).use { ssl ->
+                // The dial's client checks the name on the certificate, so this check must too.
+                ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                ssl.startHandshake()
+                TlsAnswer.ACCEPTED
+            }
+        } catch (e: SSLException) {
+            if (refusedByServer(e)) TlsAnswer.REJECTED else TlsAnswer.UNCHECKED
+        } catch (_: IOException) {
+            TlsAnswer.UNCHECKED
+        }
 
     /** Where a url's socket goes. */
     private class Target(
@@ -144,6 +203,9 @@ internal class ReachabilityProbe(
     companion object {
         private const val PROBE_TIMEOUT_MS = 5_000
 
+        /** Per read while the direct handshake runs. */
+        private const val TLS_READ_TIMEOUT_MS = 5_000
+
         /** Across every address of one host; an address left untried proves nothing. */
         internal const val TOTAL_TIMEOUT_MS = 8_000L
 
@@ -161,6 +223,11 @@ internal class ReachabilityProbe(
                 failures.all { Unreachability.proves(it) } -> Reach.PROVED_UNREACHABLE
                 else -> Reach.REACHABLE
             }
+
+        /** A handshake the server failed or refused; a connection dropped or stalled under it is neither. */
+        private fun refusedByServer(e: SSLException): Boolean =
+            (e is SSLHandshakeException || e is SSLPeerUnverifiedException) &&
+                generateSequence(e.cause) { it.cause }.none { it is EOFException || it is SocketException || it is java.io.InterruptedIOException }
 
         /** A lookup that failed; one carrying no words we can place is the JVM's cached answer. */
         private fun lookupFailed(e: IOException): Reach =

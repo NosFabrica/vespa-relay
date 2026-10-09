@@ -41,6 +41,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The batch guards withhold what our own side may have caused, and only that. */
@@ -63,6 +64,7 @@ class FitnessGuardTest {
         urls: List<NormalizedRelayUrl>,
         reach: (NormalizedRelayUrl) -> Reach = { Reach.REACHABLE },
         tor: TorTransport? = null,
+        tlsCheck: (NormalizedRelayUrl) -> TlsAnswer = { TlsAnswer.UNCHECKED },
         said: (NormalizedRelayUrl) -> String?,
     ): Map<NormalizedRelayUrl, String?> =
         runBlocking {
@@ -87,6 +89,7 @@ class FitnessGuardTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 tor = tor,
+                tlsCheck = { tlsCheck(it) },
             ).measure("guard", urls, reach = { reach(it) }, onEvent = {}, sockets = Sockets.NONE)
             urls.associateWith { gradeOf(store, it) }
         }
@@ -139,6 +142,53 @@ class FitnessGuardTest {
         val graded = grades(cached + fine, reach = { if (it in cached) Reach.UNEXPLAINED else Reach.REACHABLE }) { null }
         assertTrue(cached.all { graded[it] == null })
         assertTrue(fine.all { graded[it] == Verdict.PRIME.value })
+    }
+
+    private val pkix = "cannot:WebSocket Failure: PKIX path building failed (SSLHandshakeException)"
+
+    @Test
+    fun `a TLS failure our own direct handshake does not share is our transport and earns nothing`() {
+        // An intercepting proxy on our egress fails every dial's handshake while the relay is fine.
+        val proxied = urls("proxied", 3)
+        val fine = urls("fine", 10)
+        val graded = grades(proxied + fine, tlsCheck = { TlsAnswer.ACCEPTED }) { if (it in proxied) pkix else null }
+        assertTrue(proxied.all { graded[it] == null }, "our own transport's TLS failure was signed onto someone else's relay")
+        assertTrue(fine.all { graded[it] == Verdict.PRIME.value })
+        // And a TLS failure nothing could check from here earns nothing either.
+        val unchecked = grades(proxied + fine, tlsCheck = { TlsAnswer.UNCHECKED }) { if (it in proxied) pkix else null }
+        assertTrue(proxied.all { unchecked[it] == null })
+    }
+
+    @Test
+    fun `a certificate our own handshake also rejects is published dead`() {
+        val expired = urls("expired", 1)
+        val fine = urls("fine", 10)
+        val graded = grades(expired + fine, tlsCheck = { TlsAnswer.REJECTED }) { if (it in expired) pkix else null }
+        assertEquals(Verdict.DEAD.value, graded[expired.single()])
+    }
+
+    @Test
+    fun `TLS failing for a large share of the batch is withheld as our truststore or clock`() {
+        // A stale truststore or a skewed clock fails our direct handshake too, for every relay at once.
+        val failing = urls("skewed", 10)
+        val fine = urls("fine", 20)
+        val graded = grades(failing + fine, tlsCheck = { TlsAnswer.REJECTED }) { if (it in failing) pkix else null }
+        assertTrue(failing.all { graded[it] == null }, "a third of a batch failing TLS at once is our side")
+        assertTrue(fine.all { graded[it] == Verdict.PRIME.value }, "only the TLS verdicts are withheld")
+    }
+
+    @Test
+    fun `a TLS failure is never the evidence that our network reaches servers`() {
+        // An interceptor answers the handshake itself, so it says nothing about reaching the relays.
+        val gone = urls("gone", 1)
+        val expired = urls("expired", 1)
+        val refusing = urls("refusing", 4)
+        val graded =
+            grades(gone + expired + refusing, reach = { if (it in gone) Reach.PROVED_UNREACHABLE else Reach.REACHABLE }, tlsCheck = { TlsAnswer.REJECTED }) {
+                if (it in expired) pkix else "cannot: java.net.ConnectException: Connection refused"
+            }
+        assertNull(graded[gone.single()], "a batch where only a TLS failure answered is a dark network")
+        assertNull(graded[expired.single()])
     }
 
     /** The fitness grade the store carries for [url], or null for no record. */

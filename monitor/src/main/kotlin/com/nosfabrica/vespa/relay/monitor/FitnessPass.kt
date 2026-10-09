@@ -79,6 +79,8 @@ class FitnessPass(
     private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
     /** Verdict writes in flight at once. */
     private val writeConcurrency: Int = WRITE_CONCURRENCY,
+    /** A direct handshake to a url whose dial failed TLS, on the pre-probe's route; the default checks nothing. */
+    private val tlsCheck: suspend (NormalizedRelayUrl) -> TlsAnswer = { TlsAnswer.UNCHECKED },
     /** The NEG-OPEN, the only thing this pass asks [client] for. */
     private val reconcile: suspend (NormalizedRelayUrl, Filter) -> Unit = { url, sliver ->
         client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
@@ -115,6 +117,8 @@ class FitnessPass(
         SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true),
         TOR_DOWN("our Tor proxy is not answering", serverAnswered = false),
         LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false),
+        OUR_TLS("the dial failed TLS where our direct handshake succeeded, so our transport did", serverAnswered = false),
+        TLS_UNCHECKED("the dial failed TLS and no direct handshake could check it", serverAnswered = false),
     }
 
     /** What the second page came back with, boxed for [Reconciled]'s reason. */
@@ -141,9 +145,11 @@ class FitnessPass(
         val tested: Boolean = true,
         /** Earned at the pre-probe from our side of the network, before any server said a word. */
         val preProbe: Boolean = false,
+        /** A failed TLS handshake, confirmed by our own; a stale truststore or clock fails both. */
+        val tls: Boolean = false,
     ) {
         /** A server on the far side answered something: the evidence our own network was working. */
-        val reachedServer: Boolean get() = tested && !preProbe && verdict != Verdict.SILENT
+        val reachedServer: Boolean get() = tested && !preProbe && !tls && verdict != Verdict.SILENT
     }
 
     /**
@@ -259,6 +265,19 @@ class FitnessPass(
                     pageUnproven = pageUnproven.get(),
                 )
                 return downloaded.get()
+            }
+
+            // The TLS guard: certificates do not fail together, but our truststore or clock fails them all.
+            val tlsDead = toDial.filter { outcomes[it]?.tls == true }
+            val tlsDialled = toDial.count { it.url.startsWith("wss://", ignoreCase = true) && tor?.routes(it) != true && outcomes[it]?.preProbe != true }
+            if (tlsDead.size > tlsDialled * TLS_GUARD_SHARE) {
+                System.err.println(
+                    "router: fitness [$label] — WITHHOLDING ${tlsDead.size} TLS `dead` verdict(s): our own direct handshake " +
+                        "failed too on ${tlsDead.size} of $tlsDialled wss dial(s), over the ${(100 * TLS_GUARD_SHARE).toInt()}% guard. " +
+                        "That many certificates do not fail at once — this is more likely our truststore or clock. " +
+                        "They are measured again next pass.",
+                )
+                for (url in tlsDead) outcomes.remove(url)
             }
 
             // The dark-network guard: a failure is believed only beside proof that our network
@@ -468,6 +487,40 @@ class FitnessPass(
     }
 
     /**
+     * A dial's TLS failure, believed only when our own direct handshake fails on the server too:
+     * anything between us and the relay can fail a dial's handshake, and that is not the relay's.
+     */
+    private suspend fun tlsFailed(
+        url: NormalizedRelayUrl,
+        defer: (Deferral) -> Unit,
+    ): Outcome? {
+        progress.holding(url.url, STAGE_TLS_CHECK)
+        val answer =
+            try {
+                tlsCheck(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                TlsAnswer.UNCHECKED
+            }
+        return when (answer) {
+            TlsAnswer.REJECTED -> {
+                Outcome(Verdict.DEAD, Silence.TLS.reason, tls = true)
+            }
+
+            TlsAnswer.ACCEPTED -> {
+                defer(Deferral.OUR_TLS)
+                null
+            }
+
+            TlsAnswer.UNCHECKED -> {
+                defer(Deferral.TLS_UNCHECKED)
+                null
+            }
+        }
+    }
+
+    /**
      * The dial itself: the ask ladder for "answers", the anchored events for "honours `until`",
      * one NEG-OPEN for "reconciles". Each rung's transport reason is kept so the verdict can say why.
      */
@@ -518,9 +571,8 @@ class FitnessPass(
         if (answered == null) {
             // Never spoke, or refused every shape. [Silence] tells the two apart.
             return when (val cause = Silence.of(lastReason)) {
-                // The server took the connect and refused the protocol: its own answer.
                 Silence.TLS -> {
-                    Outcome(Verdict.DEAD, cause.reason)
+                    tlsFailed(url, defer)
                 }
 
                 Silence.UPGRADE -> {
@@ -947,6 +999,9 @@ class FitnessPass(
 
         const val STAGE_NIP77 = "neg-open"
 
+        /** Our own handshake, checking a dial's TLS failure. */
+        const val STAGE_TLS_CHECK = "tls check"
+
         /** The one ask below the ladder's window, a REQ and not a rung of it. */
         const val STAGE_COMPLIANCE = "second page"
 
@@ -972,6 +1027,12 @@ class FitnessPass(
 
         /** The batch size below which the guard does not apply. */
         const val GUARD_FLOOR = 50
+
+        /**
+         * The share of a batch's direct wss dials whose TLS failure our own handshake may confirm before
+         * those `dead`s are withheld; real certificate faults are a small minority of relays.
+         */
+        const val TLS_GUARD_SHARE = 0.25
 
         /** The share of a batch's dials the pre-probe may prove gone before that proof is doubted. */
         const val DEAD_GUARD_SHARE = 0.75

@@ -379,3 +379,19 @@ published, and outside the blind share, which is taken over the dials that went
 out (a 5xx went out and was answered, so it stays in the denominator). A 5xx
 also counts as a server reached for the dark-network guard. `unmeasured` keeps
 the dials that got no answer at all, our clearnet transport failing included.
+
+**A dial's TLS failure is believed only when our own handshake fails too.**
+Through an intercepting TLS proxy on our egress, fourteen relays were signed
+`dead` "the TLS handshake failed" while a direct handshake to each succeeded,
+and since a TLS failure counted as a server answering, neither the dark guard
+nor the blind guard could catch it. Now the pass opens its own handshake on the
+pre-probe's direct route under the default trust, checking the name on the
+certificate as the dial's client does: a certificate failure or a server's
+refusal there makes `dead`; a success is our transport and earns nothing; a
+dropped connection, a timeout, or a Tor-routed url (not checkable from here)
+earns nothing either. Those two are deferred, not blind. A TLS failure never
+counts as reaching a server, and when the confirmed ones pass a quarter of the
+batch's direct wss dials they are withheld as our truststore or clock, which
+fail every handshake at once where real certificate faults are a small
+minority. At any batch size, so a fast-lane batch rarely signs a TLS `dead`
+and leaves it to the sweep.

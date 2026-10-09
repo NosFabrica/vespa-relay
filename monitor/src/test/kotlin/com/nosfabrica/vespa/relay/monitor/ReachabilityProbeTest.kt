@@ -20,15 +20,27 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.peers.TorSettings
+import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import java.io.File
 import java.io.IOException
 import java.net.ConnectException
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLServerSocket
+import javax.net.ssl.TrustManagerFactory
+import kotlin.concurrent.thread
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -120,5 +132,105 @@ class ReachabilityProbeTest {
         assertEquals(Reach.UNEXPLAINED, lookup(UnknownHostException("dual.example")))
         assertEquals(Reach.PROVED_UNREACHABLE, lookup(UnknownHostException("dual.example: Name or service not known")))
         assertEquals(Reach.TRANSPORT_DOWN, lookup(UnknownHostException("dual.example: Temporary failure in name resolution")))
+    }
+
+    private val dir =
+        File.createTempFile("tls", "").also {
+            it.delete()
+            it.mkdirs()
+        }
+
+    @AfterTest
+    fun cleanUp() {
+        dir.deleteRecursively()
+    }
+
+    /** A self-signed certificate for localhost, made by the JDK's own keytool. */
+    private fun keyStore(): KeyStore {
+        val file = File(dir, "relay.p12")
+        val keytool = File(System.getProperty("java.home"), "bin/keytool").path
+        val made =
+            ProcessBuilder(
+                keytool,
+                "-genkeypair",
+                "-alias",
+                "relay",
+                "-keyalg",
+                "RSA",
+                "-keysize",
+                "2048",
+                "-validity",
+                "2",
+                "-dname",
+                "CN=localhost",
+                "-ext",
+                "SAN=dns:localhost,ip:127.0.0.1",
+                "-keystore",
+                file.path,
+                "-storetype",
+                "PKCS12",
+                "-storepass",
+                PASS,
+                "-keypass",
+                PASS,
+            ).redirectErrorStream(true).start()
+        val said = made.inputStream.readAllBytes().decodeToString()
+        check(made.waitFor() == 0) { "keytool failed: $said" }
+        return KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, PASS.toCharArray()) } }
+    }
+
+    /** A TLS server presenting [store]'s certificate, handshaking every connection it takes. */
+    private fun tlsServer(store: KeyStore): ServerSocket {
+        val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(store, PASS.toCharArray()) }
+        val context = SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }
+        val server = context.serverSocketFactory.createServerSocket(0) as SSLServerSocket
+        serve(server) { (it as javax.net.ssl.SSLSocket).startHandshake() }
+        return server
+    }
+
+    private fun serve(
+        server: ServerSocket,
+        handle: (Socket) -> Unit,
+    ) {
+        thread(isDaemon = true) {
+            while (!server.isClosed) {
+                val socket = runCatching { server.accept() }.getOrNull() ?: return@thread
+                thread(isDaemon = true) { runCatching { socket.use(handle) } }
+            }
+        }
+    }
+
+    private fun trusting(store: KeyStore) =
+        SSLContext
+            .getInstance("TLS")
+            .apply { init(null, TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(store) }.trustManagers, null) }
+            .socketFactory
+
+    @Test
+    fun `a direct handshake tells our transport failing TLS from the server's certificate failing it`() {
+        val store = keyStore()
+        tlsServer(store).use { server ->
+            val at = RelayUrlNormalizer.normalize("wss://localhost:${server.localPort}")
+            // A certificate our trust accepts: a dial that failed TLS failed on our side.
+            assertEquals(TlsAnswer.ACCEPTED, runBlocking { ReachabilityProbe(tor = null, tlsFactory = trusting(store)).tls(at) })
+            // One our default trust does not: the server's own answer.
+            assertEquals(TlsAnswer.REJECTED, runBlocking { ReachabilityProbe(tor = null).tls(at) })
+        }
+    }
+
+    @Test
+    fun `a handshake that never happened decides nothing`() {
+        // A server that hangs up before any TLS is spoken is not a certificate failing.
+        ServerSocket(0).use { server ->
+            serve(server) { }
+            val at = RelayUrlNormalizer.normalize("wss://localhost:${server.localPort}")
+            assertEquals(TlsAnswer.UNCHECKED, runBlocking { ReachabilityProbe(tor = null).tls(at) })
+        }
+        val tor = TorTransport(TorSettings(socksHost = "127.0.0.1", socksPort = 1, routeAll = true, connectTimeoutSec = 5, maxSockets = 4), OkHttpClient())
+        assertEquals(TlsAnswer.UNCHECKED, runBlocking { ReachabilityProbe(tor).tls(url) }, "a Tor-routed url cannot be checked on our direct route")
+    }
+
+    private companion object {
+        const val PASS = "changeit"
     }
 }

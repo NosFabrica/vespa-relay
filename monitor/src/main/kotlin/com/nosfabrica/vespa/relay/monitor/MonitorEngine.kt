@@ -172,6 +172,7 @@ class MonitorEngine(
                 document = RelayDocument(peers::httpFor),
                 tor = tor,
                 concurrency = monitorConcurrency,
+                tlsCheck = probe::tls,
             )
         }
 

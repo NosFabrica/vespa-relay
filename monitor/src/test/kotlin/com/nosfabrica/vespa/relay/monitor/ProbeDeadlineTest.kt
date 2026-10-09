@@ -223,8 +223,9 @@ class ProbeDeadlineTest {
             // A routing or refusal word from the dial is at most `silent`.
             assertEquals(Verdict.SILENT.value, grade("cannot: connect: Network is unreachable", reachable = true))
             assertEquals(Verdict.SILENT.value, grade("cannot: java.net.ConnectException: Connection refused", reachable = true))
+            // A dial's TLS failure no direct handshake has checked is not the server's (FitnessGuardTest has the rest).
+            assertNull(grade("cannot: javax.net.ssl.SSLHandshakeException: PKIX path building failed", reachable = true))
             // The server answered the connect and refused the protocol.
-            assertEquals(Verdict.DEAD.value, grade("cannot: javax.net.ssl.SSLHandshakeException: PKIX path building failed", reachable = true))
             assertEquals(Verdict.DEAD.value, grade("cannot: Expected HTTP 101 response but was '404 Not Found'", reachable = true))
             // A server or CDN error is a moment, and an auth or payment wall is a live relay.
             assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '503 Service Unavailable'", reachable = true))
