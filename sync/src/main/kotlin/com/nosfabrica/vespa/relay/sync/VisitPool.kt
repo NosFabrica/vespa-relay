@@ -68,8 +68,8 @@ internal class VisitPool(
     private val retraction: RetractionAudit? = null,
     private val sockets: Sockets,
     private val scope: CoroutineScope,
-    /** Decides what to sync; the pool asks it to [RosterBuilder.rebuild] on the roster clock. */
-    private val rosterBuilder: RosterBuilder,
+    /** Decides what to sync; the pool asks it to [RosterSource.rebuild] on the roster clock. */
+    private val rosterBuilder: RosterSource,
     /** The visit-mode streams: every relaySource entry a kind-30166 verdict source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
@@ -84,6 +84,8 @@ internal class VisitPool(
      * Shared with the pager so the audit's fallback REQs are chunked the same way.
      */
     private val widths: FilterWidths = FilterWidths(),
+    /** Silence between asks that ends a visit; a seam for tests. */
+    private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
 ) {
     /** When each stream's audits and re-fetches come due. */
     private val schedule = AuditSchedule(streams, bands, retraction)
@@ -182,11 +184,14 @@ internal class VisitPool(
 
         val events = AtomicLong()
 
-        /** Any sign of life: an event, a negentropy frame, a window opening. */
+        /** Any sign of life: an event, an answered ask, a negentropy frame, a window opening. */
         @Volatile var lastActivityMs: Long = startedMs
     }
 
     private val ongoing = ConcurrentHashMap<VisitKey, OngoingVisit>()
+
+    /** Where a unit's next visit starts, after one cut short; absent starts at the first ask. */
+    private val resumeAt = ConcurrentHashMap<VisitKey, Int>()
 
     /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
     private fun arrived(
@@ -475,6 +480,7 @@ internal class VisitPool(
         for (url in previous.keys - next.keys) {
             yields.remove(url)
         }
+        resumeAt.keys.removeIf { !wantedBy(built, it) }
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -547,15 +553,20 @@ internal class VisitPool(
         ongoing[key] = ongoingVisit
         sockets.claim(url)
         try {
-            for (ask in wanted) {
+            // A cut visit resumes where it stopped, so the asks behind the cut are not starved.
+            val start = if (wanted.isEmpty()) 0 else (resumeAt.remove(key) ?: 0) % wanted.size
+            for (step in wanted.indices) {
+                val at = (start + step) % wanted.size
+                val ask = wanted[at]
                 // Give up on silence, not on a deadline: a delivering visit is never cut.
-                if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
+                if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > quietGiveUpMs) {
+                    resumeAt[key] = at
                     aborts
                         .record(
                             key.stream,
                             url,
                             VisitAborts.Reason.GAVE_UP,
-                            asked = "${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s), ${VisitAborts.asked(ask.filter)}",
+                            asked = "${quietGiveUpMs / 60_000} quiet minute(s), ${VisitAborts.asked(ask.filter)}",
                             said = null,
                         )?.let(System.err::println)
                     return
@@ -566,6 +577,7 @@ internal class VisitPool(
                 val refusal = catchUp(ask, url, ongoingVisit)
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
+                    resumeAt[key] = at + 1
                     aborts
                         .record(
                             key.stream,
@@ -753,6 +765,8 @@ internal class VisitPool(
                 )
             }
             if (readToTheEnd(walked)) {
+                // An answered ask is the relay responding, whether or not it had anything to send.
+                ongoingVisit.lastActivityMs = System.currentTimeMillis()
                 bands.record(
                     key,
                     url,

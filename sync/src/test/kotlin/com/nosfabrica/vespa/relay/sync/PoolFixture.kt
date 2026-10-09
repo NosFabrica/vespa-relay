@@ -96,7 +96,11 @@ internal class PoolFixture(
         }
     }
 
-    fun pool(limits: PoolLimits = PoolLimits(emptyMap())): VisitPool {
+    fun pool(
+        limits: PoolLimits = PoolLimits(emptyMap()),
+        quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
+        roster: RosterSource = RosterBuilder(store = store, streams = streams, bands = bands),
+    ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
         val ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null)
@@ -115,11 +119,12 @@ internal class PoolFixture(
             healer = Healer(client, store, HealQueue(), WriteCapability(), RefusedIds.disabled(), null),
             sockets = NoSockets,
             scope = scope,
-            rosterBuilder = RosterBuilder(store = store, streams = streams, bands = bands),
+            rosterBuilder = roster,
             streams = streams,
             progress = processors.of("visits"),
             workers = 1,
             limits = limits,
+            quietGiveUpMs = quietGiveUpMs,
         )
     }
 

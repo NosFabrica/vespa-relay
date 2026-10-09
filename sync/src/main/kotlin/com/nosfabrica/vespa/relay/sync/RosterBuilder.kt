@@ -33,6 +33,11 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 
+/** Where the pool's roster comes from: [RosterBuilder], or a fixed roster in a test. */
+internal fun interface RosterSource {
+    suspend fun rebuild(): RosterBuilder.Roster
+}
+
 /**
  * What the pool should be syncing: one [rebuild] reads every stream's sources out of the
  * store, intersects them with the stream's gate, and answers url → stream → asks. Store reads
@@ -59,7 +64,7 @@ internal class RosterBuilder(
      * router that runs no monitor is not a router whose every relay is ungraded.
      */
     private val watching: Boolean = false,
-) {
+) : RosterSource {
     /** One unit of work against one relay: the stream asking and the exact filter. Bands, audits and tails key on it. */
     internal data class Ask(
         val stream: SyncStream,
@@ -121,7 +126,7 @@ internal class RosterBuilder(
 
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
-    suspend fun rebuild(): Roster {
+    override suspend fun rebuild(): Roster {
         // Two halves, sealed into [UnitAsks] at the end: the identity dedups `want()` while it grows.
         val asksByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableList<Ask>>>()
         val wantsByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableSet<String>>>()
