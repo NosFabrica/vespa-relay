@@ -17,7 +17,7 @@ class FakeWS {
 }
 globalThis.WebSocket = FakeWS;
 
-const { profiles, enrichProfiles } = await import(new URL("../../main/resources/web/shared/profiles.js", import.meta.url));
+const { profiles, enrichProfiles, parseProfile, displayName, authorOf } = await import(new URL("../../main/resources/web/shared/profiles.js", import.meta.url));
 
 const pk = (c) => c.repeat(64);
 const profileEvent = (pubkey, name) => ({ id: pk("e"), pubkey, kind: 0, created_at: 1, tags: [], content: JSON.stringify({ name }) });
@@ -54,4 +54,20 @@ const dropped = pk("d");
 await enrichProfiles([dropped]);
 assert.strictEqual(profiles.has(dropped), false, "a dropped connection states nothing");
 
-console.log("profiles: absence is cached only when the relay answered");
+// Kind-0 content is anyone's JSON: a field of the wrong type reads as absent
+// instead of throwing out of every render that shows this author.
+const odd = parseProfile({ pubkey: pk("f"), kind: 0, created_at: 1,
+  content: JSON.stringify({ display_name: 42, name: ["x"], picture: {}, nip05: true, about: null, website: 7, lud16: [] }) });
+for (const f of ["name", "display_name", "picture", "nip05", "about", "website", "lud16"]) {
+  assert.strictEqual(odd[f], "", `a non-string ${f} becomes ""`);
+}
+assert.strictEqual(displayName(odd), "");
+assert.strictEqual(displayName({ display_name: 42, name: " bob " }), "bob", "a cached non-string falls through too");
+assert.strictEqual(parseProfile({ content: JSON.stringify({ displayName: "Zed", username: 3 }) }).display_name, "Zed");
+for (const content of ["42", "null", "[1]", "\"str\""]) {
+  assert.strictEqual(displayName(parseProfile({ content })), "", `content ${content} names no one`);
+}
+profiles.set(pk("f"), odd);
+assert.ok(authorOf({ pubkey: pk("f") }).name.startsWith("npub1"), "an unnamed author falls back to the npub");
+
+console.log("profiles: absence is cached only when the relay answered; odd fields read as absent");

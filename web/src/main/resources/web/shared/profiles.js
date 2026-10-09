@@ -6,20 +6,24 @@ import { shortNpub } from "./nip19.js";
 
 export const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
 
+// Kind-0 content is anyone's JSON: a field that is not a string reads as absent.
+const str = (v) => (typeof v === "string" ? v : "");
+
 /** The one name to show: `display_name`, else `name`; a whitespace value falls through. */
-export const displayName = (p) => (p && (p.display_name || "").trim()) || (p && (p.name || "").trim()) || "";
+export const displayName = (p) => (p && (str(p.display_name).trim() || str(p.name).trim())) || "";
 
 export function parseProfile(ev) {
   let c = {};
-  try { c = JSON.parse(ev.content) || {}; } catch (e) {}
+  try { c = JSON.parse(ev.content); } catch (e) {}
+  if (!c || typeof c !== "object") c = {};
   return {
-    name: c.name || c.username || "",
-    display_name: c.display_name || c.displayName || "",
-    picture: c.picture || "",
-    nip05: c.nip05 || "",
-    about: c.about || "",
-    website: c.website || "",
-    lud16: c.lud16 || "",
+    name: str(c.name) || str(c.username),
+    display_name: str(c.display_name) || str(c.displayName),
+    picture: str(c.picture),
+    nip05: str(c.nip05),
+    about: str(c.about),
+    website: str(c.website),
+    lud16: str(c.lud16),
     created_at: ev.created_at,
   };
 }
