@@ -233,6 +233,8 @@ class VerdictCadenceTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
+                    // One write at a time, so the cursor lands on a url this test can name.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
 
@@ -289,6 +291,8 @@ class VerdictCadenceTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
+                    // One write at a time, so the cursor lands on a url this test can name.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
 
@@ -562,6 +566,8 @@ class VerdictCadenceTest {
                     progress = Processors().of("fitness"),
                     publishDeadlineMs = 100L,
                     publishWedgeBudgetMs = 500L,
+                    // One write at a time, so the budget is wall time this test can count.
+                    writeConcurrency = 1,
                     reconcile = { _, _ -> },
                 )
             System.setErr(PrintStream(captured, true))

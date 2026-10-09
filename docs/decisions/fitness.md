@@ -306,3 +306,13 @@ rather than dialling aliases blind. The per-write `currentRecord` read stays:
 the edit is a read-modify-write and must see what the record holds at write
 time. The sweep's other reads (the dead set, our records, the fold's world, the
 stability gate's load) are per pass and were left alone.
+
+**Verdict writes run several at a time.** Each was a whole record edit (read,
+sign, insert) done one after another while the pass gate was held, so a sweep
+of thousands of verdicts spent most of its write phase waiting on round trips.
+`writeEach` runs `WRITE_CONCURRENCY` of them at once, safe because each url is
+its own record. The per-write deadline is unchanged; "in a row" is counted by
+start order, so a slow write landing after quick answers to later ones is not a
+run, and each wedged write charges the budget its share of the slots rather
+than its whole wall time. The cursor still stops on the write that tripped the
+limit.

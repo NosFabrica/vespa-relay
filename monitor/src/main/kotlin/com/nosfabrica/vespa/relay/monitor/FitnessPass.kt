@@ -77,6 +77,8 @@ class FitnessPass(
     private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
     /** How much wall time one batch may lose to a store that is not answering. */
     private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
+    /** Verdict writes in flight at once. */
+    private val writeConcurrency: Int = WRITE_CONCURRENCY,
     /** The NEG-OPEN, the only thing this pass asks [client] for. */
     private val reconcile: suspend (NormalizedRelayUrl, Filter) -> Unit = { url, sliver ->
         client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
@@ -255,15 +257,9 @@ class FitnessPass(
                 for (url in provedGone) outcomes.remove(url)
             }
 
-            // The writes, serial and after the dials, each under its own wall clock: the store's
-            // client carries no read deadline, and a cut write is not retried.
-            var published = 0
-            var declined = 0
+            // The writes, after the dials and several at a time, each under its own wall clock: the
+            // store's client carries no read deadline, and a cut write is not retried.
             var skipped = 0
-            var wedgedRun = 0
-            var wedgedTotal = 0
-            var wedgedMs = 0L
-            var stoppedBy: String? = null
             // An inherited verdict is written only when it would change something: re-stamping
             // `measured-at` on what this pass did not test would make it immortal.
             val standing = held.fitness
@@ -281,72 +277,33 @@ class FitnessPass(
             // socket — so leaving the dial position up would sit full at `toDial` for the whole
             // write, with `quietForSec` climbing on a pass writing thousands of verdicts.
             progress.measuring(rotated.size, Processors.UNIT_VERDICT)
-            for (url in rotated) {
-                // `rotated` is `outcomes`' own key set, so every url here has one.
-                val outcome = outcomes.getValue(url)
-                // The evidence has to match too: re-folded onto a different canonical is not the
-                // same statement.
-                if (!outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true) {
-                    skipped++
-                    progress.attempted()
-                    continue
+            val toWrite =
+                rotated.filter { url ->
+                    // `rotated` is `outcomes`' own key set, so every url here has one.
+                    val outcome = outcomes.getValue(url)
+                    // The evidence has to match too: re-folded onto a different canonical is not the
+                    // same statement.
+                    val unchanged = !outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true
+                    if (unchanged) {
+                        skipped++
+                        progress.attempted()
+                    }
+                    !unchanged
                 }
-                progress.holding(url.url, STAGE_PUBLISH)
-                // Three-valued: `true` stored, `false` the store answering and the write still
-                // failing, `null` the deadline.
-                val writeStartedMs = System.currentTimeMillis()
-                val wrote =
-                    try {
-                        withTimeoutOrNull(publishDeadlineMs) {
-                            record.publishFitness(
-                                url = url,
-                                status = outcome.verdict.value,
-                                evidence = outcome.evidence,
-                                pageable = outcome.pageable,
-                                nip77 = outcome.nip77,
-                                compliant = outcome.compliant,
-                                facts = factsOf(url, outcome, readings[url]),
-                            ) != null
-                        }
-                    } finally {
-                        progress.released(url.url)
-                    }
-                when (wrote) {
-                    true -> {
-                        published++
-                        wedgedRun = 0
-                    }
-
-                    // The store spoke and the write still failed; a prompt failure costs nothing per verdict.
-                    false -> {
-                        declined++
-                        // A decline is the store answering, so it ends a run too; the budget bounds
-                        // the alternating case.
-                        wedgedRun = 0
-                    }
-
-                    null -> {
-                        // Each timed-out write costs the full deadline, so a wedged store ends the
-                        // batch loudly.
-                        wedgedTotal++
-                        wedgedRun++
-                        wedgedMs += System.currentTimeMillis() - writeStartedMs
-                        stoppedBy =
-                            when {
-                                wedgedRun >= PUBLISH_WEDGE_LIMIT -> "$wedgedRun write(s) in a row went unanswered"
-                                wedgedMs >= publishWedgeBudgetMs -> "${wedgedMs / 1000}s of this batch was spent waiting on writes that never came back"
-                                else -> null
-                            }
-                        if (stoppedBy != null) {
-                            // At this url, not after it: the write that tripped the limit did not
-                            // land, and the position stops where the batch did rather than filling.
-                            writeCursors[label] = url.url
-                            break
-                        }
-                    }
+            val tally =
+                writeEach(toWrite, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
+                    val outcome = outcomes.getValue(url)
+                    record.publishFitness(
+                        url = url,
+                        status = outcome.verdict.value,
+                        evidence = outcome.evidence,
+                        pageable = outcome.pageable,
+                        nip77 = outcome.nip77,
+                        compliant = outcome.compliant,
+                        facts = factsOf(url, outcome, readings[url]),
+                    ) != null
                 }
-                progress.attempted()
-            }
+            tally.resumeAt?.let { writeCursors[label] = it.url }
 
             report(
                 label,
@@ -357,13 +314,13 @@ class FitnessPass(
                 abandoned,
                 unmeasured.size,
                 downloaded.get(),
-                unwrittenCount = outcomes.size - published - skipped,
-                wedgedWrites = wedgedTotal,
-                declinedWrites = declined,
+                unwrittenCount = outcomes.size - tally.published - skipped,
+                wedgedWrites = tally.wedged,
+                declinedWrites = tally.declined,
                 cutLate = cutLate.get(),
                 resumeAt = writeCursors[label],
                 skippedWrites = skipped,
-                stoppedBy = stoppedBy,
+                stoppedBy = tally.stoppedBy,
                 negOpenCut = negOpenCut.get(),
                 secondPageCut = secondPageCut.get(),
                 pageUnproven = pageUnproven.get(),
@@ -919,6 +876,9 @@ class FitnessPass(
 
         /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
         const val PUBLISH_DEADLINE_MS = 60_000L
+
+        /** Verdict writes in flight at once; each is its own record, so they never race. */
+        const val WRITE_CONCURRENCY = 16
 
         /** Consecutive deadline hits before the batch stops; reset by every write the store answers. */
         const val PUBLISH_WEDGE_LIMIT = 3
