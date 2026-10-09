@@ -17,6 +17,11 @@ relay fails its boot on purpose — the setting would once have started the
 mirror there, and accepting-but-ignoring it is the silent inertness this
 codebase forbids.
 
+Unset or blank is the default. A number that does not parse, or falls outside
+its range, stops the boot and names the variable, as does a switch that is not
+`true`/`false` (`1`/`0`, `yes`/`no` and `on`/`off` also work, in any case). A
+typo read as the default would be a setting nobody can see is not applied.
+
 ## Core
 
 | var | meaning | default |

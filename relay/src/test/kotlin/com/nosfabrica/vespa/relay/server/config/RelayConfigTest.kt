@@ -46,13 +46,12 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `limits override only the fields set, ignoring garbage`() {
+    fun `limits override only the fields set, and garbage stops the boot`() {
         val limits =
             relayLimitsFromEnv(
                 mapOf(
                     "MAX_FILTERS" to "7",
                     "MAX_LIMIT" to "999",
-                    "MAX_SUBSCRIPTIONS" to "not-a-number",
                     "CREATED_AT_UPPER_LIMIT" to "1900000000",
                 ),
             )
@@ -60,17 +59,22 @@ class RelayConfigTest {
         assertEquals(999, limits.maxLimit)
         assertEquals(50, limits.maxSubscriptions)
         assertEquals(1_900_000_000L, limits.createdAtUpperLimit)
+        // Read as the default, a typo is a limit nobody can see is not applied.
+        assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("MAX_SUBSCRIPTIONS" to "not-a-number")) }
     }
 
     @Test
-    fun `an unreadable expansion cap keeps the default rather than disabling the splice`() {
+    fun `an unreadable expansion cap stops the boot rather than disabling the splice`() {
         val d = SearchExpansionLimits.Default
+        for (blank in listOf("", "  ")) {
+            val got = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to blank, "SEARCH_EXPAND_MAX_TOTAL" to blank))
+            assertEquals(d.maxPerEvent, got.maxPerEvent)
+            assertEquals(d.maxPerRequest, got.maxPerRequest)
+        }
         // A negative coerced to zero reads like a corpus with no trust records.
-        for (bad in listOf("-1", "-1000", "many", "", "  ")) {
-            val got = searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to bad, "SEARCH_EXPAND_MAX_TOTAL" to bad))
-            assertEquals(d.maxPerEvent, got.maxPerEvent, "SEARCH_EXPAND_MAX_PER_EVENT=$bad")
-            assertEquals(d.maxPerRequest, got.maxPerRequest, "SEARCH_EXPAND_MAX_TOTAL=$bad")
-            assertTrue(got.enabled, "a bad cap is not a way to turn the feature off")
+        for (bad in listOf("-1", "-1000", "many")) {
+            assertFailsWith<IllegalStateException>("SEARCH_EXPAND_MAX_PER_EVENT=$bad") { searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_PER_EVENT" to bad)) }
+            assertFailsWith<IllegalStateException>("SEARCH_EXPAND_MAX_TOTAL=$bad") { searchExpansionFromEnv(mapOf("SEARCH_EXPAND_MAX_TOTAL" to bad)) }
         }
     }
 
@@ -84,7 +88,7 @@ class RelayConfigTest {
         for (off in listOf("false", "0", "no", "off", "OFF")) {
             assertFalse(searchExpansionFromEnv(mapOf("SEARCH_EXPAND_REFERENCES" to off)).enabled, off)
         }
-        assertTrue(searchExpansionFromEnv(mapOf("SEARCH_EXPAND_REFERENCES" to "flase")).enabled, "a typo leaves it ON")
+        assertFailsWith<IllegalStateException>("a typo is neither on nor off") { searchExpansionFromEnv(mapOf("SEARCH_EXPAND_REFERENCES" to "flase")) }
         assertEquals(SearchExpansionLimits.Default, searchExpansionFromEnv(emptyMap()))
     }
 
@@ -206,10 +210,10 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `reject-future defaults off and clamps negatives`() {
+    fun `reject-future defaults off and refuses a negative`() {
         assertEquals(0, rejectFutureSecondsFromEnv(emptyMap()))
         assertEquals(900, rejectFutureSecondsFromEnv(mapOf("REJECT_FUTURE_SECONDS" to "900")))
-        assertEquals(0, rejectFutureSecondsFromEnv(mapOf("REJECT_FUTURE_SECONDS" to "-5")))
+        assertFailsWith<IllegalStateException> { rejectFutureSecondsFromEnv(mapOf("REJECT_FUTURE_SECONDS" to "-5")) }
     }
 
     @Test
@@ -218,10 +222,11 @@ class RelayConfigTest {
         for (off in listOf("false", "0", "no", "off", "FALSE", " no ")) {
             assertFalse(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to off)), "\"$off\" turns it off")
         }
-        // Anything else is on, typos included: a typo that opened the corpus would go unnoticed.
-        for (on in listOf("true", "1", "yes", "treu", "", "  ")) {
+        for (on in listOf("true", "1", "yes", "", "  ")) {
             assertTrue(requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to on)), "\"$on\" leaves it on")
         }
+        // A typo never opens the corpus: it stops the boot.
+        assertFailsWith<IllegalStateException> { requireReadLensFromEnv(mapOf("REQUIRE_READ_LENS" to "treu")) }
     }
 
     @Test
