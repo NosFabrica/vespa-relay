@@ -983,6 +983,7 @@ const s = {
   exhausted: false,  // the relay proved there is nothing past what we hold (paging.js's drained)
   more: null,        // this view's query, re-askable at a longer limit; null on a view that cannot page
   preloading: false, // one widening ask at a time
+  pages: 0,          // bumped by resetPages(); a widening begun before it writes nothing
 };
 
 /**
@@ -1277,13 +1278,14 @@ async function preload() {
   const want = askLimit(s.page);
   if (want <= s.asked) return;
   const myId = s.requestId;
+  const gen = s.pages;
   const ask = s.more;
   // Only the success path asks again; an error that re-kicked would loop.
   let again = false;
   s.preloading = true;
   try {
     const found = await ask(want);
-    if (myId !== s.requestId) return;
+    if (myId !== s.requestId || gen !== s.pages) return;
     const grown = mergePages(s.hits, found.events);
     // Did the reader outrun us? Asked of the old buffer.
     const waiting = !pageOf(s.hits, s.page).length;
@@ -1307,16 +1309,17 @@ async function preload() {
   } catch (e) {
     // A failed widening is not a failed search; nothing is marked exhausted, so Next tries again.
   } finally {
-    s.preloading = false;
+    // After a reset the flag belongs to the newer view's widening, if one started.
+    if (gen === s.pages) s.preloading = false;
   }
   // Once more, in case the reader moved during the round trip; each pass asks for strictly more, so
   // this terminates.
-  if (again && myId === s.requestId) preload();
+  if (again && myId === s.requestId && gen === s.pages) preload();
 }
 
 /** The pager, back to a view that has no pages: the hero, the feed, an entity. */
 function resetPages() {
-  s.page = 0; s.asked = 0; s.exhausted = false; s.more = null; s.preloading = false;
+  s.page = 0; s.asked = 0; s.exhausted = false; s.more = null; s.preloading = false; s.pages++;
 }
 
 /** Whether the list already on screen survives the wait for the next answer. */
@@ -1326,6 +1329,7 @@ const REPLACE = false, KEEP = true;
 // the timing, the skeleton and the late repaints are the same for every caller.
 async function run(st, fetch, keep, render) {
   const myId = ++st.requestId;
+  st.running = myId;
   st.loading = true; st.error = null;
   if (!keep) { st.hits = []; st.hitsFor = null; }
   render();
@@ -1333,7 +1337,7 @@ async function run(st, fetch, keep, render) {
   let late = [];
   try {
     const found = await fetch();
-    if (myId !== st.requestId) return;
+    if (myId !== st.requestId) return superseded(st, myId);
     // The feed's `hitsFor` is null, so focus can never reopen the popup on it.
     st.hits = found.events; st.hitsFor = found.text ?? null;
     // What the pager needs: how far this ask reached, and whether the relay ran out first (EOSE,
@@ -1346,7 +1350,7 @@ async function run(st, fetch, keep, render) {
     // After the guard: the row seed replaces rather than adds. See rowSeed.
     late = [found.names, found.groups, ...(found.row ? found.row() : []), found.parents].filter(Boolean);
   } catch (e) {
-    if (myId !== st.requestId) return;
+    if (myId !== st.requestId) return superseded(st, myId);
     st.error = e.message || String(e); st.hits = []; st.hitsFor = null;
   }
   st.lastMs = Math.round(performance.now() - t0); st.loading = false;
@@ -1354,6 +1358,15 @@ async function run(st, fetch, keep, render) {
   paintLate(st, myId, late, render);
   // Whether this answer is the one on screen; a superseded search must not page.
   return myId === st.requestId;
+}
+
+/**
+ * A run whose answer was dropped. A bump from outside run() starts no ask, so the last run to
+ * start still owns `loading` and clears it; otherwise the popup queues behind it forever.
+ */
+function superseded(st, myId) {
+  if (st.running === myId) st.loading = false;
+  return false;
 }
 
 /**
