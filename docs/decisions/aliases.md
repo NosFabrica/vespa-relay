@@ -238,3 +238,11 @@ mirror's roster hands it one stream's urls outside the monitor's pass gate:
 `replace` over that narrower set dropped the canonical mark of every url
 whose alias sat outside it, mid-fold. The read path now builds a throwaway
 `RelayAliases` from the same load, and only the fold's own pass replaces.
+
+**A refusal of our key is not an answer the shared-name fold may rest on.**
+`leaderPrint` counted an auth refusal as "spoke", so a host where every path
+rejected our NIP-42 key folded on its hostname alone and signed public
+`same-as` records across what may be distinct relays: a refusal reads the same
+from any server. Auth-refused urls are now unmeasured for that rule, and
+`FOLD_EPOCH` went to 3 with it so the folds signed under the old rule stop
+being read.

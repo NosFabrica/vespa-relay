@@ -484,7 +484,7 @@ class RelayVerdictRecord(
          * The version of the fold's decision rules. Bump it in the same commit as any change to
          * what a fingerprint concludes; the cost is a full re-fingerprint of the store.
          */
-        const val FOLD_EPOCH = "2"
+        const val FOLD_EPOCH = "3"
 
         /** The same lever for the stability verdict, a separate measurement. */
         const val CONSISTENCY_EPOCH = "1"

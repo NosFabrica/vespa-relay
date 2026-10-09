@@ -173,8 +173,8 @@ class AliasFolding(
                             // Asked to be the yardstick and answered nothing; a url the transport
                             // declined was never asked.
                             val exhausted = HashSet<NormalizedRelayUrl>()
-                            // Urls this pass asked, and the subset that answered: what
-                            // foldUnreadableGroups turns on.
+                            // Urls this pass asked, and the subset that answered other than by
+                            // refusing our key: what foldUnreadableGroups turns on.
                             val askedUrls = HashSet<NormalizedRelayUrl>()
                             val spoke = HashSet<NormalizedRelayUrl>()
                             for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
@@ -189,7 +189,7 @@ class AliasFolding(
                                         dial(candidate, sockets) { probe.leaderPrint(candidate, anchor, onEvent) }
                                     }
                                 if (asked) askedUrls += candidate
-                                if (attempt?.spoke == true) spoke += candidate
+                                if (attempt?.answeredForFold == true) spoke += candidate
                                 val print = attempt?.leader
                                 // Asked and silent, or cut by the deadline: a second dial this pass
                                 // buys the same silence.
@@ -242,7 +242,7 @@ class AliasFolding(
                                     }
                                 }
                                 for ((url, attempt) in swept) {
-                                    if (attempt.spoke) spoke += url
+                                    if (attempt.answeredForFold) spoke += url
                                     if (attempt.leader == null) exhausted += url
                                 }
                                 // A usable window the sweep found is a yardstick, taken in preference order so the

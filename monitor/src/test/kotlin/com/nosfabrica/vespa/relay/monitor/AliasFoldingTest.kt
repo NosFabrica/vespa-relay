@@ -295,20 +295,16 @@ class AliasFoldingTest {
         }
 
     @Test
-    fun `urls that answered DIFFERENTLY are still folded together`() =
+    fun `a refusal of our key is no evidence two urls are one relay`() =
         runBlocking {
-            // Pins a limit, not a virtue: a credential refusal and an empty EOSE count as the same answer.
+            // A NIP-42 rejection reads the same from any server, so the shared-name fold may not rest on it.
             val store = newStore()
-            val up =
-                Upstreams(
-                    serves = { false },
-                    refuses = { RelayAliases.pathOf(it.url).isNotEmpty() },
-                ) { emptyList() }
-            val fold = folding(store, up)
             val group = listOf(canonical, alias)
-
-            assertEquals(1, fold.measure("t", group, canDial = { true }))
-            assertEquals(listOf(canonical), fold.applyVerdicts(group).dial, "current behaviour: a refusal and an EOSE fold together")
+            for (refuses in listOf<(NormalizedRelayUrl) -> Boolean>({ RelayAliases.pathOf(it.url).isNotEmpty() }, { true })) {
+                val fold = folding(store, Upstreams(serves = { false }, refuses = refuses) { emptyList() })
+                assertEquals(0, fold.measure("t", group, canDial = { true }))
+                assertEquals(group, fold.applyVerdicts(group).dial, "a host refusing our key was folded on its name")
+            }
         }
 
     @Test
