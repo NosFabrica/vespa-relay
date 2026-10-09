@@ -40,6 +40,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import java.security.MessageDigest
@@ -136,6 +138,32 @@ internal class PoolFixture(
     }
 
     companion object {
+        /** A relay holding [corpus] that answers every walk in full, newest first. */
+        fun holding(corpus: List<Event>): suspend (Filter, suspend (Event) -> Unit) -> PagedFetchResult =
+            { filter, onEvent ->
+                val hits = corpus.filter { filter.match(it) }.sortedByDescending { it.createdAt }
+                hits.forEach { onEvent(it) }
+                PagedFetchResult(hits.size, PagedFetchResult.End.DRAINED)
+            }
+
+        /** One whole visit of [streams] against [answer], recording into [bands]; the pool stays readable. */
+        suspend fun visitOnce(
+            streams: List<SyncStream>,
+            bands: SyncBands,
+            answer: suspend (Filter, suspend (Event) -> Unit) -> PagedFetchResult,
+        ): VisitPool {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val fixture = PoolFixture(scope, streams, answer, bands)
+                val pool = fixture.pool()
+                pool.start()
+                fixture.awaitTail()
+                return pool
+            } finally {
+                scope.cancel()
+            }
+        }
+
         fun stream(
             name: String,
             url: NormalizedRelayUrl,

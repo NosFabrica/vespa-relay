@@ -109,3 +109,12 @@ so the index finds what the scan did.
 **An eviction hands its permit over.** Releasing the evicted tail's permit and
 then asking for one let another worker's `trySpare` take it in between, so the
 eviction cost a tail and the evicting unit still had none.
+
+**A band's drain settles it at the band's own floor.** `drainSettlesThePast`
+compared every chunk with the stream filter's floor, and a younger re-fetch
+band's legs stop at its window edge, so no younger band could ever record
+`complete`: its bottom was re-walked on every visit and the prime-relays table
+held every banded pair at `paging`. The walk now passes the ask bounded by the
+band's older edge. Nothing below that edge is ever the band's to owe, because
+the edge only rises with `now`; the oldest band's edge is the filter's own, so
+an unbanded stream is unchanged.

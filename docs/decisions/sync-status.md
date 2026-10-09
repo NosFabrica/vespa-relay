@@ -230,3 +230,13 @@ name is one the glossary can never define.
 **The coverage card's denominator is relays a stream has touched, not relays
 it names.** A dynamic stream has no configured list, so the only honest count
 is the urls that reached the band file or a sweep cursor.
+
+**A banded ask is settled by its floor band, or by the audit.** Requiring
+`complete` under every band key held a pair at `paging` whenever a younger
+band's window was empty, since an empty page records no band. An ask is now
+settled when the band reaching the floor is complete and every younger band
+it holds is too; the catch-up walks the floor band last, so a younger band
+holding nothing beside it was walked and found empty. A finished reconcile to
+the floor settles it alone, read under the bare stream name the audit files it
+under, which no band key is. The rule is a mask per ask over one snapshot
+walk, so a status tick costs what it did, and with one band it is the old rule.

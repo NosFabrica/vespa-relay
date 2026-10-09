@@ -248,6 +248,8 @@ internal class VisitPool(
         // thousands of times.
         val cannotReconcile = bands.cannotReconcileByUnit()
         val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
+        // A banded stream's audit files its reconcile under the bare name, which no band key is.
+        val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
         val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
@@ -271,6 +273,7 @@ internal class VisitPool(
                         abortReason = abort?.reason?.says,
                         abortSaid = abort?.said,
                         abortAtSec = abort?.atSec ?: 0,
+                        auditKey = auditKeys[stream],
                     )
             }
         }
@@ -696,6 +699,7 @@ internal class VisitPool(
         val stream = ask.stream
         // Read before the first `record` below widens it; it tells a catch-up from a re-fetch.
         val covered = bands.band(key, url, ask.filter)
+        val floor = ask.filter.bandFloor(bandSince)
         for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
@@ -711,7 +715,7 @@ internal class VisitPool(
             try {
                 var narrowings = 0
                 while (true) {
-                    val refusal = walkLeg(ask, url, key, flooredLeg, ongoingVisit) ?: break
+                    val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
                     if (!refusal.ours &&
                         narrowings < MAX_NARROWINGS &&
@@ -743,6 +747,8 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         key: String,
         flooredLeg: Filter,
+        /** The ask bounded below by its band, whose floor a drained chunk must reach to settle it. */
+        floor: Filter,
         ongoingVisit: OngoingVisit,
     ): Refusal? {
         val stream = ask.stream
@@ -798,7 +804,7 @@ internal class VisitPool(
                     seenMax,
                     paged = true,
                     observedByKind = seenByKind,
-                    drained = drainSettlesThePast(walked, chunk, ask.filter),
+                    drained = drainSettlesThePast(walked, chunk, floor),
                 )
             } else {
                 bands.recordCut(key, url, ask.filter, seenByKind, walkedTop = chunk.until ?: (askedAtMs / 1000))
@@ -943,6 +949,9 @@ internal class VisitPool(
                 ", last verified ${verifiedBefore?.let { "${auditStarted - it}s ago" } ?: "never"}",
         )
     }
+
+    /** [this] with the band's older edge as its floor: the ground below belongs to an older band. */
+    private fun Filter.bandFloor(bandSince: Long?): Filter = if (bandSince == null) this else copy(since = maxOf(since ?: bandSince, bandSince))
 
     /** [this] intersected with a band's window, or null where nothing is left of it. */
     private fun Filter.clampedTo(

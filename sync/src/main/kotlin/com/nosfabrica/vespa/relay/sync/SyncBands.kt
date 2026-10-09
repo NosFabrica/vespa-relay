@@ -969,8 +969,8 @@ internal fun Filter.flooredForPaging(): Filter = if (since != null) this else co
 
 /**
  * Whether a drained leg says anything about history: the guard between [PagedFetchResult] and
- * [SyncBands.record]. Only the older leg, which reaches the filter's own floor, settles the past.
- * Compared as floors, not for equality: the sweep fallback materialises a null `since`.
+ * [SyncBands.record]. Only the leg reaching [filter]'s floor settles the past; for an age band,
+ * pass the ask bounded by the band's older edge. Compared as floors: the sweep fallback materialises a null `since`.
  */
 internal fun drainSettlesThePast(
     walk: PagedFetchResult?,
