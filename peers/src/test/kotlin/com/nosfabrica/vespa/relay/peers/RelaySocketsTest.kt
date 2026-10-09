@@ -110,6 +110,57 @@ class RelaySocketsTest {
     }
 
     @Test
+    fun `no socket is closed while a claim on it is outstanding`() {
+        // The last holder's release and a new claim race; the close must never land after the claim.
+        val holders = AtomicInteger()
+        val closedUnderHolder = AtomicInteger()
+        val closes = AtomicInteger()
+        val builder =
+            object : WebsocketBuilder {
+                override fun build(
+                    url: NormalizedRelayUrl,
+                    out: WebSocketListener,
+                ): WebSocket =
+                    object : WebSocket {
+                        override fun needsReconnect() = false
+
+                        override fun connect() = Unit
+
+                        override fun disconnect() {
+                            closes.incrementAndGet()
+                            if (holders.get() > 0) closedUnderHolder.incrementAndGet()
+                        }
+
+                        override fun send(msg: String) = true
+                    }
+            }
+        val client = NostrClient(builder)
+        try {
+            val sockets = RelaySockets(client, pinnedUrls = emptySet())
+            val relay = client.getOrCreateRelay(probed)
+            val threads =
+                (0 until 4).map {
+                    Thread {
+                        repeat(20_000) {
+                            sockets.claim(probed)
+                            holders.incrementAndGet()
+                            relay.connect()
+                            holders.decrementAndGet()
+                            sockets.release(probed)
+                        }
+                    }
+                }
+            threads.forEach { it.start() }
+            threads.forEach { it.join() }
+
+            assertTrue(closes.get() > 0, "the race was never exercised: no socket was closed")
+            assertEquals(0, closedUnderHolder.get(), "a socket was closed under a holder ${closedUnderHolder.get()} time(s)")
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `a release nobody claimed is refused rather than treated as a holder leaving`() {
         val builder = CountingSockets()
         val client = NostrClient(builder)
