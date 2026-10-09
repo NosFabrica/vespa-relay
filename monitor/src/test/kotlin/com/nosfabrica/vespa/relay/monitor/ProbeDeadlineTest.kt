@@ -109,17 +109,49 @@ class ProbeDeadlineTest {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
             }
 
-            // A refused connection is a fact about the host, so a dead corpus still publishes.
-            val dead = newStore()
+            // A transport word is an answer, not blindness, so a corpus of them still publishes.
+            val refused = newStore()
             FitnessPass(
-                record = RelayVerdictRecord(dead, signer),
+                record = RelayVerdictRecord(refused, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
                 client = EmptyNostrClient(),
                 foldedAway = { emptyMap() },
                 inconsistent = { emptySet() },
                 progress = Processors().of("fitness"),
-            ).measure("dead corpus", blind, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
-            assertEquals(Verdict.DEAD.value, gradeOf(dead, blind.first()), "a transport word is evidence and must still publish")
+            ).measure("refused corpus", blind, canDial = { true }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
+        }
+
+    @Test
+    fun `dead is published on proof or on the server's own refusal, never on a connect word the pre-probe contradicts`() =
+        runBlocking {
+            val url = RelayUrlNormalizer.normalize("wss://gone.example")
+
+            suspend fun grade(
+                reason: String,
+                reachable: Boolean,
+            ): String? {
+                val store = newStore()
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = reason) },
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                ).measure("one", listOf(url), canDial = { reachable }, onEvent = {}, sockets = Sockets.NONE)
+                return gradeOf(store, url)
+            }
+
+            // The pre-probe let the url through, so a resolver or routing word from the dial is our side's word.
+            assertEquals(Verdict.SILENT.value, grade("cannot: java.net.UnknownHostException: Temporary failure in name resolution", reachable = true))
+            assertEquals(Verdict.SILENT.value, grade("cannot: connect: Network is unreachable", reachable = true))
+            assertEquals(Verdict.SILENT.value, grade("cannot: java.net.ConnectException: Connection refused", reachable = true))
+            // The server answered the connect and refused the protocol.
+            assertEquals(Verdict.DEAD.value, grade("cannot: javax.net.ssl.SSLHandshakeException: PKIX path building failed", reachable = true))
+            assertEquals(Verdict.DEAD.value, grade("cannot: Expected HTTP 101 response but was '404 Not Found'", reachable = true))
+            // The typed pre-probe's proof stands on its own.
+            assertEquals(Verdict.DEAD.value, grade("unused", reachable = false))
         }
 
     @Test

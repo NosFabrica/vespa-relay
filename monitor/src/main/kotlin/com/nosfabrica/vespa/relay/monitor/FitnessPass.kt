@@ -499,19 +499,21 @@ class FitnessPass(
         if (answered == null) {
             // Never spoke, or refused every shape. [Silence] tells the two apart.
             return when (val cause = Silence.of(lastReason)) {
-                Silence.TIMEOUT, Silence.RATE_LIMITED, Silence.UNKNOWN -> {
+                // The server took the connect and refused the protocol: its own answer.
+                Silence.TLS, Silence.UPGRADE -> {
+                    Outcome(Verdict.DEAD, cause.reason)
+                }
+
+                else -> {
                     if (lastReason == null) {
                         // Nothing came back at all, which is what our own socket layer produces when it
                         // is the broken thing: nothing is published and the url is measured again next pass.
                         null
                     } else {
-                        // Only a transport word reaches here: anything the relay itself said made it "speak".
+                        // Only a transport word reaches here. A name, refusal or route word is text, not
+                        // proof: the typed pre-probe owns `dead` for those, and it let this url through.
                         Outcome(Verdict.SILENT, cause.reason)
                     }
-                }
-
-                else -> {
-                    Outcome(Verdict.DEAD, cause.reason)
                 }
             }
         }
