@@ -289,20 +289,14 @@ class TorTransportTest {
     }
 
     @Test
-    fun `the tunables are read and clamped`() {
-        val s =
-            assertNotNull(
-                TorSettings.fromEnv(
-                    mapOf(
-                        "SYNC_TOR_SOCKS" to "tor:9050",
-                        "SYNC_TOR_ALL" to "true",
-                        "SYNC_TOR_CONNECT_TIMEOUT_SECONDS" to "1",
-                        "SYNC_TOR_MAX_SOCKETS" to "9000",
-                    ),
-                ),
-            )
+    fun `the tunables are read, and one out of range stops the boot`() {
+        val base = mapOf("SYNC_TOR_SOCKS" to "tor:9050", "SYNC_TOR_ALL" to "true")
+        val s = assertNotNull(TorSettings.fromEnv(base + mapOf("SYNC_TOR_CONNECT_TIMEOUT_SECONDS" to "30", "SYNC_TOR_MAX_SOCKETS" to "64")))
         assertTrue(s.routeAll)
-        assertEquals(5, s.connectTimeoutSec, "a sub-5s connect timeout cannot survive a rendezvous")
-        assertEquals(512, s.maxSockets)
+        assertEquals(30, s.connectTimeoutSec)
+        assertEquals(64, s.maxSockets)
+        // A sub-5s connect timeout cannot survive a rendezvous.
+        assertFailsWith<IllegalStateException> { TorSettings.fromEnv(base + ("SYNC_TOR_CONNECT_TIMEOUT_SECONDS" to "1")) }
+        assertFailsWith<IllegalStateException> { TorSettings.fromEnv(base + ("SYNC_TOR_MAX_SOCKETS" to "9000")) }
     }
 }

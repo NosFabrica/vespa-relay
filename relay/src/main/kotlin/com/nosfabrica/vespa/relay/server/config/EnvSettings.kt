@@ -27,6 +27,9 @@ import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
+import com.nosfabrica.vespa.relay.util.strictFlag
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -93,28 +96,19 @@ fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY
 
 /**
  * `REQUIRE_READ_LENS`: whether an unauthenticated read must declare its lens, see
- * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy]. Unparseable is on: a typo that opened
- * the corpus could not be noticed.
+ * [com.nosfabrica.vespa.relay.server.LensRequiredPolicy]. On unless switched off.
  */
-fun requireReadLensFromEnv(env: Map<String, String>): Boolean =
-    when (env["REQUIRE_READ_LENS"]?.trim()?.lowercase()) {
-        "false", "0", "no", "off" -> false
-        else -> true
-    }
+fun requireReadLensFromEnv(env: Map<String, String>): Boolean = env.strictFlag("REQUIRE_READ_LENS") ?: true
 
 /**
  * Whether a search also answers with the records its hits point at, and how much of the feed that
  * may be: `SEARCH_EXPAND_REFERENCES`, `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`.
- * A cap of 0 is honoured as 0; negative and unparseable keep the default.
+ * A cap of 0 is honoured as 0.
  */
 fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
     val d = SearchExpansionLimits.Default
     return SearchExpansionLimits(
-        enabled =
-            when (env["SEARCH_EXPAND_REFERENCES"]?.trim()?.lowercase()) {
-                "false", "0", "no", "off" -> false
-                else -> true
-            },
+        enabled = env.strictFlag("SEARCH_EXPAND_REFERENCES") ?: true,
         maxPerEvent = env.capOr("SEARCH_EXPAND_MAX_PER_EVENT", d.maxPerEvent),
         maxPerRequest = env.capOr("SEARCH_EXPAND_MAX_TOTAL", d.maxPerRequest),
     )
@@ -122,9 +116,9 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
 
 /**
  * `SEARCH_CONCURRENCY_PER_CONNECTION`: ranked reads one connection may run at once, see
- * `SearchGate`. 0 turns the gate off; unparseable is the default, not off.
+ * `SearchGate`. 0 turns the gate off.
  */
-fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
+fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.strictInt("SEARCH_CONCURRENCY_PER_CONNECTION", 0..Int.MAX_VALUE) ?: SearchGate.DEFAULT_PERMITS
 
 /**
  * `HTTP_RELAY` and its settings, or null when the switch is off. [origins] are the addresses a NIP-98
@@ -134,13 +128,7 @@ fun httpRelayFromEnv(
     env: Map<String, String>,
     origins: () -> List<String>,
 ): HttpRelay? {
-    val on =
-        when (val raw = env["HTTP_RELAY"]?.trim()?.lowercase()) {
-            null, "", "true", "1", "yes", "on" -> true
-            "false", "0", "no", "off" -> false
-            else -> error("HTTP_RELAY='$raw' is not a boolean. Use false to turn NIP-FE's commands over HTTP off.")
-        }
-    if (!on) return null
+    if (env.strictFlag("HTTP_RELAY") == false) return null
     val header = env["HTTP_RELAY_CLIENT_HEADER"]?.trim()?.takeIf { it.isNotEmpty() }
     val proxies =
         env["HTTP_RELAY_TRUSTED_PROXIES"]
@@ -156,10 +144,10 @@ fun httpRelayFromEnv(
     return HttpRelay(
         gate =
             HttpRelayGate(
-                perClient = env.strictInt("HTTP_RELAY_PER_CLIENT", HttpRelayGate.DEFAULT_PER_CLIENT, 0..Int.MAX_VALUE),
-                total = env.strictInt("HTTP_RELAY_TOTAL", HttpRelayGate.DEFAULT_TOTAL, 0..Int.MAX_VALUE),
+                perClient = env.strictInt("HTTP_RELAY_PER_CLIENT", 0..Int.MAX_VALUE) ?: HttpRelayGate.DEFAULT_PER_CLIENT,
+                total = env.strictInt("HTTP_RELAY_TOTAL", 0..Int.MAX_VALUE) ?: HttpRelayGate.DEFAULT_TOTAL,
             ),
-        deadlineMs = env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt(), 1..MAX_DEADLINE_SECONDS) * 1000L,
+        deadlineMs = (env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", 1..MAX_DEADLINE_SECONDS) ?: HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt()) * 1000L,
         origins = origins,
         clients = ClientAddresses(header, proxies),
     )
@@ -168,21 +156,11 @@ fun httpRelayFromEnv(
 /** An hour: an answer still running past that is a stuck one, not a slow one. */
 private const val MAX_DEADLINE_SECONDS = 3_600
 
-/** [key] as an int within [range], [default] when unset; anything else stops the boot. */
-private fun Map<String, String>.strictInt(
-    key: String,
-    default: Int,
-    range: IntRange,
-): Int {
-    val raw = this[key]?.trim()?.takeIf { it.isNotEmpty() } ?: return default
-    return raw.toIntOrNull()?.takeIf { it in range } ?: error("$key='$raw' is not a whole number in ${range.first}..${range.last}.")
-}
-
 /** `REJECT_FUTURE_SECONDS`; 0 (the default) disables the check. */
-fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env["REJECT_FUTURE_SECONDS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env.strictInt("REJECT_FUTURE_SECONDS", 0..Int.MAX_VALUE) ?: 0
 
 /** `EXPIRATION_SWEEP_SECONDS`, the NIP-40 sweep period. 0 or negative disables it. */
-fun expirationSweepSecondsFromEnv(env: Map<String, String>): Long = env["EXPIRATION_SWEEP_SECONDS"]?.trim()?.toLongOrNull() ?: 3_600L
+fun expirationSweepSecondsFromEnv(env: Map<String, String>): Long = env.strictLong("EXPIRATION_SWEEP_SECONDS") ?: 3_600L
 
 /** A comma/space/newline list of ints. A non-numeric entry throws, as [PubKeys] does for keys. */
 private fun parseIntSet(
@@ -199,23 +177,18 @@ private fun parseIntSet(
         }?.toSet()
         .orEmpty()
 
-/** A non-negative cap; [fallback] when absent, blank, negative or unparseable. */
+/** A non-negative cap; [fallback] when unset. */
 private fun Map<String, String>.capOr(
     key: String,
     fallback: Int,
-): Int =
-    this[key]
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?.toIntOrNull()
-        ?.takeIf { it >= 0 } ?: fallback
+): Int = strictInt(key, 0..Int.MAX_VALUE) ?: fallback
 
 private fun Map<String, String>.intOr(
     key: String,
     fallback: Int?,
-): Int? = this[key]?.trim()?.takeIf { it.isNotEmpty() }?.toIntOrNull() ?: fallback
+): Int? = strictInt(key) ?: fallback
 
 private fun Map<String, String>.longOr(
     key: String,
     fallback: Long?,
-): Long? = this[key]?.trim()?.takeIf { it.isNotEmpty() }?.toLongOrNull() ?: fallback
+): Long? = strictLong(key) ?: fallback

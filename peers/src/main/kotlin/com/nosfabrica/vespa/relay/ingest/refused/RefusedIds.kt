@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.ingest.refused
 
 import com.nosfabrica.vespa.relay.util.fmtCount
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -278,12 +280,8 @@ class RefusedIds(
         /** `SYNC_REFUSED_DIR` is where the per-epoch filters live; unset is off. */
         fun fromEnv(env: Map<String, String>): RefusedIds {
             val dir = env["SYNC_REFUSED_DIR"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)
-            val epoch =
-                env["SYNC_REFUSED_EPOCH_SECONDS"]?.trim()?.toLongOrNull()?.takeIf { it > 0 }
-                    ?: DEFAULT_EPOCH_SECONDS
-            val capacity =
-                env["SYNC_REFUSED_EPOCH_CAPACITY"]?.trim()?.toIntOrNull()?.takeIf { it > 0 }
-                    ?: DEFAULT_EPOCH_CAPACITY
+            val epoch = env.strictLong("SYNC_REFUSED_EPOCH_SECONDS", 1L..Long.MAX_VALUE) ?: DEFAULT_EPOCH_SECONDS
+            val capacity = env.strictInt("SYNC_REFUSED_EPOCH_CAPACITY", 1..Int.MAX_VALUE) ?: DEFAULT_EPOCH_CAPACITY
             if (dir == null) {
                 System.err.println("router: SYNC_REFUSED_DIR unset — refused-id suppression is off")
                 return disabled()

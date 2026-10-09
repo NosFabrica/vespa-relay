@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
+import com.nosfabrica.vespa.relay.util.strictInt
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -628,7 +629,7 @@ class IngestPipeline(
         private const val CHECK_CHUNK = 500
 
         /** Ids per probe query, read from the store's own knob so a widened stage B is matched here. */
-        private val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
+        private val DEDUP_CHUNK: Int = System.getenv().strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: 500
 
         /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
         private const val REASON_LIMIT = 64

@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.utils.Log
@@ -278,12 +280,12 @@ class ParseAudit(
             applyQuartzLogLevel(env)
 
             val path = env["PARSE_AUDIT_FILE"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-            val samples = env["PARSE_AUDIT_SAMPLES"]?.trim()?.toIntOrNull()?.coerceIn(1, 100) ?: 5
+            val samples = env.strictInt("PARSE_AUDIT_SAMPLES", 1..100) ?: 5
 
             // The sink must see what quartz reports, whatever the configured floor.
             if (Log.minLevel > LogLevel.WARN) Log.minLevel = LogLevel.WARN
 
-            val flushSec = env["PARSE_AUDIT_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(5L) ?: 60L
+            val flushSec = env.strictLong("PARSE_AUDIT_INTERVAL_SECONDS", 5L..Long.MAX_VALUE) ?: 60L
             val audit = ParseAudit(File(path), samples)
             Log.sink = audit
             System.err.println("parse audit: on — report at $path (up to $samples sample event(s) per issue, flushed every ${flushSec}s)")

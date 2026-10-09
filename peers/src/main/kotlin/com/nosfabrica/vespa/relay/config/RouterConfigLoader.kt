@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigParseOptions
@@ -116,21 +118,9 @@ object RouterConfigLoader {
         require(syncOrigin == null || syncOrigin.isFile) {
             "router: SYNC_CONFIG_FILE points at ${syncOrigin?.path}, which is not a readable file"
         }
-        val upInterval =
-            env["SYNC_UP_INTERVAL_SECONDS"]
-                ?.trim()
-                ?.toLongOrNull()
-                ?.coerceAtLeast(10L) ?: 300L
-        val ingestConcurrency =
-            env["SYNC_INGEST_CONCURRENCY"]
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceIn(1, 64) ?: 2
-        val ingestBatch =
-            env["SYNC_INGEST_BATCH"]
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceIn(1, 20_000) ?: 1000
+        val upInterval = env.strictLong("SYNC_UP_INTERVAL_SECONDS", 10L..Long.MAX_VALUE) ?: 300L
+        val ingestConcurrency = env.strictInt("SYNC_INGEST_CONCURRENCY", 1..64) ?: 2
+        val ingestBatch = env.strictInt("SYNC_INGEST_BATCH", 1..20_000) ?: 1000
         // Removed settings are refused, never ignored.
         require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
@@ -140,32 +130,12 @@ object RouterConfigLoader {
         val only = env["SYNC_STREAMS"]?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
             RelaySourceDefaults(
-                refreshSeconds =
-                    env["SYNC_DYNAMIC_REFRESH_SECONDS"]
-                        ?.trim()
-                        ?.toLongOrNull()
-                        ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
+                refreshSeconds = env.strictLong("SYNC_DYNAMIC_REFRESH_SECONDS", 60L..Long.MAX_VALUE) ?: fallback.refreshSeconds,
             )
-        val pageTarget =
-            env["SYNC_NEG_PAGE_TARGET"]
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceAtLeast(0) ?: 100_000
-        val pageMin =
-            env["SYNC_NEG_PAGE_MIN"]
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceAtLeast(1) ?: 1_000
-        val pageMax =
-            env["SYNC_NEG_PAGE_MAX"]
-                ?.trim()
-                ?.toIntOrNull()
-                ?.coerceAtLeast(pageMin) ?: 1_000_000
-        val pageSlack =
-            env["SYNC_NEG_PAGE_SLACK_SECONDS"]
-                ?.trim()
-                ?.toLongOrNull()
-                ?.coerceAtLeast(0L) ?: 60L
+        val pageTarget = env.strictInt("SYNC_NEG_PAGE_TARGET", 0..Int.MAX_VALUE) ?: 100_000
+        val pageMin = env.strictInt("SYNC_NEG_PAGE_MIN", 1..Int.MAX_VALUE) ?: 1_000
+        val pageMax = env.strictInt("SYNC_NEG_PAGE_MAX", pageMin..Int.MAX_VALUE) ?: 1_000_000
+        val pageSlack = env.strictLong("SYNC_NEG_PAGE_SLACK_SECONDS", 0L..Long.MAX_VALUE) ?: 60L
         return parse(
             inline,
             upInterval,

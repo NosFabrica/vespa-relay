@@ -1001,14 +1001,16 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a paging ceiling below the floor is raised to it`() {
-        // Nonsense config must not produce a window size that can never be met.
-        val cfg =
-            RouterConfigLoader.fromEnv(
-                mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_MIN" to "10000", "SYNC_NEG_PAGE_MAX" to "100"),
-            )
-        assertEquals(10_000, cfg!!.negPageMin)
-        assertEquals(10_000, cfg.negPageMax)
+    fun `a paging ceiling below the floor is refused, not raised to it`() {
+        // A window size that can never be met is a config to fix, not one to quietly rewrite.
+        val e =
+            assertFailsWith<IllegalStateException> {
+                RouterConfigLoader.fromEnv(
+                    mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_MIN" to "10000", "SYNC_NEG_PAGE_MAX" to "100"),
+                )
+            }
+        assertTrue("SYNC_NEG_PAGE_MAX='100'" in e.message.orEmpty())
+        assertTrue("at least 10000" in e.message.orEmpty())
     }
 
     @Test

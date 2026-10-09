@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -354,10 +355,7 @@ class SweepState(
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
                     ?.let(::File),
-                env["SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS"]
-                    ?.trim()
-                    ?.toLongOrNull()
-                    ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+                env.strictLong("SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS", 1L..Long.MAX_VALUE) ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
             ).startPeriodicFlush()
     }
 }

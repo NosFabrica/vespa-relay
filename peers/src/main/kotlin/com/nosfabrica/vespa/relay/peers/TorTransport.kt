@@ -21,6 +21,9 @@
 package com.nosfabrica.vespa.relay.peers
 
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.util.strictFlag
+import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import okhttp3.Dispatcher
@@ -77,13 +80,9 @@ data class TorSettings(
             return TorSettings(
                 socksHost = host,
                 socksPort = port,
-                routeAll = env["SYNC_TOR_ALL"]?.trim()?.toBooleanStrictOrNull() ?: false,
-                connectTimeoutSec =
-                    env["SYNC_TOR_CONNECT_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(5L)
-                        ?: DEFAULT_CONNECT_TIMEOUT_SEC,
-                maxSockets =
-                    env["SYNC_TOR_MAX_SOCKETS"]?.trim()?.toIntOrNull()?.coerceIn(1, 512)
-                        ?: DEFAULT_MAX_SOCKETS,
+                routeAll = env.strictFlag("SYNC_TOR_ALL") ?: false,
+                connectTimeoutSec = env.strictLong("SYNC_TOR_CONNECT_TIMEOUT_SECONDS", 5L..Long.MAX_VALUE) ?: DEFAULT_CONNECT_TIMEOUT_SEC,
+                maxSockets = env.strictInt("SYNC_TOR_MAX_SOCKETS", 1..512) ?: DEFAULT_MAX_SOCKETS,
             )
         }
     }

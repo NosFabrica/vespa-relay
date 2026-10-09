@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server.config
 
+import com.nosfabrica.vespa.relay.util.strictFlag
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.isOnion
@@ -153,6 +154,6 @@ fun relayAddressesFromEnv(env: Map<String, String>): RelayAddresses {
     return RelayAddresses(
         declared = declared,
         hostnameFile = hostnameFile,
-        advertise = env["RELAY_ONION_ADVERTISE"]?.trim()?.toBooleanStrictOrNull() ?: true,
+        advertise = env.strictFlag("RELAY_ONION_ADVERTISE") ?: true,
     )
 }
