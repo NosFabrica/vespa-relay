@@ -176,7 +176,7 @@ class RefusedIdsTest {
     }
 
     @Test
-    fun `a reopen retires the epochs on disk that no walk can ask for`() {
+    fun `a reopen retires the epochs on disk below the floor and keeps the ones ahead of the clock`() {
         val d = dir()
         RefusedIds(d, epoch, 10_000, floor = 0, nowSeconds = { 1_000_000 }).use { r ->
             for (at in listOf(1_500L, 50_500L, 900_500L)) {
@@ -185,20 +185,40 @@ class RefusedIdsTest {
             }
             r.flush()
         }
-        // Reopened with a floor above epoch 1 and a clock that puts epoch 900 in the far future.
+        // Reopened with a floor above epoch 1 and a clock that puts epoch 900 in the future.
         RefusedIds(d, epoch, 10_000, floor = 10_000, nowSeconds = { 100_000 }).use { r ->
             assertTrue(r.suppressed(id(50_500), 50_500), "an epoch inside the window is kept")
             assertFalse(r.suppressed(id(1_500), 1_500), "an epoch below the floor is retired")
-            assertFalse(r.suppressed(id(900_500), 900_500), "an epoch past tomorrow is retired")
+            assertFalse(r.suppressed(id(900_500), 900_500), "an epoch past tomorrow is not opened")
             assertEquals(
-                setOf("refused-e50-cand.cf", "refused-e50-supp.cf"),
+                setOf("refused-e50-cand.cf", "refused-e50-supp.cf", "refused-e900-cand.cf", "refused-e900-supp.cf"),
                 d
                     .listFiles()
                     .orEmpty()
                     .map { it.name }
                     .toSet(),
-                "a retired epoch's tables leave the disk",
+                "only an epoch below the floor leaves the disk",
             )
+        }
+    }
+
+    @Test
+    fun `a boot with the clock behind keeps the current epoch's suppressions`() {
+        val d = dir()
+        val stamp = 900_500L
+        RefusedIds(d, epoch, 10_000, floor = 0, nowSeconds = { stamp }).use { r ->
+            r.record(id(9), stamp)
+            r.record(id(9), stamp)
+            r.flush()
+        }
+        // Booted before the clock was set: the current epoch reads as days in the future.
+        var now = stamp - 10 * 86_400
+        RefusedIds(d, epoch, 10_000, floor = 0, nowSeconds = { now }).use { r ->
+            assertFalse(r.suppressed(id(9), stamp), "an epoch ahead of the clock is not consulted")
+            now = stamp
+            // The clock caught up; the next refusal in that epoch reopens it from disk.
+            assertEquals(RecordOutcome.ALREADY, r.record(id(9), stamp), "the suppression on disk survived the early boot")
+            assertTrue(r.suppressed(id(9), stamp))
         }
     }
 

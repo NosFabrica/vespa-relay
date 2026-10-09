@@ -83,19 +83,27 @@ class RefusedIds(
 
     init {
         // Epochs open lazily on record, so the partitions on disk must be adopted here.
-        dir
-            ?.listFiles { f -> f.name.startsWith("refused-e") && f.name.endsWith("-supp.cf") }
-            ?.forEach { file ->
-                file.name
-                    .removePrefix("refused-e")
-                    .removeSuffix("-supp.cf")
-                    .toLongOrNull()
-                    ?.let { openEpoch(it) }
-            }
-        // The only place an epoch can leave: the floor is fixed for the process, and the ceiling only rises.
-        retireBelow(floor)
+        val onDisk =
+            dir
+                ?.listFiles { f -> f.name.startsWith("refused-e") && f.name.endsWith("-supp.cf") }
+                ?.mapNotNull {
+                    it.name
+                        .removePrefix("refused-e")
+                        .removeSuffix("-supp.cf")
+                        .toLongOrNull()
+                }.orEmpty()
+        // A clock behind at boot puts current epochs above the ceiling: they stay on disk, unopened,
+        // until a record reaches them. Only the floor, fixed for the process, deletes.
         val ceiling = epochOf(latestStamp())
-        epochs.keys.filter { it > ceiling }.forEach { retire(it, "entirely above created_at ${latestStamp()}") }
+        val (adopted, ahead) = onDisk.partition { it <= ceiling || it < epochOf(floor) }
+        adopted.forEach { openEpoch(it) }
+        retireBelow(floor)
+        if (ahead.isNotEmpty()) {
+            System.err.println(
+                "router: refused-ids left ${ahead.size} epoch(s) on disk unopened, entirely above created_at " +
+                    "${latestStamp()}; each reopens once the clock reaches it",
+            )
+        }
         if (epochs.isNotEmpty()) {
             System.err.println("router: refused-ids reopened ${epochs.size} epoch(s) from ${dir?.path}")
         }

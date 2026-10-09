@@ -237,6 +237,14 @@ else is `OUT_OF_RANGE` and costs at most one re-download. The window only
 widens upward while the process runs, so retirement happens once, at boot,
 over what is on disk.
 
+**Only the floor deletes an epoch at boot.** Boot also retired every epoch
+above a day past now, files and all, so a container started before NTP set its
+clock deleted current epochs and their suppressions. An epoch ahead of the
+clock is now left on disk unopened, and the first refusal that reaches it once
+the clock catches up adopts its tables. Skipping rather than loading keeps an
+epoch a forged stamp opened before the bound out of memory and out of
+`MAX_EPOCHS`, at the cost of re-downloads until that first refusal.
+
 **`suppressedInWindow` walks the epochs that exist.** An open-ended window
 (`since = null`, the ordinary `deleteMissing` case) starts at epoch 0, so
 counting from `lo` to `hi` probed every epoch index since 1970 per id: 0.57 ms
