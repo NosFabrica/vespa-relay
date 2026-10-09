@@ -478,6 +478,7 @@ function enrichProvenance(events) {
 // score is a fact about a subject, and the authenticated socket is gated.
 const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
+let scoring = new Set();           // pubkeys whose rank read is in flight under that lens
 
 /**
  * The `30382:rank` services an observer trusts, all of them in the reader's order; a `followers`
@@ -494,13 +495,24 @@ async function rankServicesOf(observer) {
  */
 async function paintScores() {
   const lens = viewingAs || me;
-  if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
+  if (scoreLensKey !== lens) { scores.clear(); scoring = new Set(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
   const svc = lens ? await rankServicesOf(lens) : [];
   // Nobody to rank by, or a lens that ranks nothing: answered, with no number.
   if (!svc.length) { paintChips(chips); return; }
-  const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
+  // A pubkey another call is already reading is painted when that read lands.
+  const pending = scoring;
+  const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk) && !pending.has(pk));
+  for (const pk of need) pending.add(pk);
+  try { await readScores(lens, svc, need); } finally { for (const pk of need) pending.delete(pk); }
+  if (scoreLensKey !== lens) return;
+  // The chips on the page now, which a re-render while the read was out has replaced.
+  paintChips([...document.querySelectorAll(".score-chip[data-pk]")]);
+}
+
+/** Read the rank cards for [need] under [lens] into `scores`. */
+async function readScores(lens, svc, need) {
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
   const conn = batches.length ? await refConn().catch(() => null) : null;
@@ -529,7 +541,6 @@ async function paintScores() {
     // "No card for this pubkey" is a fact only after EOSE; a null cached here is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
-  paintChips(chips);
 }
 
 /** The chips themselves, from whatever `scores` now knows. */
@@ -1376,13 +1387,26 @@ function superseded(st, myId) {
 function paintLate(st, myId, late, render) {
   for (const lookup of late) {
     lookup.then((learned) => {
-      if (!learned || myId !== st.requestId) return;
-      // The field's chips are named from the same cache.
-      field.repaint();
-      if (document.querySelector(".raw-body:not([hidden])")) return;
-      render();
+      if (learned && myId === st.requestId) repaintSoon(st, myId, render);
     }).catch(() => {});
   }
+}
+
+// render -> the answer it last landed for; lookups that land within a frame share one repaint.
+const lateRepaints = new Map();
+function repaintSoon(st, myId, render) {
+  const queued = lateRepaints.has(render);
+  lateRepaints.set(render, { st, myId });
+  if (queued) return;
+  requestAnimationFrame(() => {
+    const last = lateRepaints.get(render);
+    lateRepaints.delete(render);
+    if (last.myId !== last.st.requestId) return;
+    // The field's chips are named from the same cache.
+    field.repaint();
+    if (document.querySelector(".raw-body:not([hidden])")) return;
+    render();
+  });
 }
 
 function openPopup() {

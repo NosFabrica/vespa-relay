@@ -36,13 +36,30 @@ export function seedProfiles(events) {
   }
 }
 
+const inFlight = new Map(); // pubkey -> the kind-0 read that will settle it
+
 /**
  * Load the uncached profiles among [pubkeys]; returns how many it learned, so a caller
  * knows whether to repaint.
  */
 export async function enrichProfiles(pubkeys) {
-  const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
-  if (!missing.length) return 0;
+  const want = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
+  if (!want.length) return 0;
+  // A pubkey already being read waits on that read instead of asking twice.
+  const reads = new Set(want.map((p) => inFlight.get(p)).filter(Boolean));
+  const missing = want.filter((p) => !inFlight.has(p));
+  if (missing.length) {
+    const read = askProfiles(missing).finally(() => {
+      for (const p of missing) if (inFlight.get(p) === read) inFlight.delete(p);
+    });
+    for (const p of missing) inFlight.set(p, read);
+    reads.add(read);
+  }
+  await Promise.all(reads);
+  return want.filter((p) => profiles.get(p)).length;
+}
+
+async function askProfiles(missing) {
   let asked = false;
   try {
     // Anonymous: the authenticated socket gates kind 0 to authors the reader has scored.
@@ -53,9 +70,7 @@ export async function enrichProfiles(pubkeys) {
     asked = found.complete === true;
   } catch (e) { asked = false; }
   // "No profile" is cached only when the relay answered.
-  const learned = missing.filter((p) => profiles.get(p)).length;
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
-  return learned;
 }
 
 export function authorOf(ev) {

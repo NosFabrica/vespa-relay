@@ -54,6 +54,32 @@ const dropped = pk("d");
 await enrichProfiles([dropped]);
 assert.strictEqual(profiles.has(dropped), false, "a dropped connection states nothing");
 
+// Two views asking for the same faces at once share one read, and both hear what it learned.
+let reqs = [];
+answer = ([type, id, filter], ws) => {
+  if (type !== "REQ") return;
+  reqs.push(filter.authors);
+  setTimeout(() => {
+    for (const a of filter.authors) ws.deliver(["EVENT", id, profileEvent(a, "n" + a[0])]);
+    ws.deliver(["EOSE", id]);
+  }, 10);
+};
+const [one, two] = await Promise.all([enrichProfiles([pk("1"), pk("2")]), enrichProfiles([pk("2"), pk("3")])]);
+assert.deepStrictEqual(reqs.flat().sort(), [pk("1"), pk("2"), pk("3")], "a pubkey already being read is not asked again");
+assert.strictEqual(one, 2);
+assert.strictEqual(two, 2, "the second caller counts the face the first one's read brought, so it repaints");
+answer = (msg, ws) => { if (msg[0] === "REQ") ws.close(); };
+reqs = [];
+await Promise.all([enrichProfiles([pk("4")]), enrichProfiles([pk("4")])]);
+assert.strictEqual(profiles.has(pk("4")), false);
+answer = ([type, id, filter], ws) => {
+  if (type !== "REQ") return;
+  reqs.push(filter.authors);
+  ws.deliver(["EVENT", id, profileEvent(pk("4"), "dee")]);
+  ws.deliver(["EOSE", id]);
+};
+assert.strictEqual(await enrichProfiles([pk("4")]), 1, "a read that failed is not left marked in flight");
+
 // Kind-0 content is anyone's JSON: a field of the wrong type reads as absent
 // instead of throwing out of every render that shows this author.
 const odd = parseProfile({ pubkey: pk("f"), kind: 0, created_at: 1,
