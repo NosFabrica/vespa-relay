@@ -271,3 +271,15 @@ under `SYNC_TOR_ALL`), which the fitness pass signed as `dead`. `Reach`
 separates the relay's host proved unreachable from our transport not
 answering; the second is unmeasured and feeds the batch guard's blind share,
 as it always did in the stability gate.
+
+**Pre-probe proof is believed only beside a network that reaches others.**
+Our resolver failing (`EAI_AGAIN`, an `UnknownHostException`) or our egress
+rejecting (a `ConnectException`) proves every host gone at once, and the blind
+guard never saw it because those urls landed in a verdict. `Unreachability`
+now reads a temporary resolver failure and an unreachable network as our side,
+and the batch withholds its pre-probe `dead` when no dial reached a server (at
+any size, so the fast lane too) or when the pre-probe failed more than
+`DEAD_GUARD_SHARE` of a batch past `GUARD_FLOOR`. Three quarters sits well
+above the near-half share of name and refusal failures a real sweep has shown
+(the funnel in router-internals.md). Only the `dead` verdicts are withheld: a
+false trip costs those urls a cheap re-probe, not every grade in the batch.

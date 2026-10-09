@@ -27,14 +27,26 @@ package com.nosfabrica.vespa.relay.monitor
  */
 object Unreachability {
     fun proves(e: Exception): Boolean =
-        when (e) {
-            is java.net.UnknownHostException,
-            is java.net.ConnectException,
-            is java.net.NoRouteToHostException,
-            is java.net.PortUnreachableException,
-            is javax.net.ssl.SSLHandshakeException,
-            -> true
+        when {
+            ourSide(e) -> false
+
+            e is java.net.UnknownHostException ||
+                e is java.net.ConnectException ||
+                e is java.net.NoRouteToHostException ||
+                e is java.net.PortUnreachableException ||
+                e is javax.net.ssl.SSLHandshakeException -> true
 
             else -> false
         }
+
+    /**
+     * A failure of the same type as proof whose words put it on this box: a resolver that could
+     * not answer (EAI_AGAIN), or no route out of our own network.
+     */
+    private fun ourSide(e: Exception): Boolean {
+        val said = e.message?.lowercase() ?: return false
+        return OUR_SIDE.any { it in said }
+    }
+
+    private val OUR_SIDE = listOf("temporary failure in name resolution", "try again", "network is unreachable")
 }

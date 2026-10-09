@@ -41,6 +41,14 @@ class UnreachabilityTest {
     }
 
     @Test
+    fun `our own resolver or route failing is not the relay's`() {
+        // EAI_AGAIN is the resolver not answering, which is every host at once.
+        assertFalse(proves(UnknownHostException("relay.example: Temporary failure in name resolution")))
+        assertFalse(proves(ConnectException("Network is unreachable")))
+        assertTrue(proves(UnknownHostException("relay.example: Name or service not known")))
+    }
+
+    @Test
     fun `a relay that hung up mid-transfer is not unreachable`() {
         assertFalse(proves(EOFException("stream closed")))
     }

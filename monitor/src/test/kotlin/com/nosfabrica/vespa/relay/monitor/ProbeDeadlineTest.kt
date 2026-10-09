@@ -142,6 +142,48 @@ class ProbeDeadlineTest {
         }
 
     @Test
+    fun `pre-probe proof is withheld from a batch where our network looks dark`() =
+        runBlocking {
+            // Our resolver or egress failing proves every host gone at once; a network does not go dark at once.
+            suspend fun graded(
+                gone: Int,
+                answering: Int,
+            ): Pair<List<String?>, List<String?>> {
+                val store = newStore()
+                val dead = (0 until gone).map { RelayUrlNormalizer.normalize("wss://gone$it.example") }
+                val live = (0 until answering).map { RelayUrlNormalizer.normalize("wss://live$it.example") }
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
+                    client = EmptyNostrClient(),
+                    foldedAway = { emptyMap() },
+                    inconsistent = { emptySet() },
+                    progress = Processors().of("fitness"),
+                ).measure(
+                    "dark",
+                    dead + live,
+                    reach = { if (it in dead) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                    onEvent = {},
+                    sockets = Sockets.NONE,
+                )
+                return dead.map { gradeOf(store, it) } to live.map { gradeOf(store, it) }
+            }
+
+            val (outage, _) = graded(gone = 60, answering = 0)
+            assertTrue(outage.all { it == null }, "a batch with no server reached signed `dead` onto ${outage.count { it != null }} url(s)")
+
+            val (small, _) = graded(gone = 2, answering = 0)
+            assertTrue(small.all { it == null }, "a fast-lane batch with no server reached must not sign `dead` either")
+
+            val (mostly, mostlyLive) = graded(gone = 50, answering = 10)
+            assertTrue(mostly.all { it == null }, "a pre-probe failing past the dead share must be doubted")
+            assertTrue(mostlyLive.all { it == Verdict.PRIME.value }, "the relays that answered are still graded")
+
+            val (some, _) = graded(gone = 20, answering = 40)
+            assertTrue(some.all { it == Verdict.DEAD.value }, "proof beside a working network is published")
+        }
+
+    @Test
     fun `dead is published on proof or on the server's own refusal, never on a connect word the pre-probe contradicts`() =
         runBlocking {
             val url = RelayUrlNormalizer.normalize("wss://gone.example")
@@ -151,14 +193,21 @@ class ProbeDeadlineTest {
                 reachable: Boolean,
             ): String? {
                 val store = newStore()
+                // Beside a url that answers: a pre-probe proof is believed only where our network reaches others.
                 FitnessPass(
                     record = RelayVerdictRecord(store, signer),
-                    probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = reason) },
+                    probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
                     client = EmptyNostrClient(),
                     foldedAway = { emptyMap() },
                     inconsistent = { emptySet() },
                     progress = Processors().of("fitness"),
-                ).measure("one", listOf(url), reach = { if (reachable) Reach.REACHABLE else Reach.PROVED_UNREACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(
+                    "one",
+                    listOf(url, answering),
+                    reach = { if (it == url && !reachable) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                    onEvent = {},
+                    sockets = Sockets.NONE,
+                )
                 return gradeOf(store, url)
             }
 

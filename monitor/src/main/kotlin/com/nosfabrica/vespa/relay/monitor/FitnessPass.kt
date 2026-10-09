@@ -124,7 +124,12 @@ class FitnessPass(
          * re-stamped.
          */
         val tested: Boolean = true,
-    )
+        /** Earned at the pre-probe from our side of the network, before any server said a word. */
+        val preProbe: Boolean = false,
+    ) {
+        /** A server on the far side answered something: the evidence our own network was working. */
+        val reachedServer: Boolean get() = tested && !preProbe && verdict != Verdict.SILENT
+    }
 
     /**
      * Measure [candidates] and write a verdict for each. Returns how many events the dials
@@ -219,6 +224,19 @@ class FitnessPass(
                     pageUnproven = pageUnproven.get(),
                 )
                 return downloaded.get()
+            }
+
+            // The dark-network guard: a host proved gone is believed only beside proof that our
+            // network reaches others, so a batch where too few did withholds its pre-probe `dead`.
+            val provedGone = toDial.filter { outcomes[it]?.preProbe == true }
+            val reached = toDial.count { outcomes[it]?.reachedServer == true }
+            if (provedGone.isNotEmpty() && looksDark(dialled, provedGone.size, reached)) {
+                System.err.println(
+                    "router: fitness [$label] — WITHHOLDING ${provedGone.size} `dead` verdict(s): ${provedGone.size} of " +
+                        "$dialled dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
+                        "at once — this is more likely our resolver or egress. They are measured again next pass.",
+                )
+                for (url in provedGone) outcomes.remove(url)
             }
 
             // The writes, serial and after the dials, each under its own wall clock: the store's
@@ -387,7 +405,7 @@ class FitnessPass(
             }
 
             Reach.PROVED_UNREACHABLE -> {
-                outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
+                outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe", preProbe = true)
                 return
             }
 
@@ -901,5 +919,18 @@ class FitnessPass(
 
         /** The batch size below which the guard does not apply. */
         const val GUARD_FLOOR = 50
+
+        /** The share of a batch's dials the pre-probe may prove gone before that proof is doubted. */
+        const val DEAD_GUARD_SHARE = 0.75
+
+        /**
+         * Does a batch look like our own network went dark: no dial reached a server at all, or,
+         * where a share means anything, the pre-probe failed more than [DEAD_GUARD_SHARE] of it.
+         */
+        internal fun looksDark(
+            dialled: Int,
+            provedGone: Int,
+            reached: Int,
+        ): Boolean = reached == 0 || (dialled >= GUARD_FLOOR && provedGone > dialled * DEAD_GUARD_SHARE)
     }
 }
