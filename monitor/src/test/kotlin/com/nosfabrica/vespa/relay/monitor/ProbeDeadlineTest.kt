@@ -107,15 +107,31 @@ class ProbeDeadlineTest {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
             }
 
-            // A transport word is an answer, not blindness, so a corpus of them still publishes.
+            // A transport word beside servers that answered is a fact about that relay, and publishes.
             val refused = newStore()
+
+            fun refusedCorpus(answering: List<NormalizedRelayUrl>) =
+                FitnessPass(
+                    record = RelayVerdictRecord(refused, signer),
+                    probe =
+                        probe { url, want, until, _ ->
+                            if (url in answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)")
+                        },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                )
+            refusedCorpus(fine).measure("refused corpus", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
+
+            // The same words from every dial, with nothing answering, are our own network's.
+            val dark = newStore()
             FitnessPass(
-                record = RelayVerdictRecord(refused, signer),
+                record = RelayVerdictRecord(dark, signer),
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("refused corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
-            assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
+            ).measure("dark corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertNull(gradeOf(dark, blind.first()), "a batch where nothing reached a server publishes no `silent`")
         }
 
     @Test
@@ -208,6 +224,10 @@ class ProbeDeadlineTest {
             // The server answered the connect and refused the protocol.
             assertEquals(Verdict.DEAD.value, grade("cannot: javax.net.ssl.SSLHandshakeException: PKIX path building failed", reachable = true))
             assertEquals(Verdict.DEAD.value, grade("cannot: Expected HTTP 101 response but was '404 Not Found'", reachable = true))
+            // A server or CDN error is a moment, and an auth or payment wall is a live relay.
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '503 Service Unavailable'", reachable = true))
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '530 <none>'", reachable = true))
+            assertEquals(Verdict.RESTRICTED.value, grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '402 Payment Required'", reachable = true))
             // The typed pre-probe's proof stands on its own.
             assertEquals(Verdict.DEAD.value, grade("unused", reachable = false))
         }

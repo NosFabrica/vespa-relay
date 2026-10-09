@@ -244,17 +244,20 @@ class FitnessPass(
                 return downloaded.get()
             }
 
-            // The dark-network guard: a host proved gone is believed only beside proof that our
-            // network reaches others, so a batch where too few did withholds its pre-probe `dead`.
+            // The dark-network guard: a failure is believed only beside proof that our network
+            // reaches others, so a batch where too few did withholds every verdict no server spoke for.
             val provedGone = toDial.filter { outcomes[it]?.preProbe == true }
             val reached = toDial.count { outcomes[it]?.reachedServer == true }
-            if (provedGone.isNotEmpty() && looksDark(dialled, provedGone.size, reached)) {
-                System.err.println(
-                    "router: fitness [$label] — WITHHOLDING ${provedGone.size} `dead` verdict(s): ${provedGone.size} of " +
-                        "$dialled dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
-                        "at once — this is more likely our resolver or egress. They are measured again next pass.",
-                )
-                for (url in provedGone) outcomes.remove(url)
+            if (looksDark(dialled, provedGone.size, reached)) {
+                val unspoken = toDial.filter { url -> outcomes[url]?.let { it.tested && !it.reachedServer } == true }
+                if (unspoken.isNotEmpty()) {
+                    System.err.println(
+                        "router: fitness [$label] — WITHHOLDING ${unspoken.size} `dead`/`silent` verdict(s): ${provedGone.size} of " +
+                            "$dialled dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
+                            "at once — this is more likely our resolver or egress. They are measured again next pass.",
+                    )
+                    for (url in unspoken) outcomes.remove(url)
+                }
             }
 
             // The writes, after the dials and several at a time, each under its own wall clock: the
@@ -389,6 +392,7 @@ class FitnessPass(
                     negOpenCut = negOpenCut,
                     secondPageCut = secondPageCut,
                     pageUnproven = pageUnproven,
+                    unmeasured = { why -> unmeasured[url] = why },
                 ) { event ->
                     downloaded.incrementAndGet()
                     onEvent(event)
@@ -396,7 +400,7 @@ class FitnessPass(
             if (outcome != null) {
                 outcomes[url] = outcome
             } else {
-                unmeasured[url] = "no EOSE, no CLOSED and no transport reason on any rung"
+                unmeasured.putIfAbsent(url, "no EOSE, no CLOSED and no transport reason on any rung")
             }
         } catch (e: CancellationException) {
             throw e
@@ -408,6 +412,33 @@ class FitnessPass(
             }
         } finally {
             sockets.release(url)
+        }
+    }
+
+    /**
+     * A refused websocket upgrade, graded by the status the server answered with: a server error
+     * or a CDN's is a moment, not a claim; an auth or payment wall is a live relay that will not
+     * serve us; anything else is no relay at that address.
+     */
+    private fun upgradeRefused(
+        raw: String?,
+        unmeasured: (String) -> Unit,
+    ): Outcome? {
+        val status = Silence.upgradeStatus(raw)
+        val said = status?.let { "the websocket upgrade was refused with HTTP $it" } ?: Silence.UPGRADE.reason
+        return when (status) {
+            in 500..599 -> {
+                unmeasured("$said, a temporary failure")
+                null
+            }
+
+            401, 402, 403 -> {
+                Outcome(Verdict.RESTRICTED, said)
+            }
+
+            else -> {
+                Outcome(Verdict.DEAD, said)
+            }
         }
     }
 
@@ -429,6 +460,8 @@ class FitnessPass(
         secondPageCut: AtomicInteger,
         /** Bumped for urls that end with no `pageable` claim at all. Not a fault. */
         pageUnproven: AtomicInteger,
+        /** Why a url earned no verdict, where the dial knows better than "nothing came back". */
+        unmeasured: (String) -> Unit,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         var lastReason: String? = null
@@ -459,8 +492,12 @@ class FitnessPass(
             // Never spoke, or refused every shape. [Silence] tells the two apart.
             return when (val cause = Silence.of(lastReason)) {
                 // The server took the connect and refused the protocol: its own answer.
-                Silence.TLS, Silence.UPGRADE -> {
+                Silence.TLS -> {
                     Outcome(Verdict.DEAD, cause.reason)
+                }
+
+                Silence.UPGRADE -> {
+                    upgradeRefused(lastReason, unmeasured)
                 }
 
                 else -> {

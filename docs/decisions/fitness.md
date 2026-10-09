@@ -324,3 +324,22 @@ cancelled: the verdict was lost and the url filed `ABANDONED` after `decided`
 had counted it. The pass now keeps each decided url's numbers and writes them
 after the dials through `writeEach`, under the write deadline the fitness pass
 uses.
+
+**The pre-probe looks a host up once, and only a resolver's "no such name" is
+proof.** Run in a network namespace with no route out, every lookup failed with
+EAI_AGAIN, yet the retry read it as proof: the JVM caches a failed lookup and
+answers the second one with the bare hostname, so the reason was gone. The probe
+now resolves and connects itself in one go, a temporary failure or an unreachable
+network is our transport being down, and an `UnknownHostException` proves
+nothing unless its words say the name does not exist.
+
+**A batch where nothing reached a server withholds its `silent` too.** The same
+dark run published `silent` for every IP-literal url, because only the
+pre-probe's `dead` was withheld; a transport word in a batch nobody answered is
+our network's word.
+
+**A refused upgrade is graded by its status.** Against real relays every
+"upgrade refused" `dead` was a 502/503, a Cloudflare 530, an auth or payment
+wall, or a missing path, and relay.damus.io answered 503 and then 101 seconds
+apart. A 5xx earns no verdict and is measured again, 401/402/403 is
+`restricted`, and only the rest is `dead`.

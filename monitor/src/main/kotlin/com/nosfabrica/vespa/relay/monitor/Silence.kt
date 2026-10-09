@@ -74,6 +74,18 @@ enum class Silence(
                 REFUSED to listOf("connection refused", "econnrefused", "connectexception"),
             )
 
+        /** The HTTP status a refused upgrade answered with, as OkHttp words it: `but was '503 Service Unavailable'`. */
+        fun upgradeStatus(raw: String?): Int? =
+            raw?.let {
+                UPGRADE_STATUS
+                    .find(it)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toIntOrNull()
+            }
+
+        private val UPGRADE_STATUS = Regex("""but was '(\d{3})""")
+
         /** Null is [UNKNOWN], not a cause of its own. */
         fun of(raw: String?): Silence {
             val text = raw?.lowercase() ?: return UNKNOWN

@@ -30,8 +30,10 @@ object Unreachability {
         when {
             ourSide(e) -> false
 
-            e is java.net.UnknownHostException ||
-                e is java.net.ConnectException ||
+            // Only a resolver that answered "no such name": a bare or temporary failure proves nothing.
+            e is java.net.UnknownHostException -> NO_SUCH_NAME.any { it in e.message.orEmpty().lowercase() }
+
+            e is java.net.ConnectException ||
                 e is java.net.NoRouteToHostException ||
                 e is java.net.PortUnreachableException ||
                 e is javax.net.ssl.SSLHandshakeException -> true
@@ -40,13 +42,16 @@ object Unreachability {
         }
 
     /**
-     * A failure of the same type as proof whose words put it on this box: a resolver that could
-     * not answer (EAI_AGAIN), or no route out of our own network.
+     * A failure whose words put it on this box: a resolver that could not answer (EAI_AGAIN), or
+     * no route out of our own network.
      */
-    private fun ourSide(e: Exception): Boolean {
+    fun ourSide(e: Exception): Boolean {
         val said = e.message?.lowercase() ?: return false
         return OUR_SIDE.any { it in said }
     }
 
     private val OUR_SIDE = listOf("temporary failure in name resolution", "try again", "network is unreachable")
+
+    /** glibc's, macOS's and Windows' words for a name the resolver knows does not exist. */
+    private val NO_SUCH_NAME = listOf("name or service not known", "no address associated with hostname", "nodename nor servname provided", "no such host is known")
 }

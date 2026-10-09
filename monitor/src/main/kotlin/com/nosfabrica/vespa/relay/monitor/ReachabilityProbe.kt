@@ -22,13 +22,11 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Whether the TCP pre-probe measures the route the dial will take. [TcpProber] connects
+ * Whether the TCP pre-probe measures the route the dial will take. The pre-probe connects
  * directly from this box, so for anything routed through Tor only the websocket dial counts.
  */
 internal fun shouldPreProbe(
@@ -52,37 +50,29 @@ internal class ReachabilityProbe(
     private val tor: TorTransport?,
 ) {
     /**
-     * Short-circuits only on proof: [TcpProber] folds refusal and timeout into one Boolean, so a
-     * failure is re-run for its cause and believed only for what [Unreachability] accepts.
-     * Publishes nothing; the fitness pass writes the `dead` verdict.
+     * Whether to dial, and when not, whose side the reason is on. One fresh lookup and connect:
+     * the JVM caches a failed lookup without its reason, so a second attempt could not tell our
+     * resolver failing from a name that does not exist.
      */
-    suspend fun reachable(url: NormalizedRelayUrl): Boolean {
-        if (!shouldPreProbe(url, tor)) return true
-        val answered =
-            try {
-                TcpProber.tcpReachable(url)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                true
-            }
-        if (answered) return true
-        return cause(url)?.let { !Unreachability.proves(it) } ?: true
-    }
+    suspend fun reach(url: NormalizedRelayUrl): Reach {
+        if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
+        if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
+        val failure = failure(url) ?: return Reach.REACHABLE
+        return when {
+            Unreachability.ourSide(failure) -> Reach.TRANSPORT_DOWN
 
-    /** Whether to dial, and when not, whose side the reason is on. */
-    suspend fun reach(url: NormalizedRelayUrl): Reach =
-        when {
-            tor?.routes(url) == true -> if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
-            reachable(url) -> Reach.REACHABLE
-            else -> Reach.PROVED_UNREACHABLE
+            Unreachability.proves(failure) -> Reach.PROVED_UNREACHABLE
+
+            // An unplaced failure is left to the dial, which reports what the relay said.
+            else -> Reach.REACHABLE
         }
+    }
 
     /** Our transport can carry it and something answers. */
     suspend fun canDial(url: NormalizedRelayUrl): Boolean = reach(url) == Reach.REACHABLE
 
-    /** Null when the retry succeeds or the url has no host. */
-    private suspend fun cause(url: NormalizedRelayUrl): Exception? =
+    /** Null when some address of the host takes the connect, or the url has no host. */
+    private suspend fun failure(url: NormalizedRelayUrl): Exception? =
         withContext(Dispatchers.IO) {
             val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
             val host = uri.host ?: return@withContext null
@@ -92,12 +82,22 @@ internal class ReachabilityProbe(
                     url.url.startsWith("wss://", ignoreCase = true) -> 443
                     else -> 80
                 }
-            try {
-                java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), PROBE_TIMEOUT_MS) }
-                null
-            } catch (e: java.io.IOException) {
-                e
+            val addresses =
+                try {
+                    java.net.InetAddress.getAllByName(host)
+                } catch (e: java.io.IOException) {
+                    return@withContext e
+                }
+            var last: Exception? = null
+            for (address in addresses) {
+                try {
+                    java.net.Socket().use { it.connect(java.net.InetSocketAddress(address, port), PROBE_TIMEOUT_MS) }
+                    return@withContext null
+                } catch (e: java.io.IOException) {
+                    last = e
+                }
             }
+            last
         }
 
     companion object {
