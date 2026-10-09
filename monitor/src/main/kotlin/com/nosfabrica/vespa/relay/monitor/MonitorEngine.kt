@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -278,10 +279,22 @@ class MonitorEngine(
         signer?.let { s ->
             val record = RelayVerdictRecord(store, s)
             // Two guards: a throw in the first must not skip the second.
-            runCatching { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
-            runCatching { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
-                .onFailure { System.err.println("router: could not retire legacy `s` grades: ${it.message}") }
+            guarded("stale-epoch verdicts") { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
+            guarded("legacy `s` grades") { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+        }
+    }
+
+    /** One boot retraction, its failure logged and contained; a cancellation still ends the boot. */
+    private suspend fun guarded(
+        what: String,
+        retire: suspend () -> Unit,
+    ) {
+        try {
+            retire()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: could not retire $what: ${e.message}")
         }
     }
 

@@ -438,8 +438,14 @@ class ConsistencyPass(
             val walks =
                 List(2) {
                     async {
-                        runCatching { probe.window(url, anchor, kinds, onEvent) }
-                            .getOrDefault(AliasProbe.Window(null))
+                        // Not runCatching: it would turn a cancellation into a silent walk.
+                        try {
+                            probe.window(url, anchor, kinds, onEvent)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            AliasProbe.Window(null)
+                        }
                     }
                 }.awaitAll()
             Answers(walks[0], walks[1])

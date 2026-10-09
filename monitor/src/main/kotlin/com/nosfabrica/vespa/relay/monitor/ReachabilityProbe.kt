@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -57,7 +58,15 @@ internal class ReachabilityProbe(
      */
     suspend fun reachable(url: NormalizedRelayUrl): Boolean {
         if (!shouldPreProbe(url, tor)) return true
-        if (runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)) return true
+        val answered =
+            try {
+                TcpProber.tcpReachable(url)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                true
+            }
+        if (answered) return true
         return cause(url)?.let { !Unreachability.proves(it) } ?: true
     }
 
