@@ -937,13 +937,16 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
 ```
 
 **The document is computed in two passes, and the split is by measured cost.**
-`STATS_COUNTERS_INTERVAL_SECONDS` (60s) runs `corpus`, `trust` and `sync`;
-`STATS_INTERVAL_SECONDS` (900s, the setting that always meant this) runs `kinds`,
+`STATS_COUNTERS_INTERVAL_SECONDS` (60s) runs `sync`; `STATS_INTERVAL_SECONDS`
+(900s, the setting that always meant this) runs `corpus`, `trust`, `kinds`,
 `authors`, `activity`, `kindActivity`, `zaps` and `relayDistribution`. The line
-between them is whether cost scales with the corpus: a `count()` over a match set
-does not materialise the match set, a grouping behind a *selective* `kind` filter
-is bounded by that kind's population (10040/30382 are thousands of events), and a
-windowed bucket grouping is bounded by the window — while `group(pubkey)` over
+between them is whether cost scales with the corpus. A `count()` does not
+materialise its match set but still walks it, so the event total over `true` is
+a walk over the store and the trust chain is a walk over every stored kind-30382
+score (tens of millions on the live deployment).
+A grouping behind a *selective* `kind` filter is bounded by that kind's
+population (10040 is), and a windowed bucket grouping is bounded by the window —
+while `group(pubkey)` over
 everything materialises the store's whole pubkey set, `distinctAuthorsBy(bucket)`
 materialises one such set PER BUCKET (the shape that OOMKilled the engine twice),
 a full-corpus histogram walks all 90M+ documents, and grouping `tag_index` emits
@@ -955,11 +958,13 @@ zap total the way a mirror is watched by its freshness, so fifteen minutes is fi
 for it. **The tier is the section, never the query**, because a section carries
 one `generatedAt` for all of its members — which is what moved the store's
 distinct pubkeys out of `corpus` into its own `authors` section, and why
-`corpus.kinds` is gone in favour of the histogram's own `kinds.total`. The one
-number that crosses the boundary is `corpus.newestEvent`: asked over a two-day
-window (cheap, and freshness is what a per-minute cadence is FOR), carried
-forward from the previous document when that window is empty, and published as
-the maximum of the two so a quiet mirror never winds the tile back.
+`corpus.kinds` is gone in favour of the histogram's own `kinds.total`.
+`corpus.newestEvent` is the maximum of the histogram's per-kind spans (bounded
+to the present) and of the previous document's copy, so a failed span query
+never winds the tile back. It moved with `corpus` and is as fresh as the charts
+pass: the page's staleness line is a day, which a fifteen-minute cadence meets.
+A counters pass that produced no section does not publish a first document, or a
+fresh serve-only relay would swap the page's waiting card for a blank page.
 
 Every section publishes `queryMs` per query and every pass publishes
 `tiers.<name>.{generatedAt,tookMs,everySeconds}`. That is deliberate and
@@ -967,10 +972,11 @@ load-bearing: which queries can afford the fast cadence is a MEASUREMENT on the
 corpus in front of you, not a deduction, and a pipeline that drifts into the fast
 tier does not break a chart — it quietly runs fifteen times more often than it
 can afford. `StatsRollupTest` holds the invariant from the other side, against a
-`StatsQueries` fake: a counters query may not group without a bound, nest a
-grouping inside `each(...)`, touch `tag_index`, or lean on a `kind` filter for a
-kind outside its `SELECTIVE_KINDS` — the allowlist that keeps "bounded by a kind"
-from meaning "bounded", and that kind 9735 is deliberately not in.
+`StatsQueries` fake: a counters query, a `count()` included, may not run
+without a bound, nest a grouping inside `each(...)`, touch `tag_index` or the
+reputation store, or lean on a `kind` filter for a kind outside its
+`SELECTIVE_KINDS` — the allowlist that keeps "bounded by a kind" from meaning
+"bounded", and that kinds 9735 and 30382 are deliberately not in.
 
 Four of the pipelines are `EventYql`'s own shapes, reused verbatim because this
 deployment has already run them; the rest extend them along `created_at`. It

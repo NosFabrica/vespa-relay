@@ -33,6 +33,16 @@ stops the boot: `=0s` and `=off` are the obvious spellings of "turn this off",
 and `?: default` accepted both by running the rollup on the schedule the
 operator was trying to change.
 
+**The totals and the trust chain moved to the charts pass.** The per-minute
+tier assumed a `count()` was cheap because it materialises nothing, and that
+kind 30382 ran to thousands of events. Both were wrong: a `count()` over `true`
+visits every document, and the live store held 28.7M scores, so every minute
+walked the whole corpus once and every score twice (the provider grouping and
+the score count), with a count over the whole reputation store beside them. The members
+kept their places in the document, since the page reads them there. What it
+cost is `newestEvent` at the charts cadence rather than the minute; it is now
+read off the histogram's spans for free, and the page's staleness line is a day.
+
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
 publishes the relay's own `/favicon.ico` url, the doc's `icon` is no longer a

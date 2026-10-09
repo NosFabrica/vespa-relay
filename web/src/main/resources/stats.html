@@ -163,8 +163,8 @@ function barChart(points, { label, height = 130 }) {
 }
 
 /**
- * The hero numbers, from three sections refreshing on different cadences
- * (`StatsTier` in StatsRollup). The Kinds tile takes the histogram's own
+ * The hero numbers, from three sections of the charts pass (`StatsTier` in
+ * StatsRollup), each dated on its own. The Kinds tile takes the histogram's own
  * `total`, so it cannot disagree with the table.
  */
 function tiles(doc) {
@@ -626,10 +626,9 @@ mountStatsPage({
   // still gets a line.
   tiers: [["counters", "Counters"], ["charts", "Charts"], ["status", "Status"]],
   pendingNote:
-    "This is computed behind the server. On the relay the counters land within seconds and the first pass over a " +
-    "large corpus takes a while (check the log for `stats:` lines, and that STATS_COUNTERS_INTERVAL_SECONDS and " +
-    "STATS_INTERVAL_SECONDS are not both 0); on the mirror and the monitor it is a fold over state already in " +
-    "memory and lands on the first tick (check the sync log for `router:` lines).",
+    "This is computed behind the server. On the relay the first pass over a large corpus takes a while (check the " +
+    "log for `stats:` lines, and that STATS_INTERVAL_SECONDS is not 0); on the mirror and the monitor it is a fold " +
+    "over state already in memory and lands on the first tick (check the sync log for `router:` lines).",
   // A document may have stopped carrying the grain on screen.
   beforePanels: (doc) => settleGrain(doc.activity),
 });
