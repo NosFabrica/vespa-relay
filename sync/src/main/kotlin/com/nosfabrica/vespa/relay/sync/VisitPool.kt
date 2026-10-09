@@ -481,8 +481,6 @@ internal class VisitPool(
             yields.remove(url)
         }
         resumeAt.keys.removeIf { !wantedBy(built, it) }
-        bands.retain(ownedState(built))
-        pager.retain(next.keys.mapTo(HashSet()) { it.url })
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -498,6 +496,15 @@ internal class VisitPool(
             )
         }
         phasesChanged()
+        // Last, and on its own: a failed prune must not keep the new roster's units unqueued.
+        try {
+            bands.retain(ownedState(built))
+            pager.retain(next.keys.mapTo(HashSet()) { it.url })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: could not prune state off the roster: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+        }
     }
 
     /** Everything a unit of [roster] files state under: its catch-up bands, its audit clocks, its retraction's ask. */
