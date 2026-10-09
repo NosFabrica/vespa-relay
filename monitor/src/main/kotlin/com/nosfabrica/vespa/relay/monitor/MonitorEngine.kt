@@ -132,7 +132,7 @@ class MonitorEngine(
             probeIdleMs(url, tor, connectionTimeoutMs)
         }
 
-    private val probe = ReachabilityProbe(tor)
+    private val probe = ReachabilityProbe(tor, threads = monitorConcurrency)
 
     /** What the passes measure. */
     private val world =

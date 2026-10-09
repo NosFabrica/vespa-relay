@@ -378,6 +378,11 @@ class FitnessPass(
                 unmeasured[url] = "our own transport is not answering"
                 return
             }
+
+            Reach.UNEXPLAINED -> {
+                unmeasured[url] = "the lookup failed with no reason left to read"
+                return
+            }
         }
         progress.holding(url.url, STAGE_DOCUMENT)
         document?.read(url)?.let { readings[url] = it }
@@ -500,14 +505,20 @@ class FitnessPass(
                     upgradeRefused(lastReason, unmeasured)
                 }
 
+                // The pre-probe resolved this name moments ago, so a dial that could not is our resolver.
+                Silence.NAME -> {
+                    unmeasured("the dial could not resolve a name the pre-probe had resolved")
+                    null
+                }
+
                 else -> {
                     if (lastReason == null) {
                         // Nothing came back at all, which is what our own socket layer produces when it
                         // is the broken thing: nothing is published and the url is measured again next pass.
                         null
                     } else {
-                        // Only a transport word reaches here. A name, refusal or route word is text, not
-                        // proof: the typed pre-probe owns `dead` for those, and it let this url through.
+                        // Only a transport word reaches here. A refusal or route word is text, not proof:
+                        // the typed pre-probe owns `dead` for those, and it let this url through.
                         Outcome(Verdict.SILENT, cause.reason)
                     }
                 }

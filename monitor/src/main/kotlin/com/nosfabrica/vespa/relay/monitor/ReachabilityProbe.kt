@@ -22,8 +22,14 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.UnknownHostException
 
 /**
  * Whether the TCP pre-probe measures the route the dial will take. The pre-probe connects
@@ -43,12 +49,23 @@ enum class Reach {
 
     /** Our own transport cannot carry the dial; nothing was learned about the relay. */
     TRANSPORT_DOWN,
+
+    /** The lookup failed with no reason left to read; the dial would hit the same cached answer. */
+    UNEXPLAINED,
 }
 
 /** Can we open a socket at all: the guard in front of every dial, shared so one url is judged one way. */
 internal class ReachabilityProbe(
     private val tor: TorTransport?,
+    /** Its own threads, sized to the dials it guards, so blocking connects never queue on the shared IO pool. */
+    threads: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
+    private val resolve: (String) -> Array<InetAddress> = InetAddress::getAllByName,
+    /** Opens a socket to one address within the timeout, or throws why not. */
+    private val connect: (InetSocketAddress, Int) -> Socket = ::openSocket,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
+
     /**
      * Whether to dial, and when not, whose side the reason is on. One fresh lookup and connect:
      * the JVM caches a failed lookup without its reason, so a second attempt could not tell our
@@ -57,50 +74,115 @@ internal class ReachabilityProbe(
     suspend fun reach(url: NormalizedRelayUrl): Reach {
         if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
         if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
-        val failure = failure(url) ?: return Reach.REACHABLE
-        return when {
-            Unreachability.ourSide(failure) -> Reach.TRANSPORT_DOWN
-
-            Unreachability.proves(failure) -> Reach.PROVED_UNREACHABLE
-
-            // An unplaced failure is left to the dial, which reports what the relay said.
-            else -> Reach.REACHABLE
+        val target = Target.of(url) ?: return Reach.REACHABLE
+        return withContext(io) {
+            val addresses =
+                try {
+                    resolve(target.host)
+                } catch (e: IOException) {
+                    return@withContext lookupFailed(e)
+                }
+            val attempt = open(target, addresses)
+            attempt.socket?.close()
+            if (attempt.socket != null) Reach.REACHABLE else judge(attempt.failures, attempt.complete)
         }
     }
 
     /** Our transport can carry it and something answers. */
     suspend fun canDial(url: NormalizedRelayUrl): Boolean = reach(url) == Reach.REACHABLE
 
-    /** Null when some address of the host takes the connect, or the url has no host. */
-    private suspend fun failure(url: NormalizedRelayUrl): Exception? =
-        withContext(Dispatchers.IO) {
-            val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
-            val host = uri.host ?: return@withContext null
-            val port =
-                when {
-                    uri.port > 0 -> uri.port
-                    url.url.startsWith("wss://", ignoreCase = true) -> 443
-                    else -> 80
-                }
-            val addresses =
-                try {
-                    java.net.InetAddress.getAllByName(host)
-                } catch (e: java.io.IOException) {
-                    return@withContext e
-                }
-            var last: Exception? = null
-            for (address in addresses) {
-                try {
-                    java.net.Socket().use { it.connect(java.net.InetSocketAddress(address, port), PROBE_TIMEOUT_MS) }
-                    return@withContext null
-                } catch (e: java.io.IOException) {
-                    last = e
-                }
+    /** Where a url's socket goes. */
+    private class Target(
+        val host: String,
+        val port: Int,
+    ) {
+        companion object {
+            fun of(url: NormalizedRelayUrl): Target? {
+                val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return null
+                val host = uri.host ?: return null
+                val port =
+                    when {
+                        uri.port > 0 -> uri.port
+                        url.url.startsWith("wss://", ignoreCase = true) -> 443
+                        else -> 80
+                    }
+                return Target(host, port)
             }
-            last
         }
+    }
+
+    /** The first socket any address opened, or each tried address's failure; [complete] when none went untried. */
+    private class Attempt(
+        val socket: Socket?,
+        val failures: List<Exception>,
+        val complete: Boolean,
+    )
+
+    /**
+     * The addresses in order under one deadline, stopping at the first socket or once the
+     * failures so far can only judge [Reach.REACHABLE].
+     */
+    private fun open(
+        target: Target,
+        addresses: Array<InetAddress>,
+    ): Attempt {
+        val deadline = clock() + TOTAL_TIMEOUT_MS
+        val failures = ArrayList<Exception>()
+        for (address in addresses) {
+            val left = deadline - clock()
+            if (left <= 0) return Attempt(null, failures, complete = false)
+            try {
+                return Attempt(connect(InetSocketAddress(address, target.port), minOf(PROBE_TIMEOUT_MS.toLong(), left).toInt()), failures, complete = true)
+            } catch (e: IOException) {
+                failures += e
+                if (judge(failures, complete = true) == Reach.REACHABLE) return Attempt(null, failures, complete = false)
+            }
+        }
+        return Attempt(null, failures, complete = true)
+    }
 
     companion object {
         private const val PROBE_TIMEOUT_MS = 5_000
+
+        /** Across every address of one host; an address left untried proves nothing. */
+        internal const val TOTAL_TIMEOUT_MS = 8_000L
+
+        /**
+         * A host's verdict over its addresses: proof only when every address failed with proof,
+         * our side only when every address failed on ours, and any mix or gap left to the dial.
+         */
+        internal fun judge(
+            failures: List<Exception>,
+            complete: Boolean,
+        ): Reach =
+            when {
+                !complete || failures.isEmpty() -> Reach.REACHABLE
+                failures.all { Unreachability.ourSide(it) } -> Reach.TRANSPORT_DOWN
+                failures.all { Unreachability.proves(it) } -> Reach.PROVED_UNREACHABLE
+                else -> Reach.REACHABLE
+            }
+
+        /** A lookup that failed; one carrying no words we can place is the JVM's cached answer. */
+        private fun lookupFailed(e: IOException): Reach =
+            when {
+                Unreachability.ourSide(e) -> Reach.TRANSPORT_DOWN
+                Unreachability.proves(e) -> Reach.PROVED_UNREACHABLE
+                e is UnknownHostException -> Reach.UNEXPLAINED
+                else -> Reach.REACHABLE
+            }
+
+        private fun openSocket(
+            address: InetSocketAddress,
+            timeoutMs: Int,
+        ): Socket {
+            val socket = Socket()
+            try {
+                socket.connect(address, timeoutMs)
+            } catch (e: IOException) {
+                socket.close()
+                throw e
+            }
+            return socket
+        }
     }
 }

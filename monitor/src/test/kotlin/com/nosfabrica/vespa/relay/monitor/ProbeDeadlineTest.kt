@@ -217,8 +217,10 @@ class ProbeDeadlineTest {
                 return gradeOf(store, url)
             }
 
-            // The pre-probe let the url through, so a resolver or routing word from the dial is our side's word.
-            assertEquals(Verdict.SILENT.value, grade("cannot: java.net.UnknownHostException: Temporary failure in name resolution", reachable = true))
+            // The pre-probe resolved the name, so a dial that could not is our resolver and earns nothing.
+            assertNull(grade("cannot: java.net.UnknownHostException: Temporary failure in name resolution", reachable = true))
+            assertNull(grade("cannot: java.net.UnknownHostException: gone.example", reachable = true))
+            // A routing or refusal word from the dial is at most `silent`.
             assertEquals(Verdict.SILENT.value, grade("cannot: connect: Network is unreachable", reachable = true))
             assertEquals(Verdict.SILENT.value, grade("cannot: java.net.ConnectException: Connection refused", reachable = true))
             // The server answered the connect and refused the protocol.

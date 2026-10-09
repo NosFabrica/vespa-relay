@@ -343,3 +343,22 @@ our network's word.
 wall, or a missing path, and relay.damus.io answered 503 and then 101 seconds
 apart. A 5xx earns no verdict and is measured again, 401/402/403 is
 `restricted`, and only the rest is `dead`.
+
+**The pre-probe judges a host over all of its addresses.** It kept only the
+last address's failure, so the order the resolver listed them in decided the
+verdict: IPv4 refusing and our IPv6 route missing read as our outage, an IPv4
+timeout and an IPv6 refusal as proof. Now one open socket is `REACHABLE`, proof
+needs every address to fail with proof, our side needs every address to fail on
+ours, and any mix is left to the dial. The addresses share one 8s deadline (5s
+each at most) rather than 5s apiece, and the probe stops once its answer can
+only be `REACHABLE`. It blocks on its own view of the IO pool sized to the dial
+concurrency, so the guard in front of 128 dials does not hold the shared 64
+threads.
+
+**A lookup with no reason left in it decides nothing.** The JVM answers a
+cached failed lookup with the bare hostname, so the pre-probe could not place it
+and let the url through, and the dial, hitting the same cache, published
+`silent` "the name does not resolve". A bare `UnknownHostException` is now
+`Reach.UNEXPLAINED` and the url is not dialled; and since the pre-probe has just
+resolved every name it lets through, a name word from the dial is our resolver
+and earns no verdict either.
