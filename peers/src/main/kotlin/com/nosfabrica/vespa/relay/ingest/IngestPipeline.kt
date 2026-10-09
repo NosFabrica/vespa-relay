@@ -367,7 +367,7 @@ class IngestPipeline(
                             copies
                                 .map { batch[it[0]].event.id }
                                 .chunked(DEDUP_CHUNK)
-                                .mapBounded(QUERY_FANOUT) { probe!!(it) }
+                                .mapBounded(QUERY_FANOUT) { probe(it) }
                                 .flatMapTo(HashSet()) { it }
                         }
                     }
