@@ -103,6 +103,9 @@ batch after it waited on the survivors. The pass now catches `Exception` and
 rejection, and continues; any other `Error` still ends the worker loudly.
 Refusal bookkeeping (the sink, the outcome loop) is caught on its own, because
 a throw there used to read as a failed write and rewrite an accepted batch.
+An outcome loop that dies partway (only an `Error` gets past the sink's guard)
+books the outcomes it had not reached as an `ingest fault`, so
+`accepted + rejected` still meets `submitted`.
 
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store

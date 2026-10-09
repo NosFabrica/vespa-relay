@@ -396,52 +396,65 @@ class IngestPipeline(
     private suspend fun insertIsolating(
         events: List<Event>,
         origins: Map<String, IngestOrigin>,
-    ) = insertBisecting(
-        events = events,
-        // Booked apart from the probes: this waits on the writer mutex, they wait on the query path.
-        write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { store.batchInsert(batch) } },
-        onOutcomes = { written, outcomes ->
-            // A misattributed rejection would suppress a wanted id, so only attribution is withheld.
-            val aligned = outcomes.size == written.size
-            if (!aligned) reportMisalignment(written.size, outcomes.size)
-            for ((i, outcome) in outcomes.withIndex()) {
-                when (outcome) {
-                    is IEventStore.InsertOutcome.Accepted -> {
-                        accepted.incrementAndGet()
-                    }
+    ) {
+        // Outcomes of the current write not yet in a counter; the bisection writes one half at a time.
+        var owed = 0
+        insertBisecting(
+            events = events,
+            // Booked apart from the probes: this waits on the writer mutex, they wait on the query path.
+            write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { store.batchInsert(batch) } },
+            onOutcomes = { written, outcomes ->
+                owed = outcomes.size
+                // A misattributed rejection would suppress a wanted id, so only attribution is withheld.
+                val aligned = outcomes.size == written.size
+                if (!aligned) reportMisalignment(written.size, outcomes.size)
+                for ((i, outcome) in outcomes.withIndex()) {
+                    // Ahead of the branch, whose first statement counts the outcome.
+                    owed--
+                    when (outcome) {
+                        is IEventStore.InsertOutcome.Accepted -> {
+                            accepted.incrementAndGet()
+                        }
 
-                    is IEventStore.InsertOutcome.Rejected -> {
-                        rejected.incrementAndGet()
-                        noteRejection(outcome.reason.take(48), 1L)
-                        // Only the Rejected branch reports: a Failed outcome is the store's fault.
-                        if (aligned) {
-                            written.getOrNull(i)?.let { event ->
-                                reportRefusal(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                        is IEventStore.InsertOutcome.Rejected -> {
+                            rejected.incrementAndGet()
+                            noteRejection(outcome.reason.take(48), 1L)
+                            // Only the Rejected branch reports: a Failed outcome is the store's fault.
+                            if (aligned) {
+                                written.getOrNull(i)?.let { event ->
+                                    reportRefusal(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                                }
                             }
                         }
-                    }
 
-                    is IEventStore.InsertOutcome.Failed -> {
-                        rejected.incrementAndGet()
-                        noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
-                        lostToStore.incrementAndGet()
+                        is IEventStore.InsertOutcome.Failed -> {
+                            rejected.incrementAndGet()
+                            noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
+                            lostToStore.incrementAndGet()
+                        }
                     }
                 }
-            }
-        },
-        onOutcomesFailed = { _, e -> reportBookkeepingFailure("outcome bookkeeping", e) },
-        onPoison = { event, e ->
-            rejected.incrementAndGet()
-            noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
-            reportPoison(event, e)
-        },
-        onGaveUp = { batch, e ->
-            // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
-            rejected.addAndGet(batch.size.toLong())
-            noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
-            lostToStore.addAndGet(batch.size.toLong())
-        },
-    )
+            },
+            onOutcomesFailed = { _, e ->
+                if (owed > 0) {
+                    rejected.addAndGet(owed.toLong())
+                    noteRejection("ingest fault: ${e.javaClass.simpleName}", owed.toLong())
+                }
+                reportBookkeepingFailure("outcome bookkeeping", e, "$owed uncounted outcome(s) tallied as lost, their refusal records lost")
+            },
+            onPoison = { event, e ->
+                rejected.incrementAndGet()
+                noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
+                reportPoison(event, e)
+            },
+            onGaveUp = { batch, e ->
+                // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
+                rejected.addAndGet(batch.size.toLong())
+                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
+                lostToStore.addAndGet(batch.size.toLong())
+            },
+        )
+    }
 
     /** One permanent refusal, reported to the filter and the healer, from the store's verdict or [dropSuperseded]. */
     private fun reportRefusal(
@@ -456,7 +469,7 @@ class IngestPipeline(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            reportBookkeepingFailure("refusal sink", e)
+            reportBookkeepingFailure("refusal sink", e, "the counts stand, the refusal record is lost")
         }
     }
 
@@ -464,10 +477,11 @@ class IngestPipeline(
     private fun reportBookkeepingFailure(
         where: String,
         e: Throwable,
+        consequence: String,
     ) {
         val signature = "$where ${e.javaClass.name}: ${e.message?.take(200)}"
         if (poisonSeen.size >= POISON_SAMPLE_LIMIT || !poisonSeen.add(signature)) return
-        System.err.println("router: ingest $where FAILED — ${e.javaClass.simpleName}: ${e.message}; the counts stand, the refusal record is lost")
+        System.err.println("router: ingest $where FAILED — ${e.javaClass.simpleName}: ${e.message}; $consequence")
         e.printStackTrace()
     }
 
