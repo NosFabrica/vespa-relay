@@ -23,8 +23,10 @@ package com.nosfabrica.vespa.relay.ingest.refused
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** What [RefusedIds.record] did with one refusal. */
@@ -40,17 +42,25 @@ enum class RecordOutcome {
 
     /** The partition is sealed; nothing was recorded. */
     REFUSED_FULL,
+
+    /** No walk asks for this `created_at`, or no further epoch may open; nothing was recorded. */
+    OUT_OF_RANGE,
 }
 
 /**
  * The ids this relay has decided it will never store, so a reconcile stops asking for them.
  * A first refusal only makes an id a candidate; it must be refused a second time before it is
  * suppressed. Partitioned by `created_at` epoch, and a window lookup consults every epoch it overlaps.
+ * Only stamps from [floor] to a day past now open an epoch, so a forged stamp cannot open one.
  */
 class RefusedIds(
     private val dir: File?,
     private val epochSeconds: Long = DEFAULT_EPOCH_SECONDS,
     private val capacityPerEpoch: Int = DEFAULT_EPOCH_CAPACITY,
+    /** The lowest `created_at` any walk asks for; an epoch entirely below it is retired. */
+    private val floor: Long = SyncCoverage.PLAUSIBLE_FLOOR,
+    private val maxEpochs: Int = MAX_EPOCHS,
+    private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) : AutoCloseable {
     private class Epoch(
         val candidate: CuckooFilter,
@@ -69,6 +79,8 @@ class RefusedIds(
 
     @Volatile private var flusher: Thread? = null
 
+    private val capWarned = AtomicBoolean(false)
+
     init {
         // Epochs open lazily on record, so the partitions on disk must be adopted here.
         dir
@@ -80,6 +92,10 @@ class RefusedIds(
                     .toLongOrNull()
                     ?.let { openEpoch(it) }
             }
+        // The only place an epoch can leave: the floor is fixed for the process, and the ceiling only rises.
+        retireBelow(floor)
+        val ceiling = epochOf(latestStamp())
+        epochs.keys.filter { it > ceiling }.forEach { retire(it, "entirely above created_at ${latestStamp()}") }
         if (epochs.isNotEmpty()) {
             System.err.println("router: refused-ids reopened ${epochs.size} epoch(s) from ${dir?.path}")
         }
@@ -89,6 +105,26 @@ class RefusedIds(
     val enabled: Boolean get() = dir != null
 
     fun epochOf(createdAt: Long): Long = Math.floorDiv(createdAt, epochSeconds)
+
+    /** The newest `created_at` a walk can ask for: a day past now, as for quartz's plausibility. */
+    private fun latestStamp(): Long = nowSeconds() + FUTURE_SLACK_SECONDS
+
+    /** The epoch [createdAt] belongs to, opened if it may be; null when nothing may be recorded there. */
+    private fun epochFor(createdAt: Long): Epoch? {
+        if (createdAt < floor || createdAt > latestStamp()) return null
+        val key = epochOf(createdAt)
+        epochs[key]?.let { return it }
+        if (epochs.size >= maxEpochs) {
+            if (capWarned.compareAndSet(false, true)) {
+                System.err.println(
+                    "router: refused-ids holds $maxEpochs epoch(s), its ceiling — refusals in a new epoch are " +
+                        "not recorded. Lengthen SYNC_REFUSED_EPOCH_SECONDS.",
+                )
+            }
+            return null
+        }
+        return openEpoch(key)
+    }
 
     /** Is this id twice refused, given the exact `created_at` it carries? */
     fun suppressed(
@@ -127,7 +163,7 @@ class RefusedIds(
         id: String,
         createdAt: Long,
     ): RecordOutcome {
-        val epoch = openEpoch(epochOf(createdAt))
+        val epoch = epochFor(createdAt) ?: return RecordOutcome.OUT_OF_RANGE
         if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
         if (epoch.candidate.contains(id)) {
             return when (epoch.suppress.add(id)) {
@@ -160,7 +196,7 @@ class RefusedIds(
         createdAt: Long,
     ): RecordOutcome {
         val key = epochOf(createdAt)
-        val epoch = openEpoch(key)
+        val epoch = epochFor(createdAt) ?: return RecordOutcome.OUT_OF_RANGE
         if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
         return when (epoch.suppress.add(id)) {
             AddResult.FULL -> {
@@ -177,17 +213,22 @@ class RefusedIds(
     /** Drop every epoch entirely below [floor], the lowest `created_at` any stream still asks for. */
     fun retireBelow(floor: Long) {
         val cutoff = epochOf(floor)
-        epochs.keys.filter { it < cutoff }.forEach { key ->
-            epochs.remove(key)?.let {
-                it.candidate.close()
-                it.suppress.close()
-            }
-            dir?.let { d ->
-                File(d, fileName(key, "cand")).delete()
-                File(d, fileName(key, "supp")).delete()
-            }
-            System.err.println("router: refused-ids retired epoch $key (entirely below created_at $floor)")
+        epochs.keys.filter { it < cutoff }.forEach { retire(it, "entirely below created_at $floor") }
+    }
+
+    private fun retire(
+        key: Long,
+        why: String,
+    ) {
+        epochs.remove(key)?.let {
+            it.candidate.close()
+            it.suppress.close()
         }
+        dir?.let { d ->
+            File(d, fileName(key, "cand")).delete()
+            File(d, fileName(key, "supp")).delete()
+        }
+        System.err.println("router: refused-ids retired epoch $key ($why)")
     }
 
     fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): RefusedIds {
@@ -274,11 +315,20 @@ class RefusedIds(
 
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
+        /** How far past now a walk's window reaches, matching quartz's own plausibility bound. */
+        private const val FUTURE_SLACK_SECONDS = 86_400L
+
+        /** Epochs held at once; the plausible span at the default epoch length is a small fraction of it. */
+        const val MAX_EPOCHS = 256
+
         /** Answers "no" to everything and records nothing. */
         fun disabled(): RefusedIds = RefusedIds(null, DEFAULT_EPOCH_SECONDS, 1024)
 
-        /** `SYNC_REFUSED_DIR` is where the per-epoch filters live; unset is off. */
-        fun fromEnv(env: Map<String, String>): RefusedIds {
+        /** `SYNC_REFUSED_DIR` is where the per-epoch filters live; unset is off. [floor] is the lowest `created_at` any stream asks for. */
+        fun fromEnv(
+            env: Map<String, String>,
+            floor: Long = SyncCoverage.PLAUSIBLE_FLOOR,
+        ): RefusedIds {
             val dir = env["SYNC_REFUSED_DIR"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)
             val epoch = env.strictLong("SYNC_REFUSED_EPOCH_SECONDS", 1L..Long.MAX_VALUE) ?: DEFAULT_EPOCH_SECONDS
             val capacity = env.strictInt("SYNC_REFUSED_EPOCH_CAPACITY", 1..Int.MAX_VALUE) ?: DEFAULT_EPOCH_CAPACITY
@@ -288,9 +338,9 @@ class RefusedIds(
             }
             System.err.println(
                 "router: refused-id suppression on at ${dir.path} " +
-                    "(epoch ${epoch}s, capacity ${fmtCount(capacity)}/epoch)",
+                    "(epoch ${epoch}s, capacity ${fmtCount(capacity)}/epoch, created_at from $floor)",
             )
-            return RefusedIds(dir, epoch, capacity).startPeriodicFlush()
+            return RefusedIds(dir, epoch, capacity, floor).startPeriodicFlush()
         }
     }
 }

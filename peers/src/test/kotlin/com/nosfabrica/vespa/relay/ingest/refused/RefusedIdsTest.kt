@@ -40,10 +40,11 @@ class RefusedIdsTest {
 
     private fun dir(): File = Files.createTempDirectory("refused").toFile().also { it.deleteOnExit() }
 
+    /** Floored at zero, so the small stamps below are all ones a walk could ask for. */
     private fun refused(
         d: File? = dir(),
         capacity: Int = 10_000,
-    ) = RefusedIds(d, epoch, capacity)
+    ) = RefusedIds(d, epoch, capacity, floor = 0)
 
     @Test
     fun `one refusal makes a candidate and suppresses nothing`() {
@@ -156,6 +157,58 @@ class RefusedIdsTest {
             assertTrue(sealedAt > 0, "a small epoch must seal rather than absorb 20k ids")
             assertTrue(r.summary().contains("SEALED"), "sealing must be visible: ${r.summary()}")
             assertTrue(r.suppressed(id(0), 5_000))
+        }
+    }
+
+    @Test
+    fun `a stamp no walk asks for opens no epoch and records nothing`() {
+        // A validly signed event can carry any created_at; each new epoch would map two tables.
+        val d = dir()
+        RefusedIds(d, epoch, 10_000, floor = 10_000, nowSeconds = { 100_000 }).use { r ->
+            assertEquals(RecordOutcome.OUT_OF_RANGE, r.record(id(8), 5_000), "below the floor")
+            assertEquals(RecordOutcome.OUT_OF_RANGE, r.record(id(8), 100_000 + 2 * 86_400), "past tomorrow")
+            assertEquals(RecordOutcome.OUT_OF_RANGE, r.suppressNow(id(8), Long.MAX_VALUE))
+            assertEquals("refused 0 epochs", r.summary())
+            assertTrue(d.listFiles().orEmpty().isEmpty(), "no table was created: ${d.listFiles()?.map { it.name }}")
+
+            assertEquals(RecordOutcome.CANDIDATE, r.record(id(8), 50_000), "a stamp inside the window still counts")
+        }
+    }
+
+    @Test
+    fun `a reopen retires the epochs on disk that no walk can ask for`() {
+        val d = dir()
+        RefusedIds(d, epoch, 10_000, floor = 0, nowSeconds = { 1_000_000 }).use { r ->
+            for (at in listOf(1_500L, 50_500L, 900_500L)) {
+                r.record(id(at.toInt()), at)
+                r.record(id(at.toInt()), at)
+            }
+            r.flush()
+        }
+        // Reopened with a floor above epoch 1 and a clock that puts epoch 900 in the far future.
+        RefusedIds(d, epoch, 10_000, floor = 10_000, nowSeconds = { 100_000 }).use { r ->
+            assertTrue(r.suppressed(id(50_500), 50_500), "an epoch inside the window is kept")
+            assertFalse(r.suppressed(id(1_500), 1_500), "an epoch below the floor is retired")
+            assertFalse(r.suppressed(id(900_500), 900_500), "an epoch past tomorrow is retired")
+            assertEquals(
+                setOf("refused-e50-cand.cf", "refused-e50-supp.cf"),
+                d
+                    .listFiles()
+                    .orEmpty()
+                    .map { it.name }
+                    .toSet(),
+                "a retired epoch's tables leave the disk",
+            )
+        }
+    }
+
+    @Test
+    fun `no epoch opens past the ceiling, and the open ones keep recording`() {
+        RefusedIds(dir(), epoch, 10_000, floor = 0, maxEpochs = 3).use { r ->
+            val outcomes = (0 until 5).map { r.record(id(100 + it), 1_000L * it + 500) }
+            assertEquals(List(3) { RecordOutcome.CANDIDATE } + List(2) { RecordOutcome.OUT_OF_RANGE }, outcomes)
+            assertTrue(r.summary().startsWith("refused 3 epoch(s)"), r.summary())
+            assertEquals(RecordOutcome.CANDIDATE, r.record(id(200), 1_500), "an open epoch still takes ids")
         }
     }
 

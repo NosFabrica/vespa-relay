@@ -212,6 +212,16 @@ exactly, where a timer-based rotation is a lossy guess. Epochs are opened
 lazily by `record`, so after a restart every lookup missed until a fresh
 refusal reopened the partition; the partitions on disk are adopted in `init`.
 
+**Only a stamp a walk can ask for opens an epoch.** `retireBelow` once had no
+production caller, so epochs only accumulated, and any validly signed event
+with an attacker-chosen `created_at` opened a fresh pair of tables. An epoch
+now opens only for a stamp between the floor (the lowest `since` any stream
+asks for, never above quartz's `PLAUSIBLE_FLOOR`) and a day past now, with
+`MAX_EPOCHS` as a backstop for a short `SYNC_REFUSED_EPOCH_SECONDS`; anything
+else is `OUT_OF_RANGE` and costs at most one re-download. The window only
+widens upward while the process runs, so retirement happens once, at boot,
+over what is on disk.
+
 **`suppressedInWindow` walks the epochs that exist.** An open-ended window
 (`since = null`, the ordinary `deleteMissing` case) starts at epoch 0, so
 counting from `lo` to `hi` probed every epoch index since 1970 per id: 0.57 ms

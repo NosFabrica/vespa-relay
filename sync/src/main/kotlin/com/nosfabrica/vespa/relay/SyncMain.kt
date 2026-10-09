@@ -60,6 +60,7 @@ import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
 // Enough attempts to outlast the relay's own boot deploy.
@@ -212,7 +213,9 @@ fun main() {
     val storeCalls = StoreCalls.fromEnv(env)
 
     val sweepState = SweepState.fromEnv(env)
-    val refusedIds = RefusedIds.fromEnv(env)
+    // Nothing walks below a stream's own `since`, nor below the plausible floor without one.
+    val refusedFloor = config.streams.mapNotNull { it.filter.since }.fold(SyncCoverage.PLAUSIBLE_FLOOR, ::minOf)
+    val refusedIds = RefusedIds.fromEnv(env, refusedFloor)
 
     // Opt-in: a sync running without a relay has no readers to yield to.
     val pressureUrl = env["SYNC_PRESSURE_URL"]?.trim()?.takeIf { it.isNotEmpty() }
