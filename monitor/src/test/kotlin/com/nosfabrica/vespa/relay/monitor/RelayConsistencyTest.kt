@@ -23,12 +23,14 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
+import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicInteger
@@ -207,6 +209,46 @@ class RelayConsistencyTest {
             val afterFirst = dials.get()
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
             assertEquals(afterFirst, dials.get(), "a measured url was re-dialled")
+        }
+
+    @Test
+    fun `a store slower than the relay's deadline still gets the verdict the relay earned`() =
+        runBlocking {
+            // The write is the store's time, not the relay's; it must not be cut by the dial's clock.
+            val inner = newStore()
+            val slow =
+                object : IEventStore by inner {
+                    override suspend fun insert(event: Event) {
+                        kotlinx.coroutines.delay(AliasProbe.WINDOWS_PER_URL * 20L * 3)
+                        inner.insert(event)
+                    }
+                }
+            val corpus: List<Event> = (0 until 60).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val processors = Processors()
+            val pass =
+                ConsistencyPass(
+                    consistency = RelayConsistency(),
+                    record = RelayVerdictRecord(slow, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, want, _, _ -> AliasProbe.Page(corpus.take(want)) },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { 20L },
+                        ),
+                    progress = processors.of("consistency"),
+                )
+
+            assertEquals(1, pass.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(setOf(steady), RelayVerdictRecord(inner, signer).load(listOf(steady)).consistent)
+            val row =
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+            assertTrue(row.undecided.isEmpty(), "a decided url was also filed as undecided: ${row.undecided.map { it.reason }}")
         }
 
     @Test

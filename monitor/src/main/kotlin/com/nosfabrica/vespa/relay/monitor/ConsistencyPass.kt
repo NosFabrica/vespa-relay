@@ -51,6 +51,9 @@ class ConsistencyPass(
     val progress: Processors.Handle? = null,
     /** The proxy, for the gate alone. */
     tor: TorTransport? = null,
+    /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
+    private val publishDeadlineMs: Long = FitnessPass.PUBLISH_DEADLINE_MS,
+    private val writeConcurrency: Int = FitnessPass.WRITE_CONCURRENCY,
 ) {
     /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
@@ -144,10 +147,44 @@ class ConsistencyPass(
         val unplaced = ConcurrentHashMap.newKeySet<String>()
         // One anchor for the whole pass.
         val anchor = RelayConsistency.settledAnchor(nowSeconds())
+        val earned = ConcurrentHashMap<NormalizedRelayUrl, Earned>()
 
-        // Nothing is published about a url the deadline cut: the clock is ours.
-        dialEach(wanted, gate, probe::deadlineMs, progress, cut = { silent[it] = Finding(Unmeasured.ABANDONED) }) { url ->
-            measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced)
+        // Nothing is published about a url the deadline cut: the clock is ours. A url cut after
+        // its verdict was earned keeps it.
+        dialEach(wanted, gate, probe::deadlineMs, progress, cut = { if (!earned.containsKey(it)) silent[it] = Finding(Unmeasured.ABANDONED) }) { url ->
+            measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced, earned)
+        }
+
+        // Outside the dial's deadline and permit: a slow store must not cost a verdict the relay earned.
+        progress?.measuring(earned.size, Processors.UNIT_VERDICT)
+        val writes =
+            writeEach(
+                earned.keys.sortedBy { it.url },
+                writeConcurrency,
+                publishDeadlineMs,
+                FitnessPass.PUBLISH_WEDGE_LIMIT,
+                FitnessPass.PUBLISH_WEDGE_BUDGET_MS,
+                progress,
+                STAGE_PUBLISH,
+            ) { url ->
+                val e = earned.getValue(url)
+                record.publishConsistency(
+                    url,
+                    consistent = e.consistent,
+                    first = e.first,
+                    second = e.second,
+                    shared = e.shared,
+                    score = e.score,
+                    anchorDays = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60),
+                ) != null
+            }
+        if (writes.published < earned.size) {
+            System.err.println(
+                "router: $label stability — ${earned.size - writes.published} earned verdict(s) NOT written " +
+                    "(${writes.wedged} hit the write deadline, ${writes.declined} failed outright" +
+                    (writes.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
+                    "); those urls are measured again next pass",
+            )
         }
 
         if (decided.get() > 0 || silent.isNotEmpty()) {
@@ -301,6 +338,7 @@ class ConsistencyPass(
         refused: AtomicInteger,
         silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
         unplaced: MutableSet<String>,
+        earned: ConcurrentHashMap<NormalizedRelayUrl, Earned>,
     ) {
         progress?.holding(url.url, STAGE_REACHABILITY)
         // Not runCatching: it swallows CancellationException and would file a shutdown as probe failures.
@@ -348,26 +386,28 @@ class ConsistencyPass(
         }
         val first = attempt.best.first.ids!!
         val second = attempt.best.second.ids!!
-        consistency.learn(url, answer)
-        decided.incrementAndGet()
-        if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
-        // Written per url so a restart mid-pass keeps what was proved. Not runCatching: a swallowed
-        // cancellation would file the url as ABANDONED after `decided` already counted it.
-        try {
-            record.publishConsistency(
-                url,
+        // No suspension point from here to the end, so the deadline cannot split the three.
+        earned[url] =
+            Earned(
                 consistent = answer == RelayConsistency.Verdict.CONSISTENT,
                 first = first.size,
                 second = second.size,
                 shared = consistency.shared(first, second),
                 score = consistency.containment(first, second),
-                anchorDays = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60),
             )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-        }
+        consistency.learn(url, answer)
+        decided.incrementAndGet()
+        if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
     }
+
+    /** One decided url's numbers, held from the dial to the write. */
+    private class Earned(
+        val consistent: Boolean,
+        val first: Int,
+        val second: Int,
+        val shared: Int,
+        val score: Double,
+    )
 
     /**
      * The bare filter, then the kinds fallback only when the first proved nothing. An auth
@@ -434,5 +474,8 @@ class ConsistencyPass(
         const val STAGE_REACHABILITY = "pre-probe"
 
         const val STAGE_LADDER = "paired walk"
+
+        /** The one stage that is not a dial: the record edit that puts a verdict down. */
+        const val STAGE_PUBLISH = FitnessPass.STAGE_PUBLISH
     }
 }

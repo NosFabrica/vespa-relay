@@ -316,3 +316,11 @@ start order, so a slow write landing after quick answers to later ones is not a
 run, and each wedged write charges the budget its share of the slots rather
 than its whole wall time. The cursor still stops on the write that tripped the
 limit.
+
+**The stability gate writes after its dials, not inside them.**
+`publishConsistency` ran inside `dialEach`'s per-url deadline while holding the
+dial permit, so a store slower than the relay's deadline had the write
+cancelled: the verdict was lost and the url filed `ABANDONED` after `decided`
+had counted it. The pass now keeps each decided url's numbers and writes them
+after the dials through `writeEach`, under the write deadline the fitness pass
+uses.
