@@ -26,7 +26,6 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
@@ -48,7 +47,7 @@ typealias ScoredProfileSearch = suspend (q: String, observer: String, limit: Int
 
 /** The deployment's ORE search backend settings, from the ORE env vars; see docs/configuration.md. */
 class OpenRankingConfig(
-    /** Searches running at once; one past it is refused, not queued. */
+    /** Searches running at once; one past it waits up to [SLOT_WAIT_MILLIS] for a slot, then is refused. */
     val concurrency: Int = DEFAULT_CONCURRENCY,
 ) {
     companion object {
@@ -66,6 +65,8 @@ class OpenRanking(
     val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
     /** How long a search waits for a free slot before it is refused. */
     val slotWaitMillis: Long = SLOT_WAIT_MILLIS,
+    /** Where a failed search is reported; the caller only sees a 503. */
+    val log: (String) -> Unit = { System.err.println(it) },
 ) {
     internal val slots = Semaphore(config.concurrency)
 }
@@ -79,8 +80,11 @@ internal const val SLOT_WAIT_MILLIS = 2_000L
  */
 internal fun Route.openRanking(ore: OpenRanking) {
     post(SEARCH_PATH) {
+        val body =
+            call.receiveBounded(MAX_BODY_BYTES.toLong())
+                ?: return@post call.respondError(HttpStatusCode.PayloadTooLarge, "request body exceeds $MAX_BODY_BYTES bytes")
         val ask =
-            when (val parsed = parseSearch(call.receiveText())) {
+            when (val parsed = parseSearch(body.decodeToString())) {
                 is SearchAsk.Valid -> parsed
                 is SearchAsk.Invalid -> return@post call.respondError(parsed.status, parsed.reason)
             }
@@ -93,6 +97,7 @@ internal fun Route.openRanking(ore: OpenRanking) {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    ore.log("ore: search failed (${e::class.simpleName}: ${e.message?.take(200)}) — answered 503")
                     return@post call.respondError(HttpStatusCode.ServiceUnavailable, "search is unavailable; retry later")
                 }
             call.answer(found, ask.pov, ask.limit, listFresh = { createdAt -> ore.nowSecs() - createdAt < POV_GRACE_SECONDS })
@@ -185,7 +190,7 @@ private fun parseSearch(body: String): SearchAsk {
         }
 
         else -> {
-            unprocessable("Algorithm '$algorithm' is not supported by $SEARCH_PATH")
+            unprocessable("Algorithm '${algorithm.shown()}' is not supported by $SEARCH_PATH")
         }
     }
 }
@@ -205,7 +210,15 @@ private suspend fun ApplicationCall.respondError(
     respondText(buildJsonObject { put("error", reason) }.toString(), ContentType.Application.Json, status)
 }
 
-private fun String.latin1(): String = map { if (it.code < 256) it else '?' }.joinToString("")
+/** A header value carries no control character (Ktor refuses the response) and nothing past latin-1. */
+private fun String.latin1(): String = map { if (it.code < 256 && !it.isISOControl()) it else '?' }.joinToString("")
+
+/** A caller's own string, echoed into a reason: control characters replaced, cut to [MAX_SHOWN] characters. */
+private fun String.shown(): String {
+    val clean = map { if (it.isISOControl()) '?' else it }.joinToString("")
+    if (clean.codePointCount(0, clean.length) <= MAX_SHOWN) return clean
+    return clean.substring(0, clean.offsetByCodePoints(0, MAX_SHOWN)) + "..."
+}
 
 private fun ScoredSearch.toResults(limit: Int): String =
     buildJsonObject {
@@ -225,6 +238,10 @@ private const val X_REASON = "X-Reason"
 private const val DEFAULT_LIMIT = 100
 private const val MAX_LIMIT = 400
 private const val MAX_QUERY_LENGTH = 512
+
+/** Far past the longest valid body: 512 escaped astral characters are 6 KiB, the other fields under 1 KiB. */
+private const val MAX_BODY_BYTES = 16 * 1024
+private const val MAX_SHOWN = 64
 private val CONTROL_CHARS = Regex("[\\x00-\\x1f\\x7f]")
 private const val RELEVANCE = "relevance"
 private const val RELEVANCE_POV = "relevance-pov"

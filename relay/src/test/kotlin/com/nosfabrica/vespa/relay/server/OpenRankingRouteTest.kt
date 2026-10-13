@@ -88,11 +88,13 @@ class OpenRankingRouteTest {
 
     private fun noCards(listCreatedAt: Long?) = ScoredSearch(emptyList(), ScoredSearch.Lens(NO_CARDS, service, listCreatedAt))
 
+    private val logged = mutableListOf<String>()
+
     private fun ore(
         search: ScoredProfileSearch,
         concurrency: Int = 4,
         slotWaitMillis: Long = SLOT_WAIT_MILLIS,
-    ) = OpenRanking(search, OpenRankingConfig(concurrency = concurrency), nowSecs = { now }, slotWaitMillis = slotWaitMillis)
+    ) = OpenRanking(search, OpenRankingConfig(concurrency = concurrency), nowSecs = { now }, slotWaitMillis = slotWaitMillis, log = { logged += it })
 
     private fun personal(p: String = pov) = """{"query":"alice","algorithm":"relevance-pov","pov":"$p"}"""
 
@@ -172,6 +174,37 @@ class OpenRankingRouteTest {
                 )
             for (body in bad) assertRefused(client, HttpStatusCode.UnprocessableEntity, body)
             assertEquals(emptyList(), asked)
+        }
+
+    @Test
+    fun `an unknown algorithm is echoed bounded and without control characters, so the refusal stays a 422`() =
+        testApplication {
+            serving(ore(answering(house to ready())))
+            for (algorithm in listOf("page\\nrank", "page\\r\\nX-Injected: 1", "\\u0000\\u0085", "x".repeat(15_000))) {
+                val body = """{"observer":"$house","query":"alice","algorithm":"$algorithm"}"""
+                assertRefused(client, HttpStatusCode.UnprocessableEntity, body)
+                val reason = assertNotNull(client.search(body).headers["X-Reason"])
+                assertTrue(reason.none { it.isISOControl() }, reason)
+                assertTrue(reason.length < 200, "${reason.length} characters")
+            }
+            // Cut by character, never inside a surrogate pair; the header's latin-1 copy differs, so the body is read.
+            val emoji = client.search("""{"observer":"$house","query":"alice","algorithm":"${"\\uD83D\\uDE00".repeat(100)}"}""")
+            assertEquals(HttpStatusCode.UnprocessableEntity, emoji.status)
+            assertEquals(json("""{"error":"Algorithm '${"\uD83D\uDE00".repeat(64)}...' is not supported by /search/pubkeys"}"""), json(emoji.bodyAsText()))
+            assertEquals(emptyList(), asked)
+        }
+
+    @Test
+    fun `a body over the cap is a 413 and never reaches the store, one at the cap is read`() =
+        testApplication {
+            serving(ore(answering(house to ready())))
+            val prefix = """{"observer":"$house","query":"alice","pad":""""
+            val atCap = prefix + "x".repeat(16 * 1024 - prefix.length - 2) + "\"}"
+            assertEquals(HttpStatusCode.OK, client.search(atCap).status)
+            assertRefused(client, HttpStatusCode.PayloadTooLarge, atCap.replace("\"}", "x\"}"))
+            // Control characters are stripped after the read, so 18 KiB of them as JSON escapes still counts here.
+            assertRefused(client, HttpStatusCode.PayloadTooLarge, """{"observer":"$house","query":"${"\\u0000".repeat(3_000)}alice"}""")
+            assertEquals(listOf(Ask("alice", house, 100)), asked)
         }
 
     @Test
@@ -279,12 +312,13 @@ class OpenRankingRouteTest {
     }
 
     @Test
-    fun `a store that fails is a 503 with a reason`() =
+    fun `a store that fails is a 503 with a reason, and the failure is logged`() =
         testApplication {
             serving(ore({ _, _, _ -> error("vespa down") }))
             val res = client.search("""{"observer":"$house","query":"alice"}""")
             assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
             assertNotNull(res.headers["X-Reason"])
+            assertContains(logged.single(), "vespa down")
         }
 
     @Test

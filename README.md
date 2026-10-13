@@ -277,10 +277,10 @@ no other view is substituted:
 | resolves, no cards yet, list newer than 6 hours | `202` + `Retry-After` | `503` |
 | resolves, no cards, list older | `422` | `503` |
 
-A malformed body is a `400`; a missing or empty `query`, one over 512
+A malformed body is a `400` and one over 16 KiB a `413`; a missing or empty `query`, one over 512
 characters, a `limit` outside 1..400, an unknown `algorithm` or a missing or
 invalid `pov` is a `422`. Every refusal says why in `X-Reason` and
-`{"error": …}`. Past `ORE_CONCURRENCY` searches at once the next waits up to 2 s for a slot, then is a `503`.
+`{"error": …}`; a search the store fails is a `503`, logged as `ore: search failed`. Past `ORE_CONCURRENCY` searches at once the next waits up to 2 s for a slot, then is a `503`.
 Settings: [`docs/configuration.md`](docs/configuration.md#search-backend-for-brainstorms-open-ranking).
 
 ## The router: mirror from upstream relays
