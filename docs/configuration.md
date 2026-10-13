@@ -170,6 +170,7 @@ reason.
 |---|---|---|
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…`, comma/space-separated (bare hex is refused — it has no checksum). An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
+| `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: unset keeps quartz's 64, sized for SQLite, which held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). The queue in front of it holds four batches. `1`-`8192`; anything else stops the boot | `64` |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
 

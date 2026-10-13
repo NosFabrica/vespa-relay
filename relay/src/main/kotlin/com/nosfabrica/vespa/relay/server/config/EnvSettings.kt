@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -125,6 +126,17 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
  * `SearchGate`. 0 turns the gate off; unparseable is the default, not off.
  */
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.intOr("SEARCH_CONCURRENCY_PER_CONNECTION", SearchGate.DEFAULT_PERMITS)!!.coerceAtLeast(0)
+
+/**
+ * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset keeps quartz's
+ * 64, sized for SQLite. Measured on staging 2026-10-13 under a 5.3M-event kind-3 publish: the
+ * write lock held 93-98% of each 5-minute window, batches at the 64 cap, 170-320 ms per batch,
+ * so publishing topped out near 200-380 events/s. Set but unparseable stops the boot.
+ */
+fun ingestBatchFromEnv(env: Map<String, String>): Int = env.strictInt("RELAY_INGEST_BATCH", IngestQueue.DEFAULT_MAX_BATCH, 1..MAX_INGEST_BATCH)
+
+/** The largest batch docs/decisions/ingest.md measured through the store (2 x 8192). */
+private const val MAX_INGEST_BATCH = 8_192
 
 /**
  * `HTTP_RELAY` and its settings, or null when the switch is off. [origins] are the addresses a NIP-98

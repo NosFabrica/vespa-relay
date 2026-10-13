@@ -54,6 +54,7 @@ import com.nosfabrica.vespa.relay.server.config.denyKindsFromEnv
 import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
+import com.nosfabrica.vespa.relay.server.config.ingestBatchFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
@@ -305,6 +306,7 @@ fun main() {
             rejectFutureSeconds = rejectFutureSeconds,
             requireReadLens = requireReadLens,
             searchConcurrencyPerConnection = searchConcurrencyPerConnectionFromEnv(env),
+            ingestBatch = ingestBatchFromEnv(env),
         )
 
     val sweeper = ExpirationSweeper(store, expirationSweepSecondsFromEnv(env)).start()
