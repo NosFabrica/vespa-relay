@@ -48,6 +48,7 @@ import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
+import com.nosfabrica.vespa.relay.server.OpenRanking
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.allowKindsFromEnv
 import com.nosfabrica.vespa.relay.server.config.allowPubkeysFromEnv
@@ -56,6 +57,7 @@ import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
+import com.nosfabrica.vespa.relay.server.config.openRankingFromEnv
 import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
@@ -156,13 +158,19 @@ fun main() {
     // The same origin NIP-86 signs against, and each address the relay also answers at. Parsed here,
     // with the other settings, so a bad value refuses the boot before the schema deploy.
     val relayHttpUrl = env["RELAY_HTTP_URL"] ?: relayUrlRaw.httpFromWs()
+    val openRanking = openRankingFromEnv(env)
     val httpRelay = httpRelayFromEnv(env) { listOf(relayHttpUrl) + addresses.alternates().map { it.url.httpFromWs() } }
+
+    fun setUnder(prefix: String) = env.keys.filter { it.startsWith(prefix) && !env[it].isNullOrBlank() }.sorted()
     if (httpRelay == null) {
-        env.keys
-            .filter { it.startsWith("HTTP_RELAY_") && !env[it].isNullOrBlank() }
-            .sorted()
+        setUnder("HTTP_RELAY_")
             .takeIf { it.isNotEmpty() }
             ?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
+    }
+    if (openRanking == null) {
+        (setUnder("ORE_") - "ORE_ENABLED")
+            .takeIf { it.isNotEmpty() }
+            ?.let { System.err.println("relay: ORE_ENABLED is off — ${it.joinToString()} do nothing") }
     }
 
     val searchExpansion = searchExpansionFromEnv(env)
@@ -399,6 +407,7 @@ fun main() {
         trustPage = resourceText("/trust.html"),
         trustJson = TrustDocument.reader(store, "This relay's trust projection"),
         trustExplain = { key -> TrustDocument.explain(store, key) },
+        openRanking = openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.store.scoredProfileSearch(q, observer, limit) }, config) },
         statsJson = statsSnapshot,
         selfIconUrl = ownIconUrl,
         httpRelay = httpRelay,

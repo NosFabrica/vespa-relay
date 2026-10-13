@@ -1032,7 +1032,14 @@ quartz = "68268da413"
 # LEXICOGRAPHIC: 'a995…' > '14d8…': the safe direction, moot — nothing else names the store.
 #
 # Prev 14d8c7eeed, 5379e572dc and ff54c9beb1 before it (all above).
-vespaEventStore = "a995519bef"
+#
+# a1dd4b28fb = store main @ 82580e6 + scoredProfileSearch (ORE-05's scored search and lens), on the
+# ore-search branch until it merges; re-pin to the merge commit if that changes the hash. Store code
+# only: no schema, no quartz move (still 68268da413), nothing re-derived.
+#   git merge-base --is-ancestor a995519bef a1dd4b28fb   # verified
+# LEXICOGRAPHIC: 'a1dd…' < 'a995…', moot — nothing else names the store.
+# Prev a995519bef (above).
+vespaEventStore = "a1dd4b28fb"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

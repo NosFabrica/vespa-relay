@@ -249,6 +249,40 @@ question: the `review/app` pill on an app's kind 31990 runs `label:review/app
 to:naddr1…` and returns exactly the reviews it counted — text that lives in the
 label events' `content` and that no word search would ever recall.
 
+## Search backend for Brainstorm's Open Ranking
+
+Brainstorm's [Open Ranking](https://github.com/Open-Ranking/protocol) provider is
+`api.brainstorm.world`; this relay is not one. With `ORE_ENABLED` it answers that
+server's ORE-05 profile search, which the server passes through verbatim. It is
+a private backend: not a public API, no compatibility promise, no capability
+document. The deployment must make the route reachable only from Brainstorm's
+cluster.
+
+`POST /search/pubkeys` takes `{"query", "algorithm"?, "pov"?, "observer"?, "limit"?}` and
+answers `{"results":[{"pubkey","rank"}],"ttl":300}`: kind-0 profiles whose own
+text matched, highest `rank` first. `rank` is the hit's own engine score, text
+match weighted by the observer's trust, and compares only within one answer. No
+reference expansion; `limit` is 1..400, default 100.
+
+**`relevance` (the default) ranks through the House Observer**, which the proxy
+names in `observer` (64-hex, required for it), and any `pov` is ignored. The
+relay keeps no house observer of its own, for this route or NIP-50. **`relevance-pov`
+ranks through the `pov`.** Either way the observer's own kind-10040 decides, and
+no other view is substituted:
+
+| the observer's 10040 | `relevance-pov` | `relevance` |
+|---|---|---|
+| names a rank service with a projected, ranked card | `200` | `200` |
+| none that resolves | `422` | `503` |
+| resolves, no cards yet, list newer than 6 hours | `202` + `Retry-After` | `503` |
+| resolves, no cards, list older | `422` | `503` |
+
+A malformed body is a `400`; a missing or empty `query`, one over 512
+characters, a `limit` outside 1..400, an unknown `algorithm` or a missing or
+invalid `pov` is a `422`. Every refusal says why in `X-Reason` and
+`{"error": …}`. Past `ORE_CONCURRENCY` searches at once the next waits up to 2 s for a slot, then is a `503`.
+Settings: [`docs/configuration.md`](docs/configuration.md#search-backend-for-brainstorms-open-ranking).
+
 ## The router: mirror from upstream relays
 
 The relay serves what is in the store; the router is how the store gets filled

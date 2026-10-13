@@ -1,0 +1,388 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.server
+
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.ScoredSearch
+import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_CARDS
+import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_LIST
+import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.READY
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import io.ktor.client.HttpClient
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.ApplicationTestBuilder
+import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import java.net.URI
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse.BodyHandlers
+import kotlin.test.Test
+import kotlin.test.assertContains
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/** The relay's private ORE-05 search backend, driven in-process over a fake store function. */
+class OpenRankingRouteTest {
+    private val house = "0e".repeat(32)
+    private val pov = "0b".repeat(32)
+    private val service = "5e".repeat(32)
+    private val alice = "a1".repeat(32)
+    private val bob = "b2".repeat(32)
+
+    private data class Ask(
+        val q: String,
+        val observer: String,
+        val limit: Int,
+    )
+
+    private val asked = mutableListOf<Ask>()
+
+    private fun answering(vararg byObserver: Pair<String, ScoredSearch>): ScoredProfileSearch {
+        val answers = byObserver.toMap()
+        return { q, o, n ->
+            asked += Ask(q, o, n)
+            answers[o] ?: noList
+        }
+    }
+
+    private val noList = ScoredSearch(emptyList(), ScoredSearch.Lens(NO_LIST, null, null))
+
+    private fun ready(vararg hits: ScoredSearch.Hit) = ScoredSearch(hits.toList(), ScoredSearch.Lens(READY, service, 1_000L))
+
+    private val now = 1_800_000_000L
+    private val grace = POV_GRACE_SECONDS
+
+    private fun noCards(listCreatedAt: Long?) = ScoredSearch(emptyList(), ScoredSearch.Lens(NO_CARDS, service, listCreatedAt))
+
+    private fun ore(
+        search: ScoredProfileSearch,
+        concurrency: Int = 4,
+        slotWaitMillis: Long = SLOT_WAIT_MILLIS,
+    ) = OpenRanking(search, OpenRankingConfig(concurrency = concurrency), nowSecs = { now }, slotWaitMillis = slotWaitMillis)
+
+    private fun personal(p: String = pov) = """{"query":"alice","algorithm":"relevance-pov","pov":"$p"}"""
+
+    private fun ApplicationTestBuilder.serving(ore: OpenRanking) = application { routing { openRanking(ore) } }
+
+    private suspend fun HttpClient.search(body: String): HttpResponse =
+        post("/search/pubkeys") {
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+
+    private fun json(text: String): JsonElement = Json.parseToJsonElement(text)
+
+    @Test
+    fun `a global search ranks through the House Observer with each hit's own score, highest first`() =
+        testApplication {
+            serving(ore(answering(house to ready(ScoredSearch.Hit(alice, 812.5), ScoredSearch.Hit(bob, 3.0)))))
+            val res = client.search("""{"observer":"$house","query":"alice"}""")
+            assertEquals(HttpStatusCode.OK, res.status)
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":812.5},{"pubkey":"$bob","rank":3.0}],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(listOf(Ask("alice", house, 100)), asked, "limit defaults to 100")
+        }
+
+    @Test
+    fun `a global search ignores any pov, even one that is not a pubkey`() =
+        testApplication {
+            serving(ore(answering(house to ready(ScoredSearch.Hit(alice, 1.0)))))
+            for (p in listOf("\"$pov\"", "\"nonsense\"", "42")) {
+                assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"alice","algorithm":"relevance","pov":$p}""").status, p)
+            }
+            assertEquals(List(3) { Ask("alice", house, 100) }, asked)
+        }
+
+    private suspend fun assertRefused(
+        client: HttpClient,
+        status: HttpStatusCode,
+        body: String,
+    ) {
+        val res = client.search(body)
+        assertEquals(status, res.status, body)
+        val reason = assertNotNull(res.headers["X-Reason"], "every refusal says why: $body")
+        assertEquals(json("""{"error":${Json.encodeToString(reason)}}"""), json(res.bodyAsText()), body)
+    }
+
+    @Test
+    fun `a body that is not a JSON object is a 400`() =
+        testApplication {
+            serving(ore(answering(house to ready())))
+            for (body in listOf("", "{", "not json", "[]", "\"alice\"", "null")) assertRefused(client, HttpStatusCode.BadRequest, body)
+            assertEquals(emptyList(), asked)
+        }
+
+    @Test
+    fun `every invalid field is a 422 with a reason, and never reaches the store`() =
+        testApplication {
+            serving(ore(answering(house to ready(), pov to ready())))
+            val bad =
+                listOf(
+                    """{}""",
+                    """{"observer":"$house","query":5}""",
+                    """{"observer":"$house","query":""}""",
+                    """{"observer":"$house","query":"  \u0000\u001f\u007f "}""",
+                    """{"observer":"$house","query":"${"a".repeat(513)}"}""",
+                    """{"observer":"$house","query":"alice","limit":0}""",
+                    """{"observer":"$house","query":"alice","limit":-1}""",
+                    """{"observer":"$house","query":"alice","limit":401}""",
+                    """{"observer":"$house","query":"alice","limit":"ten"}""",
+                    """{"observer":"$house","query":"alice","limit":1.5}""",
+                    """{"observer":"$house","query":"alice","limit":true}""",
+                    """{"observer":"$house","query":"alice","algorithm":"pagerank"}""",
+                    """{"observer":"$house","query":"alice","algorithm":5}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov"}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":null}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":"${"0b".repeat(31)}"}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":"${"zz".repeat(32)}"}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":42}""",
+                )
+            for (body in bad) assertRefused(client, HttpStatusCode.UnprocessableEntity, body)
+            assertEquals(emptyList(), asked)
+        }
+
+    @Test
+    fun `the query reaches the store without control characters, and the bounds are inclusive`() =
+        testApplication {
+            serving(ore(answering(house to ready(), pov to ready())))
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"al\u0000ice\n","limit":1}""").status)
+            val longest = "\uD83D\uDE00".repeat(512)
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"$longest","limit":400}""").status, "512 characters, not 512 UTF-16 units")
+            val upper = pov.uppercase()
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"bob","algorithm":"relevance-pov","pov":"$upper"}""").status)
+            assertEquals(
+                listOf(Ask("alice", house, 1), Ask(Json.decodeFromString<String>("\"$longest\""), house, 400), Ask("bob", pov, 100)),
+                asked,
+            )
+        }
+
+    @Test
+    fun `results stop at limit even when the store answers more`() =
+        testApplication {
+            serving(ore(answering(house to ready(ScoredSearch.Hit(alice, 9.0), ScoredSearch.Hit(bob, 8.0), ScoredSearch.Hit(pov, 7.0)))))
+            val res = client.search("""{"observer":"$house","query":"alice","limit":2}""")
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":9.0},{"pubkey":"$bob","rank":8.0}],"ttl":300}"""), json(res.bodyAsText()))
+        }
+
+    @Test
+    fun `control characters do not count toward the query's length`() =
+        testApplication {
+            serving(ore(answering(house to ready())))
+            val longest = "a".repeat(512)
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"\u0000$longest\u007f\n"}""").status)
+            assertEquals(listOf(Ask(longest, house, 100)), asked)
+        }
+
+    @Test
+    fun `a global search needs the proxy's House Observer, a valid pubkey`() =
+        testApplication {
+            serving(ore(answering(house to ready())))
+            assertRefused(client, HttpStatusCode.UnprocessableEntity, """{"query":"alice"}""")
+            assertRefused(client, HttpStatusCode.UnprocessableEntity, """{"query":"alice","observer":"npub1nope"}""")
+            assertEquals(emptyList(), asked)
+        }
+
+    @Test
+    fun `a personalized search needs no House Observer`() =
+        testApplication {
+            serving(ore(answering(pov to ready(ScoredSearch.Hit(alice, 1.0)))))
+            assertEquals(HttpStatusCode.OK, client.search(personal()).status)
+        }
+
+    @Test
+    fun `a personalized search ranks through the pov's own lens`() =
+        testApplication {
+            serving(ore(answering(house to ready(ScoredSearch.Hit(bob, 9.0)), pov to ready(ScoredSearch.Hit(alice, 7.25)))))
+            val res = client.search(personal())
+            assertEquals(HttpStatusCode.OK, res.status)
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":7.25}],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(listOf(Ask("alice", pov, 100)), asked)
+        }
+
+    @Test
+    fun `a pov with no trust provider list is a 422, never the House Observer's view`() =
+        testApplication {
+            serving(ore(answering(house to ready(ScoredSearch.Hit(bob, 9.0)))))
+            val res = client.search(personal())
+            assertEquals(HttpStatusCode.UnprocessableEntity, res.status)
+            assertContains(assertNotNull(res.headers["X-Reason"]), "trust provider list")
+            assertEquals(listOf(Ask("alice", pov, 100)), asked)
+        }
+
+    @Test
+    fun `a pov whose list is newer than the grace is still mirroring - 202 with Retry-After`() =
+        testApplication {
+            serving(ore(answering(pov to noCards(listCreatedAt = now - grace + 1))))
+            val res = client.search(personal())
+            assertEquals(HttpStatusCode.Accepted, res.status)
+            val retry = assertNotNull(res.headers["Retry-After"]).toLong()
+            assertTrue(retry > 0)
+            assertNotNull(res.headers["X-Reason"])
+            assertEquals(json("""{"status":"computing","retry_after":$retry}"""), json(res.bodyAsText()))
+        }
+
+    @Test
+    fun `a pov whose list is past the grace with no cards is a 422`() {
+        for (createdAt in listOf(now - grace, now - 30 * 86_400L, null)) {
+            testApplication {
+                serving(ore(answering(pov to noCards(createdAt))))
+                val res = client.search(personal())
+                assertEquals(HttpStatusCode.UnprocessableEntity, res.status, "$createdAt")
+                assertNotNull(res.headers["X-Reason"])
+            }
+        }
+    }
+
+    @Test
+    fun `a global search whose House Observer lens is not READY is a 503, never an empty 200 or a 202`() {
+        for (lens in listOf(noList, noCards(listCreatedAt = now))) {
+            testApplication {
+                serving(ore(answering(house to lens)))
+                val res = client.search("""{"observer":"$house","query":"alice"}""")
+                assertEquals(HttpStatusCode.ServiceUnavailable, res.status, "$lens")
+                assertNotNull(res.headers["X-Reason"])
+            }
+        }
+    }
+
+    @Test
+    fun `a store that fails is a 503 with a reason`() =
+        testApplication {
+            serving(ore({ _, _, _ -> error("vespa down") }))
+            val res = client.search("""{"observer":"$house","query":"alice"}""")
+            assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
+            assertNotNull(res.headers["X-Reason"])
+        }
+
+    @Test
+    fun `past the total a search waits for a slot, and gets one that frees in time`() =
+        testApplication {
+            val running = Channel<Unit>(Channel.UNLIMITED)
+            val release = CompletableDeferred<Unit>()
+            serving(
+                ore({ _, _, _ ->
+                    running.send(Unit)
+                    release.await()
+                    ready()
+                }, concurrency = 2),
+            )
+            coroutineScope {
+                val held = List(2) { async { client.search("""{"observer":"$house","query":"alice"}""") } }
+                repeat(2) { running.receive() }
+                val queued = async { client.search("""{"observer":"$house","query":"bob"}""") }
+                delay(100)
+                release.complete(Unit)
+                held.forEach { assertEquals(HttpStatusCode.OK, it.await().status) }
+                assertEquals(HttpStatusCode.OK, queued.await().status, "the queued search ran once a slot freed")
+            }
+        }
+
+    @Test
+    fun `a search still waiting for a slot past the wait is a 503`() =
+        testApplication {
+            val running = Channel<Unit>(Channel.UNLIMITED)
+            val release = CompletableDeferred<Unit>()
+            serving(
+                ore({ _, _, _ ->
+                    running.send(Unit)
+                    release.await()
+                    ready()
+                }, concurrency = 2, slotWaitMillis = 100),
+            )
+            coroutineScope {
+                val held = List(2) { async { client.search("""{"observer":"$house","query":"alice"}""") } }
+                repeat(2) { running.receive() }
+                val busy = client.search("""{"observer":"$house","query":"bob"}""")
+                assertEquals(HttpStatusCode.ServiceUnavailable, busy.status)
+                assertNotNull(busy.headers["X-Reason"])
+                release.complete(Unit)
+                held.forEach { assertEquals(HttpStatusCode.OK, it.await().status) }
+            }
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"carol"}""").status, "a finished search frees its slot")
+        }
+
+    private fun serve(
+        ore: OpenRanking?,
+        block: (port: Int) -> Unit,
+    ) {
+        val clearnet = RelayUrlNormalizer.normalize("ws://localhost:7777")
+        val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = clearnet), clearnet)
+        val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), openRanking = ore, wait = false)
+        try {
+            block(
+                runBlocking {
+                    server.engine
+                        .resolvedConnectors()
+                        .first()
+                        .port
+                },
+            )
+        } finally {
+            server.stop(0, 0)
+            relay.close()
+        }
+    }
+
+    private val http =
+        java.net.http.HttpClient
+            .newHttpClient()
+
+    private fun send(req: HttpRequest.Builder) = http.send(req.build(), BodyHandlers.ofString())
+
+    @Test
+    fun `serveRelay serves only the search, only when enabled, and exposes no reason header cross-origin`() {
+        val post = { port: Int ->
+            HttpRequest
+                .newBuilder(URI("http://localhost:$port/search/pubkeys"))
+                .POST(HttpRequest.BodyPublishers.ofString("""{"observer":"$house","query":"alice"}"""))
+                .header("Origin", "https://client.example")
+                .header("Content-Type", "application/json")
+        }
+        serve(ore(answering(house to noList))) { port ->
+            assertEquals(404, send(HttpRequest.newBuilder(URI("http://localhost:$port/.well-known/open-ranking.json"))).statusCode(), "no capability document: the server is the provider")
+            val refused = send(post(port))
+            assertEquals(503, refused.statusCode(), "the House Observer has no list here")
+            val exposed =
+                refused
+                    .headers()
+                    .allValues("Access-Control-Expose-Headers")
+                    .flatMap { it.split(',') }
+                    .map { it.trim().lowercase() }
+            assertTrue("retry-after" in exposed && "x-reason" !in exposed, "only NIP-FE's hints, nothing for a cross-origin ORE caller: $exposed")
+        }
+        serve(null) { port -> assertEquals(404, send(post(port)).statusCode()) }
+    }
+}

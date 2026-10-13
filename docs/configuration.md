@@ -318,6 +318,17 @@ The wire format is NIP-FE as published on NostrHub (kind 30817,
 `d=nip-fe-nostr-over-http`); [proposals/nip-fe-relay-over-http.md](proposals/nip-fe-relay-over-http.md)
 carries a copy, and `relay/tools/nipfe-e2e.mjs` drives a running relay through it.
 
+## Search backend for Brainstorm's Open Ranking
+
+`POST /search/pubkeys` (README, "Search backend for Brainstorm's Open Ranking"):
+the private backend `api.brainstorm.world` proxies ORE-05 to. Not public; the
+deployment must make it reachable only from Brainstorm's cluster.
+
+| var | meaning | default |
+|---|---|---|
+| `ORE_ENABLED` | mount the route. `true`/`1`/`yes`/`on` turns it on; anything else that is not a boolean stops the boot | off |
+| `ORE_CONCURRENCY` | searches the relay may run at once, `1` or more; the next waits up to 2 s for a slot, then is a `503`. Each is a ranked read. There is one caller, so there is no per-client cap | `8` |
+
 ## Search: the subject travels with the pointer
 
 | var | meaning | default |
