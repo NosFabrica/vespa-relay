@@ -1033,13 +1033,34 @@ quartz = "68268da413"
 #
 # Prev 14d8c7eeed, 5379e572dc and ff54c9beb1 before it (all above).
 #
-# a1dd4b28fb = store main @ 82580e6 + scoredProfileSearch (ORE-05's scored search and lens), on the
-# ore-search branch until it merges; re-pin to the merge commit if that changes the hash. Store code
-# only: no schema, no quartz move (still 68268da413), nothing re-derived.
-#   git merge-base --is-ancestor a995519bef a1dd4b28fb   # verified
-# LEXICOGRAPHIC: 'a1dd…' < 'a995…', moot — nothing else names the store.
+# d1adf0ff91 = vespa-eventstore main @ 2026-10-13, the merge of #164 — SAME TREE as its head
+# a1dd4b28fb (`git diff a1dd4b28fb d1adf0ff91` is empty), two merges over a995519bef:
+#  - #164, ScoredSearch + NostrSemanticsStore.scoredProfileSearch: kind-0 hits with their own
+#    engine score under a named observer, and that observer's lens (READY / NO_LIST / NO_CARDS),
+#    which OpenRankingRoutes answers ORE-05 from. Store code only.
+#  - #163, the body edge n-gram PROTOTYPE (#161), OFF by default: ONE ADDITIVE SCHEMA FIELD,
+#    `search_text_edge` (index only, no attribute, no summary), plus its matchCount() in
+#    tier_body_match and offname_match. The relay's SchemaDeploy carries it on the next boot; it
+#    is fed only under VESPA_BODY_EDGE and queried only under EventQuery.bodyEdgeMatching, neither
+#    of which this relay sets, so the field stays empty and both expressions add 0. Nothing to
+#    re-feed; SchemaFallbacks demotes the column if a serving schema predates it.
+# No quartz move (the store still names 68268da413), nothing re-derived.
+#   git merge-base --is-ancestor a995519bef d1adf0ff91   # verified
+#
+# SPELLED `com.github.nosfabrica` (below): the lowercase entry serves store and engine at
+# d1adf0ff91, and its pom names engine under `nosfabrica` too.
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,409 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line d1adf0ff91 in all
+# six modules, zero arrows. And the store at d1adf0ff91 itself: its integration suite against a
+# real Vespa 8.763.13 in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design,
+# 0 failures; the schema with search_text_edge deploys), read off the result XML. Not run:
+# RelayContractIT; and no store IT drives scoredProfileSearch on a real Vespa (its tests are unit).
+#
+# LEXICOGRAPHIC: 'd1ad…' > 'a995…': the safe direction, moot — nothing else names the store.
+#
 # Prev a995519bef (above).
-vespaEventStore = "a1dd4b28fb"
+vespaEventStore = "d1adf0ff91"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
