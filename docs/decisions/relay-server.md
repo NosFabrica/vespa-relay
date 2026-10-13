@@ -340,21 +340,24 @@ the way out. NIP-86 already answered POSTs to `/`, so the two share the route,
 told apart by NIP-86's `application/nostr+json+rpc`; with the commands off, every
 POST is the rpc's, as before.
 
-**The relay is a private search backend for Brainstorm's Open Ranking.**
+**The relay is a public search backend for Brainstorm's Open Ranking.**
 ORE-05 has to show each hit's own engine score, which NIP-50 cannot carry: page
 assembly drops it, and an expanded subject has only its pointer's placement, so
 `POST /search/pubkeys` answers it here. Open Ranking lives in one place,
 `api.brainstorm.world`, which serves the whole ORE API and passes this route's
-answers through verbatim. An earlier version served the capability document and
-the route publicly, with CORS and a per-client cap; that was dropped before it
-shipped, so the relay has no capability document, exposes nothing ORE-specific
-cross-origin, and the deployment must make it reachable only from our cluster. One
-caller makes a per-client cap meaningless, so only `ORE_CONCURRENCY` bounds it; a
-search past it waits up to 2 s for a slot, as a websocket's searches queue, then is a `503`.
+answers through verbatim, so the relay serves no capability document. An earlier
+version kept the route private, reachable only from Brainstorm's cluster; that was
+dropped, because it ranks nothing a NIP-50 `observer:` search does not already rank,
+and a `.onion` forward would have reached past any ingress rule anyway. So it is
+public on every address, under the app-wide CORS like every other route, and only
+`ORE_CONCURRENCY` bounds it (no per-client cap): a search past it waits up to 2 s
+for a slot, as a websocket's searches queue, then is a `503`.
 The relay keeps no house observer, not even for this route: a global ORE algorithm
 needs one view, and the proxy names it in each request (`observer`), since which
-key is the house is Brainstorm's decision, already in its server. The Observer's
-lens decides the status and nothing is substituted (ORE-01): a global search
-with an unready House Observer is a `503`, never an empty `200`; a fresh 10040
-with no cards yet is a `202` because the mirror lags a new activation by
-minutes, and past 6 hours it is a `422`.
+key is the house is Brainstorm's decision, already in its server. The observer's
+10040 decides the status and nothing is substituted (ORE-01): one naming a rank
+service is that observer's ranking, an empty `200` while the service's scores are
+still being mirrored, and a global search whose House Observer has none is a `503`,
+never an empty `200`. Nothing asks whether the scores are ready: an earlier version
+sampled the service's newest cards before each search to answer a `202`, a second
+engine query that eight cards could not settle anyway.

@@ -1059,8 +1059,31 @@ quartz = "68268da413"
 #
 # LEXICOGRAPHIC: 'd1ad…' > 'a995…': the safe direction, moot — nothing else names the store.
 #
-# Prev a995519bef (above).
-vespaEventStore = "d1adf0ff91"
+# 8c95193705 = vespa-eventstore branch claude/eloquent-cannon-4nj7p8, ONE commit over d1adf0ff91;
+# re-pin to its merge commit before this merges. scoredProfileSearch STOPS ASKING WHETHER THE
+# OBSERVER'S SCORES ARE READY: each call used to sample the rank service's 8 newest kind-30382
+# cards (a second engine query, sorted over every card the service publishes) and could not tell
+# from 8 cards anyway. Now it is one query; the observer's 10040 resolving a rank service (the
+# cached provider map, no query) is the whole lens. ScoredSearch carries `rankService` in place of
+# Lens/LensStatus, so OpenRankingRoutes has no 202 and no grace. Store code only: no schema, no
+# quartz move, nothing re-derived.
+#   git merge-base --is-ancestor d1adf0ff91 8c95193705   # verified
+#
+# SPELLED `com.github.NosFabrica` (below) for this pin: the lowercase entry holds a failed infra
+# build (the maven-publish plugin unresolvable, 15 s in), the capitalized one serves store and
+# engine, and its pom names engine under `NosFabrica` too.
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,412 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line 8c95193705 in all
+# six modules, zero arrows. And the store at 8c95193705 itself: its unit build (795 tests,
+# 0 failures) and its integration suite against a real Vespa 8.763.13 in Docker (23 tests, 22
+# passed, StagingCorpusIT skipped by design, 0 failures), read off the result XML. Not run:
+# RelayContractIT; still no store IT drives scoredProfileSearch on a real Vespa.
+#
+# LEXICOGRAPHIC: '8c95…' < 'd1ad…': the losing direction, moot — nothing else names the store.
+#
+# Prev d1adf0ff91 (above).
+vespaEventStore = "8c95193705"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -1084,9 +1107,10 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # for 14d8c7eeed it is the reverse — `nosfabrica` failed opening gradle-wrapper.jar,
 # `NosFabrica` built (its pom also names engine under `NosFabrica`). For a995519bef
 # it flips back: `NosFabrica` failed (JAVA_HOME at a missing JDK), `nosfabrica` built
-# (its pom names engine under `nosfabrica`). Same repo, same artifacts — different
-# cache key. On the next bump, check both spellings.
-vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+# (its pom names engine under `nosfabrica`), and d1adf0ff91 too. For 8c95193705 it flips
+# again: `nosfabrica` failed (the maven-publish plugin unresolvable), `NosFabrica` built.
+# Same repo, same artifacts — different cache key. On the next bump, check both spellings.
+vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

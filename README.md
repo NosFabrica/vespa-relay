@@ -253,10 +253,10 @@ label events' `content` and that no word search would ever recall.
 
 Brainstorm's [Open Ranking](https://github.com/Open-Ranking/protocol) provider is
 `api.brainstorm.world`; this relay is not one. With `ORE_ENABLED` it answers that
-server's ORE-05 profile search, which the server passes through verbatim. It is
-a private backend: not a public API, no compatibility promise, no capability
-document. The deployment must make the route reachable only from Brainstorm's
-cluster.
+server's ORE-05 profile search, which the server passes through verbatim. The
+route is public, on the clearnet and the `.onion` alike — it ranks only what a
+NIP-50 `observer:` search already ranks — but it publishes no capability
+document: the server is the provider.
 
 `POST /search/pubkeys` takes `{"query", "algorithm"?, "pov"?, "observer"?, "limit"?}` and
 answers `{"results":[{"pubkey","rank"}],"ttl":300}`: kind-0 profiles whose own
@@ -272,10 +272,12 @@ no other view is substituted:
 
 | the observer's 10040 | `relevance-pov` | `relevance` |
 |---|---|---|
-| names a rank service with a projected, ranked card | `200` | `200` |
-| none that resolves | `422` | `503` |
-| resolves, no cards yet, list newer than 6 hours (and dated at most 15 minutes ahead) | `202` + `Retry-After` | `503` |
-| resolves, no cards, list older | `422` | `503` |
+| names a rank service | `200` | `200` |
+| none that does | `422` | `503` |
+
+One engine query either way: nothing asks whether the service's scores are
+mirrored yet. A profile with no score from it is gated out, as in a NIP-50 read,
+so a service whose scores have not arrived answers an empty `200`.
 
 A malformed body is a `400`, one over 16 KiB a `413` and one that has not arrived within 2 s a `408`; a missing or empty `query`, one over 512
 characters, a `limit` outside 1..400, an unknown `algorithm` or a missing or

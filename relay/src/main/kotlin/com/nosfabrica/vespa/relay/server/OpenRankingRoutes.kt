@@ -59,20 +59,10 @@ class OpenRankingConfig(
     }
 }
 
-/** How long after its 10040 a pov whose cards are not projected yet answers 202 rather than 422. */
-internal const val POV_GRACE_SECONDS = 6 * 3_600L
-
-/**
- * How far ahead of this clock a 10040 may be dated and still count as fresh: a client clock running
- * fast. A list dated further ahead is not fresh, or its 202 would last until that date arrives.
- */
-internal const val POV_CLOCK_SKEW_SECONDS = 15 * 60L
-
 /** The ORE search backend: the search it answers from and how it is bounded. */
 class OpenRanking(
     val search: ScoredProfileSearch,
     val config: OpenRankingConfig,
-    val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
     /** How long a search waits for a free slot before it is refused. */
     val slotWaitMillis: Long = SLOT_WAIT_MILLIS,
     /** How long the body may take to arrive before the request is a 408. */
@@ -88,12 +78,12 @@ class OpenRanking(
 /** Queue a burst briefly, like a websocket's searches, but well inside the server's 5 s proxy timeout. */
 internal const val SLOT_WAIT_MILLIS = 2_000L
 
-/** The proxy sends a few hundred bytes from our own cluster; a body still arriving past this is not coming. */
+/** A valid body is a few hundred bytes; one still arriving past this is not coming. */
 internal const val BODY_WAIT_MILLIS = 2_000L
 
 /**
- * ORE-05's `POST /search/pubkeys`, ranked by the store's own search relevance: a private backend
- * Brainstorm's server proxies verbatim, not a public provider; see README.
+ * ORE-05's `POST /search/pubkeys`, ranked by the store's own search relevance: the backend
+ * Brainstorm's server proxies verbatim, public but not a provider (no capability document); see README.
  */
 internal fun Route.openRanking(ore: OpenRanking) {
     post(SEARCH_PATH) {
@@ -132,44 +122,32 @@ internal fun Route.openRanking(ore: OpenRanking) {
                     // A no-op once finished; a failed or cancelled search is no sample, only no longer in flight.
                     read?.abandon()
                 }
-            call.answer(found, ask.pov, ask.limit, listFresh = { createdAt -> ore.nowSecs() - createdAt in -POV_CLOCK_SKEW_SECONDS until POV_GRACE_SECONDS })
+            call.answer(found, ask.pov, ask.limit)
         } finally {
             ore.slots.release()
         }
     }
 }
 
-/** The lens decides: only a READY lens is the asked-for view, and no other view is substituted (ORE-01). */
+/**
+ * The observer's 10040 decides, and no other view is substituted (ORE-01): one that names a rank
+ * service is the observer's ranking, whatever it holds — a profile with no projected score is gated
+ * out, as in a NIP-50 read — and without one there is no ranking to serve.
+ */
 private suspend fun ApplicationCall.answer(
     found: ScoredSearch,
     pov: String?,
     limit: Int,
-    listFresh: (createdAt: Long) -> Boolean,
 ) {
-    val lens = found.lens
-    if (lens.status == ScoredSearch.LensStatus.READY) return respondText(found.toResults(limit), ContentType.Application.Json)
-    if (pov == null) return respondError(HttpStatusCode.ServiceUnavailable, "the provider's House Observer has no ranked trust on this relay yet; retry later")
-    val cannot = "algorithm '$RELEVANCE_POV' cannot be served for pov $pov"
-    val fallback = "fall back to the endpoint's default algorithm '$RELEVANCE' for a global view"
-    if (lens.status == ScoredSearch.LensStatus.NO_LIST) {
-        return respondError(HttpStatusCode.UnprocessableEntity, "$cannot: the pov has no trust provider list (kind 10040) naming a rank service. Either $fallback, or publish one")
+    if (found.rankService != null) return respondText(found.toResults(limit), ContentType.Application.Json)
+    if (pov == null) {
+        return respondError(HttpStatusCode.ServiceUnavailable, "the provider's House Observer has no trust provider list (kind 10040) naming a rank service on this relay yet; retry later")
     }
-    if (lens.listCreatedAt?.let(listFresh) == true) {
-        return respondComputing("the pov's trust provider list is recent and its scores are still being mirrored; retry the identical request after $RETRY_AFTER_SECONDS seconds")
-    }
-    respondError(HttpStatusCode.UnprocessableEntity, "$cannot: its trust provider list names a rank service with no scores on this relay. Either $fallback, or have the service publish its scores")
-}
-
-/** ORE-05's 202: `Retry-After` and a `computing` body, decided here from the pov's lens. */
-private suspend fun ApplicationCall.respondComputing(reason: String) {
-    response.headers.append(X_REASON, reason.latin1())
-    response.headers.append(HttpHeaders.RetryAfter, RETRY_AFTER_SECONDS.toString())
-    val body =
-        buildJsonObject {
-            put("status", "computing")
-            put("retry_after", RETRY_AFTER_SECONDS)
-        }
-    respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.Accepted)
+    respondError(
+        HttpStatusCode.UnprocessableEntity,
+        "algorithm '$RELEVANCE_POV' cannot be served for pov $pov: the pov has no trust provider list (kind 10040) naming a rank service. " +
+            "Either fall back to the endpoint's default algorithm '$RELEVANCE' for a global view, or publish one",
+    )
 }
 
 private sealed interface SearchAsk {
@@ -281,4 +259,3 @@ private val CONTROL_CHARS = Regex("[\\x00-\\x1f\\x7f]")
 private const val RELEVANCE = "relevance"
 private const val RELEVANCE_POV = "relevance-pov"
 private const val RESULTS_TTL_SECONDS = 300
-private const val RETRY_AFTER_SECONDS = 60

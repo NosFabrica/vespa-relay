@@ -87,7 +87,7 @@ fun serveRelay(
     trustPage: String? = null,
     trustJson: (() -> kotlinx.serialization.json.JsonObject)? = null,
     trustExplain: (suspend (String) -> kotlinx.serialization.json.JsonObject)? = null,
-    // When set, POST /search/pubkeys: the private ORE-05 backend Brainstorm's server proxies to.
+    // When set, POST /search/pubkeys: the ORE-05 backend Brainstorm's server proxies to.
     openRanking: OpenRanking? = null,
     // Null, or never yet published, makes GET /stats.json a 503.
     statsJson: StatsSnapshot? = null,

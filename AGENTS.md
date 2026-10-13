@@ -170,7 +170,7 @@ relay/…/relay/
                               serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
-                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, a private backend for Brainstorm's server),
+                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /

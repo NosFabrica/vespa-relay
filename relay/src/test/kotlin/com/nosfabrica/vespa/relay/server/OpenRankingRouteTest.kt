@@ -22,9 +22,6 @@ package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.ScoredSearch
-import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_CARDS
-import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_LIST
-import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.READY
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -59,7 +56,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/** The relay's private ORE-05 search backend, driven in-process over a fake store function. */
+/** The relay's ORE-05 search backend, driven in-process over a fake store function. */
 class OpenRankingRouteTest {
     private val house = "0e".repeat(32)
     private val pov = "0b".repeat(32)
@@ -83,14 +80,9 @@ class OpenRankingRouteTest {
         }
     }
 
-    private val noList = ScoredSearch(emptyList(), ScoredSearch.Lens(NO_LIST, null, null))
+    private val noList = ScoredSearch(emptyList(), null)
 
-    private fun ready(vararg hits: ScoredSearch.Hit) = ScoredSearch(hits.toList(), ScoredSearch.Lens(READY, service, 1_000L))
-
-    private val now = 1_800_000_000L
-    private val grace = POV_GRACE_SECONDS
-
-    private fun noCards(listCreatedAt: Long?) = ScoredSearch(emptyList(), ScoredSearch.Lens(NO_CARDS, service, listCreatedAt))
+    private fun ready(vararg hits: ScoredSearch.Hit) = ScoredSearch(hits.toList(), service)
 
     private val logged = mutableListOf<String>()
 
@@ -103,7 +95,6 @@ class OpenRankingRouteTest {
     ) = OpenRanking(
         search,
         OpenRankingConfig(concurrency = concurrency),
-        nowSecs = { now },
         slotWaitMillis = slotWaitMillis,
         bodyWaitMillis = bodyWaitMillis,
         log = { logged += it },
@@ -292,51 +283,22 @@ class OpenRankingRouteTest {
         }
 
     @Test
-    fun `a pov whose list is newer than the grace is still mirroring - 202 with Retry-After`() =
+    fun `a pov whose list names a rank service is its ranking, even with nothing scored yet - an empty 200, never a 202`() =
         testApplication {
-            serving(ore(answering(pov to noCards(listCreatedAt = now - grace + 1))))
+            serving(ore(answering(pov to ready())))
             val res = client.search(personal())
-            assertEquals(HttpStatusCode.Accepted, res.status)
-            val retry = assertNotNull(res.headers["Retry-After"]).toLong()
-            assertTrue(retry > 0)
-            assertNotNull(res.headers["X-Reason"])
-            assertEquals(json("""{"status":"computing","retry_after":$retry}"""), json(res.bodyAsText()))
+            assertEquals(HttpStatusCode.OK, res.status)
+            assertEquals(json("""{"results":[],"ttl":300}"""), json(res.bodyAsText()))
         }
 
     @Test
-    fun `a list dated a little ahead of this clock is fresh, a client clock running fast`() {
-        for (createdAt in listOf(now, now + 60, now + POV_CLOCK_SKEW_SECONDS)) {
-            testApplication {
-                serving(ore(answering(pov to noCards(createdAt))))
-                assertEquals(HttpStatusCode.Accepted, client.search(personal()).status, "$createdAt")
-            }
+    fun `a global search whose House Observer has no list is a 503, never an empty 200`() =
+        testApplication {
+            serving(ore(answering(house to noList)))
+            val res = client.search("""{"observer":"$house","query":"alice"}""")
+            assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
+            assertContains(assertNotNull(res.headers["X-Reason"]), "House Observer")
         }
-    }
-
-    @Test
-    fun `a pov whose list is past the grace with no cards is a 422`() {
-        // Dated past the clock skew it is not fresh either: its 202 would last until that date arrived.
-        for (createdAt in listOf(now - grace, now - 30 * 86_400L, now + POV_CLOCK_SKEW_SECONDS + 1, now + 365 * 86_400L, null)) {
-            testApplication {
-                serving(ore(answering(pov to noCards(createdAt))))
-                val res = client.search(personal())
-                assertEquals(HttpStatusCode.UnprocessableEntity, res.status, "$createdAt")
-                assertNotNull(res.headers["X-Reason"])
-            }
-        }
-    }
-
-    @Test
-    fun `a global search whose House Observer lens is not READY is a 503, never an empty 200 or a 202`() {
-        for (lens in listOf(noList, noCards(listCreatedAt = now))) {
-            testApplication {
-                serving(ore(answering(house to lens)))
-                val res = client.search("""{"observer":"$house","query":"alice"}""")
-                assertEquals(HttpStatusCode.ServiceUnavailable, res.status, "$lens")
-                assertNotNull(res.headers["X-Reason"])
-            }
-        }
-    }
 
     @Test
     fun `a store that fails is a 503 with a reason, and the failure is logged`() =

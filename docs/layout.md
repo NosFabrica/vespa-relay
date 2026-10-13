@@ -244,9 +244,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     HttpRelayGate.kt    HTTP_RELAY_PER_CLIENT / HTTP_RELAY_TOTAL — the search
                         gate is per connection, and here every request is one
     Nip86Route.kt       the management API
-    OpenRankingRoutes.kt  ORE-05 POST /search/pubkeys, the private backend
+    OpenRankingRoutes.kt  ORE-05 POST /search/pubkeys, the public backend
                         Brainstorm's server proxies; off unless ORE_ENABLED;
-                        the Observer's lens picks 200/202/422/503, and
+                        the Observer's 10040 picks 200/422/503, and
                         ORE_CONCURRENCY caps it
     BanListFile.kt      NIP-86 ban state that outlives the container
     ConnectionCountListener.kt  LOG_CONNECTIONS
