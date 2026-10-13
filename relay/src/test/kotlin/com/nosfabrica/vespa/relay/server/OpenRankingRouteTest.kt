@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_CARDS
 import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.NO_LIST
 import com.nosfabrica.vespa.eventstore.ScoredSearch.LensStatus.READY
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import io.ktor.client.HttpClient
 import io.ktor.client.request.post
@@ -34,10 +35,13 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentType
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -94,7 +98,17 @@ class OpenRankingRouteTest {
         search: ScoredProfileSearch,
         concurrency: Int = 4,
         slotWaitMillis: Long = SLOT_WAIT_MILLIS,
-    ) = OpenRanking(search, OpenRankingConfig(concurrency = concurrency), nowSecs = { now }, slotWaitMillis = slotWaitMillis, log = { logged += it })
+        bodyWaitMillis: Long = BODY_WAIT_MILLIS,
+        pressure: ServingPressure? = null,
+    ) = OpenRanking(
+        search,
+        OpenRankingConfig(concurrency = concurrency),
+        nowSecs = { now },
+        slotWaitMillis = slotWaitMillis,
+        bodyWaitMillis = bodyWaitMillis,
+        log = { logged += it },
+        pressure = pressure,
+    )
 
     private fun personal(p: String = pov) = """{"query":"alice","algorithm":"relevance-pov","pov":"$p"}"""
 
@@ -171,6 +185,8 @@ class OpenRankingRouteTest {
                     """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":"${"0b".repeat(31)}"}""",
                     """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":"${"zz".repeat(32)}"}""",
                     """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":42}""",
+                    """{"observer":"$house","query":"alice","algorithm":"relevance-pov","pov":"${pov}zz"}""",
+                    """{"observer":"${house}0e","query":"alice"}""",
                 )
             for (body in bad) assertRefused(client, HttpStatusCode.UnprocessableEntity, body)
             assertEquals(emptyList(), asked)
@@ -288,8 +304,19 @@ class OpenRankingRouteTest {
         }
 
     @Test
+    fun `a list dated a little ahead of this clock is fresh, a client clock running fast`() {
+        for (createdAt in listOf(now, now + 60, now + POV_CLOCK_SKEW_SECONDS)) {
+            testApplication {
+                serving(ore(answering(pov to noCards(createdAt))))
+                assertEquals(HttpStatusCode.Accepted, client.search(personal()).status, "$createdAt")
+            }
+        }
+    }
+
+    @Test
     fun `a pov whose list is past the grace with no cards is a 422`() {
-        for (createdAt in listOf(now - grace, now - 30 * 86_400L, null)) {
+        // Dated past the clock skew it is not fresh either: its 202 would last until that date arrived.
+        for (createdAt in listOf(now - grace, now - 30 * 86_400L, now + POV_CLOCK_SKEW_SECONDS + 1, now + 365 * 86_400L, null)) {
             testApplication {
                 serving(ore(answering(pov to noCards(createdAt))))
                 val res = client.search(personal())
@@ -319,6 +346,43 @@ class OpenRankingRouteTest {
             assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
             assertNotNull(res.headers["X-Reason"])
             assertContains(logged.single(), "vespa down")
+        }
+
+    @Test
+    fun `a search is a read the mirror throttles on, an answered one a sample and a failed one none`() =
+        testApplication {
+            val pressure = ServingPressure()
+            var fail = false
+            serving(ore({ _, _, _ -> if (fail) error("vespa down") else ready() }, pressure = pressure))
+            assertEquals(HttpStatusCode.OK, client.search("""{"observer":"$house","query":"alice"}""").status)
+            assertEquals(1, pressure.sampleCount())
+            fail = true
+            assertEquals(HttpStatusCode.ServiceUnavailable, client.search("""{"observer":"$house","query":"alice"}""").status)
+            assertEquals(1, pressure.sampleCount())
+        }
+
+    @Test
+    fun `a body that stops arriving is a 408 and never reaches the store`() =
+        testApplication {
+            serving(ore(answering(house to ready()), bodyWaitMillis = 200))
+            val res =
+                client.post("/search/pubkeys") {
+                    contentType(ContentType.Application.Json)
+                    setBody(
+                        object : OutgoingContent.WriteChannelContent() {
+                            override val contentLength = 64L
+
+                            override suspend fun writeTo(channel: ByteWriteChannel) {
+                                channel.writeStringUtf8("""{"observer":""")
+                                channel.flush()
+                                delay(2_000)
+                            }
+                        },
+                    )
+                }
+            assertEquals(HttpStatusCode.RequestTimeout, res.status)
+            assertNotNull(res.headers["X-Reason"])
+            assertEquals(emptyList(), asked)
         }
 
     @Test

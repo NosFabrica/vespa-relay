@@ -407,7 +407,7 @@ fun main() {
         trustPage = resourceText("/trust.html"),
         trustJson = TrustDocument.reader(store, "This relay's trust projection"),
         trustExplain = { key -> TrustDocument.explain(store, key) },
-        openRanking = openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.store.scoredProfileSearch(q, observer, limit) }, config) },
+        openRanking = openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.store.scoredProfileSearch(q, observer, limit) }, config, pressure = servingPressure) },
         statsJson = statsSnapshot,
         selfIconUrl = ownIconUrl,
         httpRelay = httpRelay,

@@ -274,10 +274,10 @@ no other view is substituted:
 |---|---|---|
 | names a rank service with a projected, ranked card | `200` | `200` |
 | none that resolves | `422` | `503` |
-| resolves, no cards yet, list newer than 6 hours | `202` + `Retry-After` | `503` |
+| resolves, no cards yet, list newer than 6 hours (and dated at most 15 minutes ahead) | `202` + `Retry-After` | `503` |
 | resolves, no cards, list older | `422` | `503` |
 
-A malformed body is a `400` and one over 16 KiB a `413`; a missing or empty `query`, one over 512
+A malformed body is a `400`, one over 16 KiB a `413` and one that has not arrived within 2 s a `408`; a missing or empty `query`, one over 512
 characters, a `limit` outside 1..400, an unknown `algorithm` or a missing or
 invalid `pov` is a `422`. Every refusal says why in `X-Reason` and
 `{"error": …}`; a search the store fails is a `503`, logged as `ore: search failed`. Past `ORE_CONCURRENCY` searches at once the next waits up to 2 s for a slot, then is a `503`.

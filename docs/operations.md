@@ -232,7 +232,9 @@ answers `POST /search/pubkeys` for Brainstorm's server, which proxies its own
 ORE-05 here (see [configuration](configuration.md#search-backend-for-brainstorms-open-ranking)). The
 deployment must make the route reachable only from Brainstorm's cluster.
 The House Observer the proxy names must have a 10040 that resolves to a rank
-service with projected cards, or every global search is a `503`.
+service with projected cards, or every global search is a `503`. Its searches
+are reads like any REQ's, so they count toward `/pressure` and the mirror yields
+to them.
 
 **The trust reconcile runs in the background.** It used to be
 `runBlocking { reconcileTrustWithRetry(store) }` between opening the store and

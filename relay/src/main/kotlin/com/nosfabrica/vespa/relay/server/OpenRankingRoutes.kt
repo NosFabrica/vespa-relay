@@ -21,16 +21,20 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.ScoredSearch
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.vitorpamplona.quartz.utils.Hex
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -58,6 +62,12 @@ class OpenRankingConfig(
 /** How long after its 10040 a pov whose cards are not projected yet answers 202 rather than 422. */
 internal const val POV_GRACE_SECONDS = 6 * 3_600L
 
+/**
+ * How far ahead of this clock a 10040 may be dated and still count as fresh: a client clock running
+ * fast. A list dated further ahead is not fresh, or its 202 would last until that date arrives.
+ */
+internal const val POV_CLOCK_SKEW_SECONDS = 15 * 60L
+
 /** The ORE search backend: the search it answers from and how it is bounded. */
 class OpenRanking(
     val search: ScoredProfileSearch,
@@ -65,14 +75,21 @@ class OpenRanking(
     val nowSecs: () -> Long = { System.currentTimeMillis() / 1000 },
     /** How long a search waits for a free slot before it is refused. */
     val slotWaitMillis: Long = SLOT_WAIT_MILLIS,
+    /** How long the body may take to arrive before the request is a 408. */
+    val bodyWaitMillis: Long = BODY_WAIT_MILLIS,
     /** Where a failed search is reported; the caller only sees a 503. */
     val log: (String) -> Unit = { System.err.println(it) },
+    /** The relay's read latency, which the mirror throttles ingest on; an ORE search is a read like a REQ. */
+    val pressure: ServingPressure? = null,
 ) {
     internal val slots = Semaphore(config.concurrency)
 }
 
 /** Queue a burst briefly, like a websocket's searches, but well inside the server's 5 s proxy timeout. */
 internal const val SLOT_WAIT_MILLIS = 2_000L
+
+/** The proxy sends a few hundred bytes from our own cluster; a body still arriving past this is not coming. */
+internal const val BODY_WAIT_MILLIS = 2_000L
 
 /**
  * ORE-05's `POST /search/pubkeys`, ranked by the store's own search relevance: a private backend
@@ -81,26 +98,41 @@ internal const val SLOT_WAIT_MILLIS = 2_000L
 internal fun Route.openRanking(ore: OpenRanking) {
     post(SEARCH_PATH) {
         val body =
-            call.receiveBounded(MAX_BODY_BYTES.toLong())
-                ?: return@post call.respondError(HttpStatusCode.PayloadTooLarge, "request body exceeds $MAX_BODY_BYTES bytes")
+            try {
+                withTimeout(ore.bodyWaitMillis) { call.receiveBounded(MAX_BODY_BYTES.toLong()) }
+                    ?: return@post call.respondError(HttpStatusCode.PayloadTooLarge, "request body exceeds $MAX_BODY_BYTES bytes")
+            } catch (_: TimeoutCancellationException) {
+                call.response.header(HttpHeaders.Connection, "close")
+                return@post call.respondError(HttpStatusCode.RequestTimeout, "request body did not arrive within ${ore.bodyWaitMillis / 1000.0}s")
+            }
         val ask =
             when (val parsed = parseSearch(body.decodeToString())) {
                 is SearchAsk.Valid -> parsed
                 is SearchAsk.Invalid -> return@post call.respondError(parsed.status, parsed.reason)
             }
-        withTimeoutOrNull(ore.slotWaitMillis) { ore.slots.acquire() }
-            ?: return@post call.respondError(HttpStatusCode.ServiceUnavailable, "busy: too many searches running; retry later")
+        // The flag, not the timeout's result: the timeout can land after acquire() returned and before the
+        // block does, and then withTimeoutOrNull answers null while the permit is held — leaked for good.
+        var acquired = false
+        withTimeoutOrNull(ore.slotWaitMillis) {
+            ore.slots.acquire()
+            acquired = true
+        }
+        if (!acquired) return@post call.respondError(HttpStatusCode.ServiceUnavailable, "busy: too many searches running; retry later")
         try {
+            val read = ore.pressure?.begin()
             val found =
                 try {
-                    ore.search(ask.query, ask.observer, ask.limit)
+                    ore.search(ask.query, ask.observer, ask.limit).also { read?.finish() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     ore.log("ore: search failed (${e::class.simpleName}: ${e.message?.take(200)}) — answered 503")
                     return@post call.respondError(HttpStatusCode.ServiceUnavailable, "search is unavailable; retry later")
+                } finally {
+                    // A no-op once finished; a failed or cancelled search is no sample, only no longer in flight.
+                    read?.abandon()
                 }
-            call.answer(found, ask.pov, ask.limit, listFresh = { createdAt -> ore.nowSecs() - createdAt < POV_GRACE_SECONDS })
+            call.answer(found, ask.pov, ask.limit, listFresh = { createdAt -> ore.nowSecs() - createdAt in -POV_CLOCK_SKEW_SECONDS until POV_GRACE_SECONDS })
         } finally {
             ore.slots.release()
         }
@@ -179,13 +211,13 @@ private fun parseSearch(body: String): SearchAsk {
         // House Observer: this relay keeps none of its own.
         RELEVANCE -> {
             val house = obj.string("observer") ?: return unprocessable("Algorithm '$RELEVANCE' requires the proxy's 'observer' pubkey")
-            val key = house.lowercase().takeIf(Hex::isHex64) ?: return unprocessable("observer is not a valid 64-character lowercase hex pubkey")
+            val key = house.lowercase().takeIf(::isPubkey) ?: return unprocessable("observer is not a valid 64-character lowercase hex pubkey")
             SearchAsk.Valid(query, null, limit, key)
         }
 
         RELEVANCE_POV -> {
             val pov = obj.string("pov") ?: return unprocessable("Algorithm '$RELEVANCE_POV' requires a 'pov' pubkey")
-            val key = pov.lowercase().takeIf(Hex::isHex64) ?: return unprocessable("pov is not a valid 64-character lowercase hex pubkey")
+            val key = pov.lowercase().takeIf(::isPubkey) ?: return unprocessable("pov is not a valid 64-character lowercase hex pubkey")
             SearchAsk.Valid(query, key, limit, key)
         }
 
@@ -194,6 +226,9 @@ private fun parseSearch(body: String): SearchAsk {
         }
     }
 }
+
+/** quartz's isHex64 reads the first 64 characters and ignores the rest, so the length is checked here. */
+private fun isPubkey(key: String): Boolean = key.length == 64 && Hex.isHex64(key)
 
 private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
