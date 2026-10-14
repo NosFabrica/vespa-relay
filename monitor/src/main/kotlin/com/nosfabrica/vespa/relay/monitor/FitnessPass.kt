@@ -64,8 +64,8 @@ class FitnessPass(
     /** The consistency pass's standing refusals; same bargain. */
     private val inconsistent: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> =
         { held, urls -> urls.filterTo(HashSet()) { it in held.inconsistent } },
-    /** The last sweep's candidate set, so a fast-lane batch sees the other urls on each candidate's server. */
-    private val world: () -> Collection<NormalizedRelayUrl> = { emptyList() },
+    /** The urls the monitor knows, so a fast-lane batch sees the other urls on each candidate's server. */
+    private val world: () -> ServerIndex = { ServerIndex.EMPTY },
     /** The bars a relay's answer is held to. */
     private val compliance: RelayCompliance = RelayCompliance(),
     val progress: Processors.Handle,
@@ -190,7 +190,7 @@ class FitnessPass(
         val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
         try {
             // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
-            val mates = RelayAliases.matesOf(candidates, world())
+            val mates = world().matesOf(candidates)
             // One read of what this monitor stands behind, after the passes before this one wrote.
             val held =
                 try {
@@ -219,7 +219,7 @@ class FitnessPass(
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
             val graded = remaining.filter { it !in shaky }
-            val waiting = AliasFolding.heldAmong(held, graded, mates.filter { it !in held.inconsistent })
+            val waiting = AliasFolding.heldAmong(held, graded, mates)
             val toDial = graded.filter { it !in waiting }
             // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size, Processors.UNIT_URL)

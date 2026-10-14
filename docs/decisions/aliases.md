@@ -258,11 +258,27 @@ folds as a scheme twin, and its old aliases follow the chain.
 **The roster's fold view also holds back what the fold has not decided.**
 `applyVerdicts` returns `waiting` beside `aliases` and `standIns`: each
 undecided url onto the url fitness grades for its server, computed from the
-monitor's last candidate set so both sides name the same stand-in. Trailing
+monitor's known set (`ServerIndex`, indexed by server so a roster rebuild
+does not walk forty thousand urls per stream) so both sides name the same
+stand-in. Trailing
 slashes, after a path or a query, and the scheme never name a different
 endpoint for this rule (`/ar` and `/ar/`, `?reject=3,6,7///` and its longer
 runs): a url waits on its decided twin first. Quartz's normalizer keeps those
 urls apart, so the records stay two; only the grade and the roster are one.
+
+**Who stands in is one rule, and never a url proven to be another relay.**
+Fitness and the roster elect through `eligibleIn`: a url the monitor knows,
+not inconsistent, standing ungraded or `prime`. A stand-in graded as refusing
+(restricted, silent, auth-refused) hands its server to the next path on the
+next sweep, or one refusing root would keep a path-routing server off the
+roster for good. A url measured `distinct` is never a stand-in: it is proven
+its own relay, not proven to be the undecided path beside it, and holding the
+outbox behind the inbox would send the outbox's authors to the wrong relay. A
+stand-in that itself waits on a twin hands its server straight to the twin, so
+no map has a chain for a one-hop re-key to stop halfway along. And where the
+monitor knows a canonical the stream does not name, the roster folds onto it
+rather than electing an alias in its place, which put one relay on the roster
+twice.
 
 **Why so many hosts stayed undecided is still open.** A fresh pass over
 `relay.nostr.net` (31 urls) and `staging.yabu.me` (35) from a sandbox folded

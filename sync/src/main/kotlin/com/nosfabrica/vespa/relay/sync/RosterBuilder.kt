@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.SyncStream
-import com.nosfabrica.vespa.relay.monitor.RelayAliases
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -245,9 +244,11 @@ internal class RosterBuilder(
         val perSource = cached(stream.name, "source", discovery.sources, discovery)
         // Over the whole discovered universe: `dropFolded` diffs against last time, and a missing url un-hides.
         val all = perSource
-        val folded = foldedAway(all.map { it.url }.distinct())
+        // Never onto a url this stream forbids or this relay itself: the survivor may come from the monitor's set, not ours.
+        val folded = foldedAway(all.map { it.url }.distinct()).filterValues { it !in discovery.exclude && it != store.relay }
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
-        return RelayAliases.foldOnto(all, folded)
+        // Entry by entry, never merged: two sources naming one url are two sets of asks, and stay so.
+        return all.map { relay -> folded[relay.url]?.let { DiscoveredRelay(it, relay.bindings) } ?: relay }
     }
 
     /** [sources] read out of the store, each held for its own `refreshSeconds`; [what] keeps a gate's cache apart. */

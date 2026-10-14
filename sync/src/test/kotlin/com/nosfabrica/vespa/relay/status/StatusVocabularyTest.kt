@@ -278,6 +278,7 @@ class StatusVocabularyTest {
                                 Processors.SharedHost(
                                     host = "pyramid.example",
                                     urls = 2,
+                                    unproven = false,
                                     relays = listOf(Processors.FoldOf("wss://pyramid.example/", "canonical"), Processors.FoldOf("wss://pyramid.example/inbox", "distinct")),
                                 ),
                             ),

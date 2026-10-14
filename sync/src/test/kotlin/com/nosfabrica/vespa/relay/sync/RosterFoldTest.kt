@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.monitor.AliasFolding
 import com.nosfabrica.vespa.relay.monitor.AliasProbe
 import com.nosfabrica.vespa.relay.monitor.RelayAliases
+import com.nosfabrica.vespa.relay.monitor.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -57,11 +58,13 @@ class RosterFoldTest {
     private fun roster(
         store: NostrSemanticsStore,
         config: String,
+        /** The monitor's own set, which the roster elects a server's stand-in from. */
+        world: ServerIndex = ServerIndex.EMPTY,
     ) = RosterBuilder(
         store = store,
         streams = RouterConfigLoader.parse(config.trimIndent()).streams,
         bands = SyncBands(null),
-        foldedAway = { urls -> folding(store).applyVerdicts(urls).let { it.aliases + it.standIns + it.waiting } },
+        foldedAway = { urls -> folding(store).applyVerdicts(urls, world).let { it.aliases + it.standIns + it.waiting } },
     )
 
     private val graded =
@@ -100,6 +103,56 @@ class RosterFoldTest {
             prime(store, root, *paths.toTypedArray())
 
             assertEquals(setOf(root), roster(store, graded).rebuild().asks.keys)
+        }
+
+    @Test
+    fun `two sources naming one url keep their own asks when anything on the roster folds`() =
+        runBlocking {
+            val store = newStore()
+            val shared = url("wss://shared.example/")
+            val alias = url("wss://elsewhere.example/a")
+            val canonical = url("wss://elsewhere.example/")
+            prime(store, shared, alias, canonical)
+            RelayVerdictRecord(store, ours).publish(alias, canonical, 500, 500)
+            val writer = NostrSignerSync(KeyPair())
+            store.insert(writer.sign<Event>(1_700_000_000L, 10002, arrayOf(arrayOf("r", shared.url)), ""))
+            val mixed =
+                """
+                streams {
+                    mixed { dir = "down", filter = { "kinds": [1] }
+                        relaySource = [
+                            { filter = { "kinds": [30166], "#l": ["prime"] } }
+                            { select = [ { tag = "r", relay = 1, authors = "pubkey" } ], filter = { "kinds": [10002] } }
+                        ] }
+                }
+                """
+
+            val asks = roster(store, mixed).rebuild().asks
+
+            assertEquals(setOf(shared, canonical), asks.keys)
+            // The unbound ask from the verdict source survives beside the author-bound one.
+            val filters = asks.getValue(shared).values.flatMap { unit -> unit.asks.map { it.filter.authors } }
+            assertEquals(setOf(null, listOf(writer.pubKey)), filters.toSet())
+        }
+
+    @Test
+    fun `nothing is re-keyed onto a url the stream excludes`() =
+        runBlocking {
+            val store = newStore()
+            val root = url("wss://excluded.example/")
+            val path = url("wss://excluded.example/x")
+            prime(store, root, path)
+            val excluding =
+                """
+                streams {
+                    graded { dir = "down", filter = { "kinds": [1] }
+                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
+                        exclude = [ "${root.url}" ] }
+                }
+                """
+
+            // The monitor grades the root, so without the exclude the path would wait on it.
+            assertEquals(setOf(path), roster(store, excluding, ServerIndex(setOf(root, path))).rebuild().asks.keys)
         }
 
     @Test

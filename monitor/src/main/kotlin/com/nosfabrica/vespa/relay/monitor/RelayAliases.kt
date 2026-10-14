@@ -376,12 +376,14 @@ class RelayAliases(
     /**
      * Of [candidates], each url nothing is decided about that another url of [world] stands in
      * for, onto that url: a decided twin naming the same endpoint, else the server's preferred
-     * canonical, else its preferred url no fold names an alias. Until the fold decides, a server is graded once.
+     * canonical, else its preferred undecided url. A url measured `distinct` never stands in for
+     * another: it is proven its own relay, not proven to be anyone else's. Until the fold decides,
+     * a server is graded once.
      */
     fun heldForFold(
         candidates: Collection<NormalizedRelayUrl>,
         world: Collection<NormalizedRelayUrl> = emptyList(),
-        /** Which urls may stand in for their server; one of a server with none eligible falls back to all. */
+        /** Which urls may stand in for their server; a server with none eligible falls back to all. */
         eligible: (NormalizedRelayUrl) -> Boolean = { true },
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         val mates =
@@ -389,22 +391,35 @@ class RelayAliases(
                 .filter { !folded.containsKey(it) }
                 .distinct()
                 .groupBy { authorityOf(it.url) }
-        val standIns = HashMap<String, NormalizedRelayUrl>()
+        // Once per server, not per candidate: a filter service can wear thousands of urls on one host.
+        val servers = HashMap<String, StandIns>()
         val held = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         for (url in candidates) {
             if (measured(url)) continue
-            val key = authorityOf(url.url)
-            // The candidate is among its own mates: it is not folded, or it would be measured.
-            val here = mates.getValue(key).filter(eligible).ifEmpty { mates.getValue(key) }
-            val endpoint = endpointKey(url.url)
-            val twin = endpoint?.let { e -> here.filter { it != url && measured(it) && endpointKey(it.url) == e }.minWithOrNull(PREFERENCE) }
-            val standIn =
-                twin ?: standIns.getOrPut(key) {
-                    here.filter { it in canonicals }.minWithOrNull(PREFERENCE) ?: here.minWith(PREFERENCE)
-                }
-            if (standIn != url) held[url] = standIn
+            val server = servers.getOrPut(authorityOf(url.url)) { standInsOf(mates.getValue(authorityOf(url.url)), eligible) }
+            val target = server.twinOf(url) ?: server.standIn?.let { server.twinOf(it) ?: it } ?: continue
+            if (target != url) held[url] = target
         }
         return held
+    }
+
+    /** One server's decided url per endpoint, and the undecided url that stands in for the rest. */
+    private class StandIns(
+        val twins: Map<String, NormalizedRelayUrl>,
+        val standIn: NormalizedRelayUrl?,
+    ) {
+        fun twinOf(url: NormalizedRelayUrl): NormalizedRelayUrl? = endpointKey(url.url)?.let(twins::get)
+    }
+
+    private fun standInsOf(
+        all: List<NormalizedRelayUrl>,
+        eligible: (NormalizedRelayUrl) -> Boolean,
+    ): StandIns {
+        val here = all.filter(eligible).ifEmpty { all }.sortedWith(PREFERENCE)
+        val twins = HashMap<String, NormalizedRelayUrl>()
+        for (u in here) if (measured(u)) endpointKey(u.url)?.let { twins.putIfAbsent(it, u) }
+        val standIn = here.firstOrNull { it in canonicals } ?: here.firstOrNull { !measured(it) }
+        return StandIns(twins, standIn)
     }
 
     companion object {
@@ -457,20 +472,9 @@ class RelayAliases(
                 { it.url },
             )
 
-        /** The urls of [world] outside [candidates] that share a server with one of them. */
-        fun matesOf(
-            candidates: Collection<NormalizedRelayUrl>,
-            world: Collection<NormalizedRelayUrl>,
-        ): List<NormalizedRelayUrl> {
-            if (world.isEmpty()) return emptyList()
-            val asked = candidates.toHashSet()
-            val servers = candidates.mapTo(HashSet()) { authorityOf(it.url) }
-            return world.filter { it !in asked && authorityOf(it.url) in servers }
-        }
-
         /** The hostname, lowercased, without the port. */
         fun hostOf(url: String): String {
-            val authority = afterScheme(url).substringBefore('/')
+            val authority = afterScheme(url).substringBefore('/').substringBefore('?')
             // An IPv6 literal keeps its brackets; only a colon after the bracket is the port separator.
             val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
             return host.lowercase()

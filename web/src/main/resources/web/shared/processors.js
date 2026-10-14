@@ -84,13 +84,11 @@ function backgroundPanel(rows, withFunnel = false) {
 /** How many unproven servers the fitness row names. */
 const SHARED_SHOWN = 5;
 
-/** The fold's words for a url measured as its own relay. */
-const PROVEN = new Set(["canonical", "distinct"]);
-
 /** The servers prime under more than one unproven url, with the fold's word on each, or null. */
 function sharedPanel(p) {
   const top = (p.sharedHosts && p.sharedHosts.top) || [];
-  const unproven = top.filter((h) => (h.relays || []).filter((r) => !PROVEN.has(r.fold)).length > 1).slice(0, SHARED_SHOWN);
+  // The router's own flag: it decides over every url, and `relays` is cut.
+  const unproven = top.filter((h) => h.unproven).slice(0, SHARED_SHOWN);
   if (!unproven.length) return null;
   const box = el("div", "sy-held");
   for (const h of unproven) {

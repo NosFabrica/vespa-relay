@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
+import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -85,38 +86,31 @@ class AliasFolding(
 
     /**
      * Urls in, deduplicated urls out, without dialling anything or changing what the fold holds.
-     * [world] is every url the monitor knows, so a waiting url's stand-in is the one fitness grades.
+     * [world] is every url the monitor knows: a canonical there is folded onto even when the set
+     * lacks it, and a waiting url's stand-in is the one fitness grades.
      */
     suspend fun applyVerdicts(
         candidates: List<NormalizedRelayUrl>,
-        world: Collection<NormalizedRelayUrl> = emptyList(),
+        world: ServerIndex = ServerIndex.EMPTY,
     ): Collapsed {
         if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
-        val mates = RelayAliases.matesOf(candidates, world)
-        val (known, inconsistent) = view(candidates + mates)
-        val collapsed = collapse(candidates, known)
-        // The stand-in is elected as fitness elects it: from the monitor's own set, never a url it holds as inconsistent.
-        val graded = world as? Set<NormalizedRelayUrl> ?: world.toHashSet()
-        val eligible: (NormalizedRelayUrl) -> Boolean = { (graded.isEmpty() || it in graded) && it !in inconsistent }
-        return collapsed.copy(waiting = known.heldForFold(collapsed.dial, mates, eligible))
-    }
-
-    /**
-     * The stored verdicts over [candidates] in a map of their own, and the urls among them held as
-     * inconsistent: a narrower set replaced into [aliases] would drop the canonicals of aliases
-     * outside it mid-fold. Only [measure] replaces.
-     */
-    private suspend fun view(candidates: List<NormalizedRelayUrl>): Pair<RelayAliases, Set<NormalizedRelayUrl>> {
+        val mates = world.matesOf(candidates)
         val held =
             try {
-                record.load(candidates)
+                record.load(candidates + mates)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // A store that cannot answer is not "no verdict": read what the fold holds.
-                return aliases to emptySet()
+                // A store that cannot answer is not "no verdict": read what the fold holds, and hold
+                // nothing back, since who stands in is a reading of the store.
+                return collapse(candidates, aliases)
             }
-        return RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) } to held.inconsistent
+        // A map of its own: a narrower set replaced into [aliases] would drop the canonicals of
+        // aliases outside it mid-fold. Only [measure] replaces.
+        val known = RelayAliases().also { it.replace(candidates + mates, held.aliases, held.distinct) }
+        val collapsed = collapse(candidates, known, present = candidates.toHashSet() + mates)
+        val electorate: (NormalizedRelayUrl) -> Boolean = { world.isEmpty() || it in world }
+        return collapsed.copy(waiting = known.heldForFold(collapsed.dial, mates, eligibleIn(held, electorate)))
     }
 
     /**
@@ -609,8 +603,9 @@ class AliasFolding(
     private fun collapse(
         candidates: List<NormalizedRelayUrl>,
         known: RelayAliases,
+        /** Where a survivor counts as present; the candidates, unless the caller can route elsewhere. */
+        present: Set<NormalizedRelayUrl> = candidates.toHashSet(),
     ): Collapsed {
-        val present = candidates.toHashSet()
         val elected = reElected(candidates, present, known)
         val measured = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val inferred = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
@@ -673,8 +668,21 @@ class AliasFolding(
             world: Collection<NormalizedRelayUrl> = emptyList(),
         ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
             val known = RelayAliases().also { it.replace((candidates + world).distinct(), held.aliases, held.distinct) }
-            return known.heldForFold(candidates, world)
+            return known.heldForFold(candidates, world, eligibleIn(held) { true })
         }
+
+        /**
+         * Who may stand in for a server, one rule for fitness and the roster: a url [electorate]
+         * admits that stands ungraded or `prime`. A refusal moves the stand-in on to the next url,
+         * or one refusing path would keep the whole server off the roster.
+         */
+        private fun eligibleIn(
+            held: RelayVerdictRecord.Verdicts,
+            electorate: (NormalizedRelayUrl) -> Boolean,
+        ): (NormalizedRelayUrl) -> Boolean =
+            { url ->
+                electorate(url) && url !in held.inconsistent && held.fitness[url]?.value.let { it == null || it == Verdict.PRIME.value }
+            }
 
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"

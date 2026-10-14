@@ -54,7 +54,7 @@ internal object PrimeCensus {
             rows
                 .sortedWith(compareBy({ !it.third }, { -it.second.size }, { it.first }))
                 .take(Processors.MAX_SHARED_HOSTS)
-                .map { (host, folds, _) -> Processors.SharedHost(host, folds.size, folds.take(Processors.MAX_SHARED_HOST_URLS)) }
+                .map { (host, folds, unproven) -> Processors.SharedHost(host, folds.size, unproven, folds.take(Processors.MAX_SHARED_HOST_URLS)) }
         return Processors.SharedHosts(
             hosts = shared.size,
             urls = shared.values.sumOf { it.size },

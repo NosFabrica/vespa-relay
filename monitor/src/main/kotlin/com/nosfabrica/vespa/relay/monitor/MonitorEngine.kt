@@ -173,7 +173,7 @@ class MonitorEngine(
                 tor = tor,
                 concurrency = monitorConcurrency,
                 tlsCheck = probe::tls,
-                world = { world.lastCandidates },
+                world = { world.known },
             )
         }
 
@@ -248,7 +248,7 @@ class MonitorEngine(
      * for another url's relay. Stand-ins and urls waiting on the fold are included: this caller
      * only decides which socket to open.
      */
-    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls, world.lastCandidates)?.let { it.aliases + it.standIns + it.waiting } ?: emptyMap()
+    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls, world.known)?.let { it.aliases + it.standIns + it.waiting } ?: emptyMap()
 
     /** How many candidate urls a current `dead` verdict of ours holds out of the passes. */
     fun heldOutDead(): Int = world.lastDerivation.heldOutDead

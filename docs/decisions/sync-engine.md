@@ -283,11 +283,15 @@ ones, never an invalidation. This is `authorsPerLeg = 1` made structural.
 
 **A folded url's bindings move onto its survivor; its bands do not.** The
 roster dropped a folded url whole, so an author-bound stream lost every author
-who listed only the alias: their asks went nowhere. `RelayAliases.foldOnto`
-re-keys each folded or waiting url's bindings onto the url standing in for
-it, which the gate then judges like any other. The asks are new filters on the
-survivor and start their own bands; the alias's coverage stays hidden, for the
-reason under `dropFolded`.
+who listed only the alias: their asks went nowhere. Each folded or waiting
+entry is re-keyed onto the url standing in for it, which the gate then judges
+like any other. Entry by entry, never merged by url: `RelayAliases.foldOnto`
+unions every entry sharing a url, which turned two sources' asks into one
+AND-ed filter and narrowed an unbound ask by another source's authors. Never
+onto a url the stream excludes or this relay itself, since the survivor can
+come from the monitor's set rather than the stream's. The asks are new filters
+on the survivor and start their own bands; the alias's coverage stays hidden,
+for the reason under `dropFolded`.
 
 **A cancelled rebuild is not a store that could not answer.** Swallowed, it
 printed the could-not-read line during every ordinary stop, a wolf cry

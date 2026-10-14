@@ -98,7 +98,7 @@ class SameServerTest {
         client = EmptyNostrClient(),
         progress = progress,
         reconcile = { _, _ -> },
-        world = world,
+        world = { ServerIndex(world().toSet()) },
     )
 
     private suspend fun FitnessPass.grade(
@@ -312,9 +312,66 @@ class SameServerTest {
             fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, graded)
             val standIn = primeAmong(store, graded).single()
 
-            val roster = folding(store, servers).applyVerdicts(listOf(nostrNet) + graded, world = graded.toSet())
+            val roster = folding(store, servers).applyVerdicts(listOf(nostrNet) + graded, world = ServerIndex(graded.toSet()))
             assertEquals((listOf(nostrNet) + graded - standIn).associateWith { standIn }, roster.waiting)
         }
+
+    @Test
+    fun `a stand-in waiting on its own twin hands every url of its server straight to that twin`() {
+        val plain = url("ws://chain.example/")
+        val secure = url("wss://chain.example/")
+        val path = url("wss://chain.example/a")
+        val aliases = RelayAliases().also { it.markDistinct(plain) }
+
+        val held = aliases.heldForFold(listOf(secure, path), listOf(plain))
+
+        assertEquals(mapOf(secure to plain, path to plain), held)
+        assertTrue(held.values.none { it in held }, "one hop, so a roster re-keying once lands on a url nothing re-keys")
+    }
+
+    @Test
+    fun `a url measured distinct never stands in for another path`() {
+        // The inbox is proven its own relay, which says nothing about the outbox beside it.
+        val inbox = url("wss://haven.example/inbox")
+        val outbox = url("wss://haven.example/outbox")
+        val aliases = RelayAliases().also { it.markDistinct(inbox) }
+
+        assertEquals(emptyMap(), aliases.heldForFold(listOf(outbox), listOf(inbox)))
+    }
+
+    @Test
+    fun `a stand-in graded as refusing hands the server to the next path`() {
+        val root = url("wss://refusing.example/")
+        val inbox = url("wss://refusing.example/inbox")
+        val outbox = url("wss://refusing.example/outbox")
+        val held =
+            RelayVerdictRecord.Verdicts(
+                fitness = mapOf(root to RelayVerdictRecord.StandingGrade(Verdict.RESTRICTED.value, "answers only shaped queries")),
+            )
+
+        assertEquals(mapOf(root to inbox, outbox to inbox), AliasFolding.heldAmong(held, listOf(root, inbox, outbox)))
+    }
+
+    @Test
+    fun `the roster folds onto a canonical the monitor knows even when the stream does not name it`() =
+        runBlocking {
+            val store = newStore()
+            val canonical = url("wss://folded.example/")
+            val alias = url("wss://folded.example/a")
+            val undecided = url("wss://folded.example/b")
+            RelayVerdictRecord(store, signer).publish(alias, canonical, 500, 500)
+
+            val roster = folding(store, Servers { corpus("folded") }).applyVerdicts(listOf(alias, undecided), ServerIndex(setOf(canonical, alias, undecided)))
+
+            assertEquals(mapOf(alias to canonical), roster.aliases)
+            assertEquals(mapOf(undecided to canonical), roster.waiting)
+            assertEquals(emptyMap(), roster.standIns, "no member elected in place of a canonical the monitor still grades")
+        }
+
+    @Test
+    fun `a query straight after the host is the same server`() {
+        assertEquals(RelayAliases.authorityOf("wss://prl.plus/"), RelayAliases.authorityOf("wss://prl.plus?reject=3"))
+    }
 
     @Test
     fun `slashes trailing a query name the same endpoint`() {

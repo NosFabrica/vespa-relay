@@ -135,6 +135,8 @@ class Processors {
     class SharedHost(
         val host: String,
         val urls: Int,
+        /** Two or more of its `prime` urls are not measured as their own relays; decided over all of them, not [relays]. */
+        val unproven: Boolean,
         /** Bounded at [MAX_SHARED_HOST_URLS]; [urls] is the whole count. */
         val relays: List<FoldOf>,
     )
@@ -496,6 +498,7 @@ class Processors {
                                         buildJsonObject {
                                             put("host", h.host)
                                             put("urls", h.urls)
+                                            put("unproven", h.unproven)
                                             putJsonArray("relays") {
                                                 for (r in h.relays) {
                                                     add(
