@@ -1095,8 +1095,21 @@ quartz = "68268da413"
 # its integration suite against a real Vespa 8.763.13 in Docker (23 tests, 22 passed,
 # StagingCorpusIT skipped by design, 0 failures), read off the result XML.
 #
-# Prev 8c95193705, d1adf0ff91 (above).
-vespaEventStore = "a34cc5df39"
+# 94aad0feea7e = vespa-eventstore main @ 2026-10-14, the merge of #165 — SAME TREE as its head
+# a34cc5df39 (`git diff a34cc5df39 94aad0feea` is empty; the store jar is byte-for-byte the same
+# size), so everything GATED above for a34cc5df39 holds for it.
+#   git merge-base --is-ancestor a34cc5df39 94aad0feea   # verified
+#
+# SPELLED WITH 12 HEX DIGITS, not the usual 10: JitPack holds a failed infra build for
+# `94aad0feea` under BOTH group spellings (the maven-publish plugin unresolvable, as for
+# 8c95193705's lowercase entry), and the version string is part of its cache key, so the longer
+# spelling of the same commit is a fresh build. `com.github.NosFabrica` serves store and engine
+# at 94aad0feea7e, and its pom names engine at 94aad0feea7e too.
+#
+# LEXICOGRAPHIC: '94aa…' < 'a34c…': the losing direction, moot — nothing else names the store.
+#
+# Prev a34cc5df39, 8c95193705, d1adf0ff91 (above).
+vespaEventStore = "94aad0feea7e"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -1122,7 +1135,9 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # it flips back: `NosFabrica` failed (JAVA_HOME at a missing JDK), `nosfabrica` built
 # (its pom names engine under `nosfabrica`), and d1adf0ff91 too. For 8c95193705 it flips
 # again: `nosfabrica` failed (the maven-publish plugin unresolvable), `NosFabrica` built.
-# Same repo, same artifacts — different cache key. On the next bump, check both spellings.
+# For 94aad0feea BOTH failed, and a 12-digit version of the same commit built: the version
+# string is part of the key too. Same repo, same artifacts — different cache key. On the next
+# bump, check both spellings, and a longer hash if both fail.
 vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
