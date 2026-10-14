@@ -249,6 +249,42 @@ question: the `review/app` pill on an app's kind 31990 runs `label:review/app
 to:naddr1…` and returns exactly the reviews it counted — text that lives in the
 label events' `content` and that no word search would ever recall.
 
+## Search backend for Brainstorm's Open Ranking
+
+Brainstorm's [Open Ranking](https://github.com/Open-Ranking/protocol) provider is
+`api.brainstorm.world`; this relay is not one. With `ORE_ENABLED` it answers that
+server's ORE-05 profile search, which the server passes through verbatim. The
+route is public, on the clearnet and the `.onion` alike — it ranks only what a
+NIP-50 `observer:` search already ranks — but it publishes no capability
+document: the server is the provider.
+
+`POST /search/pubkeys` takes `{"query", "algorithm"?, "pov"?, "observer"?, "limit"?}` and
+answers `{"results":[{"pubkey","rank"}],"ttl":300}`: kind-0 profiles whose own
+text matched, highest `rank` first. `rank` is the hit's own engine score, text
+match weighted by the observer's trust, and compares only within one answer. No
+reference expansion; `limit` is 1..400, default 100.
+
+**`relevance` (the default) ranks through the House Observer**, which the proxy
+names in `observer` (64-hex, required for it), and any `pov` is ignored. The
+relay keeps no house observer of its own, for this route or NIP-50. **`relevance-pov`
+ranks through the `pov`.** Either way the observer's own kind-10040 decides, and
+no other view is substituted:
+
+| the observer's 10040 | `relevance-pov` | `relevance` |
+|---|---|---|
+| names a rank service | `200` | `200` |
+| none that does | `422` | `503` |
+
+One engine query either way: nothing asks whether the service's scores are
+mirrored yet. A profile with no score from it is gated out, as in a NIP-50 read,
+so a service whose scores have not arrived answers an empty `200`.
+
+A malformed body is a `400`, one over 16 KiB a `413` and one that has not arrived within 2 s a `408`; a missing or empty `query`, one over 512
+characters, a `limit` outside 1..400, an unknown `algorithm` or a missing or
+invalid `pov` is a `422`. Every refusal says why in `X-Reason` and
+`{"error": …}`; a search the store fails is a `503`, logged as `ore: search failed`. Past `ORE_CONCURRENCY` searches at once the next waits up to 2 s for a slot, then is a `503`.
+Settings: [`docs/configuration.md`](docs/configuration.md#search-backend-for-brainstorms-open-ranking).
+
 ## The router: mirror from upstream relays
 
 The relay serves what is in the store; the router is how the store gets filled

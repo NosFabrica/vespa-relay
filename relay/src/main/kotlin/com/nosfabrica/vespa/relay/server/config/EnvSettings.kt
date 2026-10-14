@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.server.Cidr
 import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
+import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
@@ -162,6 +163,17 @@ fun httpRelayFromEnv(
         deadlineMs = (env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", 1..MAX_DEADLINE_SECONDS) ?: HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt()) * 1000L,
         origins = origins,
         clients = ClientAddresses(header, proxies),
+    )
+}
+
+/**
+ * The ORE-05 search backend's settings (`ORE_ENABLED`, off by default), or null when it is off; anything
+ * set that does not parse stops the boot. The House Observer comes with each global search, from the proxy.
+ */
+fun openRankingFromEnv(env: Map<String, String>): OpenRankingConfig? {
+    if (env.strictFlag("ORE_ENABLED") != true) return null
+    return OpenRankingConfig(
+        concurrency = env.strictInt("ORE_CONCURRENCY", 1..Int.MAX_VALUE) ?: OpenRankingConfig.DEFAULT_CONCURRENCY,
     )
 }
 

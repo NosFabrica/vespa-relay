@@ -227,6 +227,16 @@ by silence cannot hold ingest back for good. A read that hangs is the opposite
 case: while one is in flight the mean holds, and past the threshold it counts
 at its age, so a stalled store throttles ingest before any read returns.
 
+**The ORE search backend is public and opt-in.** With `ORE_ENABLED` the relay
+answers `POST /search/pubkeys` for Brainstorm's server, which proxies its own
+ORE-05 here (see [configuration](configuration.md#search-backend-for-brainstorms-open-ranking)),
+and for anyone else who calls it, on the clearnet and the `.onion` alike.
+The House Observer the proxy names must have a 10040 that resolves to a rank
+service, or every global search is a `503`; until that service's scores are
+mirrored, its searches answer an empty `200`. Its searches
+are reads like any REQ's, so they count toward `/pressure` and the mirror yields
+to them.
+
 **The trust reconcile runs in the background.** It used to be
 `runBlocking { reconcileTrustWithRetry(store) }` between opening the store and
 starting the listener — no websocket, no router and no NIP-11 until it finished,

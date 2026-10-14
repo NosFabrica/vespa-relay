@@ -1032,7 +1032,84 @@ quartz = "68268da413"
 # LEXICOGRAPHIC: 'a995…' > '14d8…': the safe direction, moot — nothing else names the store.
 #
 # Prev 14d8c7eeed, 5379e572dc and ff54c9beb1 before it (all above).
-vespaEventStore = "a995519bef"
+#
+# d1adf0ff91 = vespa-eventstore main @ 2026-10-13, the merge of #164 — SAME TREE as its head
+# a1dd4b28fb (`git diff a1dd4b28fb d1adf0ff91` is empty), two merges over a995519bef:
+#  - #164, ScoredSearch + NostrSemanticsStore.scoredProfileSearch: kind-0 hits with their own
+#    engine score under a named observer, and that observer's lens (READY / NO_LIST / NO_CARDS),
+#    which OpenRankingRoutes answers ORE-05 from. Store code only.
+#  - #163, the body edge n-gram PROTOTYPE (#161), OFF by default: ONE ADDITIVE SCHEMA FIELD,
+#    `search_text_edge` (index only, no attribute, no summary), plus its matchCount() in
+#    tier_body_match and offname_match. The relay's SchemaDeploy carries it on the next boot; it
+#    is fed only under VESPA_BODY_EDGE and queried only under EventQuery.bodyEdgeMatching, neither
+#    of which this relay sets, so the field stays empty and both expressions add 0. Nothing to
+#    re-feed; SchemaFallbacks demotes the column if a serving schema predates it.
+# No quartz move (the store still names 68268da413), nothing re-derived.
+#   git merge-base --is-ancestor a995519bef d1adf0ff91   # verified
+#
+# SPELLED `com.github.nosfabrica` (below): the lowercase entry serves store and engine at
+# d1adf0ff91, and its pom names engine under `nosfabrica` too.
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,409 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line d1adf0ff91 in all
+# six modules, zero arrows. And the store at d1adf0ff91 itself: its integration suite against a
+# real Vespa 8.763.13 in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design,
+# 0 failures; the schema with search_text_edge deploys), read off the result XML. Not run:
+# RelayContractIT; and no store IT drives scoredProfileSearch on a real Vespa (its tests are unit).
+#
+# LEXICOGRAPHIC: 'd1ad…' > 'a995…': the safe direction, moot — nothing else names the store.
+#
+# 8c95193705 = vespa-eventstore branch claude/eloquent-cannon-4nj7p8, ONE commit over d1adf0ff91;
+# re-pin to its merge commit before this merges. scoredProfileSearch STOPS ASKING WHETHER THE
+# OBSERVER'S SCORES ARE READY: each call used to sample the rank service's 8 newest kind-30382
+# cards (a second engine query, sorted over every card the service publishes) and could not tell
+# from 8 cards anyway. Now it is one query; the observer's 10040 resolving a rank service (the
+# cached provider map, no query) is the whole lens. ScoredSearch carries `rankService` in place of
+# Lens/LensStatus, so OpenRankingRoutes has no 202 and no grace. Store code only: no schema, no
+# quartz move, nothing re-derived.
+#   git merge-base --is-ancestor d1adf0ff91 8c95193705   # verified
+#
+# SPELLED `com.github.NosFabrica` (below) for this pin: the lowercase entry holds a failed infra
+# build (the maven-publish plugin unresolvable, 15 s in), the capitalized one serves store and
+# engine, and its pom names engine under `NosFabrica` too.
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,412 tests, 2 skipped,
+# 0 failures) + archTest, every quartz line 68268da413 and every eventstore line 8c95193705 in all
+# six modules, zero arrows. And the store at 8c95193705 itself: its unit build (795 tests,
+# 0 failures) and its integration suite against a real Vespa 8.763.13 in Docker (23 tests, 22
+# passed, StagingCorpusIT skipped by design, 0 failures), read off the result XML. Not run:
+# RelayContractIT; still no store IT drives scoredProfileSearch on a real Vespa.
+#
+# LEXICOGRAPHIC: '8c95…' < 'd1ad…': the losing direction, moot — nothing else names the store.
+#
+# a34cc5df39 = the same branch, one commit over 8c95193705, from the audit of both PRs: the lens is
+# resolved ONCE (a 10040 write between two lookups could query under another service than the
+# rankService the answer reports), and the store's own require checks the observer's length too
+# (quartz's isHex64 ignores everything past 64). Store code only. Both group spellings serve it;
+# the capitalized one stays. Re-pin to the merge commit of NosFabrica/vespa-eventstore#165.
+#   git merge-base --is-ancestor 8c95193705 a34cc5df39   # verified
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,412 tests, 2 skipped,
+# 0 failures) + archTest, every eventstore line a34cc5df39 and every quartz line 68268da413 in all
+# six modules, zero arrows. And the store at a34cc5df39: its unit build (796 tests, 0 failures) and
+# its integration suite against a real Vespa 8.763.13 in Docker (23 tests, 22 passed,
+# StagingCorpusIT skipped by design, 0 failures), read off the result XML.
+#
+# 94aad0feea7e = vespa-eventstore main @ 2026-10-14, the merge of #165 — SAME TREE as its head
+# a34cc5df39 (`git diff a34cc5df39 94aad0feea` is empty; the store jar is byte-for-byte the same
+# size), so everything GATED above for a34cc5df39 holds for it.
+#   git merge-base --is-ancestor a34cc5df39 94aad0feea   # verified
+#
+# SPELLED WITH 12 HEX DIGITS, not the usual 10: JitPack holds a failed infra build for
+# `94aad0feea` under BOTH group spellings (the maven-publish plugin unresolvable, as for
+# 8c95193705's lowercase entry), and the version string is part of its cache key, so the longer
+# spelling of the same commit is a fresh build. `com.github.NosFabrica` serves store and engine
+# at 94aad0feea7e, and its pom names engine at 94aad0feea7e too.
+#
+# LEXICOGRAPHIC: '94aa…' < 'a34c…': the losing direction, moot — nothing else names the store.
+#
+# Prev a34cc5df39, 8c95193705, d1adf0ff91 (above).
+vespaEventStore = "94aad0feea7e"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -1056,9 +1133,12 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # for 14d8c7eeed it is the reverse — `nosfabrica` failed opening gradle-wrapper.jar,
 # `NosFabrica` built (its pom also names engine under `NosFabrica`). For a995519bef
 # it flips back: `NosFabrica` failed (JAVA_HOME at a missing JDK), `nosfabrica` built
-# (its pom names engine under `nosfabrica`). Same repo, same artifacts — different
-# cache key. On the next bump, check both spellings.
-vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+# (its pom names engine under `nosfabrica`), and d1adf0ff91 too. For 8c95193705 it flips
+# again: `nosfabrica` failed (the maven-publish plugin unresolvable), `NosFabrica` built.
+# For 94aad0feea BOTH failed, and a 12-digit version of the same commit built: the version
+# string is part of the key too. Same repo, same artifacts — different cache key. On the next
+# bump, check both spellings, and a longer hash if both fail.
+vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

@@ -70,8 +70,8 @@ data class Nip11Info(
 
 /**
  * The whole relay on [port]: the websocket and the NIP-11 doc on `/`, the landing page and its
- * modules, the stats pages, `/pressure`, the HTTP commands when [httpRelay] is set, and the NIP-86 RPC
- * on `POST /` when [admin] is set.
+ * modules, the stats pages, `/pressure`, the ORE-05 search backend when [openRanking] is set, the HTTP commands
+ * when [httpRelay] is set, and the NIP-86 RPC on `POST /` when [admin] is set.
  * With [wait] (the default) this blocks until the server stops.
  */
 fun serveRelay(
@@ -87,6 +87,8 @@ fun serveRelay(
     trustPage: String? = null,
     trustJson: (() -> kotlinx.serialization.json.JsonObject)? = null,
     trustExplain: (suspend (String) -> kotlinx.serialization.json.JsonObject)? = null,
+    // When set, POST /search/pubkeys: the ORE-05 backend Brainstorm's server proxies to.
+    openRanking: OpenRanking? = null,
     // Null, or never yet published, makes GET /stats.json a 503.
     statsJson: StatsSnapshot? = null,
     // When set, GET /pressure serves the mean read latency the sync process throttles on.
@@ -177,6 +179,7 @@ fun serveRelay(
             }
             corpusStats(stats, statsJson)
             trustHealth(trust, trustJson, trustExplain)
+            openRanking?.let { openRanking(it) }
             relayPosts(commands = httpRelay?.let { httpRelayAnswer(relay, it) }, rpc = admin?.let { nip86Answer(it, info) })
         }
     }.start(wait = wait)

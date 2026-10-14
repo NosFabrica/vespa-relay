@@ -278,4 +278,19 @@ class RelayConfigTest {
             )
         for (env in refused) assertFailsWith<IllegalStateException>("$env") { httpRelayFromEnv(env) { emptyList() } }
     }
+
+    @Test
+    fun `the ORE search backend is off unless enabled, and refuses what does not parse`() {
+        assertNull(openRankingFromEnv(emptyMap()))
+        assertNull(openRankingFromEnv(mapOf("ORE_ENABLED" to "false")))
+        assertEquals(8, assertNotNull(openRankingFromEnv(mapOf("ORE_ENABLED" to "true"))).concurrency)
+        assertEquals(3, assertNotNull(openRankingFromEnv(mapOf("ORE_ENABLED" to "on", "ORE_CONCURRENCY" to "3"))).concurrency)
+        val refused =
+            listOf(
+                mapOf("ORE_ENABLED" to "ture"),
+                mapOf("ORE_ENABLED" to "true", "ORE_CONCURRENCY" to "0"),
+                mapOf("ORE_ENABLED" to "true", "ORE_CONCURRENCY" to "four"),
+            )
+        for (env in refused) assertFailsWith<RuntimeException>("$env") { openRankingFromEnv(env) }
+    }
 }
