@@ -421,3 +421,31 @@ that never landed were skipped to the back of the rotation. `writeEach` now
 records which writes were stored and hands back the earliest one that was not
 (wedged, declined or never started). No write is launched once a limit has
 tripped; those already in flight may finish.
+
+**A url the fold has not decided waits behind its server's stand-in.**
+`prime` says "canonical", and fitness read that as "not a known alias", so
+every path of a server the fold had not decided was graded on its own: on
+staging 1,135 prime urls sat on 153 servers, `rrr.pupupu.monster` with 71
+(it serves 19 events, under the fold's 20-event floor, so no fold can ever
+decide it), and the `FOLD_EPOCH` bump to 3 made every standing fold
+undecided at once. Per server (hostname plus an explicit non-default port),
+one undecided url stands in: a decided twin of the same endpoint, else the
+server's canonical, else its preferred url. The rest are not dialled and
+their standing `prime` is withdrawn rather than replaced, because whether a
+path is its own relay is the fold's claim, and an `alias` written for it would
+be a claim nothing measured. A fast-lane batch reads the other urls of each
+candidate's server from the last sweep's candidate set, so the stand-in is the
+same url whichever lane grades it.
+
+**The sweep publishes which servers are prime more than once.** `sharedHosts`
+on the fitness row groups the sweep's prime urls by server and names the
+fold's word on each. A path-routing relay (an inbox beside an outbox) belongs
+there; `unproven`, servers with two or more prime urls the fold has not
+measured apart, does not. Over a sweep only: a fast-lane batch is a handful of
+urls, and a census over it would read as the roster shrinking.
+
+**The boot retraction reports on the fitness row.** It is a paged walk of the
+whole graded corpus plus a write per stale grade, and every pass waits on it;
+after the `FITNESS_EPOCH` bump on staging it ran for over forty minutes with
+every monitor row at `starting`, which reads as the six-hour clock. The row
+now says `retiring` with a `verdict` position.

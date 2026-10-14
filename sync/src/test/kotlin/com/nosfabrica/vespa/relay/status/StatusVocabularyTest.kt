@@ -266,6 +266,21 @@ class StatusVocabularyTest {
                         "noncompliant" to 1,
                         "auth-refused" to 1,
                         "restricted" to 1,
+                        "waitingOnFold" to 14,
+                    ),
+                sharedHosts =
+                    Processors.SharedHosts(
+                        hosts = 2,
+                        urls = 5,
+                        unproven = 0,
+                        top =
+                            listOf(
+                                Processors.SharedHost(
+                                    host = "pyramid.example",
+                                    urls = 2,
+                                    relays = listOf(Processors.FoldOf("wss://pyramid.example/", "canonical"), Processors.FoldOf("wss://pyramid.example/inbox", "distinct")),
+                                ),
+                            ),
                     ),
             ),
             // The pool: the roster it walks, and the eight ways a visit ends early.

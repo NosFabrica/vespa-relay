@@ -63,6 +63,11 @@ internal class StreamWorld(
     var lastDerivation: Derivation = Derivation()
         private set
 
+    /** The last sweep's candidate set and what the fast lane has handed over since; empty until a sweep derives. */
+    @Volatile
+    var lastCandidates: Set<NormalizedRelayUrl> = emptySet()
+        private set
+
     /** Whether a derivation has run; a fresh [Derivation] and one that found nothing are the same zeros. */
     @Volatile
     var derived: Boolean = false
@@ -136,6 +141,7 @@ internal class StreamWorld(
                 sourcedLastRound = lastSourced,
             )
         derived = true
+        lastCandidates = live.toHashSet()
         // A derivation that collapsed is a fault in the read, not a new baseline. Said once;
         // nothing is retried.
         val previous = lastSourced
@@ -222,7 +228,10 @@ internal class StreamWorld(
             } catch (e: Exception) {
                 emptySet()
             }
-        return live.filterNot { it in graded }
+        val handed = live.filterNot { it in graded }
+        // Known from now on, so the roster elects a server's stand-in among the urls fitness may grade.
+        if (handed.isNotEmpty()) lastCandidates = lastCandidates + handed
+        return handed
     }
 
     override suspend fun reach(url: NormalizedRelayUrl): Reach = probe.reach(url)

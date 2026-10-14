@@ -116,6 +116,35 @@ class Processors {
         val urls: Int = 0,
     )
 
+    /**
+     * The servers graded `prime` under more than one url as the last sweep left them, so one server
+     * on the roster several times is a number rather than a hand count.
+     */
+    class SharedHosts(
+        /** Servers carrying more than one `prime` url. */
+        val hosts: Int,
+        /** The `prime` urls on them. */
+        val urls: Int,
+        /** Of those servers, how many hold two or more `prime` urls the fold has not proven their own relays. */
+        val unproven: Int,
+        /** The worst few, unproven first. Bounded at [MAX_SHARED_HOSTS]. */
+        val top: List<SharedHost>,
+    )
+
+    /** One server's `prime` urls and what the fold holds about each. */
+    class SharedHost(
+        val host: String,
+        val urls: Int,
+        /** Bounded at [MAX_SHARED_HOST_URLS]; [urls] is the whole count. */
+        val relays: List<FoldOf>,
+    )
+
+    /** One url and the fold's word on it: [FOLD_ALIAS], [FOLD_CANONICAL], [FOLD_DISTINCT], [FOLD_STALE] or [FOLD_NONE]. */
+    class FoldOf(
+        val relay: String,
+        val fold: String,
+    )
+
     /** One reason a total breaks down by, counted in events. [Undecided] counts hosts. */
     class Breakdown(
         val reason: String,
@@ -148,6 +177,8 @@ class Processors {
         val counts: List<Count>,
         /** Reasons a counter-shaped processor breaks its total down by; ingest's rejections, today. */
         val reasons: List<Breakdown> = emptyList(),
+        /** The fitness pass's census of servers graded more than once, or null before a sweep has taken one. */
+        val sharedHosts: SharedHosts? = null,
     )
 
     /** One pass's live position, swapped whole so a reader takes unit, size and count from one pass. */
@@ -198,6 +229,9 @@ class Processors {
 
         /** Latest result per stream, replacing rather than appending. */
         val work = ConcurrentHashMap<String, Work>()
+
+        @Volatile
+        var sharedHosts: SharedHosts? = null
     }
 
     private val entries = ConcurrentHashMap<String, Entry>()
@@ -234,6 +268,7 @@ class Processors {
                 work = e.work.values.sortedBy { it.stream },
                 counts = e.counts?.invoke().orEmpty(),
                 reasons = e.reasons?.invoke().orEmpty(),
+                sharedHosts = e.sharedHosts,
             )
         }
 
@@ -330,6 +365,11 @@ class Processors {
             entry.run = Run(unit, toProbe, nowMs)
         }
 
+        /** Drop the position of work that was not a pass, such as a boot retraction, without counting a pass. */
+        fun clearMeasuring() {
+            entry.run = null
+        }
+
         /** One more unit of this pass is behind it, however it ended. */
         fun attempted(
             units: Int = 1,
@@ -373,6 +413,11 @@ class Processors {
         /** What the last pass over [Work.stream]'s candidates achieved, replacing the previous row. */
         fun record(work: Work) {
             entry.work[work.stream] = work
+        }
+
+        /** The last sweep's census of servers graded more than once, replacing the previous one. */
+        fun sharedHosts(census: SharedHosts) {
+            entry.sharedHosts = census
         }
     }
 
@@ -431,6 +476,36 @@ class Processors {
                                         buildJsonObject {
                                             put("reason", r.reason)
                                             put("events", r.events)
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+                p.sharedHosts?.let { census ->
+                    put(
+                        "sharedHosts",
+                        buildJsonObject {
+                            put("hosts", census.hosts)
+                            put("urls", census.urls)
+                            put("unproven", census.unproven)
+                            putJsonArray("top") {
+                                for (h in census.top) {
+                                    add(
+                                        buildJsonObject {
+                                            put("host", h.host)
+                                            put("urls", h.urls)
+                                            putJsonArray("relays") {
+                                                for (r in h.relays) {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("relay", r.relay)
+                                                            put("fold", r.fold)
+                                                        },
+                                                    )
+                                                }
+                                            }
                                         },
                                     )
                                 }
@@ -530,5 +605,29 @@ class Processors {
 
         /** Hosts named with their url counts, on the same terms as [MAX_UNDECIDED_EXAMPLES]. */
         const val MAX_UNDECIDED_HOSTS = 100
+
+        /** Servers named in [SharedHosts.top]. */
+        const val MAX_SHARED_HOSTS = 25
+
+        /** Urls named per server in [SharedHost.relays]. */
+        const val MAX_SHARED_HOST_URLS = 25
+
+        /** The fold's words for a url in [FoldOf]: folded onto another url. */
+        const val FOLD_ALIAS = "alias"
+
+        /** Other urls fold onto it. */
+        const val FOLD_CANONICAL = "canonical"
+
+        /** Measured and matched nothing it was compared to. */
+        const val FOLD_DISTINCT = "distinct"
+
+        /** A fold answer exists, under older rules or past its TTL. */
+        const val FOLD_STALE = "stale"
+
+        /** No fold answer at all. */
+        const val FOLD_NONE = "none"
+
+        /** The boot retraction is taking back grades signed under older rules; no pass runs until it ends. */
+        const val RETIRING = "retiring"
     }
 }

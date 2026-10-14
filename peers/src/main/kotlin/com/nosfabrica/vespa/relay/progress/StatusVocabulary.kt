@@ -1077,6 +1077,34 @@ object StatusVocabulary {
                     "a filter service minting per-user paths. Probed with the same shaped-ask ladder the fold climbs " +
                     "before the verdict is written.",
             )
+            term(
+                "waitingOnFold",
+                "Urls the last fitness batch set aside because the alias fold has decided nothing about them and " +
+                    "another url of the same server stands in: a decided twin of the same endpoint, else the " +
+                    "server's canonical, else its preferred url. Not dialled and not graded, and a standing `prime` " +
+                    "on one is taken back, since grading every path of a path-ignoring server put it on the roster " +
+                    "once per path. Not a refusal: they rejoin as soon as the fold proves one its own relay.",
+            )
+            term(
+                "sharedHosts",
+                "The last SWEEP's census of servers graded `prime` under more than one url — the shape that puts " +
+                    "one server on the mirror's roster several times. Each server's prime urls are listed with the " +
+                    "fold's word on each. Many servers here is not by itself a fault: a path-routing relay (an " +
+                    "inbox beside an outbox) is several relays on one name. `unproven` is the fault.",
+            )
+            term(
+                "unproven",
+                "Servers in `sharedHosts` holding two or more `prime` urls the fold has NOT measured as their own " +
+                    "relays (`fold` other than `canonical` or `distinct`). Fitness grades at most one such url per " +
+                    "server, so anything above zero is a regression in that rule or a grade written before it.",
+            )
+            term(
+                "fold",
+                "The alias fold's current word on one url: `alias` (folds onto another url, and should never be " +
+                    "prime), `canonical` (other urls fold onto it), `distinct` (measured and matched nothing it " +
+                    "was compared to), `stale` (an answer exists, under older rules or past its TTL, so it counts " +
+                    "for nothing) or `none` (never decided).",
+            )
             // The rotating pool. A slot is a socket here.
             term(
                 "roster",

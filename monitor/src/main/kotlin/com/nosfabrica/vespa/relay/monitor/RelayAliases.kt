@@ -363,12 +363,49 @@ class RelayAliases(
      * so a new alias cannot re-point an existing verdict; otherwise the best by [PREFERENCE].
      */
     private fun leaderOf(group: List<NormalizedRelayUrl>): NormalizedRelayUrl {
-        group.firstOrNull { it in canonicals }?.let { return it }
-        return group.minWith(PREFERENCE)
+        val leader = group.firstOrNull { it in canonicals } ?: return group.minWith(PREFERENCE)
+        // A plain canonical yields to its secure twin, so a fold never settles onto the unencrypted endpoint.
+        if (isSecure(leader.url)) return leader
+        val twin = endpointKey(leader.url)?.let { secureTwins(group)[it] }
+        return twin?.takeIf { !folded.containsKey(it) } ?: leader
     }
 
     /** The best url of [urls] by [PREFERENCE], which stays private so every caller picks the same one. */
     fun preferred(urls: Collection<NormalizedRelayUrl>): NormalizedRelayUrl? = urls.minWithOrNull(PREFERENCE)
+
+    /**
+     * Of [candidates], each url nothing is decided about that another url of [world] stands in
+     * for, onto that url: a decided twin naming the same endpoint, else the server's preferred
+     * canonical, else its preferred url no fold names an alias. Until the fold decides, a server is graded once.
+     */
+    fun heldForFold(
+        candidates: Collection<NormalizedRelayUrl>,
+        world: Collection<NormalizedRelayUrl> = emptyList(),
+        /** Which urls may stand in for their server; one of a server with none eligible falls back to all. */
+        eligible: (NormalizedRelayUrl) -> Boolean = { true },
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val mates =
+            (candidates.asSequence() + world.asSequence())
+                .filter { !folded.containsKey(it) }
+                .distinct()
+                .groupBy { authorityOf(it.url) }
+        val standIns = HashMap<String, NormalizedRelayUrl>()
+        val held = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in candidates) {
+            if (measured(url)) continue
+            val key = authorityOf(url.url)
+            // The candidate is among its own mates: it is not folded, or it would be measured.
+            val here = mates.getValue(key).filter(eligible).ifEmpty { mates.getValue(key) }
+            val endpoint = endpointKey(url.url)
+            val twin = endpoint?.let { e -> here.filter { it != url && measured(it) && endpointKey(it.url) == e }.minWithOrNull(PREFERENCE) }
+            val standIn =
+                twin ?: standIns.getOrPut(key) {
+                    here.filter { it in canonicals }.minWithOrNull(PREFERENCE) ?: here.minWith(PREFERENCE)
+                }
+            if (standIn != url) held[url] = standIn
+        }
+        return held
+    }
 
     companion object {
         /** How many newest events a fingerprint holds, paged backwards to reach it. */
@@ -420,6 +457,17 @@ class RelayAliases(
                 { it.url },
             )
 
+        /** The urls of [world] outside [candidates] that share a server with one of them. */
+        fun matesOf(
+            candidates: Collection<NormalizedRelayUrl>,
+            world: Collection<NormalizedRelayUrl>,
+        ): List<NormalizedRelayUrl> {
+            if (world.isEmpty()) return emptyList()
+            val asked = candidates.toHashSet()
+            val servers = candidates.mapTo(HashSet()) { authorityOf(it.url) }
+            return world.filter { it !in asked && authorityOf(it.url) in servers }
+        }
+
         /** The hostname, lowercased, without the port. */
         fun hostOf(url: String): String {
             val authority = afterScheme(url).substringBefore('/')
@@ -442,12 +490,22 @@ class RelayAliases(
             return hostOf(url) + "/" + pathOf(url)
         }
 
+        /**
+         * The hostname, plus the port where it is explicit and not the scheme's default: one
+         * server, whatever its scheme or path. Two ports are two servers.
+         */
+        fun authorityOf(url: String): String = if (isDefaultPort(url)) hostOf(url) else hostOf(url) + ":" + portOf(url)
+
         /** No port at all, or the one this url's scheme implies. */
         private fun isDefaultPort(url: String): Boolean {
-            val authority = afterScheme(url).substringBefore('/')
-            val port =
-                if (authority.startsWith("[")) authority.substringAfter(']').removePrefix(":") else authority.substringAfter(':', "")
+            val port = portOf(url)
             return port.isEmpty() || port == (if (isSecure(url)) "443" else "80")
+        }
+
+        /** The explicit port, or empty. */
+        private fun portOf(url: String): String {
+            val authority = afterScheme(url).substringBefore('/').substringBefore('?')
+            return if (authority.startsWith("[")) authority.substringAfter(']').removePrefix(":") else authority.substringAfter(':', "")
         }
 
         private fun hasExplicitPort(url: String): Boolean {

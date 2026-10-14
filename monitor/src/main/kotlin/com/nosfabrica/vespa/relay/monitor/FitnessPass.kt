@@ -64,6 +64,8 @@ class FitnessPass(
     /** The consistency pass's standing refusals; same bargain. */
     private val inconsistent: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> =
         { held, urls -> urls.filterTo(HashSet()) { it in held.inconsistent } },
+    /** The last sweep's candidate set, so a fast-lane batch sees the other urls on each candidate's server. */
+    private val world: () -> Collection<NormalizedRelayUrl> = { emptyList() },
     /** The bars a relay's answer is held to. */
     private val compliance: RelayCompliance = RelayCompliance(),
     val progress: Processors.Handle,
@@ -187,10 +189,12 @@ class FitnessPass(
         // Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published.
         val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
         try {
+            // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
+            val mates = RelayAliases.matesOf(candidates, world())
             // One read of what this monitor stands behind, after the passes before this one wrote.
             val held =
                 try {
-                    record.load(candidates)
+                    record.load(candidates + mates)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -212,7 +216,11 @@ class FitnessPass(
                 outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
             }
 
-            val toDial = remaining.filter { it !in shaky }
+            // A url the fold has not decided waits behind its server's stand-in: grading it too would
+            // put one server on the roster once per path.
+            val graded = remaining.filter { it !in shaky }
+            val waiting = AliasFolding.heldAmong(held, graded, mates.filter { it !in held.inconsistent })
+            val toDial = graded.filter { it !in waiting }
             // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
@@ -354,6 +362,22 @@ class FitnessPass(
                     ) != null
                 }
             tally.resumeAt?.let { writeCursors[label] = it.url }
+            // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
+            val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
+            val withdrawn =
+                if (unprimed.isEmpty() || tally.stoppedBy != null) {
+                    emptySet()
+                } else {
+                    progress.measuring(unprimed.size, Processors.UNIT_VERDICT)
+                    writeEach(unprimed, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_WITHDRAW) { url ->
+                        record.retireFitness(url) != null
+                    }.stored
+                }
+            if (label != AliasMonitor.FAST_LANE) {
+                // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
+                val prime = candidates.filterTo(HashSet()) { url -> outcomes[url]?.let { it.verdict == Verdict.PRIME } ?: (url !in withdrawn && held.fitness[url]?.value == Verdict.PRIME.value) }
+                progress.sharedHosts(PrimeCensus.of(prime, held))
+            }
 
             report(
                 label,
@@ -377,6 +401,9 @@ class FitnessPass(
                 negOpenCut = negOpenCut.get(),
                 secondPageCut = secondPageCut.get(),
                 pageUnproven = pageUnproven.get(),
+                waiting = waiting.size,
+                waitingServers = waiting.values.toSet().size,
+                withdrawn = withdrawn.size,
             )
         } finally {
             progress.finish()
@@ -797,6 +824,11 @@ class FitnessPass(
         secondPageCut: Int = 0,
         /** Urls that ended with no `pageable` claim at all. */
         pageUnproven: Int = 0,
+        /** Urls waiting on the fold behind another url of their server, and how many servers that is. */
+        waiting: Int = 0,
+        waitingServers: Int = 0,
+        /** Of the waiting urls, how many had their standing `prime` taken back. */
+        withdrawn: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -851,6 +883,13 @@ class FitnessPass(
                     "pass earned",
             )
         }
+        if (waiting > 0) {
+            System.err.println(
+                "router: fitness [$label] — $waiting url(s) on $waitingServers server(s) wait on the fold behind another " +
+                    "url of the same server, not dialled; $withdrawn standing `prime` grade(s) taken back. The fold " +
+                    "has not said whether those paths are their own relays, so only the server's stand-in is graded",
+            )
+        }
         if (cutLate > 0) {
             System.err.println(
                 "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
@@ -882,7 +921,8 @@ class FitnessPass(
             )
         }
         progress.counts {
-            Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } }
+            Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } } +
+                Processors.Count(WAITING_ON_FOLD, waiting.toLong())
         }
     }
 
@@ -895,6 +935,7 @@ class FitnessPass(
             store: IEventStore,
             record: RelayVerdictRecord,
             author: String,
+            progress: Processors.Handle? = null,
         ): Int {
             // The index answers on the label's value alone, so this walks every graded record and decides here.
             val stale = mutableListOf<NormalizedRelayUrl>()
@@ -916,7 +957,7 @@ class FitnessPass(
                     record.relay()?.let(stale::add)
                 }
             }
-            retire(record, stale)
+            retire(record, stale, progress)
             if (stale.isNotEmpty()) {
                 System.err.println(
                     "router: fitness — retired ${stale.size} verdict(s) taken under older rules; " +
@@ -934,6 +975,7 @@ class FitnessPass(
             store: IEventStore,
             record: RelayVerdictRecord,
             author: String,
+            progress: Processors.Handle? = null,
         ): Int {
             val legacy = mutableListOf<NormalizedRelayUrl>()
             RelayDiscovery.scan(
@@ -946,7 +988,7 @@ class FitnessPass(
                 SCAN_PAGE,
                 caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             ) { event -> (event as? RelayDiscoveryEvent)?.relay()?.let(legacy::add) }
-            retire(record, legacy)
+            retire(record, legacy, progress)
             if (legacy.isNotEmpty()) {
                 System.err.println(
                     "router: fitness — retired ${legacy.size} grade(s) still written on the `s` tag; " +
@@ -963,11 +1005,18 @@ class FitnessPass(
         private suspend fun retire(
             record: RelayVerdictRecord,
             urls: List<NormalizedRelayUrl>,
+            progress: Processors.Handle?,
         ) {
             if (urls.isEmpty()) return
+            progress?.measuring(urls.size, Processors.UNIT_VERDICT)
             val gate = Semaphore(RETIRE_CONCURRENCY)
             coroutineScope {
-                for (url in urls) launch { gate.withPermit { record.retireFitness(url) } }
+                for (url in urls) {
+                    launch {
+                        gate.withPermit { record.retireFitness(url) }
+                        progress?.attempted()
+                    }
+                }
             }
         }
 
@@ -1030,6 +1079,12 @@ class FitnessPass(
 
         /** The one stage that is not a dial: the record edit that puts a verdict down. */
         const val STAGE_PUBLISH = "verdict write"
+
+        /** The record edit that takes a waiting url's `prime` back. */
+        const val STAGE_WITHDRAW = "prime withdrawn"
+
+        /** The count of urls a batch held back for the fold, on the fitness row. */
+        const val WAITING_ON_FOLD = "waitingOnFold"
 
         /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
         const val PUBLISH_DEADLINE_MS = 60_000L

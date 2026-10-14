@@ -79,19 +79,34 @@ class AliasFolding(
         val unmeasured: List<NormalizedRelayUrl>,
         /** Folded url -> the member standing in for an absent survivor. Routing only, never published. */
         val standIns: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
+        /** Undecided url -> the url of its server standing in until the fold decides. Routing only, never published. */
+        val waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
-    /** Urls in, deduplicated urls out, without dialling anything or changing what the fold holds. */
-    suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
+    /**
+     * Urls in, deduplicated urls out, without dialling anything or changing what the fold holds.
+     * [world] is every url the monitor knows, so a waiting url's stand-in is the one fitness grades.
+     */
+    suspend fun applyVerdicts(
+        candidates: List<NormalizedRelayUrl>,
+        world: Collection<NormalizedRelayUrl> = emptyList(),
+    ): Collapsed {
         if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
-        return collapse(candidates, view(candidates))
+        val mates = RelayAliases.matesOf(candidates, world)
+        val (known, inconsistent) = view(candidates + mates)
+        val collapsed = collapse(candidates, known)
+        // The stand-in is elected as fitness elects it: from the monitor's own set, never a url it holds as inconsistent.
+        val graded = world as? Set<NormalizedRelayUrl> ?: world.toHashSet()
+        val eligible: (NormalizedRelayUrl) -> Boolean = { (graded.isEmpty() || it in graded) && it !in inconsistent }
+        return collapsed.copy(waiting = known.heldForFold(collapsed.dial, mates, eligible))
     }
 
     /**
-     * The stored verdicts over [candidates] in a map of their own: a narrower set replaced into
-     * [aliases] would drop the canonicals of aliases outside it mid-fold. Only [measure] replaces.
+     * The stored verdicts over [candidates] in a map of their own, and the urls among them held as
+     * inconsistent: a narrower set replaced into [aliases] would drop the canonicals of aliases
+     * outside it mid-fold. Only [measure] replaces.
      */
-    private suspend fun view(candidates: List<NormalizedRelayUrl>): RelayAliases {
+    private suspend fun view(candidates: List<NormalizedRelayUrl>): Pair<RelayAliases, Set<NormalizedRelayUrl>> {
         val held =
             try {
                 record.load(candidates)
@@ -99,9 +114,9 @@ class AliasFolding(
                 throw e
             } catch (e: Exception) {
                 // A store that cannot answer is not "no verdict": read what the fold holds.
-                return aliases
+                return aliases to emptySet()
             }
-        return RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
+        return RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) } to held.inconsistent
     }
 
     /**
@@ -646,6 +661,19 @@ class AliasFolding(
         ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
             val known = RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
             return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
+        }
+
+        /**
+         * Every candidate no fold in [held] decides that another url of its server, among
+         * [candidates] and [world], stands in for: fitness grades the stand-in alone until the fold decides.
+         */
+        fun heldAmong(
+            held: RelayVerdictRecord.Verdicts,
+            candidates: List<NormalizedRelayUrl>,
+            world: Collection<NormalizedRelayUrl> = emptyList(),
+        ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+            val known = RelayAliases().also { it.replace((candidates + world).distinct(), held.aliases, held.distinct) }
+            return known.heldForFold(candidates, world)
         }
 
         /** What a held url of this pass is doing. */

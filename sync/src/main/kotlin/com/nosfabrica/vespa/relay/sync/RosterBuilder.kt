@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.monitor.RelayAliases
 import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -233,7 +234,10 @@ internal class RosterBuilder(
         return kept
     }
 
-    /** A stream's discovery, cached per source for that source's own `refreshSeconds`, with the fold applied. */
+    /**
+     * A stream's discovery, cached per source for that source's own `refreshSeconds`, with the fold
+     * applied: a folded url's bindings move onto the url standing in for it, which the gate then judges.
+     */
     private suspend fun discovered(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
@@ -243,7 +247,7 @@ internal class RosterBuilder(
         val all = perSource
         val folded = foldedAway(all.map { it.url }.distinct())
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
-        return if (folded.isEmpty()) all else all.filter { it.url !in folded }
+        return RelayAliases.foldOnto(all, folded)
     }
 
     /** [sources] read out of the store, each held for its own `refreshSeconds`; [what] keeps a gate's cache apart. */

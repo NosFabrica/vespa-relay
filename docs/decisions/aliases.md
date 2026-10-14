@@ -246,3 +246,29 @@ rejected our NIP-42 key folded on its hostname alone and signed public
 from any server. Auth-refused urls are now unmeasured for that rule, and
 `FOLD_EPOCH` went to 3 with it so the folds signed under the old rule stop
 being read.
+
+**A plain canonical yields the lead to its secure twin.** `leaderOf` keeps an
+existing canonical as the yardstick so a new alias cannot re-point a verdict,
+and when that canonical was a `ws://` url every later path folded onto the
+unencrypted endpoint (`relay.damus.io/yankee-india` → `ws://relay.damus.io/`
+on staging). A plain canonical whose `wss://` twin is in the group and not
+folded now hands it the lead; the plain url is then measured against it and
+folds as a scheme twin, and its old aliases follow the chain.
+
+**The roster's fold view also holds back what the fold has not decided.**
+`applyVerdicts` returns `waiting` beside `aliases` and `standIns`: each
+undecided url onto the url fitness grades for its server, computed from the
+monitor's last candidate set so both sides name the same stand-in. Trailing
+slashes, after a path or a query, and the scheme never name a different
+endpoint for this rule (`/ar` and `/ar/`, `?reject=3,6,7///` and its longer
+runs): a url waits on its decided twin first. Quartz's normalizer keeps those
+urls apart, so the records stay two; only the grade and the roster are one.
+
+**Why so many hosts stayed undecided is still open.** A fresh pass over
+`relay.nostr.net` (31 urls) and `staging.yabu.me` (35) from a sandbox folded
+29 and 34 urls in under fifteen seconds (`AliasFoldLiveProbe`), so the
+measurement holds for them. What the corpus shows is folds stamped across
+many sweeps per host and newer urls left behind, which fits a pass cut short
+(widest groups first, the undecidable cooldown in memory and lost on every
+restart) better than a measurement that fails. The hold above makes it cost
+one roster entry per server rather than one per path.

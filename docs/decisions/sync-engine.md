@@ -281,6 +281,14 @@ with one relay, so a per-author split keeps each `(relay, provider)` band
 valid forever: a new provider naming the relay is a new band beside the old
 ones, never an invalidation. This is `authorsPerLeg = 1` made structural.
 
+**A folded url's bindings move onto its survivor; its bands do not.** The
+roster dropped a folded url whole, so an author-bound stream lost every author
+who listed only the alias: their asks went nowhere. `RelayAliases.foldOnto`
+re-keys each folded or waiting url's bindings onto the url standing in for
+it, which the gate then judges like any other. The asks are new filters on the
+survivor and start their own bands; the alias's coverage stays hidden, for the
+reason under `dropFolded`.
+
 **A cancelled rebuild is not a store that could not answer.** Swallowed, it
 printed the could-not-read line during every ordinary stop, a wolf cry
 against the one line that matters when the store really cannot.
