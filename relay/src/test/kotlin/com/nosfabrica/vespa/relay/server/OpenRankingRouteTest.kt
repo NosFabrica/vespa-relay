@@ -301,13 +301,15 @@ class OpenRankingRouteTest {
         }
 
     @Test
-    fun `a store that fails is a 503 with a reason, and the failure is logged`() =
+    fun `a store that fails is a 503 with a reason, and the failure is logged without what was searched`() =
         testApplication {
-            serving(ore({ _, _, _ -> error("vespa down") }))
+            serving(ore({ _, _, _ -> throw IllegalArgumentException("vespa search 400: {\"errors\":[\"userQuery(alice)\"]}") }))
             val res = client.search("""{"observer":"$house","query":"alice"}""")
             assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
             assertNotNull(res.headers["X-Reason"])
-            assertContains(logged.single(), "vespa down")
+            val line = logged.single()
+            assertContains(line, "vespa search 400")
+            assertTrue("alice" !in line, "what was searched stays out of the log: $line")
         }
 
     @Test

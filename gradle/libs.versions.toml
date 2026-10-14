@@ -1082,8 +1082,21 @@ quartz = "68268da413"
 #
 # LEXICOGRAPHIC: '8c95…' < 'd1ad…': the losing direction, moot — nothing else names the store.
 #
-# Prev d1adf0ff91 (above).
-vespaEventStore = "8c95193705"
+# a34cc5df39 = the same branch, one commit over 8c95193705, from the audit of both PRs: the lens is
+# resolved ONCE (a 10040 write between two lookups could query under another service than the
+# rankService the answer reports), and the store's own require checks the observer's length too
+# (quartz's isHex64 ignores everything past 64). Store code only. Both group spellings serve it;
+# the capitalized one stays. Re-pin to the merge commit of NosFabrica/vespa-eventstore#165.
+#   git merge-base --is-ancestor 8c95193705 a34cc5df39   # verified
+#
+# GATED, on this pin with quartz 68268da413: this relay's full build (1,412 tests, 2 skipped,
+# 0 failures) + archTest, every eventstore line a34cc5df39 and every quartz line 68268da413 in all
+# six modules, zero arrows. And the store at a34cc5df39: its unit build (796 tests, 0 failures) and
+# its integration suite against a real Vespa 8.763.13 in Docker (23 tests, 22 passed,
+# StagingCorpusIT skipped by design, 0 failures), read off the result XML.
+#
+# Prev 8c95193705, d1adf0ff91 (above).
+vespaEventStore = "a34cc5df39"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

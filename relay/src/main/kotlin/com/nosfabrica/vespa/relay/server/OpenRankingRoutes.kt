@@ -116,7 +116,10 @@ internal fun Route.openRanking(ore: OpenRanking) {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    ore.log("ore: search failed (${e::class.simpleName}: ${e.message?.take(200)}) — answered 503")
+                    // The message up to its first ':' ("vespa search 400"): past it the engine quotes its
+                    // response body, which can echo the YQL and so what was searched — user data, which the
+                    // store keeps only where an operator opts in (CostLedger's slow-query ring).
+                    ore.log("ore: search failed (${e::class.simpleName}: ${e.message?.substringBefore(':')?.take(80)}) — answered 503")
                     return@post call.respondError(HttpStatusCode.ServiceUnavailable, "search is unavailable; retry later")
                 } finally {
                     // A no-op once finished; a failed or cancelled search is no sample, only no longer in flight.
