@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
+import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -79,29 +80,37 @@ class AliasFolding(
         val unmeasured: List<NormalizedRelayUrl>,
         /** Folded url -> the member standing in for an absent survivor. Routing only, never published. */
         val standIns: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
+        /** Undecided url -> the url of its server standing in until the fold decides. Routing only, never published. */
+        val waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
-    /** Urls in, deduplicated urls out, without dialling anything or changing what the fold holds. */
-    suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
-        if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
-        return collapse(candidates, view(candidates))
-    }
-
     /**
-     * The stored verdicts over [candidates] in a map of their own: a narrower set replaced into
-     * [aliases] would drop the canonicals of aliases outside it mid-fold. Only [measure] replaces.
+     * Urls in, deduplicated urls out, without dialling anything or changing what the fold holds.
+     * [world] is every url the monitor knows: a canonical there is folded onto even when the set
+     * lacks it, and a waiting url's stand-in is the one fitness grades.
      */
-    private suspend fun view(candidates: List<NormalizedRelayUrl>): RelayAliases {
+    suspend fun applyVerdicts(
+        candidates: List<NormalizedRelayUrl>,
+        world: ServerIndex = ServerIndex.EMPTY,
+    ): Collapsed {
+        if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
+        val mates = world.matesOf(candidates)
         val held =
             try {
-                record.load(candidates)
+                record.load(candidates + mates)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // A store that cannot answer is not "no verdict": read what the fold holds.
-                return aliases
+                // A store that cannot answer is not "no verdict": read what the fold holds, and hold
+                // nothing back, since who stands in is a reading of the store.
+                return collapse(candidates, aliases)
             }
-        return RelayAliases().also { it.replace(candidates, held.aliases, held.distinct) }
+        // A map of its own: a narrower set replaced into [aliases] would drop the canonicals of
+        // aliases outside it mid-fold. Only [measure] replaces.
+        val known = RelayAliases().also { it.replace(candidates + mates, held.aliases, held.distinct) }
+        val collapsed = collapse(candidates, known, present = candidates.toHashSet() + mates)
+        val electorate: (NormalizedRelayUrl) -> Boolean = { world.isEmpty() || it in world }
+        return collapsed.copy(waiting = known.heldForFold(collapsed.dial, mates, eligibleIn(held, electorate)))
     }
 
     /**
@@ -152,7 +161,7 @@ class AliasFolding(
                             val anchor = AliasProbe.settledAnchor(nowSeconds())
 
                             // The yardstick goes first, alone: it decides the filter the whole group is asked
-                            // through. The search walks down the preference order while urls stay silent.
+                            // through. The search walks down the preference order while urls stay silent or thin.
                             var dialled = false
                             var spent = 0
                             var found: NormalizedRelayUrl? = null
@@ -167,7 +176,11 @@ class AliasFolding(
                             // refusing our key: what foldUnreadableGroups turns on.
                             val askedUrls = HashSet<NormalizedRelayUrl>()
                             val spoke = HashSet<NormalizedRelayUrl>()
-                            for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
+                            // Two budgets: silence costs a whole deadline, a thin answer one short page.
+                            var fruitless = 0
+                            var thinAnswers = 0
+                            for (candidate in wanted) {
+                                if (fruitless >= YARDSTICK_ATTEMPTS || thinAnswers >= THIN_ATTEMPTS) break
                                 var asked = false
                                 val attempt =
                                     gate.withPermit(candidate) {
@@ -184,17 +197,20 @@ class AliasFolding(
                                 // Asked and silent, or cut by the deadline: a second dial this pass
                                 // buys the same silence.
                                 if (asked && print == null) exhausted += candidate
+                                if (print == null) fruitless++
                                 if (print != null) {
-                                    // It answered, so the search stops whether or not the window is usable: a
-                                    // thin window is a fact about the host, silence about the url.
                                     if (aliases.usableWindow(print.ids, print.kinds)) {
                                         found = candidate
                                         foundPrint = print
-                                    } else {
+                                        break
+                                    }
+                                    // A thin window is a fact about the path, not the host: a path-routing host
+                                    // serves a quiet path beside a busy one. The first is kept for the twin exit.
+                                    thinAnswers++
+                                    if (thin == null) {
                                         thin = candidate
                                         thinPrint = print
                                     }
-                                    break
                                 }
                             }
                             var members = wanted
@@ -594,8 +610,9 @@ class AliasFolding(
     private fun collapse(
         candidates: List<NormalizedRelayUrl>,
         known: RelayAliases,
+        /** Where a survivor counts as present; the candidates, unless the caller can route elsewhere. */
+        present: Set<NormalizedRelayUrl> = candidates.toHashSet(),
     ): Collapsed {
-        val present = candidates.toHashSet()
         val elected = reElected(candidates, present, known)
         val measured = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val inferred = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
@@ -648,11 +665,40 @@ class AliasFolding(
             return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
         }
 
+        /**
+         * Every candidate no fold in [held] decides that another url of its server, among
+         * [candidates] and [world], stands in for: fitness grades the stand-in alone until the fold decides.
+         */
+        fun heldAmong(
+            held: RelayVerdictRecord.Verdicts,
+            candidates: List<NormalizedRelayUrl>,
+            world: Collection<NormalizedRelayUrl> = emptyList(),
+        ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+            val known = RelayAliases().also { it.replace((candidates + world).distinct(), held.aliases, held.distinct) }
+            return known.heldForFold(candidates, world, eligibleIn(held) { true })
+        }
+
+        /**
+         * Who may stand in for a server, one rule for fitness and the roster: a url [electorate]
+         * admits that stands ungraded or `prime`. A refusal moves the stand-in on to the next url,
+         * or one refusing path would keep the whole server off the roster.
+         */
+        private fun eligibleIn(
+            held: RelayVerdictRecord.Verdicts,
+            electorate: (NormalizedRelayUrl) -> Boolean,
+        ): (NormalizedRelayUrl) -> Boolean =
+            { url ->
+                electorate(url) && url !in held.inconsistent && held.fitness[url]?.value.let { it == null || it == Verdict.PRIME.value }
+            }
+
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"
 
-        /** How far down a group's preference order the sequential search for a yardstick goes. */
+        /** How many urls of a group the sequential search for a yardstick may find silent or declined. */
         const val YARDSTICK_ATTEMPTS = 3
+
+        /** How many thin answers it may walk past; each costs one short page, not a deadline. */
+        const val THIN_ATTEMPTS = 12
 
         private const val NAMED_PER_REASON = 3
 

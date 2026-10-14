@@ -246,3 +246,66 @@ rejected our NIP-42 key folded on its hostname alone and signed public
 from any server. Auth-refused urls are now unmeasured for that rule, and
 `FOLD_EPOCH` went to 3 with it so the folds signed under the old rule stop
 being read.
+
+**A plain canonical yields the lead to its secure twin.** `leaderOf` keeps an
+existing canonical as the yardstick so a new alias cannot re-point a verdict,
+and when that canonical was a `ws://` url every later path folded onto the
+unencrypted endpoint (`relay.damus.io/yankee-india` → `ws://relay.damus.io/`
+on staging). A plain canonical whose `wss://` twin is in the group and not
+folded now hands it the lead; the plain url is then measured against it and
+folds as a scheme twin, and its old aliases follow the chain.
+
+**The roster's fold view also holds back what the fold has not decided.**
+`applyVerdicts` returns `waiting` beside `aliases` and `standIns`: each
+undecided url onto the url fitness grades for its server, computed from the
+monitor's known set (`ServerIndex`, indexed by server so a roster rebuild
+does not walk forty thousand urls per stream) so both sides name the same
+stand-in. Trailing
+slashes, after a path or a query, and the scheme never name a different
+endpoint for this rule (`/ar` and `/ar/`, `?reject=3,6,7///` and its longer
+runs): a url waits on its decided twin first. Quartz's normalizer keeps those
+urls apart, so the records stay two; only the grade and the roster are one.
+
+**Who stands in is one rule, and never a url proven to be another relay.**
+Fitness and the roster elect through `eligibleIn`: a url the monitor knows,
+not inconsistent, standing ungraded or `prime`. A stand-in graded as refusing
+(restricted, silent, auth-refused) hands its server to the next path on the
+next sweep, or one refusing root would keep a path-routing server off the
+roster for good. A url measured `distinct` is never a stand-in: it is proven
+its own relay, not proven to be the undecided path beside it, and holding the
+outbox behind the inbox would send the outbox's authors to the wrong relay.
+That holds for a canonical the fold also cleared: on lang.relays.land `/es`
+is its own relay that `/es/` folds onto, and electing it held the quiet `/ar`
+behind a different language. A
+stand-in that itself waits on a twin hands its server straight to the twin, so
+no map has a chain for a one-hop re-key to stop halfway along. And where the
+monitor knows a canonical the stream does not name, the roster folds onto it
+rather than electing an alias in its place, which put one relay on the roster
+twice.
+
+**The yardstick search walks past a thin window.** It stopped at the first
+url that answered at all, on the reading that a thin window is a fact about
+the host. On a path-routing host it is a fact about the path:
+`lang.relays.land/ar` served 7 events and `/zh` and `/es` 500 each, disjoint,
+so the whole group was "no yardstick" for good and waited behind a root that
+serves a web page. The search now goes on with two budgets, because the
+cap existed for silence: `YARDSTICK_ATTEMPTS` (3) urls silent or declined,
+each costing a deadline, and `THIN_ATTEMPTS` (12) thin answers, each one
+short page. Three was not enough on its own: `/ar`, `/ca` and `/cs` sort first
+on that host and are all quiet. The first thin window is kept for the
+scheme-twin exit. A host thin everywhere costs twelve small probes a pass
+instead of one. No epoch bump: a
+yardstick found this way is held to the same bars, so nothing an earlier
+verdict concluded changes.
+
+**Why some hosts stay undecided, as far as a full local run showed.** A sweep
+over 196 production relay lists (1,997 urls, 292 on the hosts #258 names)
+left 155 hosts undecided: 121 with no yardstick (mostly a single url that
+cannot answer, now also the thin-first case above), 21 our own transport, 12
+nothing to compare, and `relay.nostr.net`, whose leader shared 237 of 500 ids
+with its own second walk under the pass's load. Alone, the same walk repeats
+at 0.98 over 45 seconds at a 60-second anchor and at 1.00 at deeper ones, so
+the anchor is not the cause; `relay.damus.io` in the same pass answered
+`read bandwidth budget exhausted (1048570 bytes/min per IP)` once 15 of its
+paths had been fingerprinted, which is the likelier shape. Undecided costs one
+roster entry per server, not one per path, because of the waiting rule above.

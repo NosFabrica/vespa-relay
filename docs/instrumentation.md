@@ -164,6 +164,15 @@ Reach for it first.
   for both sat full at the dial count for the whole write with `quietForSec`
   climbing: measured on a live stack at 2016 of 2016 for six minutes while the
   writes went on, which is the shape of a wedge and was a healthy pass.
+- **`sharedHosts` on the fitness row** — the last sweep's census of servers
+  graded `prime` under more than one url, each url beside the fold's word on it
+  (`alias`, `canonical`, `distinct`, `stale`, `none`). `unproven` counts the
+  servers with two or more prime urls the fold has not measured as their own
+  relays, and should be zero: fitness grades one undecided url per server
+  (`waitingOnFold` counts the rest). #258 was found by grouping 39,557 raw
+  records by hand; this is that grouping, published every sweep. During a boot
+  that retracts stale grades the same row reads `retiring` with a `verdict`
+  position, where it used to sit at `starting` for the whole walk.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said

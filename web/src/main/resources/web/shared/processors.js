@@ -75,6 +75,29 @@ function backgroundPanel(rows, withFunnel = false) {
     // Which urls it is holding, longest first as the router publishes them.
     const held = heldPanel(p);
     if (held) box.appendChild(held);
+    const shared = sharedPanel(p);
+    if (shared) box.appendChild(shared);
+  }
+  return box;
+}
+
+/** How many unproven servers the fitness row names. */
+const SHARED_SHOWN = 5;
+
+/** The servers prime under more than one unproven url, with the fold's word on each, or null. */
+function sharedPanel(p) {
+  const top = (p.sharedHosts && p.sharedHosts.top) || [];
+  // The router's own flag: it decides over every url, and `relays` is cut.
+  const unproven = top.filter((h) => h.unproven).slice(0, SHARED_SHOWN);
+  if (!unproven.length) return null;
+  const box = el("div", "sy-held");
+  for (const h of unproven) {
+    const named = h.relays.map((r) => `${r.relay} (${r.fold})`).join(", ");
+    const more = h.urls > h.relays.length ? `, +${fmt(h.urls - h.relays.length)} more` : "";
+    const line = el("div", null, `${h.host}: ${fmt(h.urls)} prime url(s) — ${named}${more}`);
+    const why = term("fold");
+    if (why) line.title = why;
+    box.appendChild(line);
   }
   return box;
 }
@@ -250,6 +273,13 @@ function processorFact(p) {
                   (p["auth-refused"] || 0) + (p.restricted || 0);
     if (alive) add(`${fmt(alive)} refused while alive`, "silent");
     if (p.dead) add(`${fmt(p.dead)} dead`, "dead");
+    if (p.waitingOnFold) add(`${fmt(p.waitingOnFold)} waiting on the fold`, "waitingOnFold");
+    // Loud only when the fold has not proven the paths apart: a path-routing relay is several relays.
+    const shared = p.sharedHosts;
+    if (shared && shared.hosts) {
+      add(`${fmt(shared.hosts)} server(s) prime under several urls` + (shared.unproven ? `, ${fmt(shared.unproven)} UNPROVEN` : ""),
+          shared.unproven ? "unproven" : "sharedHosts", !!shared.unproven);
+    }
     return cell;
   }
   if (p.roster != null) {

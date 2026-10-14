@@ -236,7 +236,9 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
   (`self-consistent`), then `FitnessPass`, which grades what survives with a
   NIP-32 label `["l","prime","relay.fitness",…]` (or `dead`) beside `pageable`,
-  `compliant` and `nip77`. All ride one signed kind-30166 record per url, so
+  `compliant` and `nip77`. A url the fold has not decided waits behind one
+  stand-in per server (`RelayAliases.heldForFold`), so a server is graded and
+  rostered once until the fold says its paths are distinct. All ride one signed kind-30166 record per url, so
   `RelayVerdictRecord.edit` is a read-modify-write and the passes never overlap.
   A verdict ages on its own stamp (`DEFAULT_TTL_SECONDS`) and on a rules epoch
   (`FOLD_EPOCH`, `CONSISTENCY_EPOCH`, `FITNESS_EPOCH`: bump one in the same

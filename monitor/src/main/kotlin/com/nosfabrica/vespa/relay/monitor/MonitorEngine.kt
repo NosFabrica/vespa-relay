@@ -173,6 +173,7 @@ class MonitorEngine(
                 tor = tor,
                 concurrency = monitorConcurrency,
                 tlsCheck = probe::tls,
+                world = { world.known },
             )
         }
 
@@ -244,9 +245,10 @@ class MonitorEngine(
 
     /**
      * Which urls this router has folded away, and onto what, so the roster never builds a leg
-     * for another url's relay. Stand-ins are included: this caller only decides which socket to open.
+     * for another url's relay. Stand-ins and urls waiting on the fold are included: this caller
+     * only decides which socket to open.
      */
-    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls)?.let { it.aliases + it.standIns } ?: emptyMap()
+    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls, world.known)?.let { it.aliases + it.standIns + it.waiting } ?: emptyMap()
 
     /** How many candidate urls a current `dead` verdict of ours holds out of the passes. */
     fun heldOutDead(): Int = world.lastDerivation.heldOutDead
@@ -279,9 +281,15 @@ class MonitorEngine(
     private suspend fun retireOwnStaleVerdicts() {
         signer?.let { s ->
             val record = RelayVerdictRecord(store, s)
+            // On the fitness row, since every pass waits on it and a long one otherwise reads as `starting`;
+            // never on a row that is `off`, which this runs beside.
+            val row = fitness?.progress?.takeIf { hasSources }
+            row?.phase(Processors.RETIRING)
             // Two guards: a throw in the first must not skip the second.
-            guarded("stale-epoch verdicts") { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey) } }
-            guarded("legacy `s` grades") { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey) } }
+            guarded("stale-epoch verdicts") { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey, row) } }
+            guarded("legacy `s` grades") { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey, row) } }
+            row?.clearMeasuring()
+            row?.phase(Processors.STARTING)
         }
     }
 

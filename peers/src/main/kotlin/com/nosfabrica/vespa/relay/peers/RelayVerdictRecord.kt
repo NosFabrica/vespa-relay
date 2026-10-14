@@ -69,6 +69,8 @@ class RelayVerdictRecord(
         val recorded: Set<NormalizedRelayUrl> = emptySet(),
         /** The fitness grade this monitor currently stands behind, per url; stale grades are absent. */
         val fitness: Map<NormalizedRelayUrl, StandingGrade> = emptyMap(),
+        /** Urls carrying a fold answer of ours that is no longer current: an older epoch, or past the TTL. */
+        val staleFolds: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /** One chunked record read, booked as the monitor's. */
@@ -134,11 +136,12 @@ class RelayVerdictRecord(
         val measured = HashSet<NormalizedRelayUrl>()
         val recorded = HashSet<NormalizedRelayUrl>()
         val fitness = HashMap<NormalizedRelayUrl, StandingGrade>()
+        val staleFolds = HashSet<NormalizedRelayUrl>()
 
         /** Newest wins: a store should hold one record per address, and "should" is not a guarantee. */
         val fitnessFrom = HashMap<NormalizedRelayUrl, Long>()
 
-        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded, fitness)
+        fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent, speaksNegentropy, measured, recorded, fitness, staleFolds)
     }
 
     /** A page of records, folded into the sets. */
@@ -158,8 +161,12 @@ class RelayVerdictRecord(
         val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
         // Before any currency check: the record existing is what says this url is in our corpus.
         recorded += from
-        event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
-            RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
+        event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.let { tag ->
+            if (!current(tag, FOLD_EPOCH, floor)) {
+                staleFolds += from
+                return@let
+            }
+            RelayUrlNormalizer.normalizeOrNull(tag[1])?.let { to ->
                 if (from == to) distinct += from else aliases[from] = to
                 measured += from
             }
