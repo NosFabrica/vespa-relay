@@ -284,6 +284,35 @@ class SameServerTest {
         }
 
     @Test
+    fun `a quiet language relay does not keep its busy neighbours from being measured`() =
+        runBlocking {
+            // Measured on lang.relays.land: `/ar`, `/ca` and `/cs` sort first and are quiet, `/zh` and `/es`
+            // served 500 events each, disjoint.
+            val store = newStore()
+            val quietPaths = listOf("ar", "ca", "cs").map { url("wss://lang.relays.land/$it") }
+            val busy = listOf("de", "es", "fr", "zh").map { url("wss://lang.relays.land/$it") }
+            val esSlash = url("wss://lang.relays.land/es/")
+            val all = quietPaths + busy + esSlash
+            val servers =
+                Servers { at ->
+                    if (at in quietPaths) (0 until 7).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "${at.url}#$it") } else corpus(RelayAliases.pathOf(at.url))
+                }
+
+            folding(store, servers).measure("t", all, canDial = { true })
+
+            val held = RelayVerdictRecord(store, signer).load(all)
+            assertEquals(busy.toSet(), held.distinct)
+            assertEquals(mapOf(esSlash to url("wss://lang.relays.land/es")), held.aliases)
+
+            // Too thin for any fold, the quiet ones are graded once between them, never behind `/es`,
+            // which is its own relay that a twin happens to fold onto.
+            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, all)
+            val prime = primeAmong(store, all)
+            assertEquals(busy.toSet(), prime - quietPaths.toSet())
+            assertEquals(1, (prime intersect quietPaths.toSet()).size)
+        }
+
+    @Test
     fun `a trailing-slash twin waits on the url the fold measured and reaches the roster once`() =
         runBlocking {
             val store = newStore()

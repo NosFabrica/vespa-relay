@@ -161,7 +161,7 @@ class AliasFolding(
                             val anchor = AliasProbe.settledAnchor(nowSeconds())
 
                             // The yardstick goes first, alone: it decides the filter the whole group is asked
-                            // through. The search walks down the preference order while urls stay silent.
+                            // through. The search walks down the preference order while urls stay silent or thin.
                             var dialled = false
                             var spent = 0
                             var found: NormalizedRelayUrl? = null
@@ -176,7 +176,11 @@ class AliasFolding(
                             // refusing our key: what foldUnreadableGroups turns on.
                             val askedUrls = HashSet<NormalizedRelayUrl>()
                             val spoke = HashSet<NormalizedRelayUrl>()
-                            for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
+                            // Two budgets: silence costs a whole deadline, a thin answer one short page.
+                            var fruitless = 0
+                            var thinAnswers = 0
+                            for (candidate in wanted) {
+                                if (fruitless >= YARDSTICK_ATTEMPTS || thinAnswers >= THIN_ATTEMPTS) break
                                 var asked = false
                                 val attempt =
                                     gate.withPermit(candidate) {
@@ -193,17 +197,20 @@ class AliasFolding(
                                 // Asked and silent, or cut by the deadline: a second dial this pass
                                 // buys the same silence.
                                 if (asked && print == null) exhausted += candidate
+                                if (print == null) fruitless++
                                 if (print != null) {
-                                    // It answered, so the search stops whether or not the window is usable: a
-                                    // thin window is a fact about the host, silence about the url.
                                     if (aliases.usableWindow(print.ids, print.kinds)) {
                                         found = candidate
                                         foundPrint = print
-                                    } else {
+                                        break
+                                    }
+                                    // A thin window is a fact about the path, not the host: a path-routing host
+                                    // serves a quiet path beside a busy one. The first is kept for the twin exit.
+                                    thinAnswers++
+                                    if (thin == null) {
                                         thin = candidate
                                         thinPrint = print
                                     }
-                                    break
                                 }
                             }
                             var members = wanted
@@ -687,8 +694,11 @@ class AliasFolding(
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"
 
-        /** How far down a group's preference order the sequential search for a yardstick goes. */
+        /** How many urls of a group the sequential search for a yardstick may find silent or declined. */
         const val YARDSTICK_ATTEMPTS = 3
+
+        /** How many thin answers it may walk past; each costs one short page, not a deadline. */
+        const val THIN_ATTEMPTS = 12
 
         private const val NAMED_PER_REASON = 3
 

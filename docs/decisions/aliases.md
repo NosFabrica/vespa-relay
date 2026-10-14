@@ -273,18 +273,39 @@ not inconsistent, standing ungraded or `prime`. A stand-in graded as refusing
 next sweep, or one refusing root would keep a path-routing server off the
 roster for good. A url measured `distinct` is never a stand-in: it is proven
 its own relay, not proven to be the undecided path beside it, and holding the
-outbox behind the inbox would send the outbox's authors to the wrong relay. A
+outbox behind the inbox would send the outbox's authors to the wrong relay.
+That holds for a canonical the fold also cleared: on lang.relays.land `/es`
+is its own relay that `/es/` folds onto, and electing it held the quiet `/ar`
+behind a different language. A
 stand-in that itself waits on a twin hands its server straight to the twin, so
 no map has a chain for a one-hop re-key to stop halfway along. And where the
 monitor knows a canonical the stream does not name, the roster folds onto it
 rather than electing an alias in its place, which put one relay on the roster
 twice.
 
-**Why so many hosts stayed undecided is still open.** A fresh pass over
-`relay.nostr.net` (31 urls) and `staging.yabu.me` (35) from a sandbox folded
-29 and 34 urls in under fifteen seconds (`AliasFoldLiveProbe`), so the
-measurement holds for them. What the corpus shows is folds stamped across
-many sweeps per host and newer urls left behind, which fits a pass cut short
-(widest groups first, the undecidable cooldown in memory and lost on every
-restart) better than a measurement that fails. The hold above makes it cost
-one roster entry per server rather than one per path.
+**The yardstick search walks past a thin window.** It stopped at the first
+url that answered at all, on the reading that a thin window is a fact about
+the host. On a path-routing host it is a fact about the path:
+`lang.relays.land/ar` served 7 events and `/zh` and `/es` 500 each, disjoint,
+so the whole group was "no yardstick" for good and waited behind a root that
+serves a web page. The search now goes on with two budgets, because the
+cap existed for silence: `YARDSTICK_ATTEMPTS` (3) urls silent or declined,
+each costing a deadline, and `THIN_ATTEMPTS` (12) thin answers, each one
+short page. Three was not enough on its own: `/ar`, `/ca` and `/cs` sort first
+on that host and are all quiet. The first thin window is kept for the
+scheme-twin exit. A host thin everywhere costs twelve small probes a pass
+instead of one. No epoch bump: a
+yardstick found this way is held to the same bars, so nothing an earlier
+verdict concluded changes.
+
+**Why some hosts stay undecided, as far as a full local run showed.** A sweep
+over 196 production relay lists (1,997 urls, 292 on the hosts #258 names)
+left 155 hosts undecided: 121 with no yardstick (mostly a single url that
+cannot answer, now also the thin-first case above), 21 our own transport, 12
+nothing to compare, and `relay.nostr.net`, whose leader shared 237 of 500 ids
+with its own second walk under the pass's load. Alone, the same walk repeats
+at 0.98 over 45 seconds at a 60-second anchor and at 1.00 at deeper ones, so
+the anchor is not the cause; `relay.damus.io` in the same pass answered
+`read bandwidth budget exhausted (1048570 bytes/min per IP)` once 15 of its
+paths had been fingerprinted, which is the likelier shape. Undecided costs one
+roster entry per server, not one per path, because of the waiting rule above.

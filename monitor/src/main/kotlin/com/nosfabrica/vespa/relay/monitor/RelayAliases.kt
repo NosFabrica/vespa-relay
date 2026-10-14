@@ -376,9 +376,9 @@ class RelayAliases(
     /**
      * Of [candidates], each url nothing is decided about that another url of [world] stands in
      * for, onto that url: a decided twin naming the same endpoint, else the server's preferred
-     * canonical, else its preferred undecided url. A url measured `distinct` never stands in for
-     * another: it is proven its own relay, not proven to be anyone else's. Until the fold decides,
-     * a server is graded once.
+     * canonical, else its preferred undecided url. A url measured `distinct`, canonical or not, never
+     * stands in for another path: it is proven its own relay, not anyone else's. Until the fold
+     * decides, a server is graded once.
      */
     fun heldForFold(
         candidates: Collection<NormalizedRelayUrl>,
@@ -418,7 +418,8 @@ class RelayAliases(
         val here = all.filter(eligible).ifEmpty { all }.sortedWith(PREFERENCE)
         val twins = HashMap<String, NormalizedRelayUrl>()
         for (u in here) if (measured(u)) endpointKey(u.url)?.let { twins.putIfAbsent(it, u) }
-        val standIn = here.firstOrNull { it in canonicals } ?: here.firstOrNull { !measured(it) }
+        // A canonical the fold also cleared is a relay of its own that a twin folds onto, not the server's face.
+        val standIn = here.firstOrNull { it in canonicals && it !in distinct } ?: here.firstOrNull { !measured(it) }
         return StandIns(twins, standIn)
     }
 
