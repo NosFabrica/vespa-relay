@@ -138,7 +138,7 @@ class RelaySelfConsistencyProbe {
         /** The first is the fold's own anchor; the rest are windows nothing is still being written into. */
         private val ANCHOR_AGES =
             listOf(
-                "1min" to AliasProbe.ANCHOR_LAG_SECONDS,
+                "fold (${AliasProbe.ANCHOR_LAG_SECONDS / 60}min)" to AliasProbe.ANCHOR_LAG_SECONDS,
                 "1hour" to 60L * 60,
                 "1day" to 24L * 60 * 60,
                 "7days" to 7L * 24 * 60 * 60,

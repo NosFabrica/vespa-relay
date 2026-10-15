@@ -262,7 +262,7 @@ class AliasProbeTest {
         }
 
     @Test
-    fun `an anchor a minute back settles a relay still taking writes`() =
+    fun `an anchor half an hour back settles a relay still taking writes`() =
         runBlocking {
             // The second dial holds events the first had not indexed yet.
             val now = BASE
@@ -274,7 +274,7 @@ class AliasProbeTest {
             val b = probe(settled, target = 1_000).fingerprint(url, anchor) {}!!
 
             assertEquals(a, b)
-            assertEquals(60L, now - anchor, "the anchor is a minute behind the clock")
+            assertEquals(30L * 60, now - anchor, "the anchor is half an hour behind the clock")
         }
 
     @Test

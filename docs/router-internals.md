@@ -1416,8 +1416,9 @@ sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
 `target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
 fingerprint than everyone else — the exact thing paging is for.
 
-**And the walk is ANCHORED a minute back, because "the newest N" is a moving
-window.** Every url in a group starts from one shared `until`, taken before any
+**And the walk is ANCHORED half an hour back, because "the newest N" is a moving
+window.** (A minute back until the fold's guard was measured failing under a
+full sweep's load; `docs/decisions/aliases.md` has the measurement.) Every url in a group starts from one shared `until`, taken before any
 of them is dialled and held `ANCHOR_LAG_SECONDS` behind the clock. Two separate
 failures, both real:
 
@@ -2369,6 +2370,7 @@ of them, in two families:
 |---|---|
 | declined by our own transport | never answered a REQ |
 | the probe failed mid-walk | answered one of the two asks, not both |
+| waits on the fold behind another url of its server | |
 | | refused our auth |
 | | answered, but served no filter we know |
 | | too few events to judge on |
