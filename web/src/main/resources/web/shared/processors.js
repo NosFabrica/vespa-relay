@@ -274,6 +274,8 @@ function processorFact(p) {
     if (alive) add(`${fmt(alive)} refused while alive`, "silent");
     if (p.dead) add(`${fmt(p.dead)} dead`, "dead");
     if (p.waitingOnFold) add(`${fmt(p.waitingOnFold)} waiting on the fold`, "waitingOnFold");
+    // Loud: earned verdicts the store would not take, so the signed records lag the roster.
+    if (p.pendingWrites) add(`${fmt(p.pendingWrites)} WRITE(S) THE STORE HAS NOT TAKEN`, "pendingWrites", true);
     // Loud only when the fold has not proven the paths apart: a path-routing relay is several relays.
     const shared = p.sharedHosts;
     if (shared && shared.hosts) {

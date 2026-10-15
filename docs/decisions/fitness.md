@@ -449,3 +449,21 @@ whole graded corpus plus a write per stale grade, and every pass waits on it;
 after the `FITNESS_EPOCH` bump on staging it ran for over forty minutes with
 every monitor row at `starting`, which reads as the six-hour clock. The row
 now says `retiring` with a `verdict` position.
+
+**Writes the store did not take are replayed, not dropped until the next
+sweep.** The first sweep after a staging restart measured 36,889 urls in 75
+minutes and then wrote almost none of it: 13,116 verdicts unwritten, and the
+withdrawals skipped because the batch had stopped, so #259 took back no
+`prime` for six hours. The cause is in the store, not the relays: every write
+in this process, the mirror's 1,000-event ingest commits and the monitor's
+one-record edits alike, takes the store's single `writes` mutex
+(`WriteLocks.writes` in vespa-eventstore), and a single insert holds it across
+its whole admission, three to five Vespa round trips. With ingest at 16,483 of
+16,384 queued and negentropy id snapshots averaging a second a page, a verdict
+edit waited behind every queued commit past its 60-second deadline; since boot
+that process had spent 81 hours of cumulative lock wait against 14 of hold.
+Each grade and withdrawal the store refuses now stays in memory with the time
+it was measured, and the monitor replays them every five minutes without
+dialling; a later measurement of the url replaces one. `pendingWrites` on the
+fitness row says how many wait. The queueing itself is the store's to fix.
+

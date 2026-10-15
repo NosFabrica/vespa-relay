@@ -180,9 +180,12 @@ class MonitorEngine(
     /** One pass as [AliasMonitor] sees it: the work, plus the row it reports on. */
     private fun entry(
         handle: Processors.Handle?,
+        flush: suspend () -> Int = { 0 },
         run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int,
     ) = object : AliasMonitor.Pass {
         override val progress = handle
+
+        override suspend fun flushPending(): Int = flush()
 
         override suspend fun measure(
             label: String,
@@ -198,7 +201,7 @@ class MonitorEngine(
 
     private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
 
-    private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::measure) }
+    private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::flushPending, f::measure) }
 
     private val aliasMonitor: AliasMonitor? =
         listOfNotNull(foldEntry, stabilityEntry, fitnessEntry)

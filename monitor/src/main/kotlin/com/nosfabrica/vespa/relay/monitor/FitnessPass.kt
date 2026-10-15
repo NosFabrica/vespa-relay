@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
@@ -97,6 +98,41 @@ class FitnessPass(
      * label because the sweep and the fast lane share this object.
      */
     private val writeCursors = ConcurrentHashMap<String, String>()
+
+    /**
+     * Writes a batch earned and the store did not take, per url: a grade or a withdrawal, replayed by
+     * [flushPending] rather than dropped until the next sweep. A later measurement of the url replaces it.
+     */
+    private val pending = ConcurrentHashMap<NormalizedRelayUrl, suspend () -> Boolean>()
+
+    /** How many earned writes are waiting for the store. */
+    fun pendingWrites(): Int = pending.size
+
+    /**
+     * Replay the writes the store did not take, under the same limits as a batch's own. Returns how
+     * many landed; what still does not stays pending. The caller serialises this with [measure].
+     */
+    suspend fun flushPending(): Int {
+        if (pending.isEmpty()) return 0
+        val urls = pending.keys.sortedBy { it.url }
+        progress.phase(RETRYING_WRITES)
+        progress.measuring(urls.size, Processors.UNIT_VERDICT)
+        try {
+            val tally =
+                writeEach(urls, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
+                    pending[url]?.invoke() ?: true
+                }
+            pending.keys.removeAll(tally.stored)
+            System.err.println(
+                "router: fitness — ${tally.stored.size} of ${urls.size} pending write(s) landed" +
+                    (tally.stoppedBy?.let { "; the rest wait again because $it" }.orEmpty()),
+            )
+            return tally.stored.size
+        } finally {
+            progress.clearMeasuring()
+            progress.phase(Processors.IDLE)
+        }
+    }
 
     /** The NEG-OPEN's answer, boxed so `withTimeoutOrNull` can tell null from the clock firing. */
     private class Reconciled(
@@ -205,6 +241,8 @@ class FitnessPass(
                     )
                     return 0
                 }
+            // This batch measures these again, and its outcome is the one to write.
+            pending.keys.removeAll(candidates.toSet())
             // The free refusals first: standing verdicts other passes paid dials for.
             val folded = foldedAway(held, candidates)
             for ((alias, canonical) in folded) {
@@ -348,31 +386,44 @@ class FitnessPass(
                     }
                     !unchanged
                 }
+            val measuredAt = nowSeconds()
+            val writes =
+                toWrite.associateWith { url ->
+                    val outcome = outcomes.getValue(url)
+                    val facts = factsOf(url, outcome, readings[url])
+                    suspend {
+                        record.publishFitness(
+                            url = url,
+                            status = outcome.verdict.value,
+                            evidence = outcome.evidence,
+                            pageable = outcome.pageable,
+                            nip77 = outcome.nip77,
+                            compliant = outcome.compliant,
+                            facts = facts,
+                            measuredAt = measuredAt,
+                        ) != null
+                    }
+                }
             val tally =
                 writeEach(toWrite, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
-                    val outcome = outcomes.getValue(url)
-                    record.publishFitness(
-                        url = url,
-                        status = outcome.verdict.value,
-                        evidence = outcome.evidence,
-                        pageable = outcome.pageable,
-                        nip77 = outcome.nip77,
-                        compliant = outcome.compliant,
-                        facts = factsOf(url, outcome, readings[url]),
-                    ) != null
+                    writes.getValue(url)()
                 }
             tally.resumeAt?.let { writeCursors[label] = it.url }
+            for ((url, write) in writes) if (url !in tally.stored) pending[url] = write
             // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
             val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
+            val withdrawals = unprimed.associateWith { url -> suspend { record.retireFitness(url) != null } }
+            // A stopped batch means the store is not answering; the withdrawals wait with the unwritten grades.
             val withdrawn =
                 if (unprimed.isEmpty() || tally.stoppedBy != null) {
                     emptySet()
                 } else {
                     progress.measuring(unprimed.size, Processors.UNIT_VERDICT)
                     writeEach(unprimed, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_WITHDRAW) { url ->
-                        record.retireFitness(url) != null
+                        withdrawals.getValue(url)()
                     }.stored
                 }
+            for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = withdraw
             if (label != AliasMonitor.FAST_LANE) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
                 val prime = candidates.filterTo(HashSet()) { url -> outcomes[url]?.let { it.verdict == Verdict.PRIME } ?: (url !in withdrawn && held.fitness[url]?.value == Verdict.PRIME.value) }
@@ -404,6 +455,7 @@ class FitnessPass(
                 waiting = waiting.size,
                 waitingServers = waiting.values.toSet().size,
                 withdrawn = withdrawn.size,
+                withdrawalsPending = unprimed.size - withdrawn.size,
             )
         } finally {
             progress.finish()
@@ -827,8 +879,9 @@ class FitnessPass(
         /** Urls waiting on the fold behind another url of their server, and how many servers that is. */
         waiting: Int = 0,
         waitingServers: Int = 0,
-        /** Of the waiting urls, how many had their standing `prime` taken back. */
+        /** Of the waiting urls, how many had their standing `prime` taken back, and how many still wait for the store. */
         withdrawn: Int = 0,
+        withdrawalsPending: Int = 0,
     ) {
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
@@ -890,6 +943,13 @@ class FitnessPass(
                     "has not said whether those paths are their own relays, so only the server's stand-in is graded",
             )
         }
+        if (withdrawalsPending > 0) {
+            System.err.println(
+                "router: fitness [$label] — $withdrawalsPending standing `prime` grade(s) NOT taken back yet: the store " +
+                    "did not take the batch's writes" + (stoppedBy?.let { " ($it)" }.orEmpty()) +
+                    ". They wait with the unwritten grades and are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)}, not next sweep",
+            )
+        }
         if (cutLate > 0) {
             System.err.println(
                 "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
@@ -916,13 +976,15 @@ class FitnessPass(
                 }
             System.err.println(
                 "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
-                    "every url is measured again next pass" +
+                    "they are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)} until the store takes them" +
                     (resumeAt?.let { ", and the next batch's writes START at $it so the same tail is not dropped twice" }.orEmpty()),
             )
         }
         progress.counts {
             Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } } +
-                Processors.Count(WAITING_ON_FOLD, waiting.toLong())
+                Processors.Count(WAITING_ON_FOLD, waiting.toLong()) +
+                // Live, not the batch's: it falls as the retries land.
+                Processors.Count(PENDING_WRITES, pending.size.toLong())
         }
     }
 
@@ -1085,6 +1147,12 @@ class FitnessPass(
 
         /** The count of urls a batch held back for the fold, on the fitness row. */
         const val WAITING_ON_FOLD = "waitingOnFold"
+
+        /** Earned writes the store has not taken yet, on the fitness row. */
+        const val PENDING_WRITES = "pendingWrites"
+
+        /** The row's phase while it replays them. */
+        const val RETRYING_WRITES = "retrying writes"
 
         /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
         const val PUBLISH_DEADLINE_MS = 60_000L

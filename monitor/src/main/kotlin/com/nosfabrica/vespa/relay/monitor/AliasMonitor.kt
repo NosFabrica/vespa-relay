@@ -50,6 +50,8 @@ class AliasMonitor(
     /** How often the fast lane looks for newly named urls. Null, or an empty [fastLanePasses], turns it off. */
     private val fastLaneEveryMs: Long? = null,
     private val fastLanePasses: List<Pass> = emptyList(),
+    /** How often a pass's writes the store did not take are replayed; null turns it off. */
+    private val retryEveryMs: Long? = DEFAULT_RETRY_MS,
 ) {
     /** One pass over one label's urls, returning how many verdicts it learned. */
     fun interface Pass {
@@ -66,6 +68,9 @@ class AliasMonitor(
          * the work.
          */
         val progress: Processors.Handle? get() = null
+
+        /** Replay the writes the store did not take; returns how many landed. Never dials. */
+        suspend fun flushPending(): Int = 0
     }
 
     /** Where the candidate set comes from. */
@@ -152,7 +157,38 @@ class AliasMonitor(
                 }
             }
         }
+        // Off the sweep's clock: a store that recovers minutes after a batch failed should not wait hours.
+        // A tick that finds a pass running skips rather than queues; that pass will leave its own pending.
+        val retryMs = retryEveryMs
+        if (retryMs != null) {
+            scope.launch {
+                while (scope.isActive) {
+                    delay(retryMs)
+                    if (!passGate.tryLock()) continue
+                    try {
+                        flushPending()
+                    } finally {
+                        passGate.unlock()
+                    }
+                }
+            }
+        }
         return this
+    }
+
+    /** Every pass's pending writes, one pass at a time and each guarded. The caller holds [passGate]. */
+    suspend fun flushPending(): Int {
+        var landed = 0
+        for (pass in (passes + fastLanePasses).distinct()) {
+            try {
+                landed += pass.flushPending()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("router: pending write retry failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            }
+        }
+        return landed
     }
 
     /**
@@ -259,5 +295,8 @@ class AliasMonitor(
 
         /** The retry when a cold store has nothing to derive from yet. */
         const val DEFAULT_EMPTY_RETRY_MS = 60L * 1000
+
+        /** How often unwritten verdicts are replayed: short against a sweep, long against a write's own deadline. */
+        const val DEFAULT_RETRY_MS = 5L * 60 * 1000
     }
 }

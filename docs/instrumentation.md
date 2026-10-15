@@ -173,6 +173,10 @@ Reach for it first.
   records by hand; this is that grouping, published every sweep. During a boot
   that retracts stale grades the same row reads `retiring` with a `verdict`
   position, where it used to sit at `starting` for the whole walk.
+  `pendingWrites` beside them counts earned verdicts and withdrawals the store
+  has not taken; they are replayed every five minutes (`retrying writes` on the
+  row), so a number that stays up means the store is refusing this monitor's
+  writes, and the signed records lag the roster until it drains.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said
