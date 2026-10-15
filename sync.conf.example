@@ -285,7 +285,7 @@ streams {
         # bound author, so each (relay, service) band stays valid forever.
         relaySource = [
             {
-                # The same 38 delegation tags the monitor's 10040 source
+                # The same 41 delegation tags the monitor's 10040 source
                 # names, and named here for a sharper reason: this select
                 # BINDS `authors` off element 1. A tagless version would read
                 # an `["e", <id>, <relay>]` relay hint as a delegation and bind
@@ -312,6 +312,9 @@ streams {
                     { tag = "30382:zap_avg_amt_day_sent", relay = 2, authors = 1 }
                     { tag = "30382:zap_cnt_recd",         relay = 2, authors = 1 }
                     { tag = "30382:zap_cnt_sent",         relay = 2, authors = 1 }
+                    { tag = "30382:hops",                 relay = 2, authors = 1 }
+                    { tag = "30382:reporters",            relay = 2, authors = 1 }
+                    { tag = "30382:muters",               relay = 2, authors = 1 }
                     # kind 30383
                     { tag = "30383:rank",                 relay = 2, authors = 1 }
                     { tag = "30383:comment_cnt",          relay = 2, authors = 1 }

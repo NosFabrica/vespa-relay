@@ -3291,7 +3291,7 @@ that does not arise.
 It also ended a trap nobody could see from the config: a BOUND select could
 never take the projection (it hands back a set of values, and the pairing a
 binding exists to keep is gone by then), so `authors = 1` was quietly the fast
-path. The same 38 delegation tags appear once in `sync.conf.example` and once in
+path. The same 41 delegation tags appear once in `sync.conf.example` and once in
 `monitor.conf.example` — bound
 on the `assertions` stream, unbound under `monitor { sources }` — and only the
 unbound copy was expensive.

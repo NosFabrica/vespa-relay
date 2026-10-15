@@ -419,6 +419,35 @@ writes (client EVENTs, deletes, NIP-86), not the sync process's.
 43006, 45010, 46030, 46031
 ```
 
+## Migration: nine kinds become searchable (quartz `25a3f37c83`)
+
+Quartz `25a3f37c83` adds nine kinds to `SearchableKinds` and gives each a
+`SearchFieldExtractor` branch: **1624** (git cover notes), **5128** (site
+snapshots), **30024** (long-form drafts), **30031** (sticker packs), **30301**
+(Kanban boards and WalletScrutiny build verifications), **30302** (Kanban
+cards), **33402** (workout templates), **36767** (profile themes) and
+**38385** (Mostro instance info). No existing kind extracts differently: the
+diff is additions only, so this is **recall** for these nine and nothing else.
+
+**The schema does not move**: `event.sd` and `services.xml` are untouched, so
+`configChangeActions` should come back empty. Read it anyway, per the top of
+this file.
+
+### The procedure
+
+The same as the entry above, scoped to nine kinds. One boot with
+`REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the list below, then
+turn both off once the log reads `fts: reindex complete`. New writes are
+correct on arrival.
+
+```
+1624, 5128, 30024, 30031, 30301, 30302, 33402, 36767, 38385
+```
+
+Eight of the nine have no card on the search page yet (30024 renders through
+`article.js`); see `docs/decisions/web-cards.md` for the rule that a kind the
+store can find gets one.
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

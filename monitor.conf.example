@@ -84,7 +84,7 @@ sources = [
         # taking a tags projection that is a document-API visit — a walk of
         # the WHOLE corpus per tag, 75s each at 319M events against 0.0058s
         # for the same predicate through the search index (#182). The
-        # router now reads every source off the index, all 38 tags in ONE
+        # router now reads every source off the index, all 41 tags in ONE
         # walk, so name them for the reason above and nothing else.
         select = [
             # kind 30382
@@ -105,6 +105,9 @@ sources = [
             { tag = "30382:zap_avg_amt_day_sent", relay = 2 }
             { tag = "30382:zap_cnt_recd",         relay = 2 }
             { tag = "30382:zap_cnt_sent",         relay = 2 }
+            { tag = "30382:hops",                 relay = 2 }
+            { tag = "30382:reporters",            relay = 2 }
+            { tag = "30382:muters",               relay = 2 }
             # kind 30383
             { tag = "30383:rank",                 relay = 2 }
             { tag = "30383:comment_cnt",          relay = 2 }

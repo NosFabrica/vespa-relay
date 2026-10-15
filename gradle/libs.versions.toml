@@ -31,7 +31,99 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 68268da413 = amethyst main @ 2026-10-06, THE STORE'S OWN PIN: vespa-eventstore 14d8c7eeed (below)
+# 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
+# over 68268da413 (79 of them Crowdin syncs), 149 touching quartz/. Taken for the RATE-LIMIT work
+# on the CLIENT side, which is what the router's fan-out rides (PeerClient is a NostrClient):
+#
+#   A RELAY'S STATED BACK-OFF IS HONOURED, PER RELAY, ON EVERY SEND PATH. NIP-01's `params`
+#     (nostr-protocol/nips#2498): `["OK", id, false, "rate-limited: …", "1500"]` and
+#     `["CLOSED", sub, "rate-limited: …", "1500"]` carry the milliseconds before the relay takes
+#     the next command of that type. OkMessage/ClosedMessage carry `params` and `retryAfterMs`
+#     (RetryAfter parses it). A RateLimitGate per relay sits on BasicRelayClient — every REQ,
+#     EVENT and COUNT passes it, a reconnect's replay and an auth retry included — holds the
+#     refused type until the back-off passes, releases one at a time, the next at once on an
+#     accept (nostream states its whole 60s window; measured 18 refused notes in two windows
+#     instead of eighteen), waits the new back-off on a re-refusal, caps what it honours at ten
+#     minutes, outlives the socket (RelayPool keeps the gate by url and binds it when a socket
+#     OPENS, not in a constructor a losing getOrCreate could bind last), and keeps one REQ per sub
+#     on the wire (a held REQ goes out with the sub's CURRENT filters; a CLOSE drops it; a socket
+#     that dropped under a held command does not get it beside the replay). Monotonic clock.
+#   fetchAllPages PAGES BY WHAT THE RELAY DOES. No fixed page size: each REQ asks for what is
+#     still missing; a `limit too high: N (max M)` / `limitation.max_limit M` / `must not exceed
+#     M` refusal is re-asked at M and the cap kept; a throttled page (`rate-limited:`, rate-limit
+#     wording, `retry in 30ms`, `query cost … exceeds your current budget`) is re-asked after the
+#     stated back-off (PageRetryBackoff.DEFAULT 2s/5s/10s where none is stated, 60s cap); a walk
+#     stays on ONE connection (a fresh subscription per page, opened before the previous closes —
+#     the 300ms pool sample used to drop the relay between pages and pay a new TLS handshake);
+#     boundary-second repeats are dropped; a page cut short INSIDE the boundary second is re-asked
+#     at the same cursor and, if it never gets further, ends with the page's own reading rather
+#     than DRAINED (scores.brainstorm.world lost 457 kind 5s to a strfry drop there); several
+#     filters walk one at a time on their own cursors (the shared cursor lost 4,256 of 5,900 on
+#     nostr.mom), later walks skipping only the ids an earlier one delivered; an empty page at
+#     the `since` floor is the end, not throttle evidence. PagedFetchResult.End is the same seven
+#     values (VisitPool's `when`s are exhaustive and compile unchanged); it gains `message` — the
+#     CLOSED text or connect error for CLOSED / AUTH_REQUIRED / CANNOT_CONNECT — which is the
+#     sentence RelayComplaints listens for on the connection; a later cut can read it off the
+#     result instead.
+#   NEGENTROPY WALKS BACK PAST A RELAY THAT RECONCILES PART OF ITS SET. After a pass one REQ asks
+#     for anything at or below the oldest event the pass delivered (or the oldest local entry the
+#     relay matched); an event there we neither downloaded nor hold means the relay cut its set
+#     (relay.ohstr.com builds its reconcile from its newest 500: 500 -> 25,723 live), and another
+#     pass reconciles below it, passes capped at 200 then NegentropySyncException — which
+#     NegentropyPager already catches as a sweep failure. fetchByIds re-asks what an EOSE left
+#     missing (relay.nostr.net answers a 500-id REQ with 100) and re-asks a dropped connection
+#     three times, batches one at a time from the first drop. negentropySync gains `onHaveIds`
+#     (defaulted; ClientWindowSync compiles unchanged). COST on this router: an audit against a
+#     capped relay now makes more REQs and more passes than before, by design.
+#
+# SCANNED PER PACKAGE THIS RELAY IMPORTS (69 of them, all six modules): NIP-11, NIP-42, NIP-65,
+# NIP-66, NIP-77, NIP-86, NIP-98, the normalizer, filters, store, crypto, signers, the OkHttp
+# sockets and SyncCoverage have NO diff in the range. What does move on the SERVER side, all of
+# it additive with defaults, so NostrRelayServer's five policies compile unchanged:
+#
+#   RelayServerBase.connect/serve and HttpRelayHandler take an optional `clientAddress`, which
+#     RequestContext exposes (default null). PolicyResult.Rejected gains `params` and
+#     `Rejected.rateLimited(message, retryAfterMs)`; RelaySession sends it on the OK/CLOSED.
+#     RateLimitPolicy + RateLimiter are NEW: a token bucket per client (IPv6 by its /64), EVENTs
+#     and REQs/COUNTs/NEG-OPENs refused `rate-limited:` with the exact wait, AUTH and CLOSE never
+#     limited, meant to stack FIRST. Not wired here — this relay runs no rate limit today and
+#     adding one is an operator decision, not a pin's. HttpRelayResponse.single gains a
+#     3-arg overload carrying retryAfterMs (defaults to the 2-arg one, so our NIP-FE response
+#     compiles and simply does not emit a Retry-After yet).
+#   SEARCH DERIVATION: 9 kinds become searchable — 1624, 5128, 30024, 30031, 30301, 30302,
+#     33402, 36767, 38385 — and NO existing kind extracts differently (the SearchFieldExtractor
+#     diff is additions only). A kind-scoped re-feed of those nine is owed: docs/migrations.md
+#     ("nine kinds become searchable"). Eight of them have no card yet (30024 has article.js).
+#   NIP-85 ProviderTypes gains three kind-30382 services — `hops`, `reporters`, `muters`, as
+#     GrapeRank providers name them. RouterConfExamplesTest pins both 10040 scans to quartz's
+#     vocabulary (a metric quartz defines and the scan does not name is a provider this router
+#     never discovers), so sync.conf.example's `assertions` scan and monitor.conf.example's
+#     10040 source name all three now: 41 delegation tags where there were 38.
+#   Additive and unused here: EventFactory types ~15 more kinds (NIP-PNS, Zapstore proofs,
+#     Kanban, Mostro, CI events…), the NIP-85 trust-network index/sync, fetchByIds as public API,
+#     streamAllPagesFromPoolWithHooks, Hex/TimeUtils helpers, ParallelEventVerifier tuning.
+#
+# DIRECTION: 68268da413 is a strict ancestor of this.
+#   git merge-base --is-ancestor 68268da413 25a3f37c83   # verified
+#
+# ONE ARROW, TO THE PIN: the store (94aad0feea7e below) still names 68268da413, so its modules
+# carry `quartz:68268da413 -> 25a3f37c83`; `force(libs.quartz)` settles it. The store calls
+# nothing the range changes in a way that breaks it (every package it shares with us above has
+# no diff, and the search derivation only adds kinds).
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+#
+# LEXICOGRAPHIC: '25a3…' < '6826…' ('2' < '6'): the losing direction, moot under force().
+#
+# JITPACK: the build-status API reported `"status": "none"` for this commit while the artifact
+# was already served — the pom at quartz/25a3f37c83/quartz-25a3f37c83.pom is the proof, per the
+# trap in AGENTS.md.
+#
+# GATED, on this pin with the store at 94aad0feea7e: this relay's full build (1,429 tests, 2 skipped,
+# 0 failures, spotless clean) + archTest, every quartz line 25a3f37c83 in all six modules with the one
+# arrow above and nothing else. The contract IT (RelayContractIT) was NOT run — it needs a disposable
+# relay over a real Vespa, which this session has no Docker for; its ledger is unchanged.
+#
+# Prev 68268da413 = amethyst main @ 2026-10-06, THE STORE'S OWN PIN: vespa-eventstore 14d8c7eeed (below)
 # names it, and this line follows it so the graph carries one quartz. It is the hint-provider /
 # NIP-50 / tag-relationship series (amethyst 9c34a3bc..d0cbdaf0) plus its review follow-ups; not
 # amethyst's tip 3e8137ab4e, whose Crowdin-sync commits fail on JitPack (the store's note has the
@@ -138,7 +230,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "68268da413"
+quartz = "25a3f37c83"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
