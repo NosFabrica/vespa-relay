@@ -349,10 +349,11 @@ class AliasProbeTest {
             assertEquals(55, lead?.ids?.size)
             assertEquals(RelayAliases.GROUP_METADATA_KINDS, lead?.kinds, "the group must be told which filter worked")
             assertEquals(
-                listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS),
+                AliasProbe.SHAPES,
                 fake.kindsAsked.distinct(),
-                "the general filters must be tried first, and group metadata only after both are refused",
+                "the general filters must be tried first, and group metadata only after every other shape is refused",
             )
+            assertEquals(RelayAliases.GROUP_METADATA_KINDS, AliasProbe.SHAPES.last())
         }
 
     @Test

@@ -49,6 +49,8 @@ tasks.test {
     System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
     System.getProperty("liveFoldGroups")?.let { systemProperty("liveFoldGroups", it) }
     System.getProperty("liveFoldProbe")?.let { systemProperty("liveFoldProbe", it) }
+    System.getProperty("shapesProbe")?.let { systemProperty("shapesProbe", it) }
+    System.getProperty("shapesUrls")?.let { systemProperty("shapesUrls", it) }
     System.getProperty("onionFoldProbe")?.let { systemProperty("onionFoldProbe", it) }
     System.getProperty("onionFoldSocks")?.let { systemProperty("onionFoldSocks", it) }
     System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }

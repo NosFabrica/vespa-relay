@@ -62,6 +62,8 @@ class AliasProbe(
         val authRefused: Boolean = false,
         /** Quartz's terminal reason for this url when [events] is null, raw; [Silence] classifies it. */
         val reason: String? = null,
+        /** The relay's CLOSED message: it heard this shape of ask and turned it down. Null for an EOSE. */
+        val refusal: String? = null,
     )
 
     /**
@@ -74,18 +76,17 @@ class AliasProbe(
         anchor: Long,
         onEvent: suspend (Event) -> Unit,
     ): Attempt {
-        val bare = walk(url, anchor, null, onEvent)
-        if (!bare.ids.isNullOrEmpty()) return Attempt(Leader(bare.ids, null), spoke = true)
-        // A refused credential is not a refused filter.
-        if (bare.authRefused) return Attempt(null, spoke = true, authRefused = true)
-        val general = walk(url, anchor, FALLBACK_KINDS, onEvent)
-        if (!general.ids.isNullOrEmpty()) return Attempt(Leader(general.ids, FALLBACK_KINDS), spoke = true)
-        if (general.authRefused) return Attempt(null, spoke = true, authRefused = true)
-        // `&&`, not `||`: one answer is enough to earn the third rung, since a kinds walk refused
-        // beside a bare walk our transport cut is a live server declining the shape of the question.
-        if (bare.ids == null && general.ids == null) return Attempt(null, spoke = false)
-        val groups = walk(url, anchor, RelayAliases.GROUP_METADATA_KINDS, onEvent)
-        if (!groups.ids.isNullOrEmpty()) return Attempt(Leader(groups.ids, RelayAliases.GROUP_METADATA_KINDS), spoke = true)
+        var silent = 0
+        for (shape in SHAPES) {
+            val window = walk(url, anchor, shape, onEvent)
+            if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape), spoke = true)
+            // A refused credential is not a refused filter.
+            if (window.authRefused) return Attempt(null, spoke = true, authRefused = true)
+            // Silent on both general shapes is a url that is not there; one answer earns the rest,
+            // since a kinds walk refused beside a bare walk our transport cut is a live server.
+            if (window.ids == null) silent++
+            if (shape == FALLBACK_KINDS && silent == 2) return Attempt(null, spoke = false)
+        }
         return Attempt(null, spoke = true)
     }
 
@@ -136,6 +137,8 @@ class AliasProbe(
         val authRefused: Boolean = false,
         /** Why [ids] is null, raw. */
         val reason: String? = null,
+        /** The relay CLOSED this shape without serving anything: a refusal, not an empty answer. */
+        val refusal: String? = null,
         /** How long the first page took, ask to answer: NIP-66's `rtt-read`. Null when no page came back. */
         val firstPageMs: Long? = null,
         /** What the relay did with the filter. Read [Compliance.seen] before believing a zero. */
@@ -251,10 +254,12 @@ class AliasProbe(
             found: Set<String>?,
             authRefused: Boolean = false,
             reason: String? = null,
+            refusal: String? = null,
         ) = Window(
             found,
             authRefused,
             reason,
+            refusal,
             firstPageMs,
             compliance,
             found?.let { kept -> ids.entries.filter { it.key in kept }.minOfOrNull { it.value } },
@@ -285,7 +290,8 @@ class AliasProbe(
                     size = fallbackPage
                     return@repeat
                 }
-                return done(newest(ids))
+                // Refused at the humbler size too: the shape, not the size, is what it declines.
+                return done(newest(ids), refusal = page.refusal?.takeIf { ids.isEmpty() })
             }
             // Tallied before the events are folded into `ids`, so a duplicate counts twice. Only page
             // one's `until` is our clock; every later page is asked below a stamp the relay served.
@@ -371,10 +377,12 @@ class AliasProbe(
                     // Any terminal state is "spoke", a CLOSED included: `blocked: limit too high` is what
                     // the fallback-page retry exists for. Not `anyRelayServed`, which is EOSE alone.
                     val spoke = result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }
+                    val done = result.doneReasons[url]
                     Page(
                         events = if (spoke) result.events.map { it.second } else null,
-                        reason = result.doneReasons[url],
+                        reason = done,
                         authRefused = url in result.authRefused,
+                        refusal = done?.takeIf { it.startsWith(CLOSED) }?.removePrefix(CLOSED)?.trim(),
                     )
                 },
                 target = target,
@@ -393,7 +401,25 @@ class AliasProbe(
         /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
         private const val CANNOT_CONNECT = "cannot:"
 
+        /** Quartz's prefix for a terminal reason that is the relay's own CLOSED. */
+        private const val CLOSED = "closed:"
+
         /** What to ask a relay that will not take a bare filter. */
         val FALLBACK_KINDS = listOf(1)
+
+        /** Profiles: what an indexer serves when it refuses everything else. */
+        val PROFILE_KINDS = listOf(0)
+
+        /** Relay lists: the other half of an indexer, and all some of them serve. */
+        val RELAY_LIST_KINDS = listOf(10002)
+
+        /**
+         * The shapes a relay is asked in, in order, until one serves events: a bare filter, notes,
+         * the two kinds an indexer serves, then NIP-29 group metadata. Null is the bare filter.
+         */
+        val SHAPES: List<List<Int>?> = listOf(null, FALLBACK_KINDS, PROFILE_KINDS, RELAY_LIST_KINDS, RelayAliases.GROUP_METADATA_KINDS)
+
+        /** How [kinds] reads in a verdict's evidence. */
+        fun shapeOf(kinds: List<Int>?): String = kinds?.let { "kinds ${it.joinToString(",")}" } ?: "a bare filter"
     }
 }

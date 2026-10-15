@@ -637,10 +637,13 @@ class FitnessPass(
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         var lastReason: String? = null
-        var answered: AliasProbe.Window? = null
-        var shape: List<Int>? = null
-        var readMs: Long? = null
-        for (rung in listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS)) {
+        // The first shape that served events, else the first answered with an empty EOSE.
+        var served: Pair<AliasProbe.Window, List<Int>?>? = null
+        var empty: Pair<AliasProbe.Window, List<Int>?>? = null
+        // Every shape the relay heard and CLOSED, with its words: a refusal is not an empty answer.
+        val refusals = ArrayList<String>()
+        var silent = 0
+        for (rung in AliasProbe.SHAPES) {
             val window = probe.window(url, anchor, rung, onEvent)
             if (window.authRefused) {
                 return Outcome(
@@ -649,17 +652,42 @@ class FitnessPass(
                     authRequired = true,
                 )
             }
-            if (window.ids != null) {
-                answered = window
-                shape = rung
-                readMs = window.firstPageMs
+            val ids = window.ids
+            if (ids == null) {
+                lastReason = window.reason ?: lastReason
+                silent++
+                // Two silent rungs in a row is a url that is not there.
+                if (rung == AliasProbe.FALLBACK_KINDS && silent == 2) break
+                continue
+            }
+            if (ids.isNotEmpty()) {
+                served = window to rung
                 break
             }
-            lastReason = window.reason ?: lastReason
-            // Two silent rungs in a row is a url that is not there.
-            if (rung == AliasProbe.FALLBACK_KINDS && lastReason != null) break
+            // An indexer refuses a bare filter and serves kind 0; a group host serves 39000 alone.
+            val refusal = window.refusal
+            if (refusal != null) {
+                refusals += refusal
+            } else if (empty == null) {
+                empty = window to rung
+            }
         }
+        val chosen = served ?: empty
 
+        // It heard every shape and turned each down: nothing we can generally send gets an answer. A
+        // shape that went silent instead leaves it unproven, and the silence path below decides.
+        if (chosen == null && refusals.size == AliasProbe.SHAPES.size) {
+            val words = refusals.first().take(REFUSAL_QUOTE)
+            return if (refusals.all { it.startsWith(AUTH_REQUIRED, ignoreCase = true) }) {
+                // After our AUTH: a members-only relay that does not count us as one.
+                Outcome(Verdict.AUTH_REFUSED, "refused every shape it was asked as auth-required: $words", authRequired = true)
+            } else {
+                Outcome(Verdict.RESTRICTED, "refused every shape it was asked (${AliasProbe.SHAPES.joinToString { AliasProbe.shapeOf(it) }}): $words")
+            }
+        }
+        val answered = chosen?.first
+        val shape = chosen?.second
+        val readMs = answered?.firstPageMs
         if (answered == null) {
             // Never spoke, or refused every shape. [Silence] tells the two apart.
             return when (val cause = Silence.of(lastReason)) {
@@ -705,7 +733,12 @@ class FitnessPass(
                 compliant = factOf(walked),
             )
         }
-        val evidence = "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor"
+        val evidence =
+            if (seen == 0) {
+                "answered every shape it was asked empty, or refused it, at a settled anchor"
+            } else {
+                "answered $seen events at a settled anchor" + (shape?.let { ", through ${AliasProbe.shapeOf(it)}" }.orEmpty())
+            }
 
         // Handed over before any further dial, so the per-url deadline cannot leave the url with no
         // verdict, and already graded on page one so a cut cannot publish a grade page one refutes.
@@ -719,7 +752,9 @@ class FitnessPass(
 
         // The second page, through the rung that answered, under its own clock: a cut publishes
         // no `pageable` claim and no refusal.
-        val floor = answered.oldestAt
+        // A group host's metadata is its whole current list of groups, served whatever the cursor:
+        // there is no second page of it to prove, so no `pageable` claim is made from it.
+        val floor = answered.oldestAt.takeIf { shape != RelayAliases.GROUP_METADATA_KINDS }
         val asked =
             if (floor == null) {
                 null
@@ -1099,6 +1134,12 @@ class FitnessPass(
         const val NETWORK_CLEARNET = "clearnet"
 
         const val NETWORK_TOR = "tor"
+
+        /** NIP-42's machine-readable prefix on a CLOSED. */
+        private const val AUTH_REQUIRED = "auth-required:"
+
+        /** How much of a relay's own refusal a verdict quotes. */
+        private const val REFUSAL_QUOTE = 120
 
         /** The `noncompliant` grade's evidence, one sentence whichever page decided it. */
         const val NONCOMPLIANT_EVIDENCE = "answered with events the filter did not ask for"

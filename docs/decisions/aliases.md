@@ -309,3 +309,10 @@ the anchor is not the cause; `relay.damus.io` in the same pass answered
 `read bandwidth budget exhausted (1048570 bytes/min per IP)` once 15 of its
 paths had been fingerprinted, which is the likelier shape. Undecided costs one
 roster entry per server, not one per path, because of the waiting rule above.
+
+**The yardstick ladder is the fitness pass's shapes.** `leaderPrint` asked a
+bare filter, kinds 1, then group metadata, so an indexer refusing the first
+and empty on the second never gave a window and its paths could not fold.
+It walks `AliasProbe.SHAPES` now, and the group fingerprints through whichever
+shape answered.
+

@@ -76,6 +76,7 @@ node web/src/test/browser/pager.probe.mjs        # the pager against a fake WebS
 ./gradlew :monitor:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i              # a whole stability pass; -DliveConsistencyUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i             # each url walked twice at four anchors; -DselfConsistencyUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i                  # does a relay serve what it was asked; -DcomplianceUrls='wss://a,wss://b'
+./gradlew :monitor:test --tests '*RelayShapesProbe*' -DshapesProbe=true --rerun -i                          # which ask shapes a relay serves, refuses or ignores, and the grade; -DshapesUrls='wss://a,wss://b'
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i  # does the abort sampler fire; wants a busy relay
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
 ./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)

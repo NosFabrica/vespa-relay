@@ -467,3 +467,24 @@ it was measured, and the monitor replays them every five minutes without
 dialling; a later measurement of the url replaces one. `pendingWrites` on the
 fitness row says how many wait. The queueing itself is the store's to fix.
 
+**The ladder asks five shapes and steps past a refusal.** It asked a bare
+filter, then kinds 1, then kinds 39000, and moved on only from silence: a
+CLOSED reached the probe as an empty page, so a relay refusing the bare filter
+was graded `prime` on "an empty anchored page" without ever being asked
+anything it serves. On staging that grade was 437 of 1,555 `prime`s. A battery
+over 76 of them sorted them: haven-style relays that close a bare filter
+("can't handle empty filters") and serve every kinds filter; indexers that
+serve only kinds 0 and 10002 (purplepag.es: "filters must specify at least one
+kind"); NIP-29 hosts that answer only kinds 39000 without an `h` tag; spaces
+that close everything to a non-member even after our AUTH; and relays that
+answer every shape with an empty EOSE. `AliasProbe.SHAPES` is now bare, kinds
+1, 0, 10002, 39000, shared with the fold's yardstick search; `AliasProbe.Page`
+and `Window` carry the CLOSED words apart from an EOSE. The first shape that
+serves events is graded and named in the evidence; a relay that heard every
+shape and closed each is `restricted`, or `auth-refused` when every refusal is
+NIP-42's `auth-required:`; one that answered every shape empty stays `prime`
+and its evidence says so. Group metadata is a complete list served whatever
+the cursor, so a relay graded through kinds 39000 carries no `pageable` claim.
+No epoch bump: each grade is re-taken on the next sweep. `RelayShapesProbe`
+prints the per-shape answers and the grade for any list of urls.
+
