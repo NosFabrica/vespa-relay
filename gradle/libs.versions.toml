@@ -42,6 +42,10 @@ app = "0.1.0"
 #   PAGED WALKS. fetchAllPages pages by page size, re-asks a throttled or suspiciously short page
 #     after a back-off (PageRetryBackoff), keeps a walk on one connection, and reads limit,
 #     throttle and concurrency notices apart. RelayReads is its one caller here.
+#   ONE-SHOT FETCHES. fetchAllWithHooks, the call under every AliasProbe page, re-asks a relay that
+#     refuses a filter's `limit` at the limit it states (up to 6 times) before ending it `closed:`.
+#     The probe's own FALLBACK_PROBE_PAGE retry now meets that refusal only once quartz gives up,
+#     and a limit refusal no longer reaches the shape ladder as a refused shape.
 #
 # SCANNED PER PACKAGE THIS RELAY IMPORTS (42): what moves besides the client:
 #

@@ -338,7 +338,9 @@ class AliasFolding(
                                     undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
                                     System.err.println(
                                         "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
-                                            "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
+                                            "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor, " +
+                                            // A short second walk is a relay or our transport cutting it; a full one, a window that moved.
+                                            "${again?.let { "which returned ${it.size}" } ?: "which never answered"}) — " +
                                             "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
                                             "separate relay(s)",
                                     )
