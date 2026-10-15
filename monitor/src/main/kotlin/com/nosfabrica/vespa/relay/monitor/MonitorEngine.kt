@@ -123,6 +123,7 @@ class MonitorEngine(
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
                 tor = tor,
+                world = { world.known },
             )
         }
 
