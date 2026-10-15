@@ -31,7 +31,42 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 68268da413 = amethyst main @ 2026-10-06, THE STORE'S OWN PIN: vespa-eventstore 14d8c7eeed (below)
+# 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
+# over 68268da413, 149 of them touching quartz/. Taken for the client's rate-limit work, which
+# the monitor's fold walks run through (see docs/decisions/aliases.md):
+#
+#   NIP-01 BACK-OFFS (nostr-protocol/nips#2498). OK and CLOSED carry an optional params element;
+#     for `rate-limited:` it is the back-off in ms. Each BasicRelayClient owns a RateLimitGate fed
+#     every message before its listener and asked before every write, so a refused REQ, EVENT or
+#     COUNT is held and re-sent once the back-off passes, however it was sent, reconnects included.
+#   PAGED WALKS. fetchAllPages pages by page size, re-asks a throttled or suspiciously short page
+#     after a back-off (PageRetryBackoff), keeps a walk on one connection, and reads limit,
+#     throttle and concurrency notices apart. RelayReads is its one caller here.
+#
+# SCANNED PER PACKAGE THIS RELAY IMPORTS (42): what moves besides the client:
+#
+#   SEARCH DERIVATION. Purely additive: 9 kinds become searchable (1624, 5128, 30024, 30031,
+#     30301, 30302, 33402, 36767, 38385) and no searchable kind extracts differently. The store
+#     calls SearchFieldExtractor at runtime, so new writes derive on arrival; a kind-scoped
+#     reindex is owed for what is stored, docs/migrations.md ("nine kinds become searchable").
+#   NIP-85. ServiceType gains GrapeRank's 30382:hops, :reporters and :muters; both example
+#     configs' 10040 scans name them (RouterConfExamplesTest pins the vocabulary).
+#   Relay side, additive: RelayServerBase.connect / RelaySession take a clientAddress,
+#     PolicyResult.Rejected and OK/CLOSED a params, and RateLimitPolicy / RateLimiter are new and
+#     unused here. Each signature gained a DEFAULTED parameter, which removes the old JVM
+#     overload; this relay is recompiled, and the store's two jars reference none of them (all
+#     107 quartz methods they call resolve against quartz-jvm-25a3f37c83, checked with javap).
+#
+# DIRECTION: 68268da413 is a strict ancestor of this.
+#   git merge-base --is-ancestor 68268da413 25a3f37c83   # verified
+#
+# ONE ARROW, TO THE PIN: the store (94aad0feea7e, its main) still names 68268da413, so its
+# modules carry `quartz:68268da413 -> 25a3f37c83`; `force(libs.quartz)` settles it, and the
+# binary scan above is why that is safe.
+#
+# LEXICOGRAPHIC: '25a3…' < '6826…' ('2' < '6'): the losing direction, moot under force().
+#
+# Prev 68268da413 = amethyst main @ 2026-10-06, THE STORE'S OWN PIN: vespa-eventstore 14d8c7eeed (below)
 # names it, and this line follows it so the graph carries one quartz. It is the hint-provider /
 # NIP-50 / tag-relationship series (amethyst 9c34a3bc..d0cbdaf0) plus its review follow-ups; not
 # amethyst's tip 3e8137ab4e, whose Crowdin-sync commits fail on JitPack (the store's note has the
@@ -138,7 +173,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "68268da413"
+quartz = "25a3f37c83"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
