@@ -49,6 +49,13 @@ tasks.test {
     System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
     System.getProperty("liveFoldGroups")?.let { systemProperty("liveFoldGroups", it) }
     System.getProperty("liveFoldProbe")?.let { systemProperty("liveFoldProbe", it) }
+    System.getProperty("shapesProbe")?.let { systemProperty("shapesProbe", it) }
+    System.getProperty("shapesUrls")?.let { systemProperty("shapesUrls", it) }
+    // A replay of a whole sweep holds tens of thousands of verdicts; unit tests must not need it.
+    providers.gradleProperty("testHeap").orNull?.let { maxHeapSize = it }
+    System.getProperty("replayProbe")?.let { systemProperty("replayProbe", it) }
+    System.getProperty("replayUrls")?.let { systemProperty("replayUrls", it) }
+    System.getProperty("replayOut")?.let { systemProperty("replayOut", it) }
     System.getProperty("onionFoldProbe")?.let { systemProperty("onionFoldProbe", it) }
     System.getProperty("onionFoldSocks")?.let { systemProperty("onionFoldSocks", it) }
     System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }

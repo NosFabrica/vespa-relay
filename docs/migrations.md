@@ -419,6 +419,32 @@ writes (client EVENTs, deletes, NIP-86), not the sync process's.
 43006, 45010, 46030, 46031
 ```
 
+## Migration: nine kinds become searchable (quartz `25a3f37c83`)
+
+No store bump: the store calls quartz's `SearchFieldExtractor` at runtime, so
+moving the relay's quartz pin moves the derivation. The change is purely
+additive — kinds **1624** (NIP-34 cover notes), **5128** (site snapshots),
+**30024** (long-form drafts), **30031** (sticker packs), **30301 / 30302**
+(Kanban boards and cards; 30301 is also WalletScrutiny's build verification),
+**33402** (workout templates), **36767** (profile themes) and **38385** (Mostro
+info) gain search fields, and no kind that was already searchable extracts
+differently. Pure **recall**: until the reindex these kinds are simply not found
+by a NIP-50 search.
+
+**The schema does not move.** Read `configChangeActions` anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below, the kind-scoped walk of the entry above; remove both settings once
+the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+1624, 5128, 30024, 30031, 30301, 30302, 33402, 36767, 38385
+```
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

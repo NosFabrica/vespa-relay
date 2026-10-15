@@ -1416,8 +1416,9 @@ sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
 `target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
 fingerprint than everyone else — the exact thing paging is for.
 
-**And the walk is ANCHORED a minute back, because "the newest N" is a moving
-window.** Every url in a group starts from one shared `until`, taken before any
+**And the walk is ANCHORED half an hour back, because "the newest N" is a moving
+window.** (A minute back until the fold's guard was measured failing under a
+full sweep's load; `docs/decisions/aliases.md` has the measurement.) Every url in a group starts from one shared `until`, taken before any
 of them is dialled and held `ANCHOR_LAG_SECONDS` behind the clock. Two separate
 failures, both real:
 
@@ -1643,8 +1644,10 @@ Waiting out the window on the later asks is the only thing quartz COULD do; the
 relay sends nothing. The waste was ours, and the rule that fixes it is the
 ladder's own charter: **it exists to find a filter the relay will accept, and a
 credential refusal is not a complaint about the filter.** So `AliasProbe.Page`
-carries `authRefused`, the walk stops on it, and `leaderPrint` does not try the
-next rung. Measured end to end on the same three urls: **184s → 2-3s**, with
+carries `authRefused`, the walk stops on it, and `leaderPrint` tries the next
+rung only to stop at the first that goes silent: `chorus.bonsai.com` refuses one
+shape for our key and serves the others openly, so a refusal alone is not the
+end of the ladder. Measured end to end on the same three urls: **184s → 2-3s**, with
 `nos.lol` unchanged at 2s.
 
 **The stop lives in the WALK, not only in the ladder**, because the ladder is not
@@ -1652,9 +1655,9 @@ the only caller: `AliasFolding` dials every member of a group through
 `fingerprint` with the leader's filter, and walks the leader a second time for the
 reproducibility guard. Neither goes near `leaderPrint`, and without the
 walk-level stop a refused member still pays the empty-page retry at
-`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a refused credential stops
-the ladder at the first ask` and `a refused credential also ends the WALK, not
-just the ladder` pin the two halves.
+`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a connection gone silent
+after refusing us ends the ladder` and `a refused credential also ends the WALK,
+not just the ladder` pin the two halves.
 
 **THE MEASURED RELAY SHAPES, PINNED AS TESTS.** Everything above is prose until
 a fake reproduces it, so each live shape has a deterministic test against
@@ -1665,7 +1668,7 @@ bug and exercised one path that had never run:
 |---|---|---|
 | `groups.satsdisco.com` | refuses both general filters, serves 39000 | `a NIP-29 host folds on the one window a general filter cannot reach` |
 | `top.testrelay.top` | bare filter → EOSE-empty, kinds serve | `a relay refusing bare filters is asked with kinds instead` |
-| `filter.nostr.wine` | auth-refused, then silent | `a refused credential stops the ladder at the first ask` |
+| `filter.nostr.wine` | auth-refused, then silent | `a connection gone silent after refusing us ends the ladder` |
 | `chorus.bonsai.com` | a page carrying a window AND a refusal | `a page carrying both a window and a refusal keeps the window` |
 | `nwc.primal.net` | 100 urls, all answer, none serve | `a hundred unreadable urls collapse to one, and the dials are counted` |
 | `haven.calva.dev` | `/chat` empty while the host serves | `one url that serves anything keeps the empty ones separate` |
@@ -2367,6 +2370,7 @@ of them, in two families:
 |---|---|
 | declined by our own transport | never answered a REQ |
 | the probe failed mid-walk | answered one of the two asks, not both |
+| waits on the fold behind another url of its server | |
 | | refused our auth |
 | | answered, but served no filter we know |
 | | too few events to judge on |
@@ -3291,7 +3295,7 @@ that does not arise.
 It also ended a trap nobody could see from the config: a BOUND select could
 never take the projection (it hands back a set of values, and the pairing a
 binding exists to keep is gone by then), so `authors = 1` was quietly the fast
-path. The same 38 delegation tags appear once in `sync.conf.example` and once in
+path. The same delegation tags (41 since quartz 25a3f37c83) appear once in `sync.conf.example` and once in
 `monitor.conf.example` — bound
 on the `assertions` stream, unbound under `monitor { sources }` — and only the
 unbound copy was expensive.

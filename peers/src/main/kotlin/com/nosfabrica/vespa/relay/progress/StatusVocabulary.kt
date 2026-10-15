@@ -1086,6 +1086,14 @@ object StatusVocabulary {
                     "once per path. Not a refusal: they rejoin as soon as the fold proves one its own relay.",
             )
             term(
+                "pendingWrites",
+                "Fitness verdicts and `prime` withdrawals already earned that the store has not taken: a write " +
+                    "hit its deadline, or the batch stopped after several in a row did. They are replayed every few " +
+                    "minutes from memory, without dialling again, and a later measurement of the same url replaces " +
+                    "one. Above zero for long means the store is refusing this monitor's writes, not that relays " +
+                    "changed; the signed records lag the roster until it drains. Lost on restart.",
+            )
+            term(
                 "sharedHosts",
                 "The last SWEEP's census of servers graded `prime` under more than one url — the shape that puts " +
                     "one server on the mirror's roster several times. Each server's prime urls are listed with the " +

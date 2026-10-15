@@ -267,6 +267,7 @@ class StatusVocabularyTest {
                         "auth-refused" to 1,
                         "restricted" to 1,
                         "waitingOnFold" to 14,
+                        "pendingWrites" to 3,
                     ),
                 sharedHosts =
                     Processors.SharedHosts(

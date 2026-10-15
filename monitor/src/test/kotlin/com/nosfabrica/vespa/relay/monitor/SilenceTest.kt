@@ -59,6 +59,18 @@ class SilenceTest {
     }
 
     @Test
+    fun `Tor's SOCKS replies say why a hidden service was not reached`() {
+        // java.net's SocksSocketImpl words for Tor's reply codes, inside quartz's frame. Before these
+        // were taught, 1,399 of staging's 2,533 silent `.onion` urls read "a reason we do not recognise".
+        assertEquals(Silence.NO_ROUTE, Silence.of("cannot:WebSocket Failure: SOCKS: Host unreachable (SocketException)"))
+        assertEquals(Silence.NO_ROUTE, Silence.of("cannot:WebSocket Failure: SOCKS: Network unreachable (SocketException)"))
+        assertEquals(Silence.TIMEOUT, Silence.of("cannot:WebSocket Failure: SOCKS: TTL expired (SocketException)"))
+        assertEquals(Silence.REFUSED, Silence.of("cannot:WebSocket Failure: SOCKS: Connection refused (SocketException)"))
+        // Tor's catch-all says nothing about the far end.
+        assertEquals(Silence.UNKNOWN, Silence.of("cannot:WebSocket Failure: SOCKS server general failure (SocketException)"))
+    }
+
+    @Test
     fun `the specific pattern wins over the general one`() {
         // First hit wins, so the order of the table is part of its meaning.
         assertEquals(Silence.RATE_LIMITED, Silence.of("cannot: 429 too many requests, retry after timeout"))

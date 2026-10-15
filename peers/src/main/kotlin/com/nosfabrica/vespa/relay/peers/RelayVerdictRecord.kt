@@ -272,8 +272,10 @@ class RelayVerdictRecord(
         /** Did the answer match the ask. Null for a dial that got no page to check. */
         compliant: Pair<Boolean, String>? = null,
         facts: RelayFacts = RelayFacts(),
+        /** When the grade was measured; a write retried after the store recovered keeps its measurement's time. */
+        measuredAt: Long = nowSeconds(),
     ): Event? {
-        val at = nowSeconds().toString()
+        val at = measuredAt.toString()
         val add =
             buildList {
                 add(arrayOf(LABEL_TAG, status, FITNESS_NAMESPACE, evidence, at, FITNESS_EPOCH))

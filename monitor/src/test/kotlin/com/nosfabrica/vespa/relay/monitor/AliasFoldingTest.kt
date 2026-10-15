@@ -195,9 +195,9 @@ class AliasFoldingTest {
             assertEquals(listOf(urls.first()), fold.applyVerdicts(urls).dial, "100 urls, one dial")
             assertEquals(100, up.contacted.size, "every url has to answer before the group may fold")
             assertEquals(
-                300,
+                100 * AliasProbe.SHAPES.size,
                 up.dials.get(),
-                "the ladder is 3 rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
+                "the ladder is ${AliasProbe.SHAPES.size} rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
             )
         }
 

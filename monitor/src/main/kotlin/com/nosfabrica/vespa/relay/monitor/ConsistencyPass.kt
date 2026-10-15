@@ -54,6 +54,8 @@ class ConsistencyPass(
     /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
     private val publishDeadlineMs: Long = FitnessPass.PUBLISH_DEADLINE_MS,
     private val writeConcurrency: Int = FitnessPass.WRITE_CONCURRENCY,
+    /** Every url the monitor knows, by server: a stand-in may be a url outside this batch. */
+    private val world: () -> ServerIndex = { ServerIndex.EMPTY },
 ) {
     /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
@@ -92,6 +94,9 @@ class ConsistencyPass(
 
         /** The job ran out its wall clock before any answer. */
         ABANDONED("gave up at the per-url deadline"),
+
+        /** Not dialled: another url of its server stands in until the fold decides, as in fitness. */
+        WAITING("waits on the fold behind another url of its server"),
     }
 
     /** One url's outcome: the reason and, for [Unmeasured.SILENT] only, the cause underneath it. */
@@ -128,12 +133,19 @@ class ConsistencyPass(
     ): Int {
         if (candidates.isEmpty()) return 0
         val startedMs = System.currentTimeMillis()
-        adopt(candidates)
+        // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
+        val mates = world().matesOf(candidates)
+        val held = adopt(candidates, mates)
 
-        val wanted = consistency.toProbe(candidates).filter { it !in folded }
+        val open = consistency.toProbe(candidates).filter { it !in folded }
+        // A path the fold has not decided waits behind its server's stand-in, the rule fitness keeps:
+        // otherwise every path of one server is paired-walked, over Tor a socket for minutes each.
+        val waiting = held?.let { AliasFolding.heldAmong(it, open, mates) }.orEmpty()
+        val wanted = open.filter { it !in waiting }
+        val waitingFindings = waiting.keys.associateWith { Finding(Unmeasured.WAITING) }
         if (wanted.isEmpty()) {
             // Reported, not skipped: "nothing left to measure" is the state the gate works towards.
-            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptyMap())
+            report(label, candidates, dialled = 0, decided = 0, unmeasurable = waitingFindings)
             return 0
         }
 
@@ -196,10 +208,16 @@ class ConsistencyPass(
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
+        if (waiting.isNotEmpty()) {
+            System.err.println(
+                "router: $label stability — ${waiting.size} url(s) on ${waiting.values.toSet().size} server(s) wait on the fold " +
+                    "behind another url of the same server, not walked",
+            )
+        }
         if (unplaced.isNotEmpty()) {
             System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
-        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent)
+        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent + waitingFindings)
         return decided.get()
     }
 
@@ -453,21 +471,26 @@ class ConsistencyPass(
 
     /**
      * Pull the stored verdicts into memory. A url whose verdict has aged out comes back with
-     * none, which is "dial it".
+     * none, which is "dial it". Returns what the record holds for [candidates] and their
+     * [mates], or null when the read failed.
      */
-    private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
+    private suspend fun adopt(
+        candidates: List<NormalizedRelayUrl>,
+        mates: List<NormalizedRelayUrl> = emptyList(),
+    ): RelayVerdictRecord.Verdicts? {
         val held =
             try {
-                record.load(candidates)
+                record.load(candidates + mates)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // Keep what we hold; emptying on a failed read would readmit every refused relay at once.
-                return
+                return null
             }
         consistency.replace(candidates, held.consistent, held.inconsistent)
         // A folded url is never dialled; the monitor hands both passes the raw pre-fold list.
         folded = held.aliases.keys
+        return held
     }
 
     companion object {
