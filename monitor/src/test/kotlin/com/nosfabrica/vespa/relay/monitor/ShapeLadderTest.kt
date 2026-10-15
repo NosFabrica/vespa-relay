@@ -59,6 +59,9 @@ class ShapeLadderTest {
         ) : Answer
 
         object Silent : Answer
+
+        /** NIP-42's refusal of our key, as quartz reports it after the AUTH. */
+        object AuthRefused : Answer
     }
 
     /** Forty events of [kind]; a kinds ask is served only events of that kind. */
@@ -71,6 +74,7 @@ class ShapeLadderTest {
                 Answer.Empty -> AliasProbe.Page(emptyList())
                 is Answer.Refuses -> AliasProbe.Page(emptyList(), refusal = a.words)
                 Answer.Silent -> AliasProbe.Page(null, reason = "cannot: timed out")
+                Answer.AuthRefused -> AliasProbe.Page(emptyList(), authRefused = true)
             }
         }
 
@@ -154,6 +158,41 @@ class ShapeLadderTest {
             }
 
         assertEquals(Verdict.PRIME.value, grade)
+    }
+
+    @Test
+    fun `a relay that gates one shape behind our key is graded on the shapes it serves openly`() {
+        // chorus.bonsai.com: "At least one matching event requires AUTH" to a bare filter, profiles served to anyone.
+        val (grade, evidence) =
+            grade {
+                when (it) {
+                    AliasProbe.PROFILE_KINDS, AliasProbe.RELAY_LIST_KINDS -> Answer.Serves
+                    else -> Answer.AuthRefused
+                }
+            }
+
+        assertEquals(Verdict.PRIME.value, grade)
+        assertTrue(evidence!!.contains("through kinds 0"), evidence)
+    }
+
+    @Test
+    fun `a relay gone silent after refusing our key is auth-refused without asking the rest`() {
+        val asked = ArrayList<List<Int>?>()
+        val (grade, _) =
+            grade {
+                asked += it
+                if (it == null) Answer.AuthRefused else Answer.Silent
+            }
+
+        assertEquals(Verdict.AUTH_REFUSED.value, grade)
+        assertEquals(2, asked.distinct().size, "asked a silent connection another shape: $asked")
+    }
+
+    @Test
+    fun `a relay that refuses our key and serves nothing anywhere is auth-refused`() {
+        val (grade, _) = grade { if (it == null) Answer.AuthRefused else Answer.Empty }
+
+        assertEquals(Verdict.AUTH_REFUSED.value, grade)
     }
 
     @Test

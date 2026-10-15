@@ -1643,8 +1643,10 @@ Waiting out the window on the later asks is the only thing quartz COULD do; the
 relay sends nothing. The waste was ours, and the rule that fixes it is the
 ladder's own charter: **it exists to find a filter the relay will accept, and a
 credential refusal is not a complaint about the filter.** So `AliasProbe.Page`
-carries `authRefused`, the walk stops on it, and `leaderPrint` does not try the
-next rung. Measured end to end on the same three urls: **184s → 2-3s**, with
+carries `authRefused`, the walk stops on it, and `leaderPrint` tries the next
+rung only to stop at the first that goes silent: `chorus.bonsai.com` refuses one
+shape for our key and serves the others openly, so a refusal alone is not the
+end of the ladder. Measured end to end on the same three urls: **184s → 2-3s**, with
 `nos.lol` unchanged at 2s.
 
 **The stop lives in the WALK, not only in the ladder**, because the ladder is not
@@ -1652,9 +1654,9 @@ the only caller: `AliasFolding` dials every member of a group through
 `fingerprint` with the leader's filter, and walks the leader a second time for the
 reproducibility guard. Neither goes near `leaderPrint`, and without the
 walk-level stop a refused member still pays the empty-page retry at
-`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a refused credential stops
-the ladder at the first ask` and `a refused credential also ends the WALK, not
-just the ladder` pin the two halves.
+`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a connection gone silent
+after refusing us ends the ladder` and `a refused credential also ends the WALK,
+not just the ladder` pin the two halves.
 
 **THE MEASURED RELAY SHAPES, PINNED AS TESTS.** Everything above is prose until
 a fake reproduces it, so each live shape has a deterministic test against
@@ -1665,7 +1667,7 @@ bug and exercised one path that had never run:
 |---|---|---|
 | `groups.satsdisco.com` | refuses both general filters, serves 39000 | `a NIP-29 host folds on the one window a general filter cannot reach` |
 | `top.testrelay.top` | bare filter → EOSE-empty, kinds serve | `a relay refusing bare filters is asked with kinds instead` |
-| `filter.nostr.wine` | auth-refused, then silent | `a refused credential stops the ladder at the first ask` |
+| `filter.nostr.wine` | auth-refused, then silent | `a connection gone silent after refusing us ends the ladder` |
 | `chorus.bonsai.com` | a page carrying a window AND a refusal | `a page carrying both a window and a refusal keeps the window` |
 | `nwc.primal.net` | 100 urls, all answer, none serve | `a hundred unreadable urls collapse to one, and the dials are counted` |
 | `haven.calva.dev` | `/chat` empty while the host serves | `one url that serves anything keeps the empty ones separate` |

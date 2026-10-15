@@ -643,18 +643,21 @@ class FitnessPass(
         // Every shape the relay heard and CLOSED, with its words: a refusal is not an empty answer.
         val refusals = ArrayList<String>()
         var silent = 0
+        // A shape refused for our key: chorus.bonsai.com gates DMs this way and serves profiles openly.
+        var authRefused = false
         for (rung in AliasProbe.SHAPES) {
             val window = probe.window(url, anchor, rung, onEvent)
-            if (window.authRefused) {
-                return Outcome(
-                    Verdict.AUTH_REFUSED,
-                    "asked for NIP-42 and rejected our key",
-                    authRequired = true,
-                )
+            if (window.authRefused && window.ids.isNullOrEmpty()) {
+                authRefused = true
+                refusals += AUTH_REQUIRED + " " + (window.refusal ?: "rejected our key")
+                continue
             }
             val ids = window.ids
             if (ids == null) {
                 lastReason = window.reason ?: lastReason
+                // filter.nostr.wine answers nothing on that connection once it has refused us, and each
+                // further shape would wait out the whole idle window.
+                if (authRefused) break
                 silent++
                 // Two silent rungs in a row is a url that is not there.
                 if (rung == AliasProbe.FALLBACK_KINDS && silent == 2) break
@@ -671,6 +674,10 @@ class FitnessPass(
             } else if (empty == null) {
                 empty = window to rung
             }
+        }
+        // Refused our key on a shape and served nothing anywhere: what it holds is behind the key.
+        if (served == null && authRefused) {
+            return Outcome(Verdict.AUTH_REFUSED, "asked for NIP-42 and rejected our key", authRequired = true)
         }
         val chosen = served ?: empty
 

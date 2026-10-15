@@ -196,11 +196,15 @@ where it used to make four passes and then a filter of the whole map per row,
 seven times over five thousand urls. `dialled` counts sockets opened, not
 `wanted.size`, since a url `canDial` held back is work that never happened.
 
-**An auth refusal ends the filter ladder.** On `filter.nostr.wine` the first
-ask is refused in 1.6s and every later ask on that connection is answered
-with nothing, each waiting out the full idle window; the pass used to fall
-through to the kinds pair regardless because the refusal was flattened into
-"proved nothing".
+**An auth refusal followed by silence ends the filter ladder.** On
+`filter.nostr.wine` the first ask is refused in 1.6s and every later ask on
+that connection is answered with nothing, each waiting out the full idle
+window; the pass used to fall through to the kinds pair regardless because the
+refusal was flattened into "proved nothing". A refusal alone no longer ends it:
+`chorus.bonsai.com` refuses one shape for our key ("At least one matching event
+requires AUTH") and serves profiles and relay lists to anyone, so the ladder
+asks the next shape and stops only when that one goes silent. A url refused for
+our key that served nothing on any shape is `auth-refused`.
 
 **The consistency verdict write is not wrapped in `runCatching`.** It runs
 inside the per-url deadline, and a swallowed cancellation let `measureOne`

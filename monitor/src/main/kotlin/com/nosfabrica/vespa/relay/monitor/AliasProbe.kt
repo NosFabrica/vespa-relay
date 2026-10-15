@@ -77,17 +77,21 @@ class AliasProbe(
         onEvent: suspend (Event) -> Unit,
     ): Attempt {
         var silent = 0
+        // A refused credential is not a refused filter, and one shape refusing our key leaves the others to ask.
+        var authRefused = false
         for (shape in SHAPES) {
             val window = walk(url, anchor, shape, onEvent)
             if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape), spoke = true)
-            // A refused credential is not a refused filter.
-            if (window.authRefused) return Attempt(null, spoke = true, authRefused = true)
+            // Silence after refusing us is filter.nostr.wine's connection gone quiet: each further
+            // shape would wait out the whole idle window.
+            if (window.ids == null && authRefused) return Attempt(null, spoke = true, authRefused = true)
+            if (window.authRefused) authRefused = true
             // Silent on both general shapes is a url that is not there; one answer earns the rest,
             // since a kinds walk refused beside a bare walk our transport cut is a live server.
             if (window.ids == null) silent++
             if (shape == FALLBACK_KINDS && silent == 2) return Attempt(null, spoke = false)
         }
-        return Attempt(null, spoke = true)
+        return Attempt(null, spoke = true, authRefused = authRefused)
     }
 
     /** What one url gave up: a window, and whether the relay answered at all. */

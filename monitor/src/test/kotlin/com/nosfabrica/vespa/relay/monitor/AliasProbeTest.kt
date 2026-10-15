@@ -45,6 +45,8 @@ class AliasProbeTest {
         val demandsKinds: Boolean = false,
         // Turns our credentials down on every ask.
         val refusesCredentials: Boolean = false,
+        // filter.nostr.wine: refuses our credentials once, then answers nothing on that connection.
+        val silentAfterRefusing: Boolean = false,
         // Serves a partial window with the refusal flagged on the same page.
         val servesThenRefuses: Boolean = false,
         // The same relay [newerBy] events later.
@@ -65,6 +67,13 @@ class AliasProbeTest {
             asks += want to until
             kindsAsked += kinds
             if (refusesCredentials) return AliasProbe.Page(emptyList(), authRefused = true)
+            if (silentAfterRefusing) {
+                return if (asks.size == 1) {
+                    AliasProbe.Page(emptyList(), authRefused = true)
+                } else {
+                    AliasProbe.Page(null, reason = "cannot: timed out")
+                }
+            }
             if (servesThenRefuses) {
                 return AliasProbe.Page(
                     events.filter { until == null || it.createdAt <= until }.take(minOf(want, cap)),
@@ -357,16 +366,31 @@ class AliasProbeTest {
         }
 
     @Test
-    fun `a refused credential stops the ladder at the first ask`() =
+    fun `a refused credential asks each shape once and says so`() =
         runBlocking {
-            // A refused credential is not a complaint about the filter.
+            // One shape refusing our key leaves the others to ask; each walk still ends at its refusal.
             val fake = Fake(total = 5_000, refusesCredentials = true)
 
             val attempt = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
 
             assertNull(attempt.leader, "a relay that refuses us has no window to give")
             assertTrue(attempt.spoke, "a refusal is the relay ANSWERING, and the fold turns on that")
-            assertEquals(1, fake.asks.size, "the ladder asked again after being refused: ${fake.kindsAsked}")
+            assertTrue(attempt.authRefused)
+            assertEquals(AliasProbe.SHAPES.size, fake.asks.size, "one ask per shape: ${fake.kindsAsked}")
+        }
+
+    @Test
+    fun `a connection gone silent after refusing us ends the ladder`() =
+        runBlocking {
+            // filter.nostr.wine: 184s of idle windows when every shape was asked.
+            val fake = Fake(total = 5_000, silentAfterRefusing = true)
+
+            val attempt = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
+
+            assertNull(attempt.leader)
+            assertTrue(attempt.spoke, "it refused us before it went quiet")
+            assertTrue(attempt.authRefused)
+            assertEquals(2, fake.kindsAsked.distinct().size, "the ladder asked a silent connection another shape: ${fake.kindsAsked}")
         }
 
     @Test
