@@ -47,6 +47,7 @@
 <link rel="modulepreload" href="./web/cards/chess.js" />
 <link rel="modulepreload" href="./web/cards/moderation.js" />
 <link rel="modulepreload" href="./web/cards/declists.js" />
+<link rel="modulepreload" href="./web/cards/kanban.js" />
 <link rel="modulepreload" href="./web/cards/forums.js" />
 <link rel="modulepreload" href="./web/cards/generic.js" />
 <link rel="modulepreload" href="./web/cards/lists.js" />
@@ -1211,6 +1212,15 @@
   .muted-note { color: var(--faint); font-size: 11.5px; }
   .emoji-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .emoji-grid img { width: 26px; height: 26px; object-fit: contain; }
+  /* A 30031 sticker is a picture to send, not a glyph inside a line of text. */
+  .emoji-grid.stickers img { width: 64px; height: 64px; }
+  /* A 36767 theme drawn as itself: its background, a line in its text color, its primary.
+     The colors are the event's own, and reach `style` only through themeColors()'s strict match. */
+  .theme-swatch { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 12px;
+                  border: 1px solid var(--border); border-radius: 10px; }
+  .theme-sample { font-size: 20px; font-weight: 700; }
+  .theme-primary { width: 22px; height: 22px; border-radius: 999px; flex: none; }
+  .theme-hexes { margin-left: auto; font-family: var(--mono); font-size: 11.5px; opacity: .8; }
   .status-pill { display: inline-block; vertical-align: middle; margin-left: 6px; padding: 1px 8px;
                  border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase;
                  letter-spacing: .04em; background: var(--surface-2); color: var(--muted); }

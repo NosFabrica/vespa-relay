@@ -35,9 +35,10 @@ drops to `none` behind a poster; and the url sits in `data-src` for app.js to
 promote near the viewport, because `preload="metadata"` on sixty short videos
 is sixty range requests before the reader has passed the second card.
 
-**`frameStyle` is the one place an event's numbers reach a `style` attribute.**
-The parse is a strict full-string match on two short digit runs; anything else
-yields no attribute rather than a sanitised one. The width floor is for `dim
+**An event's values reach a `style` attribute in two places, each behind a
+strict full-string match.** `frameStyle` takes a `dim` of two short digit runs;
+the theme card (36767) takes a color of exactly `#rrggbb`. Anything else yields
+no attribute rather than a sanitised one. The width floor is for `dim
 100x4000`, a legal tag whose ratio implies a nine-pixel hairline.
 
 **A picture post is an album.** Kind 20 carries one imeta per image; reading
@@ -169,3 +170,22 @@ ciphertext undrawn. A 31555 review's `d` is `a:30402:…`, a pointer rather than
 `titleOf` skips any `d` shaped like an address, and the card links the product it names
 instead, labelled "a listing" when that `d` is opaque. Addresses are linked as written, never
 whitespace-normalised: "bike " is another product than "bike".
+
+**The eight kinds quartz `25a3f37c83` made searchable get cards with the bump that indexes
+them.** A git cover note (1624), a website snapshot (5128), a sticker pack (30031), a Kanban
+board and card (30301 / 30302), a workout plan (33402), a theme (36767) and a Mostro instance
+(38385) fell to the generic floor. On that floor a verification's JSON report printed raw, a
+Mostro instance had no title at all, and a sticker pack showed its name and no stickers. Each
+card is written from quartz's reader for the kind and joins the family whose shape it shares.
+Kanban gets its own file, because 30301 is three things and a renderer is chosen per kind.
+
+**A shared kind number is decided per event, in quartz's order, and the rest say what they are
+not.** 30301 is a WalletScrutiny verification (`i` + `status`), else a Kanban board (a `title`
+or a named `col`), else an encrypted planner app's task. 30302 is a card unless Fieldbook
+wrote it. 38385 is a Mostro instance only with a `z` of `info` or a `mostro_version`, because
+Paygress publishes there too. `notOursCard` (base.js, moved from the Shopstr cards) draws the
+rest as "a kind N event that is not …" and never draws their ciphertext; `registerBadge` turns
+their badge into "kind N".
+
+**A sticker rated nsfw is counted, not drawn.** DEN Chat rates each sticker in slot 3. A
+results page is not where to decide to show one, so the card says how many it held back.

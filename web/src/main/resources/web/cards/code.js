@@ -4,7 +4,7 @@
 // Two Buzz kinds belong here for what they carry: a 40008 diff posted into a channel, and a
 // 30621 project, which is a named set of NIP-34 repositories.
 
-import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, mdExcerpt } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
@@ -236,6 +236,36 @@ function issueCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** What a cover note's `k` says it covers; NIP-34 writes one of these three. */
+const COVERED = { 1617: "a patch", 1618: "a pull request", 1621: "an issue" };
+
+/** The covered item: the `root`-marked `e`, else the first well-formed one (quartz's `coverNoteRoot`). */
+function coverRoot(ev) {
+  const es = tagsOf(ev, "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  return es.find((t) => t[3] === "root") || es[0] || null;
+}
+
+/** "an issue" from `k`, or "an item" when the note does not say. */
+const coveredNoun = (ev) => COVERED[tagOf(ev, "k")] || "an item";
+
+/**
+ * 1624 — a cover note: the markdown a maintainer writes over an issue, patch or PR, the way a
+ * cover letter heads a patch series. It leads with what it covers, then the note.
+ */
+function coverNoteCard(ev, opts) {
+  const root = coverRoot(ev);
+  const author = tagsOf(ev, "p").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const inner =
+    repoLine(ev, opts) +
+    `<div class="result-body">covers ${esc(coveredNoun(ev))}` +
+    (root ? ` <a class="mono" href="${eventHref(root[1], { relay: root[2] })}">${esc(shortNote(root[1]))}</a>` : "") +
+    (author && author !== ev.pubkey ? ` by ${personLink(author)}` : "") +
+    `</div>` +
+    // Markdown, so the preview is its first prose run (mdExcerpt); the permalink keeps it whole.
+    bodyHtml(opts, opts && opts.full ? ev.content : mdExcerpt(ev.content), 500);
+  return shell(ev, opts, inner);
+}
+
 /** 1630-1633 — a NIP-34 status. The kind is the status; no tag says which. */
 const GIT_STATUS = {
   1630: { label: "open", tone: "open", full: "open" },
@@ -409,6 +439,7 @@ register([1617], patchCard);
 // 1618/1619 pull requests are a subject over prose, so they take the issue template.
 register([1621, 1618, 1619, 1622], issueCard);
 register([1630, 1631, 1632, 1633], gitStatusCard);
+register([1624], coverNoteCard);
 register([30617], repoCard);
 register([30618], repoStateCard);
 register([30063], releaseCard);
@@ -422,6 +453,7 @@ registerRow([1337], (ev) => ({
 }));
 registerRow([1617], (ev) => ({ name: parsePatch(ev.content).subject || tagOf(ev, "subject"), sub: repoName(ev) }));
 registerRow([1621, 1618, 1619, 1622], (ev) => ({ name: tagOf(ev, "subject") || ev.content, sub: repoName(ev) }));
+registerRow([1624], (ev) => ({ name: `covers ${coveredNoun(ev)}`, sub: mdExcerpt(ev.content) }));
 registerRow([1630, 1631, 1632, 1633], (ev) => ({ name: GIT_STATUS[ev.kind].full, sub: repoName(ev) || ev.content }));
 registerRow([30617], (ev) => ({
   name: tagOf(ev, "name") || titleOf(ev) || tagOf(ev, "d"),

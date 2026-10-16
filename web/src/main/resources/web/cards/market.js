@@ -13,6 +13,7 @@ import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
   fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson, addrHref, multiTag,
+  notOursCard,
 } from "./base.js";
 import { shortNote, shortAddr, naddr } from "../shared/nip19.js";
 
@@ -206,6 +207,72 @@ function orderCard(ev, opts) {
     ["platform", tagOf(ev, "y") ? esc(clip(tagOf(ev, "y"), 40)) : null],
     ["network", [tagOf(ev, "network"), tagOf(ev, "layer")].map(oneLine).filter(Boolean).map((v) => esc(clip(v, 24))).join(" · ") || null],
     ["rating", tagOf(ev, "rating") ? esc(clip(tagOf(ev, "rating"), 40)) : null],
+  ]);
+}
+
+/**
+ * A 38385 is a Mostro instance's terms when it says so: a `z` of `info` or a `mostro_version`,
+ * quartz's `isMostroInfo`. Paygress, a bond app and a game publish other things on the number.
+ */
+const isMostroInfo = (ev) =>
+  tagsOf(ev, "z").some((t) => t[1] === "info") || !!oneLine(tagOf(ev, "mostro_version"));
+
+/** The instance's own name, the third slot of `y` (the second is the platform, "mostro"). */
+const mostroName = (ev) => oneLine((tagsOf(ev, "y").find((t) => oneLine(t[2])) || [])[2]);
+
+/** The trade fee, published as a fraction (`0.006`), read as a percentage: "0.6%". */
+function mostroFee(ev) {
+  const raw = oneLine(tagOf(ev, "fee"));
+  if (!/^\d+(?:\.\d+)?$/.test(raw)) return "";
+  return `${Number((Number(raw) * 100).toFixed(4))}%`;
+}
+
+/** The order-size window in sats, as `min_order_amount` / `max_order_amount` publish it. */
+function mostroLimits(ev) {
+  const sats = (name) => {
+    const v = oneLine(tagOf(ev, name));
+    return /^\d+$/.test(v) ? `${Number(v).toLocaleString()} sats` : "";
+  };
+  const lo = sats("min_order_amount");
+  const hi = sats("max_order_amount");
+  return lo && hi ? `orders ${lo} – ${hi}` : lo ? `orders from ${lo}` : hi ? `orders up to ${hi}` : "";
+}
+
+/**
+ * The currencies an instance trades: one `fiat_currencies_accepted` tag, comma-separated. An empty
+ * value is the spec's "every currency", which is not the same as an instance that names none.
+ */
+function mostroCurrencies(ev) {
+  const t = tagsOf(ev, "fiat_currencies_accepted")[0];
+  if (!t) return null;
+  return String(t[1] || "").split(",").map(oneLine).filter(Boolean);
+}
+
+/**
+ * 38385 — a Mostro instance's status and terms, republished on an interval: whether it is taking
+ * orders, what it charges, the order sizes it accepts and the currencies it trades. Every value
+ * is a tag; the content is empty by spec.
+ */
+function mostroInfoCard(ev, opts) {
+  if (!isMostroInfo(ev)) return notOursCard(ev, opts, "a Mostro instance");
+  // other_events.md: no `maintenance_mode` means the instance is open.
+  const down = oneLine(tagOf(ev, "maintenance_mode")) === "true";
+  const terms = [mostroFee(ev) && `fee ${mostroFee(ev)}`, mostroLimits(ev)].filter(Boolean).join(" · ");
+  const currencies = mostroCurrencies(ev);
+  const pow = oneLine(tagOf(ev, "pow"));
+  const inner =
+    titleHtml(opts, mostroName(ev) || "a Mostro instance", 140) +
+    `<div class="pill-row"><span class="status-pill lead ${down ? "closed" : "open"}">${down ? "maintenance" : "open"}</span>` +
+    (terms ? `<span class="price-line">${esc(terms)}</span>` : "") + `</div>` +
+    (currencies && !currencies.length ? `<div class="result-body muted">trades every currency</div>` : "") +
+    chipRow(currencies || [], opts);
+  return shell(ev, opts, inner, [
+    ["escrow", esc(clip(oneLine(tagOf(ev, "escrow_mode")) || "lightning", 24))],
+    ["version", tagOf(ev, "mostro_version") ? esc(clip(oneLine(tagOf(ev, "mostro_version")), 24)) : null],
+    ["protocol", tagOf(ev, "protocol_version") ? esc(clip(oneLine(tagOf(ev, "protocol_version")), 12)) : null],
+    ["proof of work", /^[1-9]\d*$/.test(pow) ? esc(`${pow} bits`) : null],
+    ["order expiry", /^\d+$/.test(oneLine(tagOf(ev, "expiration_hours"))) ? esc(plural(Number(tagOf(ev, "expiration_hours")), "hour")) : null],
+    ["lightning node", tagOf(ev, "lnd_node_alias") ? esc(clip(oneLine(tagOf(ev, "lnd_node_alias")), 40)) : null],
   ]);
 }
 
@@ -482,21 +549,6 @@ function bidConfirmationCard(ev, opts) {
 
 // ---- Open Markets: collections, shipping options, reviews --------------------
 
-/** NIP-04 or NIP-44 ciphertext: one unbroken base64 run, with NIP-04's `?iv=` tail if any. */
-const CIPHERTEXT = /^[A-Za-z0-9+/]{32,}={0,2}(?:\?iv=[A-Za-z0-9+/]+={0,2})?$/;
-
-/**
- * A 30405 or 30406 another app wrote on the same number (Shopstr keeps encrypted carts and escrow
- * records there): said for what it is not, with a ciphertext body left undrawn.
- */
-function notOursCard(ev, opts, noun) {
-  const text = String(ev.content || "").trim();
-  const inner =
-    `<div class="result-body muted">a kind ${esc(ev.kind)} event that is not ${esc(noun)}</div>` +
-    (CIPHERTEXT.test(text) ? `<div class="muted-note">its content is encrypted</div>` : bodyHtml(opts, text, 200, true));
-  return shell(ev, opts, inner);
-}
-
 /** The products a collection holds: its `a` tags naming 30402s. */
 const productsOf = (ev) => addrsOf(ev, "a", 30402);
 
@@ -524,8 +576,12 @@ function collectionCard(ev, opts) {
   ]);
 }
 
-/** A shipping option has a title or a service; Shopstr's escrow records on 30406 have neither. */
-const isShippingOption = (ev) => !!(oneLine(tagOf(ev, "title")) || oneLine(tagOf(ev, "service")));
+/**
+ * A shipping option has a title, a service or a country, quartz's `isShippingOption`; Shopstr's
+ * escrow records on 30406 have none of them.
+ */
+const isShippingOption = (ev) =>
+  !!(oneLine(tagOf(ev, "title")) || oneLine(tagOf(ev, "service")) || oneLine(tagOf(ev, "country")));
 
 const DURATION_UNITS = { H: ["hour", "hours"], D: ["day", "days"], W: ["week", "weeks"] };
 
@@ -650,8 +706,10 @@ register([1022], bidConfirmationCard);
 register([30405], collectionCard);
 register([30406], shippingCard);
 register([31555], reviewCard);
+register([38385], mostroInfoCard);
 registerBadge([30405], (ev) => (isCollection(ev) ? "" : "kind 30405"));
 registerBadge([30406], (ev) => (isShippingOption(ev) ? "" : "kind 30406"));
+registerBadge([38385], (ev) => (isMostroInfo(ev) ? "" : "kind 38385"));
 // The merchant is named from the address in `d`, which no scan of `p` tags reaches.
 registerNamedPeople([31555], (ev) => [reviewOf(ev).merchant].filter(Boolean));
 registerBadge([38000], (ev) => KIND_38000[kind38000(ev)].badge);
@@ -709,6 +767,19 @@ registerRow([38383], (ev) => {
   return {
     name: [ORDER_SIDES.has(side) ? side : "order", sats ? `${sats} sats` : "", fiat ? `for ${fiat}` : ""].filter(Boolean).join(" "),
     sub: [oneLine(tagOf(ev, "s")), oneLine(tagOf(ev, "name")), oneLine(tagOf(ev, "y"))].filter(Boolean).join(" · "),
+  };
+});
+// An instance's line is its name, then whether it is open and what it charges.
+registerRow([38385], (ev) => {
+  if (!isMostroInfo(ev)) return { name: "a kind 38385 event, not a Mostro instance" };
+  const currencies = mostroCurrencies(ev);
+  return {
+    name: mostroName(ev) || "a Mostro instance",
+    sub: [
+      oneLine(tagOf(ev, "maintenance_mode")) === "true" ? "maintenance" : "open",
+      mostroFee(ev) && `fee ${mostroFee(ev)}`,
+      currencies && (currencies.length ? currencies.slice(0, 6).join(", ") : "every currency"),
+    ].filter(Boolean).join(" · "),
   };
 });
 registerRow([38000], (ev) => KIND_38000[kind38000(ev)].row(ev));

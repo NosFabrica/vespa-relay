@@ -382,6 +382,15 @@ const FIXTURES = [
   [45010, ev(45010, [["d", "spec"], ["h", "chan"], ["title", "Launch Plan"], ["type", "doc"], ["op", "create"], ["ar", "1"]], "step one: ship"), "Launch Plan"],
   [46030, ev(46030, [["d", "f00dbabe"]], "looks good"), "approves a workflow step"],
   [46031, ev(46031, [["d", "f00dbabe"]], "not yet"), "denies a workflow step"],
+  // The kinds quartz 25a3f37c83 made searchable.
+  [1624,  ev(1624, [["e", eid, "wss://git.example", "root"], ["p", pk2], ["k", "1621"]], "## Why this matters\nIt breaks on every boot."), "covers an issue"],
+  [5128,  ev(5128, [["a", `35128:${pk}:blog`], ["path", "/index.html", "ab".repeat(32)], ["title", "My Blog"], ["description", "the March build"]]), "snapshot of"],
+  [30031, ev(30031, [["d", "cats"], ["title", "Cat Stickers"], ["description", "cats doing things"], ["sticker", "loaf", "https://x/loaf.webp", "sfw"]]), "emoji-grid stickers"],
+  [30301, ev(30301, [["d", "roadmap"], ["title", "Roadmap"], ["description", "what ships next"], ["col", "todo", "To Do", "0"], ["col", "done", "Done", "2"], ["col", "doing", "Doing", "1"], ["p", pk2]]), "Roadmap"],
+  [30302, ev(30302, [["d", "c1"], ["title", "Write the docs"], ["description", "every endpoint"], ["a", `30301:${pk}:roadmap`], ["s", "Doing"], ["p", pk2]]), "Write the docs"],
+  [33402, ev(33402, [["d", "legs"], ["title", "Leg Day"], ["type", "strength"], ["rounds", "3"], ["exercise", `33401:${pk}:back-squat`, "", "100", "5", "8", "normal"], ["exercise", `33401:${pk}:lunge`, "", "", "12", "", "warmup"]], "go heavy"), "Leg Day"],
+  [36767, ev(36767, [["d", "dusk"], ["title", "Dusk"], ["description", "a dark theme"], ["c", "#1a1b26", "background"], ["c", "#c0caf5", "text"], ["c", "#7aa2f7", "primary"], ["f", "Inter", "https://x/inter.woff2", "body"], ["t", "theme"]]), "theme-swatch"],
+  [38385, ev(38385, [["d", pk], ["y", "mostro", "Lisbon Mostro"], ["z", "info"], ["mostro_version", "0.14.0"], ["fee", "0.006"], ["min_order_amount", "100"], ["max_order_amount", "1000000"], ["fiat_currencies_accepted", "EUR,USD"], ["pow", "0"], ["protocol_version", "1"]]), "Lisbon Mostro"],
 ];
 
 // Every registered kind has a fixture, and every fixture targets a registered kind.
@@ -508,6 +517,12 @@ const ROW_SAYS = [
   [40008, "fix the off-by-one · a.kt · abcdef1"], [40901, "general · everything else"],
   [43003, "reports progress on a job · running · halfway"], [11316, "Weather MCP · forecasts over nostr"],
   [33331, "Chair · 4 vertices · 2 faces"], [15, "the receipt · image/jpeg · 120.6 KB"],
+  // The kinds quartz 25a3f37c83 brought: each row says what the kind exists to carry.
+  [1624, "covers an issue · It breaks on every boot."],
+  [5128, "My Blog · one pinned website build · 1 file · the March build"],
+  [30031, "Cat Stickers · 1 sticker · cats doing things"], [30301, "Roadmap · To Do → Doing → Done · what ships next"],
+  [30302, "Write the docs · Doing · every endpoint"], [33402, "Leg Day · 2 sets · strength · 3 rounds · go heavy"],
+  [36767, "Dusk · a dark theme · #1a1b26 · #c0caf5 · #7aa2f7"], [38385, "Lisbon Mostro · open · fee 0.6% · EUR, USD"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
@@ -1685,5 +1700,95 @@ assert(card(jsonArtifact).includes("a JSON document") && card(jsonArtifact, { fu
 // A decentralized-list item links the list it adds to when the `z` is an address or an id.
 assert(card(ev(39999, [["z", `39998:${pk2}:books`], ["name", "Dune"]])).includes('href="/naddr1'), "an item links its list by address");
 assert(card(ev(9999, [["z", eid], ["t", "Rex"]])).includes(`href="/${noteId(eid)}"`), "…or by id");
+
+// ---- the kinds quartz 25a3f37c83 made searchable ----------------------------------------
+
+// 30301 is three things, decided per event in quartz's order: a verification, a board, or neither.
+const verification = ev(30301, [
+  ["d", "app.wallet:1.2.0:android:" + "cd".repeat(32)], ["i", "app.wallet"], ["version", "1.2.0"], ["platform", "android"],
+  ["status", "reproducible"], ["x", "cd".repeat(32)], ["issue-tracker-url", "https://x/issues/9"],
+], JSON.stringify({ description: "Wallet 1.2.0 for Android reproduces", content: "Built twice in Docker; the APKs match byte for byte." }));
+const vFull = card(verification, { full: true });
+assert.strictEqual(badgeOf(vFull), "build verification", "a WalletScrutiny verification is badged as one, not as a board");
+assert(vFull.includes("status-pill lead open") && vFull.includes(">reproducible<") && vFull.includes("app.wallet 1.2.0 · android"),
+  "…leads with its verdict and what was built");
+assert(vFull.includes("Wallet 1.2.0 for Android reproduces") && vFull.includes("byte for byte") && !vFull.includes("{&quot;"),
+  "…reads its JSON content as a description and a report, never printing the JSON");
+assert.strictEqual(rowOf(verification).name, "reproducible · app.wallet 1.2.0 · android", "…and its row leads with the verdict");
+// Quartz checks the verification first, so one that also carries a `title` is still a verification.
+assert.strictEqual(badgeOf(card(ev(30301, [["i", "w"], ["status", "reproducible"], ["title", "W"]]))), "build verification",
+  "an `i` + `status` event is a verification even with a board's title");
+assert(card(ev(30301, [["i", "w"], ["status", "ftbfs"]])).includes("fails to build"), "a verdict code reads in words");
+assert(card(ev(30301, [["i", "w"], ["status", "new_code"]])).includes(">new code<"), "…and one quartz does not know still shows");
+const board = FIXTURES.find(([k]) => k === 30301)[1];
+assert.strictEqual(badgeOf(card(board)), "kanban board");
+assert(/To Do[\s\S]*Doing[\s\S]*Done/.test(card(board, { full: true })), "a board's columns read in their `order`, not tag order");
+const planner = ev(30301, [["d", "t1"], ["b", "ab".repeat(16)], ["status", "open"]], nip44);
+for (const opts of [undefined, { full: true }]) {
+  assert.strictEqual(badgeOf(card(planner, opts)), "kind 30301", "a planner's encrypted task is neither a board nor a verification");
+  assert(!card(planner, opts).includes(nip44.slice(0, 24)), "…and its ciphertext is not drawn");
+}
+assert.strictEqual(rowOf(planner).name, "a kind 30301 event, not a board or a verification");
+assert.strictEqual(badgeOf(card(ev(30301, [["col", "a", "Inbox"]]))), "kanban board", "a named column alone is a board");
+
+// A card: its column, its board, and who it is assigned to; Fieldbook's memberships are not cards.
+const kcard = card(FIXTURES.find(([k]) => k === 30302)[1], { full: true });
+assert(kcard.includes(">Doing<") && kcard.includes(`href="/${naddr(`30301:${pk}:roadmap`)}"`) && kcard.includes("assigned to 1 person"),
+  "a Kanban card shows its column, links its board and counts its assignees");
+const membership = ev(30302, [["d", "m"], ["client", "fieldbook"], ["a", `30300:${pk}:team`]], JSON.stringify({ role: "member" }));
+assert.strictEqual(badgeOf(card(membership)), "kind 30302", "a Fieldbook membership is not a Kanban card");
+assert.strictEqual(rowOf(membership).name, "a kind 30302 event, not a Kanban card");
+assert(card(ev(30302, [["a", `30301:${pk}:roadmap`]])).includes("on <a"), "a card with no title still names its board");
+assert(card(ev(30302, [["title", "T"], ["k", "1621"], ["e", eid]]), { full: true }).includes("tracks a kind 1621 event"),
+  "a tracker card says what it mirrors");
+
+// A Mostro instance: open unless it says it is down, its fee as a percentage, and its currencies.
+const mostro = card(FIXTURES.find(([k]) => k === 38385)[1], { full: true });
+for (const fact of ["status-pill lead open", "fee 0.6%", "orders 100 sats – 1,000,000 sats", ">EUR<", ">USD<", "<dt>escrow</dt><dd>lightning</dd>"]) {
+  assert(mostro.includes(fact), `a Mostro instance shows ${fact}`);
+}
+assert(!mostro.includes("<dt>proof of work</dt>"), "a pow of 0 is no requirement, and is not drawn as one");
+assert(card(ev(38385, [["z", "info"], ["maintenance_mode", "true"]])).includes("status-pill lead closed\">maintenance"), "an instance in maintenance says so");
+assert(card(ev(38385, [["z", "info"], ["fiat_currencies_accepted", ""]])).includes("trades every currency"),
+  "an empty currency list is the spec's every currency");
+const paygress = ev(38385, [["d", "lease-1"], ["t", "paygress"]], JSON.stringify({ revoked: true }));
+assert.strictEqual(badgeOf(card(paygress)), "kind 38385", "Paygress on 38385 is not a Mostro instance");
+assert.strictEqual(rowOf(paygress).name, "a kind 38385 event, not a Mostro instance");
+
+// A theme draws its own colors, and nothing but a six-digit hex reaches a style attribute.
+const theme = card(FIXTURES.find(([k]) => k === 36767)[1], { full: true });
+assert(theme.includes('style="background: #1a1b26; color: #c0caf5"') && theme.includes('style="background: #7aa2f7"'),
+  "a theme is drawn in its own background, text and primary colors");
+assert(theme.includes("Inter (body)"), "…and names its fonts");
+const hostileTheme = card(ev(36767, [["title", "X"], ["c", "#fff;background:url(https://x/t)", "background"], ["c", "red", "text"]]), { full: true });
+assert(!hostileTheme.includes("url(") && !hostileTheme.includes("theme-swatch"), "a color that is not #rrggbb never reaches a style attribute");
+const copied = card(ev(36767, [["title", "Mine"], ["a", `36767:${pk2}:dusk`], ["p", pk2]]), { full: true });
+assert(copied.includes(`href="/${naddr(`36767:${pk2}:dusk`)}"`) && copied.includes(`href="/${npub(pk2)}"`),
+  "a copied theme credits the definition and the person it came from");
+
+// Stickers are drawn at sticker size; the ones rated nsfw are counted and never drawn.
+const pack = card(ev(30031, [["title", "P"], ["sticker", "ok", "https://x/ok.png"], ["sticker", "lewd", "https://x/lewd.png", "nsfw"]]), { full: true });
+assert(pack.includes("https://x/ok.png") && !pack.includes("https://x/lewd.png") && pack.includes("1 sticker marked nsfw"),
+  "an nsfw sticker is counted, not shown");
+
+// A workout plan lists its sets, and RUNSTR's activity word in `exercise` is not one.
+const plan = card(FIXTURES.find(([k]) => k === 33402)[1], { full: true });
+assert(plan.includes("100 kg × 5 reps · RPE 8") && plan.includes("12 reps · warmup") && plan.includes(`href="/${naddr(`33401:${pk}:back-squat`)}"`),
+  "a plan's sets read as prescribed and link the exercise they use");
+assert(card(ev(33402, [["exercise", `33401:${pk}:pull-up`, "", "-20", "8"]]), { full: true }).includes("20 kg assisted × 8 reps"),
+  "a negative weight is assistance");
+assert(!card(ev(33402, [["title", "Run"], ["exercise", "running"]])).includes("1 set"), "an activity word is not a set");
+
+// A cover note says what it covers and links it; a snapshot links the site it pins.
+const cover = card(FIXTURES.find(([k]) => k === 1624)[1]);
+assert(cover.includes(`href="/${noteId(eid)}`) && cover.includes(`href="/${npub(pk2)}"`), "a cover note links the item it covers and that item's author");
+assert(card(ev(1624, [["e", eid], ["k", "1618"]], "x")).includes("covers a pull request"), "…named by its `k`");
+assert(!card(FIXTURES.find(([k]) => k === 1624)[1]).includes("## ") && card(FIXTURES.find(([k]) => k === 1624)[1], { full: true }).includes("## Why"),
+  "a cover note previews its prose, not its markdown marks, and keeps the whole note on its page");
+assert(card(FIXTURES.find(([k]) => k === 5128)[1], { full: true }).includes(`href="/${naddr(`35128:${pk}:blog`)}"`),
+  "a website snapshot links the site it pins");
+
+// A 30406 with only a `country` is a shipping option, as quartz reads it.
+assert.strictEqual(badgeOf(card(ev(30406, [["d", "s"], ["country", "BR"]]))), "shipping option", "a country is enough to be a shipping option");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);

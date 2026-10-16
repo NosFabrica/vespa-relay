@@ -9,7 +9,7 @@ import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref,
   extLink, relayRows, refRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, noteHref,
-  fmtBytes, fmtDuration, plural, faceStrip, jsonContent, oneLine,
+  fmtBytes, fmtDuration, plural, faceStrip, jsonContent, oneLine, personLink, addrHref, registerNamedPeople,
 } from "./base.js";
 import { shortNote } from "../shared/nip19.js";
 
@@ -150,6 +150,92 @@ function emojiPackCard(ev, opts) {
     `<div class="result-body">${esc(plural(emoji.length, "emoji", "emoji"))}</div>` +
     emojiGrid(emoji, opts);
   return shell(ev, opts, inner);
+}
+
+/**
+ * The stickers a 30031 pack defines, quartz's `StickerTag`: a shortcode and an image url, then
+ * either DEN Chat's content rating in slot 3 or Sonar's hash, MIME type, description and emoji.
+ * A sticker missing its code or url is dropped.
+ */
+const stickersOf = (ev) => tagsOf(ev, "sticker").filter((t) => t[1] && t[2]);
+
+/** A sticker its publisher rated not safe for work: counted, never drawn in a results page. */
+const isNsfw = (t) => t[3] === "nsfw";
+
+/** The stickers themselves: the emoji grid's markup at sticker size. */
+function stickerGrid(stickers, opts) {
+  const shown = opts && opts.full ? stickers : stickers.slice(0, 12);
+  if (!shown.length) return "";
+  return `<div class="emoji-grid stickers">${shown.map((t) => {
+    const label = t[6] ? `:${t[1]}: ${t[6]}` : `:${t[1]}:`;
+    return `<img src="${esc(t[2])}" alt="${esc(label)}" title="${esc(label)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`;
+  }).join("")}</div>`;
+}
+
+/** 30031 — a sticker pack: the emoji pack's shape, with bigger pictures and a content rating. */
+function stickerPackCard(ev, opts) {
+  const stickers = stickersOf(ev);
+  const nsfw = stickers.filter(isNsfw).length;
+  const inner =
+    (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    `<div class="result-body">${esc(plural(stickers.length, "sticker"))}` +
+    (nsfw ? ` <span class="muted">· ${esc(plural(nsfw, "sticker"))} marked nsfw, not shown</span>` : "") + `</div>` +
+    stickerGrid(stickers.filter((t) => !isNsfw(t)), opts);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * A theme color, as quartz's `ColorTag` reads it: `["c", "#rrggbb", <role>]`. The strict
+ * full-string match is what lets the value reach a `style` attribute (see `frameStyle`).
+ */
+const THEME_ROLES = ["background", "text", "primary"];
+function themeColors(ev) {
+  const out = {};
+  for (const t of tagsOf(ev, "c")) {
+    if (THEME_ROLES.includes(t[2]) && !out[t[2]] && /^#[0-9a-fA-F]{6}$/.test(t[1] || "")) out[t[2]] = t[1].toLowerCase();
+  }
+  return out;
+}
+
+/** A font by role; an `f` with no role is the body font (the spec's legacy three-slot form). */
+const themeFont = (ev, role) =>
+  oneLine((tagsOf(ev, "f").find((t) => oneLine(t[1]) && (t[3] || "body") === role) || [])[1]);
+
+/** The background image's url, the `url <u>` entry of the imeta-style `bg` tag. */
+const themeBackground = (ev) => {
+  const entry = (tagsOf(ev, "bg")[0] || []).slice(1).find((v) => /^url\s+\S/.test(v || ""));
+  return entry ? entry.replace(/^url\s+/, "").trim() : "";
+};
+
+/**
+ * 36767 — a shareable profile theme (Ditto, Armada): the three colors drawn as the theme would
+ * draw a line of text, then its fonts and background. Never loads the font files.
+ */
+function themeCard(ev, opts) {
+  const c = themeColors(ev);
+  const swatch = c.background
+    ? `<div class="theme-swatch" style="background: ${c.background}${c.text ? `; color: ${c.text}` : ""}">` +
+      `<span class="theme-sample">Aa</span>` +
+      (c.primary ? `<span class="theme-primary" style="background: ${c.primary}"></span>` : "") +
+      `<span class="theme-hexes">${THEME_ROLES.filter((r) => c[r]).map((r) => esc(c[r])).join(" · ")}</span></div>`
+    : "";
+  const from = tagsOf(ev, "a").map((t) => t[1]).find((v) => /^36767:[0-9a-f]{64}:./.test(v || ""));
+  const creator = tagsOf(ev, "p").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || "") && v !== ev.pubkey);
+  const fonts = [["title", themeFont(ev, "title")], ["body", themeFont(ev, "body")]].filter(([, f]) => f);
+  const inner =
+    (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    swatch;
+  return shell(ev, opts, inner, [
+    ["fonts", fonts.length ? fonts.map(([r, f]) => esc(`${clip(f, 40)} (${r})`)).join(" · ") : null],
+    ["background", extLink(themeBackground(ev))],
+    // Armada's credit: the definition this one was copied from, and its creator.
+    ["copied from", [
+      creator ? personLink(creator) : "",
+      from && addrHref(from) ? `<a class="mono" href="${addrHref(from)}">${esc(clip(from.split(":").slice(2).join(":"), 40))}</a>` : "",
+    ].filter(Boolean).join(" · ") || null],
+  ]);
 }
 
 /**
@@ -326,6 +412,9 @@ register([1063], fileCard);
 register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
+register([30031], stickerPackCard);
+register([36767], themeCard);
+registerNamedPeople([36767], (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "") && v !== ev.pubkey).slice(0, 1));
 register([32176], pieceIndexCard);
 register([1065], fileStorageCard);
 register([1163], galleryCard);
@@ -365,6 +454,15 @@ registerRow([30030], (ev) => ({
   sub: [plural(emojiOf(ev).length, "emoji", "emoji"), summaryOf(ev)].filter(Boolean).join(" · "),
 }));
 // A file is what it is and how big: the pieces are the kind's business, not the reader's first line.
+registerRow([30031], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(stickersOf(ev).length, "sticker"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
+// A theme's line is its name, then its colors as the hex values a designer would quote.
+registerRow([36767], (ev) => {
+  const c = themeColors(ev);
+  return { name: titleOf(ev), sub: [summaryOf(ev), THEME_ROLES.map((r) => c[r]).filter(Boolean).join(" · ")].filter(Boolean).join(" · ") };
+});
 registerRow([32176], (ev) => ({
   name: titleOf(ev),
   sub: [tagOf(ev, "type"), fmtBytes(tagOf(ev, "size")), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
