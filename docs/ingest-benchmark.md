@@ -107,6 +107,28 @@ What it says, so far:
   relay. When the store has nothing to write, framing, parsing, policies and the OKs (and the
   publisher's own JSON) are the whole cost, ~460 µs of relay CPU per event.
 
+### Follow-ups: the feed writer and the access log
+
+A JFR profile of the `pipe-2x1000` arm (the harness's `JAVA_OPTS` reaches the relay alone;
+`AMY_JAVA_OPTS` is the publisher's) put 12% of the relay's samples in the store building each
+feed body as a `JsonObject` tree, and most of the rest of its write in the Vespa feed client's
+own HTTP/2 request per document. The store now writes the body in one pass (vespa-eventstore,
+`EventDoc.feedJson`, byte-identical): 320-360 µs to 183-206 µs per body. Same slice, same box:
+
+| arm | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| `pipe-2x1000`, tree (three runs) | 620, 599, 614¹ | 1,330-1,380 | 2,720-2,880 |
+| `pipe-2x1000`, one-pass writer (two runs) | 585, 634 | 1,280-1,300 | 2,710-2,880 |
+| the same with `VESPA_ACCESS_LOG=disabled` (two runs) | **679, 689** | 1,230-1,250 | **2,520-2,550** |
+
+¹ 614 and 623 were the writer's first, two-pass form.
+
+The writer is a 3-5% cut in the relay's CPU and invisible in throughput here, where Vespa
+takes two thirds of the CPU; it is the relay's own capacity it buys back. The access log is
+worth 12%: the store feeds one HTTP request per document, so the container logged a line per
+event. `.env.example` already set it to `disabled`, but `docker-compose.yml` never forwarded the
+variable to either process, so a compose deployment ran with the log on.
+
 Two client artifacts were found and fixed on the way, both of which had inflated `duplicate`
 and `unanswered` in earlier runs: OkHttp closes a websocket whose send queue would pass 16 MiB
 (2,048 of these events are 38 MiB), and an EVENT over `max_message_length` was answered with a

@@ -13,7 +13,7 @@
 # processes splitting the slice, one socket each: what several clients publishing at once look
 # like, and the only way past one socket's send queue), KEEP_STORE=1 (keep
 # the store the previous arm filled: a resend pass), CPUS (what the measured processes may run on),
-# AMY, OUT, VESPA_MEM_LIMIT, GRADLE_ARGS. Needs docker, taskset, python3, and `amy` (amethyst's cli).
+# AMY, AMY_JAVA_OPTS, OUT, VESPA_MEM_LIMIT, GRADLE_ARGS, JAVA_OPTS (the relay's). Needs docker, taskset, python3, and `amy` (amethyst's cli).
 set -euo pipefail
 NAME=$1
 shift
@@ -82,7 +82,8 @@ else
   PART=$(((TAKE + PUBLISHERS - 1) / PUBLISHERS))
   PUBLISHER_PIDS=()
   for p in $(seq 0 $((PUBLISHERS - 1))); do
-    taskset -c "$CPUS" "$AMY" publish --file "$CORPUS" --relay ws://localhost:7777 --skip $((SKIP + p * PART)) --take "$PART" \
+    # The publisher's JVM options are its own: a JAVA_OPTS meant for the relay must not reach amy's launcher.
+    taskset -c "$CPUS" env JAVA_OPTS="${AMY_JAVA_OPTS:-}" "$AMY" publish --file "$CORPUS" --relay ws://localhost:7777 --skip $((SKIP + p * PART)) --take "$PART" \
       --in-flight "$INFLIGHT" --progress 10 --timeout 60 --no-verify --json >"$RUN/amy-$p.json" 2>"$RUN/amy-$p.progress" &
     PUBLISHER_PIDS+=($!)
   done
