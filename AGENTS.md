@@ -22,7 +22,9 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 - `:peers` — how this deployment talks to other relays, shared by the two
   client-side planes: `PeerClient`, `RelaySockets`, `RelayVerdictRecord` and the
   `Verdict` vocabulary, `RelayDiscovery`, `RouterConfig`, `IngestPipeline`,
-  `Processors`. Sits above `:common`.
+  `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
+  `IngestPipeline`, which writes the relay's publishes the way it writes the
+  mirror's downloads (`RELAY_INGEST`).
 - `:web` — every `.html`, `.js` and `.css` in the repo and the Ktor scaffolding
   that serves them. Depends on Ktor and kotlinx.serialization, nothing of ours.
 
@@ -150,8 +152,9 @@ peers/…/relay/
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
-  ingest/, progress/          IngestPipeline, BisectingInsert, ProbeGate, ParseAudit, refused/; Processors, InFlight,
-                              StoreCalls, StatusVocabulary
+  ingest/, progress/          IngestPipeline (the write path of both processes: the mirror's downloads and, as
+                              quartz's EventIngest, the relay's publishes), StoreProbes, BisectingInsert, ProbeGate,
+                              ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server

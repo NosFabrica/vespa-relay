@@ -179,7 +179,9 @@ reason.
 |---|---|---|
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…`, comma/space-separated (bare hex is refused — it has no checksum). An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
-| `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: unset keeps quartz's 64, sized for SQLite, which held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). The queue in front of it holds four batches. `1`-`8192`; anything else stops the boot | `64` |
+| `RELAY_INGEST` | how publishes reach the store. `pipeline` writes them through the mirror's `IngestPipeline`: several workers, each batch dropping what the store already holds or has a newer version of before checking a signature, each publish answered with the store's verdict. `queue` keeps quartz's single-writer `IngestQueue`, which verifies every event and commits one batch at a time. Anything else stops the boot. See [ingest-benchmark.md](ingest-benchmark.md) | `pipeline` |
+| `RELAY_INGEST_CONCURRENCY` | the pipeline's workers. The store serializes commits, so a second worker buys overlap (one plans while the other commits), not parallel writes. `1`-`64` | `2` |
+| `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: quartz's 64, sized for SQLite, held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). The queue in front of it holds four batches. `1`-`8192`; anything else stops the boot | `1000` with the pipeline, `64` with the queue |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
 
@@ -721,6 +723,9 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `STORE_METRICS_LOG_SECONDS` | both | any |
 | `SYNC_UP_INTERVAL_SECONDS` | sync | `10` or more |
 | `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |
+| `RELAY_INGEST` | relay | `pipeline` or `queue` |
+| `RELAY_INGEST_CONCURRENCY` | relay | `1`–`64` |
+| `RELAY_INGEST_BATCH` | relay | `1`–`8192` |
 | `SYNC_INGEST_CONCURRENCY` | sync | `1`–`64` |
 | `SYNC_INGEST_BATCH` | sync | `1`–`20000` |
 | `SYNC_NEG_PAGE_TARGET` / `SYNC_NEG_PAGE_SLACK_SECONDS` | sync | `0` or more |

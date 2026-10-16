@@ -31,7 +31,23 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
+# 96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1 = amethyst branch claude/awesome-edison-x5mb5y, four
+# commits over main d7df3040 (2026-10-16), which is two commits over 25a3f37c83 touching quartz/
+# (the sno mesh limits, outside anything this relay imports). Pinned by the FULL hash: JitPack keys
+# a build by the version string, and the 10-char spelling's first build hit a transient plugin
+# resolution failure that JitPack caches. Taken for the ingest work (docs/ingest-benchmark.md):
+#
+#   EventIngest. LiveEventStore takes it instead of the concrete IngestQueue, which is how the
+#     relay's publishes reach IngestPipeline (RELAY_INGEST). IngestQueue implements it unchanged.
+#   OK FOR AN OVERSIZED EVENT. A frame over max_message_length got a NOTICE and no OK, so a
+#     publisher pipelining EVENTs waited each one out; it now gets `OK false invalid: … too large`.
+#   publishStream, the windowed bulk publish amy's `publish --file` is built on (client side only).
+#
+# DIRECTION: 25a3f37c83 is a strict ancestor (git merge-base --is-ancestor 25a3f37c83 96100f4309).
+#
+# LEXICOGRAPHIC: '9610…' > '6826…' (the store's own pin): the safe way, moot under force().
+#
+# Prev 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
 # over 68268da413, 149 of them touching quartz/. Taken for the client's rate-limit work, which
 # the monitor's fold walks run through (see docs/decisions/aliases.md):
 #
@@ -177,7 +193,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "25a3f37c83"
+quartz = "96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the

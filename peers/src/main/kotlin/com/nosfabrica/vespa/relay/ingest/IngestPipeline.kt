@@ -38,6 +38,7 @@ import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
 import com.vitorpamplona.quartz.nip01Core.crypto.verifySignature
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
@@ -50,6 +51,7 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -58,9 +60,10 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
 
 /**
- * The download-to-store pipeline every mirrored event funnels through: a bounded channel and
- * a pool of workers draining it in batches through [IEventStore.batchInsert]. Only a verified
- * event may shadow another, in batch or in the store. A full channel suspends [submit].
+ * The pipeline every event this deployment stores funnels through, mirrored or published: a
+ * bounded channel and a pool of workers draining it in batches through [IEventStore.batchInsert].
+ * Only a verified event may shadow another, in batch or in the store. A full channel suspends
+ * [submit]. As an [EventIngest] it is the relay's writer too, answering each publish's OK.
  */
 class IngestPipeline(
     private val store: IEventStore,
@@ -76,11 +79,12 @@ class IngestPipeline(
     private val refusals: RefusalSink = RefusalSink.None,
     /** How long a batch pass runs before the pipeline reads as wedged rather than backpressured. */
     private val wedgeAfterMs: Long = WEDGE_AFTER_MS,
-) : AutoCloseable {
-    private data class Inbound(
+) : EventIngest {
+    private class Inbound(
         val event: Event,
         val skipVerify: Boolean,
         val origin: IngestOrigin,
+        val onOutcome: ((IEventStore.InsertOutcome) -> Unit)?,
     )
 
     private val workers = tuning.concurrency
@@ -173,17 +177,19 @@ class IngestPipeline(
         event: Event,
         skipVerify: Boolean,
         origin: IngestOrigin = IngestOrigin.Local,
+        onOutcome: ((IEventStore.InsertOutcome) -> Unit)? = null,
     ) {
         // Checked after the caller's SyncCoverage.observe, so the leg keeps its per-kind evidence.
         if (refusals.isSuppressed(event)) {
             suppressed.incrementAndGet()
+            onOutcome?.let { deliver(it, SUPPRESSED) }
             return
         }
         // Counted before the send and taken back if it fails, or a fast worker decrements first.
         queued.incrementAndGet()
         var handedOff = false
         try {
-            val inbound = Inbound(event, skipVerify, origin)
+            val inbound = Inbound(event, skipVerify, origin, onOutcome)
             // The fast path first, so `parked` counts only a send that suspends.
             if (this.inbound.trySend(inbound).isSuccess) {
                 handedOff = true
@@ -205,6 +211,15 @@ class IngestPipeline(
             if (!handedOff) queued.decrementAndGet()
         }
     }
+
+    /** A publish: answered once with its outcome, from a worker thread. */
+    override suspend fun submit(
+        event: Event,
+        skipVerify: Boolean,
+        onComplete: (IEventStore.InsertOutcome) -> Unit,
+    ) = submit(event, skipVerify, IngestOrigin.Local, onComplete)
+
+    override fun hasBacklog(): Boolean = queued.get() > 0 || inBatch() > 0
 
     /**
      * One worker: take a batch off the channel, run it through the store, repeat. The exit is
@@ -244,17 +259,18 @@ class IngestPipeline(
             busySince.set(worker, System.currentTimeMillis())
             // Events of this pass no counter has taken yet; what a fault loses.
             var untallied = batch.size
+            val answers = Answers(batch)
             try {
-                val valid = admit(batch)
+                val valid = admit(batch, answers)
                 untallied = valid.size
                 if (valid.isEmpty()) continue
                 // Before the batch write, where a report raised in parallel has no single event.
-                audit?.let { for (msg in valid) it.inspect(msg.event) }
+                audit?.let { for (i in valid) it.inspect(batch[i].event) }
                 val origins =
-                    if (refusals.tracksOrigins) valid.associateTo(HashMap(valid.size)) { it.event.id to it.origin } else emptyMap()
+                    if (refusals.tracksOrigins) valid.associateTo(HashMap(valid.size)) { batch[it].event.id to batch[it].origin } else emptyMap()
                 // The write tallies every event it is handed, through its own callbacks.
                 untallied = 0
-                insertIsolating(valid.map { it.event }, origins)
+                insertIsolating(valid, batch, answers, origins)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -263,6 +279,8 @@ class IngestPipeline(
                 // A pathological event costs its batch, never the worker; other Errors still end it.
                 lostToFault(untallied, e)
             } finally {
+                // Whatever the pass did not answer, a fault took: every submission hears exactly once.
+                answers.rest(IEventStore.InsertOutcome.Failed(RejectionReason.INSERT_FAILED))
                 busySince.set(worker, 0)
             }
         }
@@ -289,14 +307,17 @@ class IngestPipeline(
      * bad signatures dropped and tallied. Only a verified copy may shadow another, and only a copy
      * whose id matches its content may place its group, so no forgery costs the batch a genuine event.
      */
-    private suspend fun admit(batch: List<Inbound>): List<Inbound> {
-        val fresh = dropDuplicates(batch)
+    private suspend fun admit(
+        batch: List<Inbound>,
+        answers: Answers,
+    ): List<Int> {
+        val fresh = dropDuplicates(batch, answers)
         val hashStartedNs = System.nanoTime()
-        val (placed, forged) = ledByContent(batch, fresh)
+        val (placed, forged) = ledByContent(batch, fresh, answers)
         // Booked to `verify` without a call of its own, since it is the id half of the check below.
         IngestStats.add("verify", System.nanoTime() - hashStartedNs)
         tallyBadSignatures(forged)
-        val contests = dropSuperseded(batch, placed)
+        val contests = dropSuperseded(batch, placed, answers)
         if (contests.isEmpty()) return emptyList()
         val winners = ArrayList<Int>(contests.size)
         val superseded = ArrayList<List<Int>>()
@@ -310,11 +331,14 @@ class IngestPipeline(
                         superseded.add(copies)
                         continue
                     }
+                    var winner = -1
                     for ((n, i) in copies.withIndex()) {
                         val msg = batch[i]
                         when {
                             won -> {
                                 duplicates++
+                                // Heard only once the copy that is written has its own verdict.
+                                answers.follow(i, winner)
                             }
 
                             // The leader's id is already checked against its content; the rest are not.
@@ -322,10 +346,12 @@ class IngestPipeline(
                                 runCatching { if (n == 0) msg.event.verifySignature() else msg.event.verify() }.getOrDefault(false) -> {
                                 winners.add(i)
                                 won = true
+                                winner = i
                             }
 
                             else -> {
                                 badSigs++
+                                answers.answer(i, BAD_SIGNATURE)
                             }
                         }
                     }
@@ -337,9 +363,9 @@ class IngestPipeline(
             rejected.addAndGet(duplicates.toLong())
             noteRejection(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
         }
-        if (superseded.isNotEmpty()) reportSuperseded(batch, superseded)
+        if (superseded.isNotEmpty()) reportSuperseded(batch, superseded, answers)
         winners.sort()
-        return winners.map { batch[it] }
+        return winners
     }
 
     private fun tallyBadSignatures(count: Int) {
@@ -353,7 +379,10 @@ class IngestPipeline(
      * own), minus every id the store already holds via [knownIds] when the batch is wide enough
      * to pay for the round trip. Safe on an unverified id: a dropped event is never stored.
      */
-    private suspend fun dropDuplicates(batch: List<Inbound>): List<List<Int>> {
+    private suspend fun dropDuplicates(
+        batch: List<Inbound>,
+        answers: Answers,
+    ): List<List<Int>> {
         val byId = HashMap<String, MutableList<Int>>(batch.size)
         val copies = ArrayList<MutableList<Int>>(batch.size)
         batch.forEachIndexed { i, msg ->
@@ -392,7 +421,12 @@ class IngestPipeline(
                 }
             }
 
-        val fresh = if (stored.isEmpty()) copies else copies.filter { batch[it[0]].event.id !in stored }
+        val fresh =
+            if (stored.isEmpty()) {
+                copies
+            } else {
+                copies.filter { c -> (batch[c[0]].event.id !in stored).also { new -> if (!new) c.forEach { answers.answer(it, DUPLICATE) } } }
+            }
         // Only the probe teaches the gate.
         if (probed) idGate.record(copies.size, copies.size - fresh.size)
         val dropped = copies.sumOf { it.size } - fresh.sumOf { it.size }
@@ -412,6 +446,7 @@ class IngestPipeline(
     private fun ledByContent(
         batch: List<Inbound>,
         copies: List<List<Int>>,
+        answers: Answers,
     ): Pair<List<List<Int>>, Int> {
         var forged = 0
         val led = ArrayList<List<Int>>(copies.size)
@@ -419,9 +454,11 @@ class IngestPipeline(
             val lead = c.indexOfFirst { batch[it].skipVerify || runCatching { batch[it].event.verifyId() }.getOrDefault(false) }
             if (lead < 0) {
                 forged += c.size
+                c.forEach { answers.answer(it, BAD_SIGNATURE) }
                 continue
             }
             forged += lead
+            for (k in 0 until lead) answers.answer(c[k], BAD_SIGNATURE)
             led.add(if (lead == 0) c else c.subList(lead, c.size))
         }
         return led to forged
@@ -429,9 +466,14 @@ class IngestPipeline(
 
     /** Write a batch through the store's bulk path; if it throws, bisect so one bad event does not cost the batch. */
     private suspend fun insertIsolating(
-        events: List<Event>,
+        valid: List<Int>,
+        batch: List<Inbound>,
+        answers: Answers,
         origins: Map<String, IngestOrigin>,
     ) {
+        val events = valid.map { batch[it].event }
+        // By identity: the bisection hands back sublists of [events], and copies of one id are separate submissions.
+        val indexOf = IdentityHashMap<Event, Int>(events.size).apply { events.forEachIndexed { k, e -> put(e, valid[k]) } }
         // Outcomes of the current write not yet in a counter; the bisection writes one half at a time.
         var owed = 0
         insertBisecting(
@@ -446,6 +488,7 @@ class IngestPipeline(
                 for ((i, outcome) in outcomes.withIndex()) {
                     // Ahead of the branch, whose first statement counts the outcome.
                     owed--
+                    if (aligned) indexOf[written[i]]?.let { answers.answer(it, outcome) }
                     when (outcome) {
                         is IEventStore.InsertOutcome.Accepted -> {
                             accepted.incrementAndGet()
@@ -479,14 +522,15 @@ class IngestPipeline(
             },
             onPoison = { event, e ->
                 rejected.incrementAndGet()
+                indexOf[event]?.let { answers.answer(it, IEventStore.InsertOutcome.Failed("error: the store could not take this event")) }
                 noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
                 reportPoison(event, e)
             },
-            onGaveUp = { batch, e ->
+            onGaveUp = { lost, e ->
                 // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
-                rejected.addAndGet(batch.size.toLong())
-                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
-                lostToStore.addAndGet(batch.size.toLong())
+                rejected.addAndGet(lost.size.toLong())
+                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", lost.size.toLong())
+                lostToStore.addAndGet(lost.size.toLong())
             },
         )
     }
@@ -528,6 +572,7 @@ class IngestPipeline(
     private suspend fun dropSuperseded(
         batch: List<Inbound>,
         copies: List<List<Int>>,
+        answers: Answers,
     ): List<List<List<Int>>> {
         // A batch carrying a deletion or a vanish goes to the store whole: an event's fate there
         // depends on its position among the others. Keyed on the kind, not the type.
@@ -567,7 +612,7 @@ class IngestPipeline(
         }
         versionGate.record(byAddress.size, beatenAddresses)
         // The stored version is verified, so these lose before any signature is checked.
-        if (beaten.isNotEmpty()) reportSuperseded(batch, beaten)
+        if (beaten.isNotEmpty()) reportSuperseded(batch, beaten, answers)
         return contests.filter { it.isNotEmpty() }
     }
 
@@ -579,7 +624,9 @@ class IngestPipeline(
     private fun reportSuperseded(
         batch: List<Inbound>,
         versions: List<List<Int>>,
+        answers: Answers,
     ) {
+        for (copies in versions) copies.forEach { answers.answer(it, REPLACED) }
         val dropped = versions.sumOf { it.size }.toLong()
         noteRejection(RejectionReason.REPLACED.take(48), dropped)
         rejected.addAndGet(dropped)
@@ -755,8 +802,60 @@ class IngestPipeline(
         runCatching { pool.close() }
     }
 
+    /**
+     * Each submission's one answer for a pass, by batch index. A copy that [follow]s the copy
+     * written in its place hears that copy's verdict, as a duplicate when it was accepted. A
+     * callback that throws costs nothing but its own delivery.
+     */
+    private inner class Answers(
+        private val batch: List<Inbound>,
+    ) {
+        private val answered = BooleanArray(batch.size)
+        private var followers: HashMap<Int, MutableList<Int>>? = null
+
+        fun follow(
+            copy: Int,
+            leader: Int,
+        ) {
+            (followers ?: HashMap<Int, MutableList<Int>>().also { followers = it }).getOrPut(leader) { ArrayList(1) }.add(copy)
+        }
+
+        fun answer(
+            i: Int,
+            outcome: IEventStore.InsertOutcome,
+        ) {
+            if (answered[i]) return
+            answered[i] = true
+            batch[i].onOutcome?.let { deliver(it, outcome) }
+            followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome) }
+        }
+
+        fun rest(outcome: IEventStore.InsertOutcome) {
+            for (i in batch.indices) answer(i, outcome)
+        }
+    }
+
+    private fun deliver(
+        onOutcome: (IEventStore.InsertOutcome) -> Unit,
+        outcome: IEventStore.InsertOutcome,
+    ) {
+        try {
+            onOutcome(outcome)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            reportBookkeepingFailure("outcome callback", e, "that submission's answer is lost")
+        }
+    }
+
     companion object {
         const val REJECTION_ROWS = 4
+
+        // What a publisher hears, in the store's own words, for the verdicts reached before the store.
+        private val DUPLICATE = IEventStore.InsertOutcome.Rejected(RejectionReason.DUPLICATE)
+        private val REPLACED = IEventStore.InsertOutcome.Rejected(RejectionReason.REPLACED)
+        private val BAD_SIGNATURE = IEventStore.InsertOutcome.Rejected("invalid: bad signature or id")
+        private val SUPPRESSED = IEventStore.InsertOutcome.Rejected("blocked: refused twice before")
 
         private const val MAX_INBOUND_QUEUE = 16_384
 

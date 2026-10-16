@@ -21,13 +21,12 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
-import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
+import com.nosfabrica.vespa.relay.ingest.knownIdsProbe
+import com.nosfabrica.vespa.relay.ingest.newestVersionsProbe
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.onionUpstreams
@@ -246,17 +245,8 @@ fun main() {
             torSettings = torSettings,
             progress = progress,
             storeCalls = storeCalls,
-            // A pure membership read, which is all ingest needs to skip verifying a duplicate.
-            knownIds = store.engine::existingIds,
-            // The winner rule is stage D's: newest created_at, ties to the lower id.
-            newestVersions = { kind, authors ->
-                store.engine
-                    .search(EventQuery(kinds = listOf(kind), authors = authors))
-                    .groupBy { it.pubkey }
-                    .mapValues { (_, docs) ->
-                        docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
-                    }
-            },
+            knownIds = store.knownIdsProbe(),
+            newestVersions = store.newestVersionsProbe(),
         )
     // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
     // exactly the state they exist to show.

@@ -290,3 +290,30 @@ version stage applies, but it runs before the writer lock: a NIP-09 deletion
 of the newer version landing inside that window drops an event the store
 would have taken, until the next full resync re-offers it. Accepted, because
 the window is one batch wide and the loss is recoverable.
+
+**The relay's publishes take the mirror's pipeline.** The relay wrote through
+quartz's `IngestQueue`, one writer committing one batch of up to 64 at a time
+with every signature checked, while the mirror's `IngestPipeline` had grown the
+store's costs into it: several workers, so one plans while another commits;
+the id and version probes, so a resend or a stale replaceable never costs a
+signature check or a write; and the bisecting insert. The two diverged because
+quartz's `LiveEventStore` took the concrete `IngestQueue`, and the OKs and live
+fanout ride on it. Quartz's `EventIngest` is the seam now, the pipeline
+implements it, and `RELAY_INGEST=queue` keeps the old writer for A/B runs. On
+the first 100k of relay.ditto.pub's kind 3s ([ingest-benchmark.md](../ingest-benchmark.md)),
+one publisher went from 427 ev/s to 620, with 21% less engine CPU per event.
+
+**Each publish hears exactly one outcome, in the store's words.** A drop the
+pipeline decides before the store (stored id, stale version, bad signature) is
+answered with the `RejectionReason` the store itself would have given, so a
+publisher cannot tell which side decided. A second copy of an event in one
+batch follows the copy that is written: `duplicate:` once that one is accepted,
+its own failure otherwise, never an `OK true` for an event that was not stored.
+A pass that throws answers whatever it had not answered as `Failed`, in a
+`finally`, which is what makes "exactly once" hold through a fault.
+
+**A resend is acknowledged without its signature being checked.** The id probe
+drops what the store holds before verification, so a forged copy of a stored
+event's id hears `OK true duplicate:`. That is a true statement about the id,
+and the alternative is a schnorr check per resend on the relay's hottest path:
+resends are the common case for a publisher whose OK was late.
