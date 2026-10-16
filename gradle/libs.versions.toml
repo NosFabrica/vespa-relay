@@ -31,7 +31,37 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
+# ce7f4db1b6 = amethyst main @ 2026-10-16, the merge of vitorpamplona/amethyst#4506: Open Markets
+# product collections (30405), shipping options (30406) and product reviews (31555), the kinds the
+# Conduit recommendation plan reads and the web cards (cards/market.js) render. 58 commits over
+# 25a3f37c83, 5 of them touching quartz/: that series, an SNO (cyberspace) size-cap fix and a
+# dial-race test.
+#
+# SCANNED PER PACKAGE THIS RELAY IMPORTS: none of them changes. What moves is reached through the
+# store and the parser:
+#
+#   SEARCH DERIVATION. Additive: 30405, 30406 and 31555 become searchable (collection: title,
+#     summary, content; shipping option: title, carrier, content; review: content, catch-all),
+#     and no kind already searchable extracts differently in this range. 30405 and 30406 are
+#     tag-split in EventFactory: Shopstr's tagless encrypted carts and its escrow records on the
+#     same numbers parse as UnrecognizedKind30405Event / UnrecognizedKind30406Event, addressable
+#     (supersession and NIP-09 by `d` unchanged) and never indexed.
+#     Owed: docs/migrations.md ("Open Markets kinds become searchable"), which also carries the
+#     NIP-15 kinds the 25a3f37c83 entry missed.
+#   KindNames names the three kinds; StatsRollup's per-kind labels pick them up.
+#
+# BINARY CHECK: the store (94aad0feea7e) is still compiled against 68268da413, so its modules carry
+#   `quartz:68268da413 -> ce7f4db1b6`, which `force(libs.quartz)` settles. All 124 quartz members
+#   the store's two jars reference (methods, constructors, fields) resolve against
+#   quartz-jvm-ce7f4db1b6, javap over every class in both jars, inherited members followed.
+#
+# DIRECTION: 25a3f37c83 is a strict ancestor of this, as is 68268da413.
+#   git merge-base --is-ancestor 25a3f37c83 ce7f4db1b6   # verified, full-depth clone
+#
+# LEXICOGRAPHIC: 'ce7f…' > '6826…' ('c' > '6'): would win the store's conflict unforced; moot under
+#   force(libs.quartz) regardless.
+#
+# Prev 25a3f37c83 = amethyst main @ 2026-10-15, the merge of vitorpamplona/amethyst#4491. 781 commits
 # over 68268da413, 149 of them touching quartz/. Taken for the client's rate-limit work, which
 # the monitor's fold walks run through (see docs/decisions/aliases.md):
 #
@@ -177,7 +207,7 @@ app = "0.1.0"
 # classpath).
 # Prev a8e8778265 (2026-09-10, PR #4069: the searchable set 133 -> 144 by that
 # note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
-quartz = "25a3f37c83"
+quartz = "ce7f4db1b6"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
