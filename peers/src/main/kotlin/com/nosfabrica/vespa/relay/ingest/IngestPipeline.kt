@@ -91,7 +91,7 @@ class IngestPipeline(
     private val configuredBatch = tuning.batch
 
     /** How many downloaded events may wait for ingest. */
-    val capacity = (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+    val capacity = tuning.queue?.coerceIn(1, MAX_INBOUND_QUEUE) ?: (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
 
     /** How many events one worker takes per pass, capped to its fair share of the channel. */
     private val batchSize = tuning.batch.coerceAtMost((capacity / workers).coerceAtLeast(1))
@@ -205,7 +205,9 @@ class IngestPipeline(
             }
             submitted.incrementAndGet()
         } catch (_: ClosedSendChannelException) {
-            // Shutdown raced this event in.
+            // Shutdown raced this event in. A publish still hears once, as quartz's own queue
+            // answers it: EventIngest owes every submission exactly one callback.
+            onOutcome?.let { deliver(it, SHUTTING_DOWN) }
         } finally {
             // `send` also throws CancellationException on shutdown.
             if (!handedOff) queued.decrementAndGet()
@@ -247,16 +249,17 @@ class IngestPipeline(
         while (scope.isActive) {
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
             val first = inbound.receiveCatching().getOrNull() ?: break
-            queued.decrementAndGet()
             batch.clear()
             batch.add(first)
             while (batch.size < batchSize) {
                 val next = inbound.tryReceive().getOrNull() ?: break
-                queued.decrementAndGet()
                 batch.add(next)
             }
             // Around the whole pass: the only record that a worker is inside a store round trip.
+            // Marked before the batch leaves [queued], so hasBacklog() never reads an event that
+            // is out of the channel and not yet answered as no backlog at all.
             busySince.set(worker, System.currentTimeMillis())
+            queued.addAndGet(-batch.size)
             // Events of this pass no counter has taken yet; what a fault loses.
             var untallied = batch.size
             val answers = Answers(batch)
@@ -856,6 +859,7 @@ class IngestPipeline(
         private val REPLACED = IEventStore.InsertOutcome.Rejected(RejectionReason.REPLACED)
         private val BAD_SIGNATURE = IEventStore.InsertOutcome.Rejected("invalid: bad signature or id")
         private val SUPPRESSED = IEventStore.InsertOutcome.Rejected("blocked: refused twice before")
+        private val SHUTTING_DOWN = IEventStore.InsertOutcome.Failed("error: relay shutting down")
 
         private const val MAX_INBOUND_QUEUE = 16_384
 
@@ -895,4 +899,11 @@ data class AddressVersion(
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,
+    /**
+     * Events that may wait in the channel; null is the mirror's sizing (four batches, at least
+     * 4,096), deep enough to ride out a download's bursts. A relay's publishes are already
+     * buffered by their senders, so it asks for one batch per worker: every event waiting here
+     * holds a parsed copy in the heap, up to the relay's frame limit each.
+     */
+    val queue: Int? = null,
 )

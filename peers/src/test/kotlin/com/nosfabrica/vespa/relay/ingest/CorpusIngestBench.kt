@@ -21,9 +21,7 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
-import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -80,20 +78,9 @@ class CorpusIngestBench {
                 audit = null,
                 servingPressure = null,
                 scope = scope,
-                knownIds = if (probes) store.engine::existingIds else null,
-                newestVersions =
-                    if (!probes) {
-                        null
-                    } else {
-                        { kind, authors ->
-                            store.engine
-                                .search(EventQuery(kinds = listOf(kind), authors = authors))
-                                .groupBy { it.pubkey }
-                                .mapValues { (_, docs) ->
-                                    docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
-                                }
-                        }
-                    },
+                // The probes SyncMain and RelayMain wire, not a copy that could drift from them.
+                knownIds = if (probes) store.knownIdsProbe() else null,
+                newestVersions = if (probes) store.newestVersionsProbe() else null,
             )
         IngestStats.statusLine()
         pipeline.start()

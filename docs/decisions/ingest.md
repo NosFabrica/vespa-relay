@@ -317,3 +317,27 @@ drops what the store holds before verification, so a forged copy of a stored
 event's id hears `OK true duplicate:`. That is a true statement about the id,
 and the alternative is a schnorr check per resend on the relay's hottest path:
 resends are the common case for a publisher whose OK was late.
+The same holds inside one batch with no probe at all: a forged copy that
+arrives after the genuine one follows it and hears `duplicate:`.
+
+**What else a publisher can see differently from the queue**, all of it the
+pipeline's batching rather than a different rule, and none of it changing what
+is stored:
+
+- An older replaceable version in the same batch as a newer one is answered
+  `OK false replaced:` and not fanned out; the queue wrote both in turn and
+  answered both `OK true`.
+- Two workers commit in parallel batches, so one connection's EVENT and the
+  kind 5 deleting it can commit in either order: the EVENT may hear
+  `blocked: deleted` where the queue accepted it first. The store ends the same.
+- An expired event the sweeper has not reached yet, resent in a probed batch,
+  hears `OK true duplicate:` (the id is held) where the store would refuse it.
+- A publish that races shutdown hears `OK false error: relay shutting down`, as
+  quartz's queue answers it.
+
+**The queue in front of the workers is one batch per worker deep for the relay**
+(`IngestTuning.queue`), not the mirror's four batches with a 4,096 floor. Every
+waiting publish is a parsed event in the heap, up to the relay's 256 KiB frame
+limit each, and a publisher's own window already buffers what it sends; the
+mirror's depth rides out download bursts the relay does not have. At the
+defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.

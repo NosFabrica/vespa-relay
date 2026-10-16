@@ -105,6 +105,19 @@ class IngestOutcomesTest {
             heard
         }
 
+    @Test
+    fun `a publish racing shutdown is answered once, as quartz's queue answers it`() =
+        runBlocking {
+            val scope = CoroutineScope(Job())
+            val pipeline = IngestPipeline(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), IngestTuning(concurrency = 1, batch = 8), null, null, scope)
+            pipeline.closeIntake()
+            val heard = mutableListOf<IEventStore.InsertOutcome>()
+            pipeline.submit(note(1), skipVerify = false) { heard.add(it) }
+            scope.cancel()
+            pipeline.close()
+            assertEquals(listOf<IEventStore.InsertOutcome>(IEventStore.InsertOutcome.Failed("error: relay shutting down")), heard)
+        }
+
     private fun assertRejected(
         prefix: String,
         outcome: IEventStore.InsertOutcome,

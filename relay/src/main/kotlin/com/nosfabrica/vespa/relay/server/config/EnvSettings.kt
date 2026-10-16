@@ -147,12 +147,17 @@ data class RelayIngest(
 fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
     when (env.strictChoice("RELAY_INGEST", setOf("pipeline", "queue")) ?: "pipeline") {
         "queue" -> {
+            // Read anyway: a malformed value stops the boot in either mode, like every strict setting.
+            env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
             RelayIngest(null, ingestBatchFromEnv(env))
         }
 
         else -> {
             val batch = ingestBatchFromEnv(env, DEFAULT_PIPELINE_BATCH)
-            RelayIngest(IngestTuning(env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY, batch), batch)
+            val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
+            // One batch per worker waiting: enough to keep every worker fed, and no deeper, since
+            // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
+            RelayIngest(IngestTuning(concurrency, batch, queue = batch * concurrency), batch)
         }
     }
 

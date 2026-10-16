@@ -29,28 +29,55 @@ AMY=${AMY:-amy}
 RELAY_BIN=${RELAY_BIN:-$REPO/relay/build/install/vespa-relay/bin/vespa-relay}
 RUN=$OUT/runs/$(date +%Y%m%d-%H%M%S)-$NAME
 mkdir -p "$RUN"
-relay_pids() { pgrep -f 'java.*com.nosfabrica.vespa.relay.RelayMainKt' || true; }
-
-for pid in $(relay_pids); do kill "$pid"; done
-while [ -n "$(relay_pids)" ]; do sleep 1; done
+# The relay this harness started, by pid, never by pattern: on a host running the compose
+# relay, a `pgrep RelayMainKt` would find that container's JVM too.
+PIDFILE=$OUT/relay.pid
+stop_relay() {
+  local pid
+  pid=$(cat "$PIDFILE" 2>/dev/null) || return 0
+  if grep -qa RelayMainKt /proc/"$pid"/cmdline 2>/dev/null; then
+    kill "$pid"
+    while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+  fi
+  rm -f "$PIDFILE"
+}
+stop_relay
+# Whatever ends the arm, its relay goes with it and Vespa gets every core back.
+trap 'stop_relay; docker update --cpuset-cpus "0-$(($(nproc) - 1))" vespa >/dev/null 2>&1 || true' EXIT
 
 if [ "${KEEP_STORE:-0}" != 1 ]; then
-  (cd "$REPO" && docker compose rm -sf vespa >/dev/null 2>&1 && docker volume rm -f "$(basename "$REPO")_vespa_var" >/dev/null &&
-    VESPA_MEM_LIMIT=${VESPA_MEM_LIMIT:-8g} docker compose up -d vespa >/dev/null 2>&1)
+  # A fresh store deletes the compose project's Vespa volume: never next to a live relay.
+  if (cd "$REPO" && docker compose ps --status running --services 2>/dev/null | grep -qx relay); then
+    echo "the compose relay is running: this would wipe the store it serves. Stop it, or KEEP_STORE=1." >&2
+    exit 1
+  fi
+  # The volume the container actually mounts, not a name guessed from the directory
+  # (COMPOSE_PROJECT_NAME, or a directory compose normalizes, would miss it silently).
+  VOLUME=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/opt/vespa/var"}}{{.Name}}{{end}}{{end}}' vespa 2>/dev/null || true)
+  (cd "$REPO" && docker compose rm -sf vespa >/dev/null 2>&1)
+  [ -n "$VOLUME" ] && docker volume rm "$VOLUME" >/dev/null
+  (cd "$REPO" && VESPA_MEM_LIMIT=${VESPA_MEM_LIMIT:-8g} docker compose up -d vespa >/dev/null 2>&1)
   until curl -s http://localhost:19071/state/v1/health | grep -q '"code" : "up"'; do sleep 2; done
 fi
 docker update --cpuset-cpus "$CPUS" vespa >/dev/null
 VESPA_PID=$(docker inspect -f '{{.State.Pid}}' vespa)
-# The container is its cgroup; v1 keeps the counter under cpuacct, v2 under the unified tree.
-vespa_cpu_us() {
-  local cg
-  cg=$(sed -n 's/^0:://p' /proc/"$VESPA_PID"/cgroup)
-  if [ -f /sys/fs/cgroup/cpuacct"$cg"/cpuacct.usage ]; then
-    echo $(($(cat /sys/fs/cgroup/cpuacct"$cg"/cpuacct.usage) / 1000))
-  else
-    awk '/usage_usec/{print $2}' /sys/fs/cgroup"$cg"/cpu.stat
-  fi
-}
+# The container is its cgroup. Under v1 (or a hybrid host) the counter is cpuacct's, found by
+# that controller's own line; under v2, the unified tree's, by the `0::` line. Neither found is an
+# error: a fallback to the root counter would read the whole host's CPU as Vespa's.
+CG_V1=$(sed -n 's/^[0-9]*:[^:]*cpuacct[^:]*://p' /proc/"$VESPA_PID"/cgroup)
+CG_V2=$(sed -n 's/^0:://p' /proc/"$VESPA_PID"/cgroup)
+VESPA_CPU_FILE=
+for dir in /sys/fs/cgroup/cpuacct /sys/fs/cgroup/cpu,cpuacct; do
+  if [ -n "$CG_V1" ] && [ -f "$dir$CG_V1/cpuacct.usage" ]; then VESPA_CPU_FILE=$dir$CG_V1/cpuacct.usage; fi
+done
+if [ -n "$VESPA_CPU_FILE" ]; then
+  vespa_cpu_us() { echo $(($(cat "$VESPA_CPU_FILE") / 1000)); }
+elif [ -n "$CG_V2" ] && [ -f /sys/fs/cgroup"$CG_V2"/cpu.stat ]; then
+  vespa_cpu_us() { awk '/usage_usec/{print $2}' /sys/fs/cgroup"$CG_V2"/cpu.stat; }
+else
+  echo "Vespa's cgroup CPU counter was not found (neither cpuacct.usage nor cpu.stat)." >&2
+  exit 1
+fi
 
 if [ "${MODE:-relay}" = sync ]; then
   # Includes the schema deploy the bench's open() does: small next to a slice.
@@ -63,6 +90,8 @@ else
   taskset -c "$CPUS" env VESPA_URL=http://localhost:8080 RELAY_URL=ws://localhost:7777 RELAY_PORT=7777 STORE_METRICS_LOG_SECONDS=15 \
     JAVA_OPTS="${JAVA_OPTS:--Xmx4g}" "$@" "$RELAY_BIN" >"$RUN/relay.log" 2>&1 &
   RELAY_JOB=$!
+  # taskset, env and the launcher script each exec the next, so the job's pid becomes the JVM's.
+  echo "$RELAY_JOB" >"$PIDFILE"
   until grep -q "listening on" "$RUN/relay.log" 2>/dev/null; do
     # The job, not the java process: the launcher script runs a while before it execs java.
     if ! kill -0 "$RELAY_JOB" 2>/dev/null; then
@@ -74,7 +103,7 @@ else
   done
   # The content node has to answer, not only the container; a 200 with no coverage is a node still loading.
   until curl -s "http://localhost:8080/search/?yql=select%20*%20from%20event%20where%20true&hits=0" | grep -q '"coverage"'; do sleep 2; done
-  RELAY_PID=$(relay_pids | head -1)
+  RELAY_PID=$RELAY_JOB
   proc_cpu_ticks() { awk '{print $14+$15}' /proc/"$1"/stat; }
   R0=$(proc_cpu_ticks "$RELAY_PID")
   V0=$(vespa_cpu_us)
@@ -90,10 +119,12 @@ else
   # A publisher exits 1 on a stall; its summary is still written, and the row reports it.
   wait "${PUBLISHER_PIDS[@]}" || true
   RCPU=$((($(proc_cpu_ticks "$RELAY_PID") - R0) / $(getconf CLK_TCK)))
+  # Both CPU windows end at the last answer.
+  V1=$(vespa_cpu_us)
   # The store-metrics line is cumulative; the last one is the arm's total.
   sleep 16
 fi
-VCPU=$((($(vespa_cpu_us) - V0) / 1000000))
+VCPU=$(((${V1:-$(vespa_cpu_us)} - V0) / 1000000))
 
 python3 -I - "$RUN" "$NAME" "$*" "$RCPU" "$VCPU" "$OUT/results.tsv" "${MODE:-relay}" <<'PY'
 import json, os, re, sys
@@ -115,7 +146,7 @@ else:
     parts = [json.load(open(f)) for f in sorted(glob.glob(f"{run}/amy-*.json"))]
     total = lambda k: sum(r[k] for r in parts)
     # The arm lasts as long as its slowest publisher; percentiles do not add, so the worst is reported.
-    span = max(r["answering_ms"] for r in parts) / 1000
+    span = max(max(r["answering_ms"] for r in parts) / 1000, 0.001)
     answered = total("accepted") + total("duplicate") + total("refused") + total("unanswered")
     sent = total("sent")
     rows.append([name + (f" x{len(parts)}" if len(parts) > 1 else ""), env or "-", sent, round(answered / span), round(total("bytes") / 1e6 / span, 2),

@@ -134,3 +134,34 @@ and `unanswered` in earlier runs: OkHttp closes a websocket whose send queue wou
 (2,048 of these events are 38 MiB), and an EVENT over `max_message_length` was answered with a
 NOTICE and no OK. `publishStream` now bounds its window in bytes, and quartz answers the
 oversized EVENT with `OK false`.
+
+### Feed compression
+
+An audit of the store's write path found the feed client compressing every document: its
+default, `auto`, gzips any body over 512 bytes, and nothing set it. For a 400-tag kind 3 (72 KB,
+29 KB gzipped) that is about 2 ms of the relay's CPU, four times what writing the body costs, and
+Vespa inflates it again. The store now reads `VESPA_FEED_COMPRESSION` (vespa-eventstore
+`75be510`), and `docker-compose.yml` sets `none` for its Vespa on the same host. Same slice and
+box, `VESPA_ACCESS_LOG=disabled`, two alternating pairs:
+
+| arm | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| `auto` (gzip) | 693, 725 | 1,180-1,210 | 2,430-2,440 |
+| `none` | **792, 832** | **940-990** | **2,200-2,280** |
+
+From 427 ev/s at the start of this page to 832 on the same box and slice. Across a WAN the bytes
+are the cost instead; set `gzip` there.
+
+The same audit changed the harness after these rows were taken: `vespa_cpu_s` now ends at the
+last answer, as `relay_cpu_s` does (every row above includes the 16 s the harness then waits for
+the last metrics line, so later rows read slightly lower); the relay is tracked by the pid the
+harness started, never by a process pattern that would also match a compose relay's JVM; and an
+arm refuses to wipe the store while the compose relay is running. It also sized the relay's queue
+to one batch per worker (2,000 waiting instead of 4,096 at the defaults). Both checked on the
+final build (store `75be510686`, quartz `020e714858`), `none`, same slice and box:
+
+| arm | ev/s | relay µs/ev | Vespa µs/ev |
+|---|---|---|---|
+| final build, `none` (two runs) | **822, 844** | 930-950 | 2,080-2,110¹ |
+
+¹ The window that ends at the last answer.
