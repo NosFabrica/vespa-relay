@@ -48,7 +48,8 @@ const KIND_LABELS = {
   30267: "app set", 30311: "live", 30312: "room", 30313: "conference",
   30315: "status", 30382: "score", 30383: "event score", 30384: "entry score",
   30385: "id score",
-  30402: "listing", 30403: "draft listing",
+  30402: "listing", 30403: "draft listing", 30405: "collection", 30406: "shipping option",
+  31555: "product review",
   // The monitor's own vocabulary, a Buzz workspace, and one interactive story.
   30166: "relay", 30175: "persona", 30176: "team", 30177: "managed agent",
   30296: "story", 30297: "scene", 30298: "reading",
@@ -109,7 +110,8 @@ const KIND_TONES = {
   code: [1337, 1617, 1618, 1619, 1621, 1622, 1630, 1631, 1632, 1633, 30063, 30617, 30618, 40008,
     30621],
   live: [1312, 1313, 30311, 30312, 30313, 31922, 31923, 31924, 31925],
-  market: [9041, 30009, 30017, 30018, 30019, 30020, 30402, 30403, 33863, 38000, 38383, 1022],
+  market: [9041, 30009, 30017, 30018, 30019, 30020, 30402, 30403, 30405, 30406, 31555, 33863, 38000,
+    38383, 1022],
   apps: [5050, 5100, 5129, 5250, 5302, 5303, 10100, 15128, 15129, 30175, 30176, 30177, 30620, 31890,
     31989, 31990, 32267, 35128, 35129, 5901, 11316, 30178, 43001, 43002, 43003, 43004, 43005, 43006],
   // What somebody did or saw, logged: a workout, an exercise, a sighting, a life list.

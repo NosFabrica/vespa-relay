@@ -159,3 +159,11 @@ and that the request came with a code. The raw event is still behind the json to
 (`registerNamedPeople`), and the row says the same thing with short npubs. An unknown `type`
 is said as its code, with underscores turned into spaces, not dropped.
 
+
+**30405 and 30406 are decided per event.** Open Markets puts collections and shipping options
+on these numbers, and Shopstr reuses them for encrypted carts (`d` and ciphertext) and escrow
+records (no title, service or country). A 30405 is a collection when it has a title or a
+30402 `a`, a 30406 a shipping option when it has a title or a `service`; anything else is
+badged "kind N", says what it is not, and leaves its ciphertext undrawn. A 31555 review's
+`d` is `a:30402:…`, a pointer rather than a name, so `titleOf` skips any `d` shaped like an
+address, and the card links the product it names instead.

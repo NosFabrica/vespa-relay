@@ -1,5 +1,6 @@
-// The marketplace family: NIP-99 listings keep everything in tags, NIP-15 stalls and
-// products keep a JSON content. Nothing is invented for a missing field. The two ends of a
+// The marketplace family: NIP-99 listings keep everything in tags, and so do the Open Markets
+// collections, shipping options and reviews around them; NIP-15 stalls and products keep a JSON
+// content. Nothing is invented for a missing field. The two ends of a
 // trade are here too — a NIP-69 peer-to-peer order, and the mints a NIP-87 reader recommends.
 //
 // Kind 38000 is three vocabularies on one number: NIP-87's mint recommendation, BAO Markets'
@@ -11,9 +12,9 @@ import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
-  fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson,
+  fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson, addrHref, multiTag,
 } from "./base.js";
-import { shortNote } from "../shared/nip19.js";
+import { shortNote, shortAddr, naddr } from "../shared/nip19.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -32,17 +33,84 @@ const priceLine = (amount, currency, period) => {
 const imgEmbed = (url) =>
   url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "";
 
-/** 30402 — a classified listing. */
+/** A listing's images in the order its `image` tags' sort values give, unsorted ones last. */
+const imagesOf = (ev) => tagsOf(ev, "image")
+  .map((t, i) => ({ url: oneLine(t[1]), rank: intOf(oneLine(t[3])) ?? Infinity, i }))
+  .filter((m) => m.url)
+  .sort((a, b) => a.rank - b.rank || a.i - b.i)
+  .map((m) => m.url);
+
+/** The first image as a banner, the rest as a grid beneath it. */
+const gallery = (urls) => imgEmbed(urls[0]) + (urls.length > 1
+  ? `<div class="media-grid">${urls.slice(1).map((u) => `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`
+  : "");
+
+/** The NIP-99 and Open Markets words a listing is flagged with; an absent or unknown one is no pill. */
+const LISTING_PILLS = { sold: "closed", "pre-order": "tentative", hidden: "" };
+
+/** What a listing says about its own availability: sold, pre-order or hidden, as written. */
+function listingFlags(ev) {
+  const status = oneLine(tagOf(ev, "status")).toLowerCase();
+  const visibility = oneLine(tagOf(ev, "visibility")).toLowerCase();
+  return [status === "sold" ? "sold" : "", visibility === "pre-order" || visibility === "hidden" ? visibility : ""]
+    .filter(Boolean);
+}
+
+const flagPills = (flags) => (flags.length
+  ? `<div class="pill-row">${flags.map((f) => `<span class="status-pill${LISTING_PILLS[f] ? ` ${LISTING_PILLS[f]}` : ""}">${esc(f)}</span>`).join("")}</div>`
+  : "");
+
+/** An address list as links, each labelled by its `d`. */
+const addrLinks = (addrs) => addrs.map((a) => {
+  const href = addrHref(a);
+  const label = esc(clip(shortAddr(a), 40));
+  return href ? `<a href="${href}">${label}</a>` : `<span class="mono">${label}</span>`;
+}).join(", ");
+
+/** `["weight", "1.2", "kg"]` and its kin as "1.2 kg", or "". */
+const measureOf = (ev, name) => {
+  const t = tagsOf(ev, name)[0] || [];
+  return [oneLine(t[1]), oneLine(t[2])].filter(Boolean).join(" ");
+};
+
+const addrsOf = (ev, name, kind) =>
+  tagsOf(ev, name).map((t) => oneLine(t[1])).filter((a) => a.startsWith(`${kind}:`));
+
+/**
+ * 30402 — a classified listing. The preview is the title, price, flags and one line of text; the
+ * permalink adds every image, the description under the summary, and the shop's facts.
+ */
 function listingCard(ev, opts) {
   const price = tagsOf(ev, "price")[0] || [];
   const full = opts && opts.full;
+  const summary = summaryOf(ev);
+  const type = tagsOf(ev, "type")[0] || [];
+  const format = oneLine(type[2]).toLowerCase();
+  const stock = intOf(oneLine(tagOf(ev, "stock")));
+  const parent = addrsOf(ev, "a", 30402);
+  const shipping = tagsOf(ev, "shipping_option").map((t) => oneLine(t[1])).filter(Boolean);
+  const specs = full ? tagsOf(ev, "spec").map((t) => [oneLine(t[1]), oneLine(t[2])]).filter(([k, v]) => k && v) : [];
   const inner =
-    (full ? imgEmbed(imageOf(ev)) : "") +
+    (full ? gallery(imagesOf(ev)) : "") +
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}</h2>` : "") +
+    flagPills(listingFlags(ev)) +
     priceLine(price[1], price[2], price[3]) +
-    bodyHtml(opts, summaryOf(ev) || ev.content, 400);
+    (full
+      ? bodyHtml(opts, summary, 400) + bodyHtml(opts, summary === ev.content ? "" : ev.content, 400)
+      : bodyHtml(opts, summary || ev.content, 400)) +
+    chipRow(topicsOf(ev), opts, hashtagHref);
   return shell(ev, opts, inner, [
     ["location", tagOf(ev, "location") ? esc(tagOf(ev, "location")) : null],
+    ["stock", stock != null && stock >= 0 ? esc(stock.toLocaleString()) : null],
+    ["format", format === "physical" || format === "digital" ? esc(format) : null],
+    ...(full ? [
+      ["variant of", oneLine(type[1]).toLowerCase() === "variation" && parent.length ? addrLinks(parent.slice(0, 1)) : null],
+      ["collections", addrLinks(addrsOf(ev, "a", 30405)) || null],
+      ["shipping", addrLinks(shipping) || null],
+      ["weight", measureOf(ev, "weight") ? esc(clip(measureOf(ev, "weight"), 40)) : null],
+      ["dimensions", measureOf(ev, "dim") ? esc(clip(measureOf(ev, "dim"), 40)) : null],
+      ...specs.map(([k, v]) => [clip(k, 40), esc(clip(v, 120))]),
+    ] : []),
   ]);
 }
 
@@ -401,6 +469,155 @@ function bidConfirmationCard(ev, opts) {
   ]);
 }
 
+// ---- Open Markets: collections, shipping options, reviews --------------------
+
+/** NIP-04 or NIP-44 ciphertext: one unbroken base64 run, with NIP-04's `?iv=` tail if any. */
+const CIPHERTEXT = /^[A-Za-z0-9+/]{32,}={0,2}(?:\?iv=[A-Za-z0-9+/]+={0,2})?$/;
+
+/**
+ * A 30405 or 30406 another app wrote on the same number (Shopstr keeps encrypted carts and escrow
+ * records there): said for what it is not, with a ciphertext body left undrawn.
+ */
+function notOursCard(ev, opts, noun) {
+  const text = String(ev.content || "").trim();
+  const inner =
+    `<div class="result-body muted">a kind ${esc(ev.kind)} event that is not ${esc(noun)}</div>` +
+    (CIPHERTEXT.test(text) ? `<div class="muted-note">its content is encrypted</div>` : bodyHtml(opts, text, 200, true));
+  return shell(ev, opts, inner);
+}
+
+/** The products a collection holds: its `a` tags naming 30402s. */
+const productsOf = (ev) => addrsOf(ev, "a", 30402).filter((a) => naddr(a));
+
+/** A collection names itself or lists products; a `d`-only 30405 is somebody's cart. */
+const isCollection = (ev) => !!(oneLine(tagOf(ev, "title")) || productsOf(ev).length);
+
+/** 30405 — a product collection: a merchant's named group of listings. */
+function collectionCard(ev, opts) {
+  if (!isCollection(ev)) return notOursCard(ev, opts, "a product collection");
+  const full = opts && opts.full;
+  const products = productsOf(ev);
+  const summary = oneLine(tagOf(ev, "summary"));
+  const shipping = tagsOf(ev, "shipping_option").map((t) => oneLine(t[1])).filter(Boolean);
+  const inner =
+    (full ? imgEmbed(oneLine(tagOf(ev, "image"))) : "") +
+    titleHtml(opts, oneLine(tagOf(ev, "title")), 140) +
+    (full
+      ? bodyHtml(opts, summary, 400) + bodyHtml(opts, summary === ev.content ? "" : ev.content, 400)
+      : bodyHtml(opts, summary || ev.content, 300)) +
+    `<div class="result-body">${esc(plural(products.length, "product"))}</div>` +
+    (full ? refRows(products.map((a) => ({ kind: "a", value: a })), opts) : "");
+  return shell(ev, opts, inner, [
+    ["location", tagOf(ev, "location") ? esc(clip(tagOf(ev, "location"), 120)) : null],
+    ["shipping", full ? addrLinks(shipping) || null : null],
+  ]);
+}
+
+/** A shipping option has a title or a service; Shopstr's escrow records on 30406 have neither. */
+const isShippingOption = (ev) => !!(oneLine(tagOf(ev, "title")) || oneLine(tagOf(ev, "service")));
+
+const DURATION_UNITS = { H: ["hour", "hours"], D: ["day", "days"], W: ["week", "weeks"] };
+
+/** `["duration", "24", "72", "H"]` as "24–72 hours", or "" when the window cannot be read. */
+function durationText(ev) {
+  const t = tagsOf(ev, "duration")[0] || [];
+  const [min, max] = [oneLine(t[1]), oneLine(t[2])].map((v) => (/^\d+(?:\.\d+)?$/.test(v) ? v : ""));
+  const unit = DURATION_UNITS[oneLine(t[3]).toUpperCase()];
+  if (!unit || !(min || max)) return "";
+  const span = min && max && min !== max ? `${min}–${max}` : min || max;
+  return `${span} ${span === "1" ? unit[0] : unit[1]}`;
+}
+
+/** A min/max pair of measures as one range: "up to 30 kg", "from 1 kg", "1 kg – 30 kg". */
+const rangeText = (lo, hi) => (lo && hi ? `${lo} – ${hi}` : lo ? `from ${lo}` : hi ? `up to ${hi}` : "");
+
+/** `["price-weight", "0.75", "USD", "kg"]` as "+0.75 USD per kg"; the currency is optional. */
+function ratesOf(ev) {
+  return ["price-weight", "price-volume", "price-distance"].map((name) => {
+    const t = (tagsOf(ev, name)[0] || []).map(oneLine);
+    if (!t[1] || t.length < 3) return "";
+    return `+${t[1]}${t.length > 3 && t[2] ? ` ${t[2]}` : ""} per ${t[t.length - 1]}`;
+  }).filter(Boolean);
+}
+
+/** 30406 — a shipping option: what it costs, how fast, and where it goes. */
+function shippingCard(ev, opts) {
+  if (!isShippingOption(ev)) return notOursCard(ev, opts, "a shipping option");
+  const full = opts && opts.full;
+  const price = tagsOf(ev, "price")[0] || [];
+  const service = oneLine(tagOf(ev, "service")).toLowerCase();
+  const countries = multiTag(ev, "country").map(oneLine).filter(Boolean);
+  const regions = multiTag(ev, "region").map(oneLine).filter(Boolean);
+  const where = oneLine(tagOf(ev, "location"));
+  const inner =
+    titleHtml(opts, oneLine(tagOf(ev, "title")), 140) +
+    (service ? `<div class="pill-row"><span class="status-pill">${esc(clip(service, 24))}</span></div>` : "") +
+    priceLine(price[1], price[2]) +
+    bodyHtml(opts, ev.content === oneLine(tagOf(ev, "title")) ? "" : ev.content, 300);
+  return shell(ev, opts, inner, [
+    ["ships to", countries.length ? esc(clip(countries.join(", "), full ? 400 : 80)) : null],
+    ["regions", regions.length ? esc(clip(regions.join(", "), full ? 400 : 80)) : null],
+    ["delivery", durationText(ev) ? esc(durationText(ev)) : null],
+    [service === "pickup" ? "pickup at" : "location", where ? esc(clip(where, 120)) : null],
+    ...(full ? [
+      ["carrier", tagOf(ev, "carrier") ? esc(clip(oneLine(tagOf(ev, "carrier")), 60)) : null],
+      ["weight", rangeText(measureOf(ev, "weight-min"), measureOf(ev, "weight-max")) ? esc(clip(rangeText(measureOf(ev, "weight-min"), measureOf(ev, "weight-max")), 60)) : null],
+      ["size", rangeText(measureOf(ev, "dim-min"), measureOf(ev, "dim-max")) ? esc(clip(rangeText(measureOf(ev, "dim-min"), measureOf(ev, "dim-max")), 60)) : null],
+      ["rates", ratesOf(ev).length ? esc(ratesOf(ev).join(" · ")) : null],
+    ] : []),
+  ]);
+}
+
+/** A review's `d` names the product as `a:30402:<merchant>:<d>`. */
+const REVIEWED = /^a:(30402:([0-9a-f]{64}):[\s\S]*)$/;
+
+/**
+ * A 31555 read the Open Markets way: the `thumb` rating, the category ratings beside it, and the
+ * total, which is the thumb alone or half the thumb plus half the categories' mean. Scores outside
+ * 0..1 are malformed and left out.
+ */
+function reviewOf(ev) {
+  const m = REVIEWED.exec(oneLine(tagOf(ev, "d")));
+  const scores = tagsOf(ev, "rating")
+    .map((t) => ({ text: oneLine(t[1]), category: oneLine(t[2]) }))
+    .filter((r) => r.text && r.category && Number.isFinite(Number(r.text)) && Number(r.text) >= 0 && Number(r.text) <= 1)
+    .map((r) => ({ value: Number(r.text), category: r.category }));
+  const thumbTag = scores.find((r) => r.category.toLowerCase() === "thumb");
+  const categories = scores.filter((r) => r.category.toLowerCase() !== "thumb");
+  const thumb = thumbTag ? thumbTag.value : null;
+  const mean = categories.length ? categories.reduce((n, r) => n + r.value, 0) / categories.length : null;
+  return {
+    product: m && naddr(m[1]) ? m[1] : null,
+    merchant: m && naddr(m[1]) ? m[2] : null,
+    thumb,
+    categories,
+    total: thumb == null ? null : mean == null ? thumb : thumb * 0.5 + mean * 0.5,
+  };
+}
+
+const percent = (v) => `${Math.round(v * 100)}%`;
+/** The thumb's word; a half is neither way. */
+const thumbWord = (v) => (v == null ? "" : v > 0.5 ? "thumbs up" : v < 0.5 ? "thumbs down" : "mixed");
+const THUMB_TONE = { "thumbs up": "open", "thumbs down": "closed", mixed: "" };
+
+/** 31555 — a product review: the verdict, its parts, the words, and the product it is about. */
+function reviewCard(ev, opts) {
+  const r = reviewOf(ev);
+  const word = thumbWord(r.thumb);
+  const product = r.product
+    ? `<a href="${addrHref(r.product)}">${esc(clip(shortAddr(r.product), 60))}</a>${r.merchant ? ` from ${personLink(r.merchant)}` : ""}`
+    : "a product";
+  const inner =
+    `<div class="result-body">reviews ${product}</div>` +
+    (word
+      ? `<div class="pill-row"><span class="status-pill lead${THUMB_TONE[word] ? ` ${THUMB_TONE[word]}` : ""}">${esc(word)}</span>` +
+        `<span class="price-line">${esc(percent(r.total))} overall</span></div>`
+      : "") +
+    chipRow(r.categories.map((c) => `${c.category} ${percent(c.value)}`), opts) +
+    bodyHtml(opts, ev.content, 400);
+  return shell(ev, opts, inner);
+}
+
 register([30402, 30403], listingCard);
 register([30018, 30020], productCard);
 register([30017], stallCard);
@@ -411,6 +628,13 @@ register([30019], marketplaceCard);
 register([33863], fundraiserCard);
 register([38000], (ev, opts) => KIND_38000[kind38000(ev)].card(ev, opts));
 register([1022], bidConfirmationCard);
+register([30405], collectionCard);
+register([30406], shippingCard);
+register([31555], reviewCard);
+registerBadge([30405], (ev) => (isCollection(ev) ? "" : "kind 30405"));
+registerBadge([30406], (ev) => (isShippingOption(ev) ? "" : "kind 30406"));
+// The merchant is named from the address in `d`, which no scan of `p` tags reaches.
+registerNamedPeople([31555], (ev) => [reviewOf(ev).merchant].filter(Boolean));
 registerBadge([38000], (ev) => KIND_38000[kind38000(ev)].badge);
 registerNamedPeople([1022], (ev) => [bidderOf(ev)].filter(Boolean));
 
@@ -419,7 +643,27 @@ registerRow([30402, 30403], (ev) => {
   const price = tagsOf(ev, "price")[0] || [];
   return {
     name: titleOf(ev),
-    sub: [priceText(price[1], price[2], price[3]), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+    sub: [priceText(price[1], price[2], price[3]), ...listingFlags(ev), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+  };
+});
+registerRow([30405], (ev) => (isCollection(ev)
+  ? { name: oneLine(tagOf(ev, "title")), sub: [plural(productsOf(ev).length, "product"), oneLine(tagOf(ev, "summary")) || oneLine(ev.content)].filter(Boolean).join(" · ") }
+  : { name: "a kind 30405 event, not a collection" }));
+registerRow([30406], (ev) => {
+  if (!isShippingOption(ev)) return { name: "a kind 30406 event, not a shipping option" };
+  const price = tagsOf(ev, "price")[0] || [];
+  return {
+    name: oneLine(tagOf(ev, "title")) || `${oneLine(tagOf(ev, "service"))} shipping`,
+    sub: [priceText(price[1], price[2]), oneLine(tagOf(ev, "service")), durationText(ev), multiTag(ev, "country").map(oneLine).filter(Boolean).join(", ")]
+      .filter(Boolean).join(" · "),
+  };
+});
+// A review's first line is the product, the verdict and the words under it.
+registerRow([31555], (ev) => {
+  const r = reviewOf(ev);
+  return {
+    name: `reviews ${r.product ? clip(shortAddr(r.product), 60) : "a product"}`,
+    sub: [thumbWord(r.thumb), r.total == null ? "" : `${percent(r.total)} overall`, ev.content].filter(Boolean).join(" · "),
   };
 });
 registerRow([30018, 30020], (ev) => {

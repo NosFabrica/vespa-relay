@@ -58,6 +58,12 @@ const FIXTURES = [
   [31923, ev(31923, [["title", "Meetup"], ["start", String(now + 86400)]]), "Meetup"],
   [31924, ev(31924, [["title", "My calendar"], ["a", "31923:x:y"]]), "1 event"],
   [30402, ev(30402, [["title", "Bike for sale"], ["price", "250", "USD"], ["location", "Berlin"], ["image", "https://x/bike.jpg"]], "good bike"), "250 USD"],
+  [30405, ev(30405, [["d", "wallets"], ["title", "Hardware Wallets"], ["summary", "cold storage"], ["a", `30402:${pk}:trezor`],
+    ["a", `30402:${pk}:coldcard`], ["image", "https://x/wallets.jpg"], ["location", "Lisbon"]], "Every wallet we stock."), "2 products"],
+  [30406, ev(30406, [["d", "std"], ["title", "Standard Shipping"], ["price", "5.99", "USD"], ["country", "US", "CA"],
+    ["region", "US-FL"], ["service", "standard"], ["carrier", "UPS"], ["duration", "24", "72", "H"]], "regional shipping"), "24–72 hours"],
+  [31555, ev(31555, [["d", `a:30402:${pk2}:bike`], ["rating", "1", "thumb"], ["rating", "0.8", "value"], ["rating", "0.6", "delivery"]],
+    "Rides well, arrived late."), "thumbs up"],
   [30018, ev(30018, [], JSON.stringify({ name: "Widget", description: "a widget", price: 10, currency: "EUR", images: ["https://x/w.jpg"] })), "10 EUR"],
   [30017, ev(30017, [], JSON.stringify({ name: "My stall", description: "shop", currency: "USD" })), "My stall"],
   [9041,  ev(9041, [["amount", "2100000000"]], "help the cause"), "2,100,000 sats"],
@@ -460,6 +466,8 @@ const ROW_SAYS = [
   // The ones whose fact has to be read out of somewhere first.
   [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
   [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
+  [30405, "Hardware Wallets · 2 products · cold storage"], [30406, "Standard Shipping · 5.99 USD · standard · 24–72 hours · US, CA"],
+  [31555, "reviews bike · thumbs up · 85% overall · Rides well"],
   [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
   // A citation leads with the source, not with the note about it.
   [32, "Chapter Two · Ursula Franklin · The Real World vol 2"], [33, "claude-opus-5 · what is a relay?"],
@@ -1508,6 +1516,82 @@ assert(card(ev(38000, [["d", "sybil test vote 7"]])).includes("no app this page 
 // A `k` naming another kind is not a recommendation, whatever else the event carries.
 assert.strictEqual(badgeOf(card(ev(38000, [["k", "1"], ["u", "https://x"], ["election", "E"]]))), "ballot",
   "a non-mint `k` rules the recommendation out before the ballot is checked");
+
+// ---- Open Markets: listings, collections, shipping options, reviews ----------
+//
+// A listing's permalink keeps every word and every fact its merchant wrote; the preview stays short.
+const bike = ev(30402, [["d", "bike"], ["title", "Bike"], ["price", "250", "USD"], ["summary", "a city bike"],
+  ["status", "sold"], ["visibility", "pre-order"], ["stock", "3"], ["type", "simple", "physical"], ["t", "bikes"], ["t", "Bikes"],
+  ["spec", "frame", "steel"], ["image", "https://x/b2.jpg", "", "2"], ["image", "https://x/b1.jpg", "", "1"], ["image", "https://x/b3.jpg"],
+  ["shipping_option", `30406:${pk}:std`], ["a", `30405:${pk}:wallets`]], "Ridden twice, kept indoors.");
+const bikeFull = card(bike, { full: true });
+assert(bikeFull.includes("a city bike") && bikeFull.includes("Ridden twice, kept indoors."),
+  "a listing's permalink shows its summary and its description, not one in place of the other");
+assert(!card(bike).includes("Ridden twice"), "…and the preview stays at the summary");
+assert(/status-pill[^"]*">sold</.test(card(bike)) && /status-pill[^"]*">pre-order</.test(card(bike)),
+  "a sold or pre-order listing says so at both depths");
+assert(bikeFull.includes("<dt>stock</dt><dd>3</dd>") && bikeFull.includes("<dt>format</dt><dd>physical</dd>"),
+  "stock and the physical format are facts on the card");
+assert((bikeFull.match(/>#bikes</gi) || []).length === 1 && bikeFull.includes(`href="/?q=%23bikes"`),
+  "a listing's categories are hashtag chips, each once");
+assert(bikeFull.includes("<dt>frame</dt><dd>steel</dd>"), "a spec is a fact on the permalink");
+assert(bikeFull.indexOf("b1.jpg") < bikeFull.indexOf("b2.jpg") && bikeFull.indexOf("b2.jpg") < bikeFull.indexOf("b3.jpg"),
+  "the permalink draws every image, in the order the merchant sorted them");
+assert(!card(bike).includes("b1.jpg"), "…and the preview draws none");
+assert(bikeFull.includes(`href="/${naddr(`30406:${pk}:std`)}"`) && bikeFull.includes(`href="/${naddr(`30405:${pk}:wallets`)}"`),
+  "a listing links the shipping options and collections it names");
+assert(rowOf(bike).sub.includes("sold"), "the row says a listing is sold");
+const plain = card(ev(30402, [["title", "Lamp"], ["price", "5", "EUR"]], "a lamp"), { full: true });
+assert(!plain.includes("status-pill") && !plain.includes("<dt>stock</dt>") && !plain.includes("<dt>format</dt>"),
+  "a listing that says nothing of its availability or format is not given any");
+assert(card(ev(30402, [["title", "L"], ["visibility", "hidden"]])).includes(">hidden<"), "a hidden listing is marked hidden");
+
+// A collection names its products and links them; a `d`-only 30405 is Shopstr's encrypted cart.
+const wallets = FIXTURES.find(([k]) => k === 30405)[1];
+const walletsFull = card(wallets, { full: true });
+assert(walletsFull.includes("Hardware Wallets") && walletsFull.includes("cold storage") && walletsFull.includes("Every wallet we stock."),
+  "a collection's permalink shows its title, its summary and its description");
+assert(walletsFull.includes(`href="/${naddr(`30402:${pk}:trezor`)}"`) && walletsFull.includes("wallets.jpg"),
+  "…links every product it holds and draws its image");
+assert(!card(wallets).includes("wallets.jpg"), "…and the preview carries no banner");
+assert(walletsFull.includes("<dt>location</dt><dd>Lisbon</dd>"), "a collection's location is a fact");
+const cart = ev(30405, [["d", "shopstr-cart"]], "QmFzZTY0IGVuY3J5cHRlZCBjYXJ0IHBheWxvYWQgaGVyZQ==");
+for (const opts of [undefined, { full: true }]) {
+  assert(!card(cart, opts).includes("0 products") && !card(cart, opts).includes("QmFzZTY0"),
+    "a Shopstr cart is not drawn as a collection, and its ciphertext is not drawn at all");
+  assert.strictEqual(badgeOf(card(cart, opts)), "kind 30405", "…nor badged as one");
+}
+assert(!rowOf(cart).name.includes("collection ·") && !rowOf(cart).name.includes("products"), "the cart's row does not count products");
+// A real collection may list no products yet; its title is enough.
+assert.strictEqual(badgeOf(card(ev(30405, [["d", "c"], ["title", "Krux DIY Wallets"]]))), "collection");
+
+// A shipping option says what it costs, how fast, where it goes, and who carries it.
+const ship = FIXTURES.find(([k]) => k === 30406)[1];
+const shipFull = card(ship, { full: true });
+for (const fact of ["Standard Shipping", "5.99 USD", ">standard<", "US, CA", "US-FL", "UPS", "24–72 hours"]) {
+  assert(shipFull.includes(fact), `a shipping option's permalink shows ${fact}`);
+}
+const pickup = card(ev(30406, [["title", "Store Pickup"], ["price", "0", "USD"], ["service", "pickup"], ["location", "123 Main St"]]), { full: true });
+assert(pickup.includes("<dt>pickup at</dt><dd>123 Main St</dd>"), "a pickup option says where to pick up");
+const escrow = ev(30406, [["d", "escrow-1"], ["p", pk2]], "QmFzZTY0IGVuY3J5cHRlZCBlc2Nyb3cgcmVjb3JkIGhlcmU=");
+assert.strictEqual(badgeOf(card(escrow)), "kind 30406", "a Shopstr escrow record is not badged a shipping option");
+assert(!card(escrow, { full: true }).includes("QmFzZTY0") && !rowOf(escrow).name.includes("shipping ·"),
+  "…nor drawn as one");
+
+// A review links the product it reviews, and its score is the Open Markets total.
+const review = FIXTURES.find(([k]) => k === 31555)[1];
+const reviewFull = card(review, { full: true });
+assert(reviewFull.includes(`href="/${naddr(`30402:${pk2}:bike`)}"`), "a review card links to the reviewed product");
+assert(reviewFull.includes("85% overall"), "the total is half the thumb plus half the categories' mean");
+assert(reviewFull.includes("value 80%") && reviewFull.includes("delivery 60%"), "each category's score is shown");
+assert(reviewFull.includes("Rides well, arrived late."), "…and the review's words");
+assert(card(ev(31555, [["d", `a:30402:${pk2}:x`], ["rating", "0", "thumb"]])).includes("thumbs down") &&
+  card(ev(31555, [["d", `a:30402:${pk2}:x`], ["rating", "0", "thumb"]])).includes("0% overall"),
+  "a thumb alone is the total");
+for (const opts of [undefined, { full: true }]) {
+  assert(!card(review, opts).includes(`a:30402:`), "a review's raw `d` is never its title");
+}
+assert(!rowOf(review).name.includes("a:30402:"), "…nor its row's name");
 
 // A NIP-17 file's key is on the event, never on the page; nor is a NIP-29 invite code.
 const sealed = FIXTURES.find(([k]) => k === 15)[1];

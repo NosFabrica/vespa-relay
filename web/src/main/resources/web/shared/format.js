@@ -31,6 +31,8 @@ export const firstTag = (ev, ...names) => {
 };
 /** A `d` that is a UUID, a hex blob or a bare unix timestamp is never a title. */
 const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{10,})$/i;
+/** A `d` that points at another event's address (a review's `a:30402:…`) names that event, not this one. */
+const ADDRESS_D = /^(?:a:)?\d+:[0-9a-f]{64}:/i;
 export const titleOf = (ev) => {
   const named = firstTag(ev, "title", "name", "subject");
   if (named) return named;
@@ -38,7 +40,7 @@ export const titleOf = (ev) => {
   const room = ev && ev.kind === 30312 ? firstTag(ev, "room") : null;
   if (room && room.trim()) return room.trim();
   const d = firstTag(ev, "d");
-  return d && !OPAQUE_D.test(d) ? d : null;
+  return d && !OPAQUE_D.test(d) && !ADDRESS_D.test(d) ? d : null;
 };
 export const summaryOf = (ev) => firstTag(ev, "summary", "description", "alt");
 export const imageOf = (ev) => firstTag(ev, "image", "thumb", "picture", "icon");
