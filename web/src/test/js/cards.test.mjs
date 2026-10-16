@@ -12,6 +12,7 @@ const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../main/re
 const { seedProfiles } = await import(new URL("../../main/resources/web/shared/profiles.js", import.meta.url));
 const { seedGroupEvents } = await import(new URL("../../main/resources/web/shared/groupnames.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../main/resources/web/shared/parents.js", import.meta.url));
+const { titleOf } = await import(new URL("../../main/resources/web/shared/format.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -1544,6 +1545,13 @@ assert(rowOf(bike).sub.includes("sold"), "the row says a listing is sold");
 const plain = card(ev(30402, [["title", "Lamp"], ["price", "5", "EUR"]], "a lamp"), { full: true });
 assert(!plain.includes("status-pill") && !plain.includes("<dt>stock</dt>") && !plain.includes("<dt>format</dt>"),
   "a listing that says nothing of its availability or format is not given any");
+assert(card(ev(30402, [["title", "L"], ["type", "physical"]]), { full: true }).includes("<dt>format</dt><dd>physical</dd>"),
+  "a format written in the type slot is still the format");
+// An address is linked as written: a `d` of "bike " or "my  bike" is another product than "bike".
+for (const d of ["std ", "my  std"]) {
+  assert(card(ev(30402, [["title", "L"], ["shipping_option", `30406:${pk}:${d}`]]), { full: true }).includes(`href="/${naddr(`30406:${pk}:${d}`)}"`),
+    `a listing links the shipping option "${d}" by its own d`);
+}
 assert(card(ev(30402, [["title", "L"], ["visibility", "hidden"]])).includes(">hidden<"), "a hidden listing is marked hidden");
 
 // A collection names its products and links them; a `d`-only 30405 is Shopstr's encrypted cart.
@@ -1555,13 +1563,29 @@ assert(walletsFull.includes(`href="/${naddr(`30402:${pk}:trezor`)}"`) && wallets
   "…links every product it holds and draws its image");
 assert(!card(wallets).includes("wallets.jpg"), "…and the preview carries no banner");
 assert(walletsFull.includes("<dt>location</dt><dd>Lisbon</dd>"), "a collection's location is a fact");
-const cart = ev(30405, [["d", "shopstr-cart"]], "QmFzZTY0IGVuY3J5cHRlZCBjYXJ0IHBheWxvYWQgaGVyZQ==");
+// Shopstr's shapes as written: a cart is NIP-44 ciphertext with no tags at all; an escrow record adds a `d` and a `type`.
+const nip44 = Buffer.from([2, ...Array.from({ length: 98 }, (_, i) => (i * 37 + 11) & 255)]).toString("base64");
+const cart = ev(30405, [], nip44);
 for (const opts of [undefined, { full: true }]) {
-  assert(!card(cart, opts).includes("0 products") && !card(cart, opts).includes("QmFzZTY0"),
+  assert(!card(cart, opts).includes("0 products") && !card(cart, opts).includes(nip44.slice(0, 24)),
     "a Shopstr cart is not drawn as a collection, and its ciphertext is not drawn at all");
   assert.strictEqual(badgeOf(card(cart, opts)), "kind 30405", "…nor badged as one");
 }
-assert(!rowOf(cart).name.includes("collection ·") && !rowOf(cart).name.includes("products"), "the cart's row does not count products");
+assert.strictEqual(rowOf(cart).name, "a kind 30405 event, not a collection", "the cart's row says what it is not");
+const withProducts = (n, extra = []) => ev(30405, [...extra, ...Array.from({ length: n }, (_, i) => ["a", `30402:${pk}:p${i}`])]);
+assert.strictEqual(badgeOf(card(withProducts(1))), "collection", "one product address is enough to be a collection");
+// A preview only counts the products; it never encodes them.
+const bigShelf = withProducts(5000);
+const shelfStarted = Date.now();
+const shelfPreview = card(bigShelf), shelfRow = rowOf(bigShelf);
+const shelfTook = Date.now() - shelfStarted;
+assert(shelfPreview.includes("5,000 products") && shelfRow.sub.startsWith("5,000 products"), "a collection's products are counted");
+assert(shelfTook < 80, `a 5000-product collection must not cost ${shelfTook}ms to preview`);
+for (const d of ["bike ", "my  bike"]) {
+  const shelf = card(ev(30405, [["title", "S"], ["a", `30402:${pk}:${d}`], ["shipping_option", `30406:${pk}:${d}`]]), { full: true });
+  assert(shelf.includes(`href="/${naddr(`30402:${pk}:${d}`)}"`) && shelf.includes(`href="/${naddr(`30406:${pk}:${d}`)}"`),
+    `a collection links the product and shipping option "${d}" by their own d`);
+}
 // A real collection may list no products yet; its title is enough.
 assert.strictEqual(badgeOf(card(ev(30405, [["d", "c"], ["title", "Krux DIY Wallets"]]))), "collection");
 
@@ -1573,10 +1597,14 @@ for (const fact of ["Standard Shipping", "5.99 USD", ">standard<", "US, CA", "US
 }
 const pickup = card(ev(30406, [["title", "Store Pickup"], ["price", "0", "USD"], ["service", "pickup"], ["location", "123 Main St"]]), { full: true });
 assert(pickup.includes("<dt>pickup at</dt><dd>123 Main St</dd>"), "a pickup option says where to pick up");
-const escrow = ev(30406, [["d", "escrow-1"], ["p", pk2]], "QmFzZTY0IGVuY3J5cHRlZCBlc2Nyb3cgcmVjb3JkIGhlcmU=");
+const escrow = ev(30406, [["d", "shopstr:p2pk-escrow:6f1c2b9e-4d7a-4e21-9b3c-0a5f8e7d6c41"], ["type", "p2pk-escrow"]], nip44);
 assert.strictEqual(badgeOf(card(escrow)), "kind 30406", "a Shopstr escrow record is not badged a shipping option");
-assert(!card(escrow, { full: true }).includes("QmFzZTY0") && !rowOf(escrow).name.includes("shipping ·"),
-  "…nor drawn as one");
+assert(!card(escrow, { full: true }).includes(nip44.slice(0, 24)), "…nor is its ciphertext drawn");
+assert.strictEqual(rowOf(escrow).name, "a kind 30406 event, not a shipping option", "…and its row says what it is not");
+const shipWith = (...tags) => card(ev(30406, [["title", "T"], ...tags]), { full: true });
+assert(shipWith(["price-weight", "0.75", "kg", ""]).includes("+0.75 per kg"), "an empty trailing value is not the rate's unit");
+assert(shipWith(["price-weight", "0.75", "USD", "kg"]).includes("+0.75 USD per kg"), "…and a currency still reads");
+assert(shipWith(["duration", "2", "1", "W"]).includes("1–2 weeks"), "a reversed delivery window reads low to high");
 
 // A review links the product it reviews, and its score is the Open Markets total.
 const review = FIXTURES.find(([k]) => k === 31555)[1];
@@ -1592,6 +1620,20 @@ for (const opts of [undefined, { full: true }]) {
   assert(!card(review, opts).includes(`a:30402:`), "a review's raw `d` is never its title");
 }
 assert(!rowOf(review).name.includes("a:30402:"), "…nor its row's name");
+assert.strictEqual(titleOf(ev(31555, [["d", `a:30402:${pk2}:x`]])), null, "a `d` naming another event's address is no title");
+assert.strictEqual(titleOf(ev(31555, [["d", `30402:${pk2}:x`]])), null, "…with or without the `a:` prefix");
+assert.strictEqual(titleOf(ev(30402, [["d", "bike"]])), "bike", "a plain `d` is still a title");
+const reviewing = (d) => ev(31555, [["d", `a:30402:${pk2}:${d}`], ["rating", "1", "thumb"]]);
+assert(card(reviewing("bike "), { full: true }).includes(`href="/${naddr(`30402:${pk2}:bike `)}"`),
+  "a review links the product by its `d` as written");
+for (const d of ["6f1c2b9e-4d7a-4e21-9b3c-0a5f8e7d6c41", "ab".repeat(32)]) {
+  assert.strictEqual(rowOf(reviewing(d)).name, "reviews a listing", "an opaque product `d` is not shown");
+  assert(!card(reviewing(d), { full: true }).replace(/<details[\s\S]*?<\/details>/g, "").includes(d), "…on the card either");
+}
+for (const bad of ["0x1", "1e0", "", " "]) {
+  assert(!/thumbs|overall/.test(card(ev(31555, [["d", "r"], ["rating", bad, "thumb"]]))), `a rating of "${bad}" is not a score`);
+}
+assert(card(ev(31555, [["d", "r"], ["rating", ".5", "thumb"]])).includes("50% overall"), "a decimal with no leading digit is a score");
 
 // A NIP-17 file's key is on the event, never on the page; nor is a NIP-29 invite code.
 const sealed = FIXTURES.find(([k]) => k === 15)[1];

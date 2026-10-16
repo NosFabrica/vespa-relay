@@ -30,7 +30,7 @@ export const firstTag = (ev, ...names) => {
   return null;
 };
 /** A `d` that is a UUID, a hex blob or a bare unix timestamp is never a title. */
-const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{10,})$/i;
+export const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{10,})$/i;
 /** A `d` that points at another event's address (a review's `a:30402:…`) names that event, not this one. */
 const ADDRESS_D = /^(?:a:)?\d+:[0-9a-f]{64}:/i;
 export const titleOf = (ev) => {

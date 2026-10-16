@@ -8,7 +8,7 @@
 // them apart by tags (EventFactory), and so does [kind38000], in the same order, so a market is
 // never drawn as "recommends 0 mints".
 
-import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, OPAQUE_D } from "../shared/format.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
@@ -63,7 +63,7 @@ const flagPills = (flags) => (flags.length
 /** An address list as links, each labelled by its `d`. */
 const addrLinks = (addrs) => addrs.map((a) => {
   const href = addrHref(a);
-  const label = esc(clip(shortAddr(a), 40));
+  const label = esc(clip(oneLine(shortAddr(a)), 40));
   return href ? `<a href="${href}">${label}</a>` : `<span class="mono">${label}</span>`;
 }).join(", ");
 
@@ -73,8 +73,20 @@ const measureOf = (ev, name) => {
   return [oneLine(t[1]), oneLine(t[2])].filter(Boolean).join(" ");
 };
 
-const addrsOf = (ev, name, kind) =>
-  tagsOf(ev, name).map((t) => oneLine(t[1])).filter((a) => a.startsWith(`${kind}:`));
+const ADDRESS = /^(\d+):[0-9a-f]{64}:/;
+/** A value that is an address, of [kind] when given; it is linked as written, since a `d` may hold any whitespace. */
+const isAddress = (a, kind) => {
+  const m = typeof a === "string" ? ADDRESS.exec(a) : null;
+  return !!m && (kind == null || m[1] === String(kind));
+};
+const addrsOf = (ev, name, kind) => tagsOf(ev, name).map((t) => t[1]).filter((a) => isAddress(a, kind));
+
+/** A listing's `type` tag as `[type, format]`; a format written in the type slot is still the format. */
+const FORMATS = new Set(["physical", "digital"]);
+function productTypeOf(ev) {
+  const [, type, format] = (tagsOf(ev, "type")[0] || []).map((v) => oneLine(v).toLowerCase());
+  return FORMATS.has(format) ? [type, format] : FORMATS.has(type) ? ["", type] : [type || "", ""];
+}
 
 /**
  * 30402 — a classified listing. The preview is the title, price, flags and one line of text; the
@@ -84,11 +96,10 @@ function listingCard(ev, opts) {
   const price = tagsOf(ev, "price")[0] || [];
   const full = opts && opts.full;
   const summary = summaryOf(ev);
-  const type = tagsOf(ev, "type")[0] || [];
-  const format = oneLine(type[2]).toLowerCase();
+  const [type, format] = productTypeOf(ev);
   const stock = intOf(oneLine(tagOf(ev, "stock")));
   const parent = addrsOf(ev, "a", 30402);
-  const shipping = tagsOf(ev, "shipping_option").map((t) => oneLine(t[1])).filter(Boolean);
+  const shipping = addrsOf(ev, "shipping_option");
   const specs = full ? tagsOf(ev, "spec").map((t) => [oneLine(t[1]), oneLine(t[2])]).filter(([k, v]) => k && v) : [];
   const inner =
     (full ? gallery(imagesOf(ev)) : "") +
@@ -102,9 +113,9 @@ function listingCard(ev, opts) {
   return shell(ev, opts, inner, [
     ["location", tagOf(ev, "location") ? esc(tagOf(ev, "location")) : null],
     ["stock", stock != null && stock >= 0 ? esc(stock.toLocaleString()) : null],
-    ["format", format === "physical" || format === "digital" ? esc(format) : null],
+    ["format", format ? esc(format) : null],
     ...(full ? [
-      ["variant of", oneLine(type[1]).toLowerCase() === "variation" && parent.length ? addrLinks(parent.slice(0, 1)) : null],
+      ["variant of", type === "variation" && parent.length ? addrLinks(parent.slice(0, 1)) : null],
       ["collections", addrLinks(addrsOf(ev, "a", 30405)) || null],
       ["shipping", addrLinks(shipping) || null],
       ["weight", measureOf(ev, "weight") ? esc(clip(measureOf(ev, "weight"), 40)) : null],
@@ -487,10 +498,10 @@ function notOursCard(ev, opts, noun) {
 }
 
 /** The products a collection holds: its `a` tags naming 30402s. */
-const productsOf = (ev) => addrsOf(ev, "a", 30402).filter((a) => naddr(a));
+const productsOf = (ev) => addrsOf(ev, "a", 30402);
 
-/** A collection names itself or lists products; a `d`-only 30405 is somebody's cart. */
-const isCollection = (ev) => !!(oneLine(tagOf(ev, "title")) || productsOf(ev).length);
+/** A collection names itself or lists products; a 30405 with neither is somebody's cart. */
+const isCollection = (ev) => !!oneLine(tagOf(ev, "title")) || tagsOf(ev, "a").some((t) => isAddress(t[1], 30402));
 
 /** 30405 — a product collection: a merchant's named group of listings. */
 function collectionCard(ev, opts) {
@@ -498,7 +509,7 @@ function collectionCard(ev, opts) {
   const full = opts && opts.full;
   const products = productsOf(ev);
   const summary = oneLine(tagOf(ev, "summary"));
-  const shipping = tagsOf(ev, "shipping_option").map((t) => oneLine(t[1])).filter(Boolean);
+  const shipping = addrsOf(ev, "shipping_option");
   const inner =
     (full ? imgEmbed(oneLine(tagOf(ev, "image"))) : "") +
     titleHtml(opts, oneLine(tagOf(ev, "title")), 140) +
@@ -521,9 +532,10 @@ const DURATION_UNITS = { H: ["hour", "hours"], D: ["day", "days"], W: ["week", "
 /** `["duration", "24", "72", "H"]` as "24–72 hours", or "" when the window cannot be read. */
 function durationText(ev) {
   const t = tagsOf(ev, "duration")[0] || [];
-  const [min, max] = [oneLine(t[1]), oneLine(t[2])].map((v) => (/^\d+(?:\.\d+)?$/.test(v) ? v : ""));
+  const [a, b] = [oneLine(t[1]), oneLine(t[2])].map((v) => (/^\d+(?:\.\d+)?$/.test(v) ? v : ""));
   const unit = DURATION_UNITS[oneLine(t[3]).toUpperCase()];
-  if (!unit || !(min || max)) return "";
+  if (!unit || !(a || b)) return "";
+  const [min, max] = a && b && Number(a) > Number(b) ? [b, a] : [a, b];
   const span = min && max && min !== max ? `${min}–${max}` : min || max;
   return `${span} ${span === "1" ? unit[0] : unit[1]}`;
 }
@@ -535,6 +547,7 @@ const rangeText = (lo, hi) => (lo && hi ? `${lo} – ${hi}` : lo ? `from ${lo}` 
 function ratesOf(ev) {
   return ["price-weight", "price-volume", "price-distance"].map((name) => {
     const t = (tagsOf(ev, name)[0] || []).map(oneLine);
+    while (t.length && !t[t.length - 1]) t.pop();
     if (!t[1] || t.length < 3) return "";
     return `+${t[1]}${t.length > 3 && t[2] ? ` ${t[2]}` : ""} per ${t[t.length - 1]}`;
   }).filter(Boolean);
@@ -569,7 +582,9 @@ function shippingCard(ev, opts) {
 }
 
 /** A review's `d` names the product as `a:30402:<merchant>:<d>`. */
-const REVIEWED = /^a:(30402:([0-9a-f]{64}):[\s\S]*)$/;
+const REVIEWED = /^a:(30402:([0-9a-f]{64}):([\s\S]*))$/;
+/** A score as a plain decimal: Number() alone also takes "0x1" and "1e0". */
+const DECIMAL = /^\d*\.?\d+$/;
 
 /**
  * A 31555 read the Open Markets way: the `thumb` rating, the category ratings beside it, and the
@@ -577,18 +592,22 @@ const REVIEWED = /^a:(30402:([0-9a-f]{64}):[\s\S]*)$/;
  * 0..1 are malformed and left out.
  */
 function reviewOf(ev) {
-  const m = REVIEWED.exec(oneLine(tagOf(ev, "d")));
+  const d = tagOf(ev, "d");
+  const m = typeof d === "string" ? REVIEWED.exec(d) : null;
+  const linked = !!(m && naddr(m[1]));
   const scores = tagsOf(ev, "rating")
     .map((t) => ({ text: oneLine(t[1]), category: oneLine(t[2]) }))
-    .filter((r) => r.text && r.category && Number.isFinite(Number(r.text)) && Number(r.text) >= 0 && Number(r.text) <= 1)
+    .filter((r) => DECIMAL.test(r.text) && r.category && Number(r.text) <= 1)
     .map((r) => ({ value: Number(r.text), category: r.category }));
   const thumbTag = scores.find((r) => r.category.toLowerCase() === "thumb");
   const categories = scores.filter((r) => r.category.toLowerCase() !== "thumb");
   const thumb = thumbTag ? thumbTag.value : null;
   const mean = categories.length ? categories.reduce((n, r) => n + r.value, 0) / categories.length : null;
   return {
-    product: m && naddr(m[1]) ? m[1] : null,
-    merchant: m && naddr(m[1]) ? m[2] : null,
+    product: linked ? m[1] : null,
+    merchant: linked ? m[2] : null,
+    // An opaque `d` (a UUID, a hex id) is no name for the product.
+    label: linked && oneLine(m[3]) && !OPAQUE_D.test(oneLine(m[3])) ? clip(oneLine(m[3]), 60) : "a listing",
     thumb,
     categories,
     total: thumb == null ? null : mean == null ? thumb : thumb * 0.5 + mean * 0.5,
@@ -605,7 +624,7 @@ function reviewCard(ev, opts) {
   const r = reviewOf(ev);
   const word = thumbWord(r.thumb);
   const product = r.product
-    ? `<a href="${addrHref(r.product)}">${esc(clip(shortAddr(r.product), 60))}</a>${r.merchant ? ` from ${personLink(r.merchant)}` : ""}`
+    ? `<a href="${addrHref(r.product)}">${esc(r.label)}</a>${r.merchant ? ` from ${personLink(r.merchant)}` : ""}`
     : "a product";
   const inner =
     `<div class="result-body">reviews ${product}</div>` +
@@ -662,7 +681,7 @@ registerRow([30406], (ev) => {
 registerRow([31555], (ev) => {
   const r = reviewOf(ev);
   return {
-    name: `reviews ${r.product ? clip(shortAddr(r.product), 60) : "a product"}`,
+    name: `reviews ${r.product ? r.label : "a product"}`,
     sub: [thumbWord(r.thumb), r.total == null ? "" : `${percent(r.total)} overall`, ev.content].filter(Boolean).join(" · "),
   };
 });
