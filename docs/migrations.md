@@ -447,8 +447,9 @@ New writes are correct on arrival.
 
 ## Migration: Open Markets kinds become searchable (quartz `ce7f4db1b6`)
 
-No store bump, as in the entry above: the relay's quartz pin moves the
-derivation. **30405** (product collections), **30406** (shipping options) and
+The relay's quartz pin moves the derivation, as in the entry above. The store
+pin also moves, to `28a6020ca1c4`, but only so the graph carries one quartz: it
+changes no store code. **30405** (product collections), **30406** (shipping options) and
 **31555** (product reviews) gain search fields. Shopstr's encrypted carts and
 escrow records on 30405 / 30406 do not: quartz parses them as unrecognized
 events, which stay addressable and are never indexed.

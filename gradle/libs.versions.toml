@@ -50,10 +50,10 @@ app = "0.1.0"
 #     NIP-15 kinds the 25a3f37c83 entry missed.
 #   KindNames names the three kinds; StatsRollup's per-kind labels pick them up.
 #
-# BINARY CHECK: the store (94aad0feea7e) is still compiled against 68268da413, so its modules carry
-#   `quartz:68268da413 -> ce7f4db1b6`, which `force(libs.quartz)` settles. All 124 quartz members
-#   the store's two jars reference (methods, constructors, fields) resolve against
-#   quartz-jvm-ce7f4db1b6, javap over every class in both jars, inherited members followed.
+# NO ARROW: the store at 28a6020ca1c4 (below) names ce7f4db1b6 too, so every quartz line in all six
+#   modules reads it. Before that store pin, 94aad0feea7e carried `quartz:68268da413 -> ce7f4db1b6`,
+#   checked safe then: all 124 quartz members its two jars reference resolved against
+#   quartz-jvm-ce7f4db1b6 (javap over every class in both jars, inherited members followed).
 #
 # DIRECTION: 25a3f37c83 is a strict ancestor of this, as is 68268da413.
 #   git merge-base --is-ancestor 25a3f37c83 ce7f4db1b6   # verified, full-depth clone
@@ -1178,7 +1178,26 @@ quartz = "ce7f4db1b6"
 # LEXICOGRAPHIC: '94aa…' < 'a34c…': the losing direction, moot — nothing else names the store.
 #
 # Prev a34cc5df39, 8c95193705, d1adf0ff91 (above).
-vespaEventStore = "94aad0feea7e"
+#
+# 28a6020ca1c4 = vespa-eventstore main @ 2026-10-16, the merge of #166 — SAME TREE as its head
+# 00da4d38f1 (`git diff 00da4d38f1 28a6020ca1c4` is empty). That PR only moves the store's quartz
+# pin to ce7f4db1b6, this relay's own (above): 12 kinds become searchable, among them the Open
+# Markets 30405 / 30406 / 31555, and NIP-15 bodies parse leniently. No store code changes. Taken
+# so the graph carries one quartz: it clears the `quartz:68268da413 -> ce7f4db1b6` arrow.
+#   git merge-base --is-ancestor 94aad0feea7e 28a6020ca1c4   # verified
+#
+# GATED, the store at 00da4d38f1 with quartz ce7f4db1b6: its unit build (796 tests, 0 failures)
+# and its integration suite against a real Vespa in Docker (23 tests, 22 passed, StagingCorpusIT
+# skipped by design, 0 failures), read off the result XML. Same tree here, so it holds for the
+# merge commit.
+#
+# Spelled with 12 hex digits like the pin it replaces. com.github.NosFabrica serves store and engine
+# at 28a6020ca1c4, and the store's pom names engine at 28a6020ca1c4 and quartz-jvm at ce7f4db1b6.
+#
+# LEXICOGRAPHIC: '28a6…' < '94aa…': the losing direction, moot — nothing else names the store.
+#
+# Prev 94aad0feea7e (above).
+vespaEventStore = "28a6020ca1c4"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
