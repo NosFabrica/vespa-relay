@@ -220,6 +220,15 @@ class StatsRollupTest {
                     .map { it.jsonObject }
                     .single { it["kind"]!!.jsonPrimitive.content == "0" }
             assertEquals(1_754_581_422L, kind0["lastSeen"]!!.jsonPrimitive.content.toLong())
+            assertEquals(
+                NOW,
+                doc["kinds"]!!
+                    .jsonObject["data"]!!
+                    .jsonObject["asOf"]!!
+                    .jsonPrimitive.content
+                    .toLong(),
+                "the page measures every lastSeen from the bound the spans were cut at",
+            )
         }
     }
 

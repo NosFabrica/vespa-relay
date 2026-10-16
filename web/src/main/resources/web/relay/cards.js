@@ -43,7 +43,8 @@ function nowPanel(live, socketUrl) {
           "The newest event this relay holds is over a day old. Either the mirror has stopped, or this " +
           "deployment serves without one — this page cannot tell which.";
       } else {
-        newest.t.title = isoOf(at);
+        // The ISO first; the refresh's failure note, when there is one, stays beside it.
+        newest.t.title = [isoOf(at), live.get("newest").error ? newest.t.title : ""].filter(Boolean).join(" — ");
       }
     }
     row.appendChild(newest.t);

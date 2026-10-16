@@ -131,3 +131,63 @@ async function drain(live) {
   assert.equal(relay.asked.length, 0);
   ok("a hidden tab asks nothing");
 }
+
+{
+  // The whole-kind counts are the expensive ones: one at a time, and never in place of a cheap ask.
+  const pending = [];
+  const relay = fakeRelay({ answer: (f) => (f.kinds ? new Promise((r) => pending.push(r)) : 7) });
+  relay.count = async function (filter) {
+    this.asked.push({ verb: "count", filter });
+    return filter.kinds ? new Promise((r) => pending.push(r)) : 7;
+  };
+  const live = new LiveCounts(relay, { now: () => NOW });
+  live.tick();
+  await settle();
+  const heavyAsked = () => relay.asked.filter((a) => a.filter.kinds).length;
+  assert.equal(heavyAsked(), 1, "two whole-kind counts were in flight at once");
+  assert.equal(live.value("last.60"), 7, "a cheap ask waited behind a whole-kind count");
+  pending.shift()(60547435);
+  await settle();
+  live.tick();
+  await settle();
+  assert.equal(heavyAsked(), 2, "the next whole-kind count did not start when the first answered");
+  // Answer the rest, so no deadline timer outlives the test.
+  for (let i = 0; i < 5 && pending.length; i++) {
+    while (pending.length) pending.shift()(1);
+    await settle();
+  }
+  assert.equal(heavyAsked(), 3);
+  ok("at most one whole-kind count is in flight, and the cheap asks never wait for it");
+}
+
+{
+  // A count the engine is too busy for is retried later each time, never every 30s for good.
+  let clock = NOW;
+  const relay = fakeRelay({ answer: (f) => (f.kinds ? { unanswered: "timeout" } : 7) });
+  const live = new LiveCounts(relay, { now: () => clock });
+  const kind0 = () => relay.asked.filter((a) => a.filter.kinds && a.filter.kinds[0] === 0).length;
+  await drain(live);
+  assert.equal(kind0(), 1);
+  const at = [];
+  for (let s = 0; s < 1800 && at.length < 4; s++) {
+    clock++;
+    const before = kind0();
+    await drain(live);
+    if (kind0() > before) at.push(clock - NOW);
+  }
+  assert.deepEqual(at, [30, 90, 210, 450], "the waits between retries do not double");
+  assert.equal(live.get("people.0").failures, 5);
+  ok("a failing count backs off, doubling up to its own cadence");
+}
+
+{
+  // The socket's own watchdog is an idle window the cheap asks keep resetting; this deadline is not.
+  const relay = fakeRelay();
+  relay.count = async (filter) => (filter.kinds ? new Promise(() => {}) : 7);
+  const live = new LiveCounts(relay, { now: () => NOW, countDeadlineMs: 5 });
+  live.tick();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(live.get("people.0").error, "timed out");
+  assert.ok(!live.inFlight.has("people.0"), "an unanswered count held its slot");
+  ok("a count the relay never answers gives its slot back");
+}

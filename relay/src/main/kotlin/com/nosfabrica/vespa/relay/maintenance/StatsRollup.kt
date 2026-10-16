@@ -234,10 +234,14 @@ internal class StatsRollup(
             val counts =
                 attempt(attempts, "events") { longsByGroup(StatsYql.countsBy("kind")) }
                     ?: return@section buildJsonObject { }
-            // Bounded to now, or the most optimistically dated spam in a kind is its "newest".
-            val spans = attempt(attempts, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
+            // Bounded to now, or the most optimistically dated spam in a kind is its "newest". The
+            // bound is published: the page reads `lastSeen` as an age from it, and on a large store
+            // the histogram before it takes long enough that the section's start is the wrong anchor.
+            val asOf = nowSeconds()
+            val spans = attempt(attempts, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(asOf)) }
             buildJsonObject {
                 put("total", counts.size)
+                put("asOf", asOf)
                 putJsonArray("all") {
                     counts.entries
                         .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key.toIntOrNull() ?: 0 })

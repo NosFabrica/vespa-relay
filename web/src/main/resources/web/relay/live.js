@@ -8,8 +8,19 @@ export const HOUR = 3600;
 /** Kinds that hold one event per author, so their count is a count of people. */
 export const PEOPLE_KINDS = [0, 3, 10002];
 
-/** A failed ask is retried sooner than its cadence, but not in a loop. */
+/**
+ * A failed ask is retried sooner than its cadence, but not in a loop: the wait doubles with each
+ * failure in a row, up to the ask's own cadence, so a count the engine is too busy for is not
+ * re-asked every 30s by every open tab.
+ */
 const RETRY_AFTER = 30;
+
+/**
+ * How long a COUNT may take before this page stops waiting for it. The socket's own watchdog is an
+ * idle window, and the cheap asks keep the socket busy, so without this a count the relay never
+ * answers would hold its slot for the life of the tab.
+ */
+const COUNT_DEADLINE_MS = 60000;
 
 /** How often the scheduler looks for due asks; the cadences below are what bound the load. */
 const TICK_MS = 2000;
@@ -37,8 +48,9 @@ export function wantedAsks(now) {
   asks.push({ key: "newest", verb: "req", filter: { limit: 1, until: now }, ttl: 15, read: (evs) => (evs[0] ? evs[0].created_at : null) });
   count("last.60", { since: now - MINUTE, until: now }, 15);
   count("last.3600", { since: now - HOUR, until: now }, 15);
-  // A whole kind is a longer count, and a population moves slowly.
-  for (const k of PEOPLE_KINDS) count(`people.${k}`, { kinds: [k] }, 1800);
+  // A whole kind walks every event of it (kind 0 is tens of millions), and a population moves
+  // slowly: half-hourly, and `heavy`, so at most one is in flight.
+  for (const k of PEOPLE_KINDS) asks.push({ key: `people.${k}`, verb: "count", filter: { kinds: [k] }, ttl: 1800, heavy: true });
   return asks;
 }
 
@@ -51,14 +63,17 @@ const unanswered = (v) => v && typeof v === "object" && "unanswered" in v;
  * carries `include:spam`. An answer is kept while its refresh fails, with the failure beside it.
  */
 export class LiveCounts {
-  constructor(relay, { now = () => Math.floor(Date.now() / 1000), concurrency = 4, onChange = () => {} } = {}) {
+  constructor(relay, { now = () => Math.floor(Date.now() / 1000), concurrency = 4, onChange = () => {}, countDeadlineMs = COUNT_DEADLINE_MS } = {}) {
     this.relay = relay;
+    this.countDeadlineMs = countDeadlineMs;
     this.now = now;
     this.concurrency = concurrency;
     this.onChange = onChange;
     /** key -> { value, at, error, errorAt } */
     this.answers = new Map();
     this.inFlight = new Set();
+    /** The keys in flight that are `heavy`. */
+    this.heavy = new Set();
     this.paused = false;
     this.connError = null;
     this.connRetryAt = 0;
@@ -81,27 +96,39 @@ export class LiveCounts {
       if (this.inFlight.has(a.key)) return false;
       const got = this.answers.get(a.key);
       if (!got) return true;
-      if (got.errorAt != null && (got.at == null || got.errorAt >= got.at)) return now - got.errorAt >= Math.min(a.ttl, RETRY_AFTER);
+      if (got.errorAt != null && (got.at == null || got.errorAt >= got.at)) {
+        return now - got.errorAt >= Math.min(a.ttl, RETRY_AFTER * 2 ** Math.max(0, (got.failures || 1) - 1));
+      }
       return now - got.at >= a.ttl;
     });
   }
 
-  /** Start as many due asks as the concurrency allows. Safe to call at any time. */
+  /** Start as many due asks as the concurrency allows, at most one heavy. Safe to call at any time. */
   tick() {
     if (this.paused) return;
     if (this.connError && Date.now() < this.connRetryAt) return;
-    const room = this.concurrency - this.inFlight.size;
+    let room = this.concurrency - this.inFlight.size;
     if (room <= 0) return;
     const now = this.now();
-    for (const ask of this.due(now).slice(0, room)) this.run(ask, now);
+    let heavy = [...this.inFlight].some((key) => this.heavy.has(key));
+    for (const ask of this.due(now)) {
+      if (room <= 0) break;
+      if (ask.heavy && heavy) continue;
+      heavy ||= !!ask.heavy;
+      room--;
+      this.run(ask, now);
+    }
   }
 
   async run(ask, now) {
     this.inFlight.add(ask.key);
+    if (ask.heavy) this.heavy.add(ask.key);
     let value, error = null;
     try {
       if (ask.verb === "count") {
-        const n = await this.relay.count(ask.filter);
+        let timer;
+        const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve({ unanswered: "timeout" }), this.countDeadlineMs); });
+        const n = await Promise.race([this.relay.count(ask.filter), deadline]).finally(() => clearTimeout(timer));
         if (unanswered(n)) error = n.unanswered === "timeout" ? "timed out" : "refused";
         else value = n;
       } else {
@@ -119,10 +146,11 @@ export class LiveCounts {
       }
     } finally {
       this.inFlight.delete(ask.key);
+      this.heavy.delete(ask.key);
     }
     const prior = this.answers.get(ask.key) || {};
     if (error == null) this.answers.set(ask.key, { value, at: now });
-    else this.answers.set(ask.key, { ...prior, error, errorAt: now });
+    else this.answers.set(ask.key, { ...prior, error, errorAt: now, failures: (prior.failures || 0) + 1 });
     this.onChange(ask.key);
     this.tick();
   }
