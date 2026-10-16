@@ -24,15 +24,25 @@ more, and the gap is the trust sync failing quietly rather than loudly.
 
 ## `/stats.html`
 
-Totals, a per-kind table with distinct authors, events and publishing pubkeys
-per UTC day/week/month, the hour-of-day shape, a daily series per kind, the
-relays our NIP-65 lists name, zap receipts, how fresh the store is, whether the
-**web of trust is actually populated** — a `scoredPubkeys` of zero means ranked
-search is silently falling back for every reader — and, last on the page, **every
-kind in the store** with its events, distinct authors and last-seen age.
+At the top, counted **live over the relay's own websocket**: *Right now* — the
+newest event and how many events were created in the last minute and hour — and
+*People and trust* — how many profiles, follow lists and relay lists the store
+holds. These are asked again every few seconds (the populations every half
+hour), and a hidden tab asks nothing.
 
-Charted from **`GET /stats.json`**, a public document a background rollup
-recomputes with Vespa grouping queries. The JSON is the artifact and the page is
+Under an **"As of &lt;age&gt;"** line, everything the rollup drew: totals, a
+per-kind table with distinct authors, events and publishing pubkeys per UTC
+day/week/month, the hour-of-day shape, a daily series per kind, the relays our
+NIP-65 lists name, zap receipts, whether the **web of trust is actually
+populated** — a `scoredPubkeys` of zero means ranked search is silently falling
+back for every reader — and, last on the page, **every kind in the store** with
+its events and the age of its last event. That age is measured from the
+rollup's own time, not from now: the column answers whether a kind is still in
+use, so a table rolled up six hours ago reads kind 1 as seconds quiet, not six
+hours.
+
+The part under the line is charted from **`GET /stats.json`**, a public document
+a background rollup recomputes with Vespa grouping queries. The JSON is the artifact and the page is
 one reader of it — publish it and anyone can chart this relay's coverage, or diff
 it against a network-wide dashboard, without scraping markup.
 

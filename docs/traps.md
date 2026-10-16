@@ -329,9 +329,8 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   aggregator and `all(output(max(created_at)))` fails with HTTP 500 and
   `Cannot invoke SingleResultNode.max(…) because "this.max" is null`, which
   reads like an engine bug and sends you looking in the wrong place. Anything
-  other than `count()` needs a `group(...) each(output(...))` around it. The
-  corpus-wide newest event is therefore DERIVED from the per-kind spans rather
-  than asked for.
+  other than `count()` needs a `group(...) each(output(...))` around it, which
+  is why per-kind `lastSeen` comes from `spanBy(kind)`.
 - **Freshness has to be bounded to the present.** `created_at` is author-signed,
   so an unbounded `max(created_at)` reports the corpus's most optimistically
   dated spam — a relay whose mirror died an hour ago reads as fresh "in 74

@@ -34,7 +34,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -82,11 +81,10 @@ internal class StatsRollup(
 ) {
     /**
      * Compute one [tier]'s members. Never throws: a section that fails says so in the document.
-     * [previous] is the served document, read only for [carriedNewest]; [everySeconds] is published.
+     * [everySeconds] is published.
      */
     suspend fun compute(
         tier: StatsTier,
-        previous: JsonObject? = null,
         everySeconds: Long = 0,
     ): JsonObject {
         val startedMs = System.currentTimeMillis()
@@ -98,9 +96,9 @@ internal class StatsRollup(
             }
 
             StatsTier.CHARTS -> {
-                // Kinds first: the newest event and the per-kind series follow its histogram.
+                // Kinds first: the per-kind series follows its histogram.
                 val kinds = kindsSection()
-                sections["corpus"] = corpusSection(kinds, previous)
+                sections["corpus"] = corpusSection()
                 sections["trust"] = trustSection()
                 sections["kinds"] = kinds
                 sections["authors"] = authorsSection()
@@ -157,30 +155,6 @@ internal class StatsRollup(
     /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
     private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
-    /**
-     * The newest `created_at` in the store, as the maximum over the per-kind spans of a
-     * [kindsSection]; Vespa answers no bare `max()`, see [StatsYql.NO_BARE_AGGREGATES].
-     */
-    private fun newestOf(kinds: JsonObject?): Long? =
-        (kinds?.get("data") as? JsonObject)
-            ?.get("all")
-            ?.let { it as? JsonArray }
-            ?.mapNotNull { entry -> (entry as? JsonObject)?.get("lastSeen")?.jsonPrimitive?.longOrNull }
-            ?.maxOrNull()
-
-    /**
-     * The newest event the last document knew about, from `corpus.newestEvent` or its per-kind
-     * spans, since either may be absent. A timestamp carried forward is still true.
-     */
-    private fun carriedNewest(previous: JsonObject?): Long? {
-        val corpus =
-            ((previous?.get("corpus") as? JsonObject)?.get("data") as? JsonObject)
-                ?.get("newestEvent")
-                ?.jsonPrimitive
-                ?.longOrNull
-        return listOfNotNull(corpus, newestOf(previous?.get("kinds") as? JsonObject)).maxOrNull()
-    }
-
     /** The kinds to draw a per-kind series for: the largest few from the histogram. Empty when it failed. */
     private fun topKindNumbers(kinds: JsonObject): List<Int> =
         (kinds["data"] as? JsonObject)
@@ -193,24 +167,19 @@ internal class StatsRollup(
     // ---- sections -----------------------------------------------------------
 
     /**
-     * The headline totals. `newestEvent` is the maximum of [kinds]' spans, bounded to the present;
-     * `pubkeys` lives in [authorsSection]; `kinds` is the histogram's own `kinds.total`.
+     * The headline totals. `pubkeys` lives in [authorsSection]; `kinds` is the histogram's own
+     * `kinds.total`. No newest event: a pass hours old cannot say how fresh the store is, so the
+     * page asks the relay itself over its websocket.
      */
-    private suspend fun corpusSection(
-        kinds: JsonObject,
-        previous: JsonObject?,
-    ): JsonObject =
+    private suspend fun corpusSection(): JsonObject =
         section { attempts ->
             val now = nowSeconds()
             val events = attempt(attempts, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
             // Clock skew and spam, counted because it is why every freshness number is bounded.
             val future = attempt(attempts, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
-            val newest = newestOf(kinds)
             buildJsonObject {
                 events?.let { put("events", it) }
                 future?.let { put("futureDated", it) }
-                // The maximum of measured and carried, so a failed span query cannot retract it.
-                listOfNotNull(newest, carriedNewest(previous)).maxOrNull()?.let { put("newestEvent", it) }
                 put("asOf", now)
             }
         }
@@ -671,7 +640,7 @@ internal class StatsRollup(
 
     companion object {
         /** Bumped when a released field changes meaning or leaves, not when one is added. */
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
 
         const val DEFAULT_WINDOW_DAYS = 30
 
@@ -709,9 +678,7 @@ internal fun launchStatsRollup(
     scope.launch {
         while (true) {
             val startedMs = System.currentTimeMillis()
-            // Read at the start of every pass so a tier picks up what the other has published.
-            val previous = snapshot.served()?.doc
-            runCatching { rollup.compute(tier, previous, everySeconds) }
+            runCatching { rollup.compute(tier, everySeconds) }
                 .onSuccess { members ->
                     // A first document of headers alone would replace the page's "waiting" card with a blank one.
                     if (tier.sections.any { it in members } || snapshot.served() != null) {

@@ -8,10 +8,13 @@ const fmt = (n) => Number(n).toLocaleString();
 const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 const short = (n) => COMPACT.format(Number(n));
 
-/** A timestamp as an age, "4m ago"; the exact instant stays available on hover. */
-const ago = (seconds) => {
+/**
+ * A timestamp as an age, "4m ago"; the exact instant stays available on hover. [now] is what the age
+ * is measured from: a figure in a rollup reads against the rollup's own time, not the reader's.
+ */
+const ago = (seconds, now = Math.floor(Date.now() / 1000)) => {
   if (seconds == null) return "—";
-  const d = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
+  const d = Math.max(0, now - seconds);
   if (d < 90) return `${d}s ago`;
   if (d < 5400) return `${Math.round(d / 60)}m ago`;
   if (d < 172800) return `${Math.round(d / 3600)}h ago`;
