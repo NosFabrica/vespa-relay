@@ -326,6 +326,8 @@ function storeCard(live) {
 export function liveCards(live, socketUrl) {
   const parts = [
     nowPanel(live, socketUrl),
+    // Headline totals, so they sit with the other headline numbers rather than under a long table.
+    peoplePanel(live),
     bucketCard(live, {
       title: `Events per hour · last ${HOURS} hours`,
       sub: "UTC hours, by created_at",
@@ -347,7 +349,6 @@ export function liveCards(live, socketUrl) {
       label: (t) => new Date(t * 1000).toISOString().slice(0, 10),
     }),
     kindsCard(live),
-    peoplePanel(live),
     storeCard(live),
   ];
   let queued = false;
