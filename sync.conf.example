@@ -162,6 +162,28 @@ streams {
         ]
     }
 
+    # OpenAgents' plugin and capability catalog: capability heads (NIP-CAP
+    # 30180), plugin listings (NIP-EXT 30184) and their immutable releases
+    # (3184). contentViaOutbox asks every certified relay for them too, but
+    # today they are published to one relay, which no monitor verdict has to
+    # vouch for to be worth asking: a pinned upstream, like the indexers. The
+    # retractions ride along, so a listing deleted or a publisher vanished at
+    # the source is deleted here.
+    openAgents {
+        dir = "down"
+
+        # A small catalog on one relay: one dial, one tail.
+        visitConcurrency = 1
+        maxLiveConcurrency = 1
+
+        filter = { "kinds": [5, 62, 3184, 30180, 30184] }
+        negentropySyncThePastSeconds = 604800
+        refetchThePastSeconds = 2592000
+        urls = [
+            "wss://relay.openagents.com"
+        ]
+    }
+
     # Every profile, relay list and provider list, from every relay the monitor
     # certifies. Kinds-only asks — author narrowing is gone: with 32M pubkeys
     # in the store no chunking cadence rotates the key space fast enough for
@@ -442,13 +464,13 @@ streams {
             0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 31, 32, 33, 40, 41, 42, 54, 62,
             818, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313,
             1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808,
-            1985, 2003, 2004, 2473, 3302, 5050,
+            1985, 2003, 2004, 2473, 3184, 3302, 5050,
             5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734,
             9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154,
             11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005,
             30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030,
             30040, 30041, 30045, 30054, 30055, 30063, 30142, 30175, 30176,
-            30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315,
+            30177, 30180, 30184, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315,
             30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395,
             30402, 30405, 30406, 30617, 30620, 30817, 30818, 31337, 31555,
             31871, 31872, 31873,

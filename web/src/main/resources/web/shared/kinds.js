@@ -90,6 +90,8 @@ const KIND_LABELS = {
   // Kanban board and card (30301 also a build verification), a workout plan, a theme, a Mostro.
   1624: "cover note", 5128: "website snapshot", 30031: "sticker pack", 30301: "kanban board",
   30302: "kanban card", 33402: "workout plan", 36767: "theme", 38385: "Mostro instance",
+  // OpenAgents: a capability an agent or service offers, a plugin, and one release of it.
+  30180: "capability", 30184: "plugin", 3184: "plugin release",
 };
 export const kindLabel = (k) => KIND_LABELS[k] || `kind ${k}`;
 
@@ -117,7 +119,8 @@ const KIND_TONES = {
   market: [9041, 30009, 30017, 30018, 30019, 30020, 30402, 30403, 30405, 30406, 31555, 33863, 38000,
     38383, 1022, 38385],
   apps: [5050, 5100, 5129, 5250, 5302, 5303, 10100, 15128, 15129, 30175, 30176, 30177, 30620, 31890,
-    31989, 31990, 32267, 35128, 35129, 5901, 11316, 30178, 43001, 43002, 43003, 43004, 43005, 43006, 5128],
+    31989, 31990, 32267, 35128, 35129, 5901, 11316, 30178, 43001, 43002, 43003, 43004, 43005, 43006, 5128,
+    3184, 30180, 30184],
   // What somebody did or saw, logged: a workout, an exercise, a sighting, a life list.
   record: [1301, 1315, 2473, 12473, 33401, 38192, 64, 30066, 30068, 33402],
   list: [10000, 10001, 10003, 10004, 10005, 10006, 10007, 10008, 10009, 10011, 10012, 10013, 10015,
