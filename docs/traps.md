@@ -298,7 +298,7 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   November before February, the 15th before the 5th — but NOT everywhere, since
   `'-'` sorts below `'0'`, so `2025-1-5` beside `2025-10-9` comes out right. A
   chart can look correct for one window and interleave in the next, with every
-  bar the right height and only the axis wrong. `StatsYql.isoDay` is the one way
+  bar the right height and only the axis wrong. The retired `StatsYql.isoDay` was the one way
   in; a test asserts the misordering on values chosen to actually exhibit it,
   because the pair the fixture happens to contain does not.
 - **A nested grouping and a flat one answer in the SAME shape.** Vespa collapses

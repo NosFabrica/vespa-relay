@@ -57,9 +57,9 @@ be measured against different instants and draw the same cursor two ways.
 
 **The verdicts panel reads records, not the rollup.** `/stats.json` says 373
 urls collapsed onto 909 relays and stops; it cannot say what the store holds
-about one url or when it was measured. The kind histogram lost the
-protocol-check property when it stopped asking NIP-45 COUNTs and was right to,
-because counts have a rollup to fall back on; verdicts have no other reader.
+about one url or when it was measured. The relay's own panels ask NIP-45
+COUNTs over the same socket for the same reason: a number the page cannot get
+over the protocol is one no client can.
 
 **The read is scoped to the relay's own key.** A router discovers relays from
 other monitors' reports (the outbox source reads `kinds: [10002, 10050, 30002,

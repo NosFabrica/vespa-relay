@@ -175,13 +175,14 @@ relay/…/relay/
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
-                              OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
-                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
+                              OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport,
+                              StatsRollup (STATS_COUNTERS_INTERVAL_SECONDS; the relay's /stats.json, no engine query)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
   resources/index.html        the search UI; its behaviour is resources/web/ (app.js, searchfield.js, paging.js, feed.js,
                               entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
-  resources/stats.html        the one status page; web/sync/ and web/monitor/ hold each plane's cards
+  resources/stats.html        the one status page; web/relay/ (counted live over the relay's websocket),
+                              web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
@@ -263,6 +264,8 @@ operator page shows and why is
   `wedged` with the oldest batch's age.
 - `/stats.json` and `/stats.html` on the relay, the mirror (`SYNC_STATUS_PORT`,
   7778) and the monitor; `/observer_stats.html` and `/pressure` on the relay.
+  The relay's page counts its store live over its own websocket (NIP-45 COUNTs
+  over time windows), so a number there is as old as the moment it was asked.
   One relay is looked up with `jq` over the document, not on the page.
 - `/pulse.json` and `/pulse.html` (`PULSE_PORT` / `SYNC_PULSE_PORT`, off by
   default) — WHERE THE STORE'S RESOURCES GO, live off the store's own counters:
@@ -351,15 +354,8 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A deploy adds a derived column and does not populate it, and neither does `REINDEX_FTS_ON_START`; `POST /reindex` alone sits `pending`. See [docs/migrations.md](docs/migrations.md).
 - Two KDoc blocks in a row fail ktlint (`standard:kdoc`); each doc needs its own declaration.
 - A `@Test` that returns a value does not run; declare `(): Unit =`, and sweep with `javap -p <class> | grep 'public final' | grep -v void`.
-- Vespa's `time.date()` does not zero-pad; `StatsYql.isoDay` is the one way in.
-- A nested grouping and a flat one answer in the same shape; only the right builder keeps events out of a users column.
-- Grouping expressions take arithmetic: weeks are `(created_at + 259200) / 604800`, months `time.year * 12 + time.monthofyear`.
-- A coarser time bucket is not the finer one re-added; distinct authors are asked per granularity.
-- A bare aggregate with no grouping level fails for anything but `count()`.
-- Freshness is bounded to the present: every `lastSeen` carries `created_at <= now`, future-dated events count in `corpus.futureDated`.
-- A nested grouping is one query where the obvious shape is N; without the inner `each()` the series collapses to one count.
+- Freshness is bounded to the present: every window the stats page asks carries `until <= now`, or a note dated 2100 counts in all of them.
 - Playwright's Chromium has no HTTP cache, so a 304 is checked with `curl -H "If-None-Match: …"`.
-- The bundled query profile (`grouping.globalMaxGroups: -1`, `defaultMaxGroups`/`defaultMaxHits`) is what makes the rollup legal.
 - `grep` may be aliased to `ugrep`; use `/usr/bin/grep` when a search finds nothing implausibly.
 - `\n` inside a Kotlin raw string is literal, which breaks HOCON fixtures.
 - A timeout is an idle window, not a deadline; size it by the slowest single answer.

@@ -352,9 +352,11 @@ describes — so a page that will not load is itself an answer.
 | `/pulse.html` | own port, off by default | what does any of it *cost*? |
 | `/` on sync / monitor | `7778` / `7779` | what is the mirror doing, and which relays may be dialled at all? |
 
-Each charts a JSON document served beside it — `/stats.json`, `/trust.json`,
+`/stats.html` counts the store live over the relay's own websocket — NIP-45
+`COUNT`s over time windows — so anyone can take the same numbers with any Nostr
+client. The others chart a JSON document served beside them — `/trust.json`,
 `/pulse.json` — and the JSON is the artifact: publish it and anyone can chart
-this relay's coverage without scraping markup. Every number describes **this
+it without scraping markup. Every number describes **this
 relay's store**, not the Nostr network, so a total below a network-wide one is a
 mirror's coverage rather than a fault.
 

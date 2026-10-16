@@ -14,10 +14,10 @@ looks like) are exactly what it can hand you.
 - **what it holds, counted 2026-08-26**: kind 0 **54.9M**, kind 1 **149.5M**,
   NIP-32 labels (1985) **1.34M**, NIP-85 contact cards (30382) **32.6M**,
   provider lists (10040) **337**, and on the Trusted List kinds **30392: 9,
-  30393: 1, 30394: 44, 30395: 0**. Count off **`/stats.json`**, whose `kinds`
-  section groups over the whole store — a per-kind COUNT is fine too but a
-  corpus this live drifts between asks, and an earlier read of these numbers
-  reported the 30392-30395 range as empty when it was not.
+  30393: 1, 30394: 44, 30395: 0**. Count with a NIP-45 `COUNT` per kind
+  (`/stats.html` does it for the last day) — a corpus this live drifts between
+  asks, and an earlier read of these numbers reported the 30392-30395 range as
+  empty when it was not.
   **NONE of those 54 are Tapestry lists**: those kind numbers are squatted by
   an omikuji fortune generator on 30394, WireGuard room records and
   `trusted-attestor:` entries on 30392, an Alexandria manifest on 30393 — and
@@ -74,9 +74,9 @@ looks like) are exactly what it can hand you.
   `Accept: application/nostr+json`). These are the same pages this repo builds,
   filled with numbers a local store will never reach: on 2026-08-14
   `/stats.json` reported 125 kinds, 132.4M kind 1, 28.7M kind 30382, 28.5M
-  kind 0, and `/pressure` `{"meanMs":863,"samples":20}`. Chart tiers there are
-  minutes old by design (`counters` every 60s, `charts` every 900s), so a
-  `generatedAt` in the past is the tiering working, not a stale relay.
+  kind 0, and `/pressure` `{"meanMs":863,"samples":20}`. `/stats.html` now
+  counts over the websocket as you watch; `/stats.json` carries only the
+  router's mirrored kinds.
 
 **To simulate an observer, rank through
 `460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c`.** It is a

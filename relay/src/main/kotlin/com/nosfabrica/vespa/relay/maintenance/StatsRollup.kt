@@ -20,101 +20,40 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.nosfabrica.vespa.relay.util.canonicalRelay
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
-import com.vitorpamplona.quartz.kinds.KindNames
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.io.File
 import java.time.Instant
-import java.time.YearMonth
 
 /**
- * Which cadence a section is computed on, split by cost: cheap is bounded by something other than
- * the corpus, expensive walks the corpus or a populous kind. The tier is the section, not the
- * query, because a section carries one `generatedAt`; the tiers are not serialised.
- */
-internal enum class StatsTier(
-    /** What this tier is called in the document, under `tiers`. */
-    val member: String,
-    /** The top-level members this tier owns; a member missing from a pass leaves the served document. */
-    val sections: Set<String>,
-) {
-    /** The router's manifest: what is cheap enough to run every minute, which no engine query is. */
-    COUNTERS("counters", setOf("sync")),
-
-    /** Everything that asks the engine: even a bare `count()` walks every document it matches. */
-    CHARTS("charts", setOf("corpus", "trust", "kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
-}
-
-/**
- * The corpus statistics document at `GET /stats.json` and the job that recomputes it. [compute]
- * returns one tier's members and `StatsSnapshot` merges them; every section carries its own status.
- * Every number describes this relay's store, not the network, and the queries go to the engine with no lens.
+ * The relay's `GET /stats.json`: who this relay is and what its router mirrors. It asks the engine
+ * nothing; `stats.html` counts the store itself over the relay's websocket, so every number on the
+ * page is as fresh as the moment it was asked.
  */
 internal class StatsRollup(
-    private val vespa: StatsQueries,
     private val relayUrl: String,
-    /** Wall clock in epoch seconds; injected so the window bounds are assertable. */
-    private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
-    private val windowDays: Int = DEFAULT_WINDOW_DAYS,
-    private val weekWindowWeeks: Int = DEFAULT_WEEK_WINDOW_WEEKS,
-    /** The first month the monthly series covers: an anchor, not a length. */
-    private val monthSeriesStart: YearMonth = DEFAULT_MONTH_SERIES_START,
-    private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
-    private val topRelays: Int = DEFAULT_TOP_RELAYS,
-    private val kindSeries: Int = DEFAULT_KIND_SERIES,
     /** The router's manifest on the shared volume; null in a serve-only deployment. */
     private val syncManifestFile: File? = null,
 ) {
-    /**
-     * Compute one [tier]'s members. Never throws: a section that fails says so in the document.
-     * [previous] is the served document, read only for [carriedNewest]; [everySeconds] is published.
-     */
-    suspend fun compute(
-        tier: StatsTier,
-        previous: JsonObject? = null,
-        everySeconds: Long = 0,
-    ): JsonObject {
+    /** The document. Never throws: an unreadable manifest is a failed `sync` section. */
+    fun compute(everySeconds: Long = 0): JsonObject {
         val startedMs = System.currentTimeMillis()
-        val sections = LinkedHashMap<String, JsonObject>()
-        when (tier) {
-            StatsTier.COUNTERS -> {
-                // Absent, not empty, without a router: "0 relays" reads as a broken mirror.
-                syncSection()?.let { sections["sync"] = it }
-            }
-
-            StatsTier.CHARTS -> {
-                // Kinds first: the newest event and the per-kind series follow its histogram.
-                val kinds = kindsSection()
-                sections["corpus"] = corpusSection(kinds, previous)
-                sections["trust"] = trustSection()
-                sections["kinds"] = kinds
-                sections["authors"] = authorsSection()
-                sections["activity"] = activitySection()
-                sections["kindActivity"] = kindActivitySection(topKindNumbers(kinds))
-                sections["zaps"] = zapsSection()
-                sections["relayDistribution"] = relaysSection()
-            }
-        }
+        // Absent, not empty, without a router: "0 relays" reads as a broken mirror.
+        val sync = syncSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("title", "Relay stats")
             put("relay", relayUrl)
-            // When either tier last touched the document; the honest timestamps are per section.
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put(
                 "scope",
@@ -122,618 +61,87 @@ internal class StatsRollup(
                     "a total below a network-wide dashboard's is this mirror's coverage, not a fault.",
             )
             put("countedAs", "anonymous")
-            put("counted", "Counted anonymously against the whole store.")
+            put("counted", "Counted live over this relay's websocket, anonymously, against the whole store.")
             put("timezone", "UTC")
             putJsonObject("tiers") {
-                putJsonObject(tier.member) {
+                putJsonObject(TIER) {
                     put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                     put("tookMs", System.currentTimeMillis() - startedMs)
                     if (everySeconds > 0) put("everySeconds", everySeconds)
-                    // What this pass produced, not what the tier owns.
-                    putJsonArray("sections") { sections.keys.forEach { add(it) } }
+                    putJsonArray("sections") { if (sync != null) add("sync") }
                 }
             }
-            sections.forEach { (member, value) -> put(member, value) }
+            sync?.let { put("sync", it) }
         }
     }
 
-    /**
-     * The kind set this relay mirrors, read off the shared volume: the one section that queries
-     * nothing. An unreadable file is a failed section, the same contract every queried section has.
-     */
-    private suspend fun syncSection(): JsonObject? {
+    /** The kind set this relay mirrors, read off the shared volume; null when no router ever wrote one. */
+    private fun syncSection(): JsonObject? {
         if (syncManifestFile == null) return null
-        var data: JsonObject? = null
-        val section =
-            section { attempts ->
-                val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
-                data = mirrors?.let { buildJsonObject { put("mirrors", it) } }
-                data ?: buildJsonObject { }
-            }
-        // Nothing read and nothing failed means no router has ever written here.
-        return if (data == null && section["errors"] == null) null else section
-    }
-
-    /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
-    private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
-
-    /**
-     * The newest `created_at` in the store, as the maximum over the per-kind spans of a
-     * [kindsSection]; Vespa answers no bare `max()`, see [StatsYql.NO_BARE_AGGREGATES].
-     */
-    private fun newestOf(kinds: JsonObject?): Long? =
-        (kinds?.get("data") as? JsonObject)
-            ?.get("all")
-            ?.let { it as? JsonArray }
-            ?.mapNotNull { entry -> (entry as? JsonObject)?.get("lastSeen")?.jsonPrimitive?.longOrNull }
-            ?.maxOrNull()
-
-    /**
-     * The newest event the last document knew about, from `corpus.newestEvent` or its per-kind
-     * spans, since either may be absent. A timestamp carried forward is still true.
-     */
-    private fun carriedNewest(previous: JsonObject?): Long? {
-        val corpus =
-            ((previous?.get("corpus") as? JsonObject)?.get("data") as? JsonObject)
-                ?.get("newestEvent")
-                ?.jsonPrimitive
-                ?.longOrNull
-        return listOfNotNull(corpus, newestOf(previous?.get("kinds") as? JsonObject)).maxOrNull()
-    }
-
-    /** The kinds to draw a per-kind series for: the largest few from the histogram. Empty when it failed. */
-    private fun topKindNumbers(kinds: JsonObject): List<Int> =
-        (kinds["data"] as? JsonObject)
-            ?.get("all")
-            ?.let { it as? JsonArray }
-            ?.mapNotNull { entry -> (entry as? JsonObject)?.get("kind")?.jsonPrimitive?.intOrNull }
-            ?.take(kindSeries)
-            .orEmpty()
-
-    // ---- sections -----------------------------------------------------------
-
-    /**
-     * The headline totals. `newestEvent` is the maximum of [kinds]' spans, bounded to the present;
-     * `pubkeys` lives in [authorsSection]; `kinds` is the histogram's own `kinds.total`.
-     */
-    private suspend fun corpusSection(
-        kinds: JsonObject,
-        previous: JsonObject?,
-    ): JsonObject =
-        section { attempts ->
-            val now = nowSeconds()
-            val events = attempt(attempts, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
-            // Clock skew and spam, counted because it is why every freshness number is bounded.
-            val future = attempt(attempts, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
-            val newest = newestOf(kinds)
-            buildJsonObject {
-                events?.let { put("events", it) }
-                future?.let { put("futureDated", it) }
-                // The maximum of measured and carried, so a failed span query cannot retract it.
-                listOfNotNull(newest, carriedNewest(previous)).maxOrNull()?.let { put("newestEvent", it) }
-                put("asOf", now)
-            }
-        }
-
-    /**
-     * How many distinct pubkeys the store holds events from. Its own section because `group(pubkey)`
-     * over the corpus materialises every pubkey.
-     */
-    private suspend fun authorsSection(): JsonObject =
-        section(
-            note =
-                "Every pubkey this relay holds an event from — the store's distinct authors. NOT the same " +
-                    "population as `trust.scoredPubkeys`; see that section's note.",
-        ) { attempts ->
-            val pubkeys = attempt(attempts, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
-            buildJsonObject { pubkeys?.let { put("pubkeys", it) } }
-        }
-
-    /**
-     * The trust view's own health. The four counts are a chain (observers name providers, providers
-     * publish scores, scores project onto pubkeys), so reading them together localises a break.
-     */
-    private suspend fun trustSection(): JsonObject =
-        section(
-            note =
-                "`scoredPubkeys` and `authors.pubkeys` are INDEPENDENT populations, not a ratio: the web of " +
-                    "trust scores people whose events this relay may not hold, and holds events from people nobody " +
-                    "has scored. Compare their magnitudes, not their quotient.",
-        ) { attempts ->
-            val scored = attempt(attempts, "scoredPubkeys") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, source = StatsYql.REPUTATION)) }
-            val observers = attempt(attempts, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_OBSERVER")) }
-            val providers = attempt(attempts, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_SCORE")) }
-            val scores = attempt(attempts, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_SCORE")) }
-            buildJsonObject {
-                scored?.let { put("scoredPubkeys", it) }
-                observers?.let { put("observers", it) }
-                providers?.let { put("providers", it) }
-                scores?.let { put("scores", it) }
-            }
-        }
-
-    /** What a kind is called, from Quartz's protocol-wide registry, since this table enumerates the store. */
-    private fun kindName(kind: Int): String? = KindNames.nameFor(kind)
-
-    /**
-     * The per-kind table: documents and the span of `created_at`, every kind, sorted by volume.
-     * No author count: per kind, a distinct count partitions the whole corpus into pubkey sets.
-     * Every kind rather than a top-N, because a truncation would hide the long tail.
-     */
-    private suspend fun kindsSection(): JsonObject =
-        section { attempts ->
-            val counts =
-                attempt(attempts, "events") { longsByGroup(StatsYql.countsBy("kind")) }
-                    ?: return@section buildJsonObject { }
-            // Bounded to now, or the most optimistically dated spam in a kind is its "newest".
-            val spans = attempt(attempts, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
-            buildJsonObject {
-                put("total", counts.size)
-                putJsonArray("all") {
-                    counts.entries
-                        .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key.toIntOrNull() ?: 0 })
-                        .forEach { (kind, events) ->
-                            add(
-                                buildJsonObject {
-                                    val n = kind.toIntOrNull() ?: -1
-                                    put("kind", n)
-                                    kindName(n)?.let { put("name", it) }
-                                    put("events", events)
-                                    spans?.get(kind)?.let { (first, last) ->
-                                        put("firstSeen", first)
-                                        put("lastSeen", last)
-                                    }
-                                },
-                            )
-                        }
-                }
-            }
-        }
-
-    /**
-     * Events and distinct authors per UTC day, week and month, plus the hour-of-day shape. Three
-     * granularities because distinct authors do not sum from a finer bucket. The monthly series is
-     * anchored to a date, filled to its whole span, and asked a year at a time.
-     */
-    private suspend fun activitySection(): JsonObject =
-        section { attempts ->
-            val now = nowSeconds()
-            val hourWindow = StatsYql.window(now - hourWindowDays * DAY_SECONDS, now)
-            // Trailing windows: one query each and nothing to fill.
-            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, listOf(Slice(now - windowDays * DAY_SECONDS, now)))
-            val weeks =
-                series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, listOf(Slice(now - weekWindowWeeks * 7 * DAY_SECONDS, now)))
-            // One slice per calendar year, on exact month boundaries.
-            val monthSlices = StatsYql.monthSlicesFrom(monthSeriesStart, now)
-            val months =
-                series(
-                    attempts,
-                    "months",
-                    StatsYql.MONTH,
-                    StatsYql::isoMonth,
-                    monthSlices.map { Slice(it.since, it.until, key = it.year.toString(), fill = it.months) },
-                )
-            val hours = attempt(attempts, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
-            buildJsonObject {
-                put("windowDays", windowDays)
-                put("windowWeeks", weekWindowWeeks)
-                // Derived from the slices, so the months covered and the bars cannot disagree.
-                put("windowMonths", monthSlices.sumOf { it.months.size })
-                put("monthsSince", monthSeriesStart.toString())
-                put("hourWindowDays", hourWindowDays)
-                days?.let { put("days", it) }
-                weeks?.let { put("weeks", it) }
-                months?.let { put("months", it) }
-                hours?.let { byHour ->
-                    putJsonArray("hours") {
-                        (0..23).forEach { hour ->
-                            add(
-                                buildJsonObject {
-                                    put("hour", hour)
-                                    put("events", byHour[hour.toString()] ?: 0L)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-    /**
-     * The relay urls this store's NIP-65 lists name, and how many lists name each. `lists`, not
-     * `users`: kind 10002 is replaceable, but that equality is the store's, not this query's.
-     */
-    private suspend fun relaysSection(): JsonObject =
-        section(
-            note =
-                "How many stored NIP-65 lists name each relay. NOT split by read/write: that marker is an `r` tag's " +
-                    "THIRD element and tag_index holds only `<letter>:<value>`, so it is not queryable — it needs a " +
-                    "walk over kind 10002.",
-        ) { attempts ->
-            val pairs =
-                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
-                    ?: return@section buildJsonObject { }
-            // Summed per canonical url: the grouping returns one row per distinct string, and a
-            // trailing slash makes two strings for one relay.
-            val relays =
-                pairs
-                    .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { canonicalRelay(it) to count } }
-                    .groupingBy { it.first }
-                    .fold(0L) { sum, (_, count) -> sum + count }
-            buildJsonObject {
-                put("total", relays.size)
-                put("shown", minOf(relays.size, topRelays))
-                putJsonArray("top") {
-                    relays.entries
-                        .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
-                        .take(topRelays)
-                        .forEach { (url, lists) ->
-                            add(
-                                buildJsonObject {
-                                    put("relay", url)
-                                    put("lists", lists)
-                                },
-                            )
-                        }
-                }
-            }
-        }
-
-    /**
-     * Zap receipts: how many, from how many wallets, and their shape over time. No sats: the amount
-     * is in tags `tag_index` cannot address. `wallets` is the receipt's author, the LNURL service.
-     */
-    private suspend fun zapsSection(): JsonObject =
-        section(
-            note =
-                "Receipt counts only. Sats are unreachable by any grouping — the amount is in the `bolt11` and " +
-                    "`description` tags, whose multi-character names are absent from tag_index — and senders/recipients " +
-                    "would drag every `e:` tag along with them. Both need a walk over kind 9735.",
-        ) { attempts ->
-            val now = nowSeconds()
-            val window = StatsYql.window(now - windowDays * DAY_SECONDS, now)
-            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = 9735")) }
-            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = 9735")) }
-            val days =
-                attempt(attempts, "days") {
-                    bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = 9735 and $window", StatsYql::isoDay, distinct = false)
-                }
-            buildJsonObject {
-                receipts?.let { put("receipts", it) }
-                wallets?.let { put("wallets", it) }
-                put("windowDays", windowDays)
-                days?.let { byDay ->
-                    putJsonArray("days") {
-                        byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
-                            add(
-                                buildJsonObject {
-                                    put("day", day)
-                                    put("receipts", count)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-    /** A daily series for each of the largest few kinds, taken from [kindsSection]'s histogram. */
-    private suspend fun kindActivitySection(topByEvents: List<Int>): JsonObject =
-        section { attempts ->
-            val now = nowSeconds()
-            val since = now - windowDays * DAY_SECONDS
-            if (topByEvents.isEmpty()) return@section buildJsonObject { put("windowDays", windowDays) }
-            // One nested query for every series, not one per kind.
-            val perKind =
-                attempt(attempts, "series") {
-                    nestedBuckets(
-                        StatsYql.nested("kind", StatsYql.DAY),
-                        "kind in (${topByEvents.joinToString(", ")}) and ${StatsYql.window(since, now)}",
-                        StatsYql::isoDay,
-                    )
-                }.orEmpty()
-            buildJsonObject {
-                put("windowDays", windowDays)
-                putJsonArray("kinds") {
-                    // In the histogram's order, so the panel reads like the table.
-                    topByEvents.forEach { kind ->
-                        val byDay = perKind[kind.toString()] ?: return@forEach
-                        add(
-                            buildJsonObject {
-                                put("kind", kind)
-                                kindName(kind)?.let { put("name", it) }
-                                putJsonArray("days") {
-                                    byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
-                                        add(
-                                            buildJsonObject {
-                                                put("day", day)
-                                                put("events", count)
-                                            },
-                                        )
-                                    }
-                                }
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
-    /**
-     * One bucketed series, events and distinct authors per bucket; [decode] turns the engine's
-     * bucket value into the page's label. A slice whose events query fails contributes nothing, not
-     * even its [Slice.fill]; the pubkeys column is all or nothing, since a missing point charts as zero.
-     */
-    private suspend fun series(
-        attempts: Attempts,
-        name: String,
-        bucket: String,
-        decode: (String) -> String?,
-        slices: List<Slice>,
-    ): JsonArray? {
-        val events = LinkedHashMap<String, Long>()
-        val authors = LinkedHashMap<String, Long>()
-        var answered = 0
-        var authorsWhole = true
-        for (slice in slices) {
-            val key = slice.key?.let { "$name.$it" } ?: name
-            val where = StatsYql.window(slice.since, slice.until)
-            val counts = attempt(attempts, "$key.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) }
-            if (counts == null) {
-                authorsWhole = false
-                continue
-            }
-            answered++
-            // The union: a bucket outside the fill is a disagreement between window and enumeration.
-            val labels = counts.keys + slice.fill
-            labels.forEach { events[it] = counts[it] ?: 0L }
-            // Empty is not zero: [bucketed] drops a group it cannot read, and zero-filling an
-            // unreadable shape would claim no authors.
-            val byLabel =
-                attempt(attempts, "$key.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
-                    ?.takeIf { it.isNotEmpty() }
-            if (byLabel == null) {
-                authorsWhole = false
-            } else {
-                labels.forEach { authors[it] = byLabel[it] ?: 0L }
-            }
-        }
-        if (answered == 0) return null
-        return buildJsonArray {
-            events.keys.sorted().forEach { label ->
-                add(
-                    buildJsonObject {
-                        put("period", label)
-                        put("events", events[label] ?: 0L)
-                        if (authorsWhole) authors[label]?.let { put("pubkeys", it) }
-                    },
-                )
-            }
-        }
-    }
-
-    /** One query's worth of a series: its window, the labels it fills, and [key] to name it in an error. */
-    private data class Slice(
-        val since: Long,
-        val until: Long,
-        val key: String? = null,
-        val fill: List<String> = emptyList(),
-    )
-
-    // ---- section plumbing ---------------------------------------------------
-
-    /**
-     * Run [body], collecting per-query failures, and wrap the result in the shared envelope: `ok`,
-     * `partial` or `failed`. [note] is a caveat on what a section deliberately leaves out.
-     */
-    private suspend fun section(
-        note: String? = null,
-        body: suspend (Attempts) -> JsonObject,
-    ): JsonObject {
-        val attempts = Attempts()
         val startedMs = System.currentTimeMillis()
-        val data = body(attempts)
-        return buildJsonObject {
-            put("status", attempts.status())
+        val mirrors =
+            try {
+                MirrorReport.build(syncManifestFile.takeIf { it.isFile }?.readText())
+            } catch (e: Exception) {
+                return envelope("failed", startedMs, buildJsonObject { }, e.message ?: e.toString())
+            }
+        return mirrors?.let { envelope("ok", startedMs, buildJsonObject { put("mirrors", it) }) }
+    }
+
+    /** The section envelope every service's panels read: status, timing, data, and the error if any. */
+    private fun envelope(
+        status: String,
+        startedMs: Long,
+        data: JsonObject,
+        error: String? = null,
+    ): JsonObject =
+        buildJsonObject {
+            put("status", status)
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put("tookMs", System.currentTimeMillis() - startedMs)
-            note?.let { put("note", it) }
             put("data", data)
-            // Published, not logged: it is what an operator re-tiers a query from. Failures are timed too.
-            if (attempts.queryMs.isNotEmpty()) {
-                putJsonObject("queryMs") { attempts.queryMs.forEach { (k, v) -> put(k, v) } }
-            }
-            if (attempts.errors.isNotEmpty()) {
-                putJsonObject("errors") { attempts.errors.forEach { (k, v) -> put(k, v) } }
-            }
+            error?.let { putJsonObject("errors") { put("mirrors", it) } }
         }
-    }
-
-    /**
-     * What a section's queries did. The status counts successes rather than inspecting `data`,
-     * which is never empty.
-     */
-    private class Attempts {
-        val errors = LinkedHashMap<String, String>()
-
-        /** What each attempt took, keyed as its errors would be. */
-        val queryMs = LinkedHashMap<String, Long>()
-        var succeeded = 0
-            private set
-
-        fun ok() {
-            succeeded++
-        }
-
-        fun status(): String =
-            when {
-                errors.isEmpty() -> "ok"
-                succeeded == 0 -> "failed"
-                else -> "partial"
-            }
-    }
-
-    /**
-     * Run one query, recording a failure under [key] instead of propagating it. Cancellation is
-     * rethrown: a cancelled rollup must not persist a document blaming the engine for shutdown.
-     */
-    private suspend fun <T> attempt(
-        attempts: Attempts,
-        key: String,
-        query: suspend () -> T?,
-    ): T? {
-        val startedMs = System.currentTimeMillis()
-        return try {
-            query().also { attempts.ok() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            attempts.errors[key] = e.message ?: e.toString()
-            null
-        } finally {
-            attempts.queryMs[key] = System.currentTimeMillis() - startedMs
-        }
-    }
-
-    // ---- readers ------------------------------------------------------------
-
-    private suspend fun longsByGroup(
-        pipeline: String,
-        where: String = "true",
-    ): Map<String, Long> {
-        val root = vespa.group(pipeline, where)
-        return StatsYql
-            .topGroups(root)
-            .mapNotNull { g ->
-                val value = StatsYql.valueOf(g) ?: return@mapNotNull null
-                val count = StatsYql.aggOf(g, "count()") ?: return@mapNotNull null
-                value to count
-            }.toMap()
-    }
-
-    /** A two-level pipeline: outer value -> inner label -> count. The inner labels go through [decode]. */
-    private suspend fun nestedBuckets(
-        pipeline: String,
-        where: String,
-        decode: (String) -> String?,
-    ): Map<String, Map<String, Long>> {
-        val root = vespa.group(pipeline, where)
-        return StatsYql
-            .topGroups(root)
-            .mapNotNull { outer ->
-                val key = StatsYql.valueOf(outer) ?: return@mapNotNull null
-                val inner =
-                    StatsYql
-                        .childGroups(outer)
-                        .mapNotNull { g ->
-                            val label = StatsYql.valueOf(g)?.let(decode) ?: return@mapNotNull null
-                            val count = StatsYql.aggOf(g, "count()") ?: return@mapNotNull null
-                            label to count
-                        }.toMap()
-                key to inner
-            }.toMap()
-    }
-
-    /**
-     * A bucketed pipeline, rekeyed by [decode]; a bucket the decoder rejects is dropped, so a
-     * changed format loses points visibly instead of scrambling an axis.
-     */
-    private suspend fun bucketed(
-        pipeline: String,
-        where: String,
-        decode: (String) -> String?,
-        distinct: Boolean,
-    ): Map<String, Long> {
-        val root = vespa.group(pipeline, where)
-        return StatsYql
-            .topGroups(root)
-            .mapNotNull { g ->
-                val label = StatsYql.valueOf(g)?.let(decode) ?: return@mapNotNull null
-                val count = (if (distinct) StatsYql.distinctCountOf(g) else StatsYql.aggOf(g, "count()")) ?: return@mapNotNull null
-                label to count
-            }.toMap()
-    }
-
-    private suspend fun spansByGroup(
-        pipeline: String,
-        where: String = "true",
-    ): Map<String, Pair<Long, Long>> {
-        val root = vespa.group(pipeline, where)
-        return StatsYql
-            .topGroups(root)
-            .mapNotNull { g ->
-                val value = StatsYql.valueOf(g) ?: return@mapNotNull null
-                val first = StatsYql.aggOf(g, "min(created_at)") ?: return@mapNotNull null
-                val last = StatsYql.aggOf(g, "max(created_at)") ?: return@mapNotNull null
-                value to (first to last)
-            }.toMap()
-    }
 
     companion object {
         /** Bumped when a released field changes meaning or leaves, not when one is added. */
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
 
-        const val DEFAULT_WINDOW_DAYS = 30
+        /** The one cadence, as the document's `tiers` names it. */
+        const val TIER = "counters"
 
-        const val DEFAULT_WEEK_WINDOW_WEEKS = 26
-
-        /** The monthly chart's first bucket: a date, not a rolling count, so the early years stay on the chart. */
-        val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
-
-        const val DEFAULT_HOUR_WINDOW_DAYS = 7
-
-        const val DEFAULT_TOP_RELAYS = 50
-
-        const val DEFAULT_KIND_SERIES = 8
-        private const val DAY_SECONDS = 86_400L
-
-        /** NIP-85: the list naming which service scores which dimension for an observer. */
-        private const val KIND_OBSERVER = 10040
-
-        /** NIP-85: one published trust score. */
-        private const val KIND_SCORE = 30382
+        /** The sections this rollup owns; one missing from a pass leaves the served document. */
+        val SECTIONS = setOf("sync")
     }
 }
 
 /**
- * Recompute one [tier] of the stats document into [snapshot], one call per tier. [everySeconds] is
- * the gap between passes, not a period, so a slow pass delays the next rather than overlapping it.
+ * Recompute the document into [snapshot] every [everySeconds]. Published even without a `sync`
+ * section: the page's live panels need only the headers, and a serve-only relay has nothing else.
  */
 internal fun launchStatsRollup(
     scope: CoroutineScope,
     rollup: StatsRollup,
     snapshot: StatsSnapshot,
-    tier: StatsTier,
     everySeconds: Long,
 ) {
     scope.launch {
         while (true) {
-            val startedMs = System.currentTimeMillis()
-            // Read at the start of every pass so a tier picks up what the other has published.
-            val previous = snapshot.served()?.doc
-            runCatching { rollup.compute(tier, previous, everySeconds) }
-                .onSuccess { members ->
-                    // A first document of headers alone would replace the page's "waiting" card with a blank one.
-                    if (tier.sections.any { it in members } || snapshot.served() != null) {
-                        snapshot.publish(members, owns = tier.sections, tier = tier.member)
+            runCatching { rollup.compute(everySeconds) }
+                .onSuccess { doc ->
+                    snapshot.publish(doc, owns = StatsRollup.SECTIONS, tier = StatsRollup.TIER)
+                    if ((doc["sync"] as? JsonObject)?.get("status") == JsonPrimitive("failed")) {
+                        println("stats: the sync manifest could not be read — see /stats.json")
                     }
-                    val secs = (System.currentTimeMillis() - startedMs) / 1000
-                    // The count only; each section's error text is in the document.
-                    val failed = members.entries.count { (_, v) -> (v as? JsonObject)?.statusOf() in setOf("failed", "partial") }
-                    println(
-                        "stats: ${tier.member} rolled up in ${secs}s" +
-                            (if (failed > 0) " — $failed section(s) incomplete, see /stats.json" else ""),
-                    )
                 }.onFailure { e ->
                     if (e is CancellationException) throw e
-                    // compute() catches per query, so this is the assembly itself breaking.
-                    System.err.println("stats: ${tier.member} rollup failed (${e.message}) — serving the previous document")
-                    // Marked by tier: one cadence can fail for hours while the other keeps publishing.
-                    snapshot.markStale("the last ${tier.member} rollup failed: ${e.message ?: e.javaClass.simpleName}", tier = tier.member)
+                    System.err.println("stats: rollup failed (${e.message}) — serving the previous document")
+                    snapshot.markStale(
+                        "the last ${StatsRollup.TIER} rollup failed: ${e.message ?: e.javaClass.simpleName}",
+                        tier = StatsRollup.TIER,
+                    )
                 }
             delay(everySeconds * 1000)
         }
     }
 }
-
-private fun JsonObject.statusOf(): String? = (this["status"] as? kotlinx.serialization.json.JsonPrimitive)?.content

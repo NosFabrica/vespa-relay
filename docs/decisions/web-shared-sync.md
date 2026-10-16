@@ -287,8 +287,8 @@ swatch rendered `rgba(0, 0, 0, 0)`.
 **The live half of the card is marks.** The sentence-based version ran 520
 words for two streams; the same facts as chips, bars and one table run 66.
 
-**`.trend`, not `.spark`.** The kind-activity card already carried `chart
-spark` sparklines and the trend rules were restyling them.
+**`.trend`, not `.spark`.** The kind-activity card (since retired) carried
+`chart spark` sparklines and the trend rules were restyling them.
 
 **`.card.pending` is scoped.** Bare `.pending` also matched the disposition
 bar's `pending` segment, and `border-style` with no width resolves to `medium`,

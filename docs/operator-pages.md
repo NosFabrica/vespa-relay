@@ -24,22 +24,33 @@ more, and the gap is the trust sync failing quietly rather than loudly.
 
 ## `/stats.html`
 
-Totals, a per-kind table with distinct authors, events and publishing pubkeys
-per UTC day/week/month, the hour-of-day shape, a daily series per kind, the
-relays our NIP-65 lists name, zap receipts, how fresh the store is, whether the
-**web of trust is actually populated** — a `scoredPubkeys` of zero means ranked
-search is silently falling back for every reader — and, last on the page, **every
-kind in the store** with its events, distinct authors and last-seen age.
+How fresh the store is and how fast it is filling, **counted live**: the newest
+event, events created in the last minute, hour and day, a bar per UTC hour for
+the last day and per UTC day for the last month, every mirrored kind's count
+over the last day and hour, and the one-per-author totals (profiles, follow
+lists, relay lists, trust observers). The total over the whole store is a button,
+because it is a walk over every document.
 
-Charted from **`GET /stats.json`**, a public document a background rollup
-recomputes with Vespa grouping queries. The JSON is the artifact and the page is
-one reader of it — publish it and anyone can chart this relay's coverage, or diff
-it against a network-wide dashboard, without scraping markup.
+The page asks **the relay itself, over its own websocket** — anonymous NIP-45
+`COUNT`s over time windows, which the engine answers in milliseconds — and
+re-asks each on its own cadence while the tab is visible: the open hour every
+thirty seconds, a closed day hourly. So there is no rollup to go stale, and the
+page is also a protocol check: a number it cannot get is a number no client can.
+What it asked and when is the only state; an unanswered ask is a dash, a failed
+refresh keeps the last answer and says so on hover.
+
+Whether the web of trust reaches ranked search — the `scoredPubkeys` that read
+zero when every ranked search was silently falling back — is
+[`/trust.html`](#trusthtml)'s question, and it lives there.
+
+`GET /stats.json` beside it is a small public document: who this relay is, and
+`sync.mirrors.kinds`, the kinds its router asks for. The kinds table counts that
+set.
 
 Which is the thing to keep in mind reading it: every number describes **this
 relay's store**, not the Nostr network, so a total below a network-wide one is a
 mirror's coverage rather than a fault. And a mirror is a **filtered** subset,
-which is why the document also carries `sync.mirrors.kinds` — the kinds the
+which is why the document carries `sync.mirrors.kinds` — the kinds the
 router asks for. Any count taken against this relay has to carry them: measured
 against an author's own relay, unfiltered, this store once read as *35%
 mirrored* while missing nothing — the entire gap being kinds no stream here

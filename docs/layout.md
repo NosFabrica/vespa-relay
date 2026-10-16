@@ -36,12 +36,13 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
                             measured in HttpServer), statsDocument, and
                             serveStatusSite — one page + its document + its
                             assets, which is a whole background service's UI
-  resources/stats.html      THE page. Panels guarded on the section they read,
+  resources/stats.html      THE page. Panels guarded on the document they read,
                             so the relay's, the mirror's and the monitor's
-                            documents each draw their own cards from one file
+                            each draw their own cards from one file; the
+                            relay's count its store over its own websocket
   resources/web/            every module the pages import: shared/ (the design,
-                            the render engine, the protocol clients), sync/ and
-                            monitor/ (each plane's cards), cards/ (the search
+                            the render engine, the protocol clients), relay/,
+                            sync/ and monitor/ (each plane's cards), cards/ (the search
                             UI's per-kind renderers). shared/asks.js is the
                             one to know before touching a search ask: the
                             relay's cost is the MATCH SET, not the limit
@@ -811,12 +812,14 @@ relay/src/main/resources/
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  stats.html            the corpus dashboard: it charts GET /stats.json, and
-                        THE JSON IS THE ARTIFACT — the page is one reader of it
-                        (see maintenance/StatsRollup). No aggregation on it is a
-                        protocol feature to test, and thirty days of
-                        distinct-pubkey counts is not a question to ask over a
-                        websocket, so every chart here is a rollup read.
+  stats.html            the dashboard every service serves. On the relay it
+                        COUNTS THE STORE ITSELF over the relay's own websocket
+                        (web/relay/live.js asks, web/relay/cards.js draws):
+                        NIP-45 COUNTs over windows the engine answers in
+                        milliseconds, each re-asked on its own cadence while
+                        the tab is visible, so no rollup runs behind the
+                        server and none can go stale. On the mirror and the
+                        monitor it charts that service's GET /stats.json.
                         The router's state is TWO cards off one `sync` section,
                         split by what each row decides. *Sync coverage* answers
                         "is the mirror keeping up": the constraint line, then
@@ -902,18 +905,15 @@ relay/src/main/resources/
                         it fell out of every counter on the page at once.
                         Its Kinds table REPLACED kind_stats.html, whose url now
                         301s here. That page asked one NIP-45 COUNT per kind it
-                        already knew to name — shared/kinds.js plus whatever an
-                        operator typed in — so a kind nobody had registered was
-                        invisible on the only page that would have revealed it.
-                        A grouping histogram enumerates instead, which is why
-                        the table is EVERY kind and not a top-N. What went with
-                        that page: it exercised NIP-45 over the relay's own
-                        websocket. Nothing here speaks the protocol; if that
-                        check is wanted back it wants to be a test, not a page
+                        already knew to name, so a kind nobody had registered
+                        was invisible. The live table asks per kind too, and
+                        enumerates from what the store says instead: the
+                        router's `sync.mirrors.kinds` plus every kind among the
+                        newest events, so an unregistered kind arriving shows.
 ```
 
-The statistics rollup lives in `relay/maintenance/` beside the other background
-jobs, and talks to Vespa directly rather than through the store:
+The relay's `/stats.json` is built in `relay/maintenance/` beside the other
+background jobs, and asks the engine nothing:
 
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
@@ -923,71 +923,33 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                      mirror has walked and what it is doing moved to the sync
                      service's own status site; see `SyncStatus` for why a file
                      could not answer "is it running" and an HTTP request can
-    StatsYql.kt      the grouping pipelines and the readers for what comes
-                     back — pure, so both halves are tested against captured
-                     engine output rather than against an assumed shape
-    StatsVespa.kt    POST to /search/, refuse a degraded answer (the same
-                     coverage question the store's SearchCoverage asks, and
-                     for the same reason: `full` answers it in neither
-                     direction)
-    StatsRollup.kt   the document, section by section, each failing on its own
-                     — and `StatsTier`, the two schedules it is computed on
+    StatsRollup.kt   the document: who this relay is, and `sync.mirrors`.
+                     Published even with no router, since the page's live
+                     panels need only the headers
   (:web) StatsSnapshot.kt
                      what GET /stats.json serves — held in memory with an
-                     ETag, written through to STATS_FILE so a deploy does not
-                     blank the page for the minutes a first rollup takes, and
-                     the MERGE point for the two tiers. In :web because every
+                     ETag, written through to STATS_FILE, and the merge point
+                     for documents published in tiers. In :web because every
                      service publishes a document this way, not just the relay
+web/src/main/resources/web/relay/
+    live.js          the asks and the loop: every window bounded at now, each
+                     ask with its own cadence (the open hour every 30s, a
+                     closed day hourly), a failed refresh keeping the previous
+                     answer, a dead socket retried after a pause, a hidden tab
+                     asking nothing, and the whole-store COUNT only on a press
+    cards.js         the panels drawn from it, redrawn at most once a frame
 ```
 
-**The document is computed in two passes, and the split is by measured cost.**
-`STATS_COUNTERS_INTERVAL_SECONDS` (60s) runs `sync`; `STATS_INTERVAL_SECONDS`
-(900s, the setting that always meant this) runs `corpus`, `trust`, `kinds`,
-`authors`, `activity`, `kindActivity`, `zaps` and `relayDistribution`. The line
-between them is whether cost scales with the corpus. A `count()` does not
-materialise its match set but still walks it, so the event total over `true` is
-a walk over the store and the trust chain is a walk over every stored kind-30382
-score (tens of millions on the live deployment).
-A grouping behind a *selective* `kind` filter is bounded by that kind's
-population (10040 is), and a windowed bucket grouping is bounded by the window —
-while `group(pubkey)` over
-everything materialises the store's whole pubkey set, `distinctAuthorsBy(bucket)`
-materialises one such set PER BUCKET (the shape that OOMKilled the engine twice),
-a full-corpus histogram walks all 90M+ documents, and grouping `tag_index` emits
-every tag pair on every matched document. **A `kind` filter bounds the group set,
-not the walk**, which is why `zaps` is with the charts despite being three counts:
-a mirror holds millions of kind-9735 receipts and `group(pubkey)` over them
-touches every one to return a handful of LNURL services. Nothing is watched by a
-zap total the way a mirror is watched by its freshness, so fifteen minutes is fine
-for it. **The tier is the section, never the query**, because a section carries
-one `generatedAt` for all of its members — which is what moved the store's
-distinct pubkeys out of `corpus` into its own `authors` section, and why
-`corpus.kinds` is gone in favour of the histogram's own `kinds.total`.
-`corpus.newestEvent` is the maximum of the histogram's per-kind spans (bounded
-to the present) and of the previous document's copy, so a failed span query
-never winds the tile back. It moved with `corpus` and is as fresh as the charts
-pass: the page's staleness line is a day, which a fifteen-minute cadence meets.
-A counters pass that produced no section does not publish a first document, or a
-fresh serve-only relay would swap the page's waiting card for a blank page.
-
-Every section publishes `queryMs` per query and every pass publishes
-`tiers.<name>.{generatedAt,tookMs,everySeconds}`. That is deliberate and
-load-bearing: which queries can afford the fast cadence is a MEASUREMENT on the
-corpus in front of you, not a deduction, and a pipeline that drifts into the fast
-tier does not break a chart — it quietly runs fifteen times more often than it
-can afford. `StatsRollupTest` holds the invariant from the other side, against a
-`StatsQueries` fake: a counters query, a `count()` included, may not run
-without a bound, nest a grouping inside `each(...)`, touch `tag_index` or the
-reputation store, or lean on a `kind` filter for a kind outside its
-`SELECTIVE_KINDS` — the allowlist that keeps "bounded by a kind" from meaning
-"bounded", and that kinds 9735 and 30382 are deliberately not in.
-
-Four of the pipelines are `EventYql`'s own shapes, reused verbatim because this
-deployment has already run them; the rest extend them along `created_at`. It
-does NOT build on `EventYql` itself — `grouping()` is private, its pipelines are
-a fixed set, and it ships in vespa-eventstore, so every new chart would cost a
-store release plus a JitPack pin bump. The duplication is the WHERE clause and
-nothing else.
+**The corpus numbers are asked, not rolled up.** They used to be a grouping
+pass (`StatsYql`, `StatsVespa`, `STATS_INTERVAL_SECONDS`) that walked the
+corpus behind the server: 135 seconds every six hours on the live deployment,
+so the page was hours old by design, and its distinct-author series was the
+shape that OOMKilled the engine twice. What replaced it is bounded by the
+question rather than by the store: a COUNT over a window or a sparse kind, which
+the engine answers in milliseconds (`live.test.mjs` asserts no unprompted ask is
+anything else). What could not be asked that way left the page with the pass:
+distinct authors per bucket, the all-time per-kind histogram and spans, the
+hour-of-day shape, the NIP-65 relay distribution and the zap services.
 
 `docs/configuration.md` documents every environment variable, `docs/router.md`
 the router config format, and `docs/migrations.md` the schema changes a store

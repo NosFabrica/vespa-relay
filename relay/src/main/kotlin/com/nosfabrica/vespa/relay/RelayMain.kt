@@ -27,8 +27,6 @@ import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
-import com.nosfabrica.vespa.relay.maintenance.StatsTier
-import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
@@ -259,28 +257,22 @@ fun main() {
     }
     // Seeded from the state file so a restart serves the last document until the first rollup.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
-    val statsIntervalSeconds = statsInterval(env, "STATS_INTERVAL_SECONDS", 900L)
+    if (!env["STATS_INTERVAL_SECONDS"].isNullOrBlank()) {
+        System.err.println(
+            "stats: STATS_INTERVAL_SECONDS is no longer read — the relay runs no corpus rollup; stats.html counts the store " +
+                "over the websocket. Unset it.",
+        )
+    }
     val statsCountersIntervalSeconds = statsInterval(env, "STATS_COUNTERS_INTERVAL_SECONDS", 60L)
-    if (statsIntervalSeconds > 0 || statsCountersIntervalSeconds > 0) {
+    if (statsCountersIntervalSeconds > 0) {
         val rollup =
             StatsRollup(
-                StatsVespa(vespaUrl),
                 relayUrl = relayUrl.url,
                 syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
             )
-        // Counters first, so a fresh relay has totals within seconds of boot.
-        if (statsCountersIntervalSeconds > 0) {
-            launchStatsRollup(maintenanceScope, rollup, statsSnapshot, StatsTier.COUNTERS, statsCountersIntervalSeconds)
-        } else {
-            println("stats: STATS_COUNTERS_INTERVAL_SECONDS=$statsCountersIntervalSeconds — no counters; /stats.json will carry only the chart sections")
-        }
-        if (statsIntervalSeconds > 0) {
-            launchStatsRollup(maintenanceScope, rollup, statsSnapshot, StatsTier.CHARTS, statsIntervalSeconds)
-        } else {
-            println("stats: STATS_INTERVAL_SECONDS=$statsIntervalSeconds — no charts; /stats.json will carry only the counter sections")
-        }
+        launchStatsRollup(maintenanceScope, rollup, statsSnapshot, statsCountersIntervalSeconds)
     } else {
-        println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
+        println("stats: STATS_COUNTERS_INTERVAL_SECONDS=$statsCountersIntervalSeconds — no rollup; /stats.json serves the state file, or 503 if there is none")
     }
     // One instance, held past the boot publish: a NIP-86 rename republishes through it.
     val profile = identity?.let { RelayProfile(store, it, relayUrl) }
@@ -427,7 +419,7 @@ private fun String.httpFromWs(): String =
 /** A bundled classpath resource, or null if it isn't there. */
 private fun resourceText(path: String): String? = object {}.javaClass.getResource(path)?.readText()
 
-/** One of the stats rollup's intervals, in seconds. A value that does not parse stops the boot. */
+/** The stats rollup's interval, in seconds. A value that does not parse stops the boot. */
 private fun statsInterval(
     env: Map<String, String>,
     key: String,

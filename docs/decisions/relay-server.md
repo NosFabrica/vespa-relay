@@ -24,24 +24,15 @@ measured at over twelve minutes. The shutdown hook cancels the scope and does
 not wait: an unfinished reconcile costs a less complete ranking until the next
 start, which is what it costs anyway.
 
-**The stats rollup has two intervals.** The corpus-wide groupings and the cheap
-counters (totals, freshness, trust health, the sync heartbeat) are not within an
-order of magnitude of each other in cost, and the counters were being served
-fifteen minutes stale for no reason. One rollup, two timers, because the tiers
-write disjoint halves of the document. A stats interval that does not parse
-stops the boot: `=0s` and `=off` are the obvious spellings of "turn this off",
-and `?: default` accepted both by running the rollup on the schedule the
+**The stats rollup has one interval, and it asks the engine nothing.** It had
+two: a per-minute counters pass and a corpus-wide grouping pass
+(`STATS_INTERVAL_SECONDS`). The grouping pass moved to the page, as live
+NIP-45 COUNTs over the relay's websocket (see relay-maintenance.md, "Stats"), so
+its interval is gone; a relay that still sets it says so at boot rather than
+ignoring it silently. The remaining interval still stops the boot on a value
+that does not parse: `=0s` and `=off` are the obvious spellings of "turn this
+off", and `?: default` accepted both by running the rollup on the schedule the
 operator was trying to change.
-
-**The totals and the trust chain moved to the charts pass.** The per-minute
-tier assumed a `count()` was cheap because it materialises nothing, and that
-kind 30382 ran to thousands of events. Both were wrong: a `count()` over `true`
-visits every document, and the live store held 28.7M scores, so every minute
-walked the whole corpus once and every score twice (the provider grouping and
-the score count), with a count over the whole reputation store beside them. The members
-kept their places in the document, since the page reads them there. What it
-cost is `newestEvent` at the charts cadence rather than the minute; it is now
-read off the histogram's spans for free, and the page's staleness line is a day.
 
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
@@ -222,8 +213,8 @@ and throwing turned an enforced ban into an RPC 500.
 
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went
-away: the Kinds table on `/stats.html` covers every kind where the old page
-counted only the ones it knew to name.
+away: the Kinds table on `/stats.html` counts the router's kinds and every kind
+among the newest events, where the old page counted only the ones it knew to name.
 
 **The pulse guard is resolved before the schema deploy, and its window opens
 with the store.** `PulseGuard` throws when `PULSE_PORT` is set with no

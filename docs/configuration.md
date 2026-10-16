@@ -46,31 +46,50 @@ the exact word `true` deletes and every other value is a dry run.
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
-## Corpus statistics (`GET /stats.json`, `/stats.html`)
+## Corpus statistics (`/stats.html`, `GET /stats.json`)
 
-A background rollup counts what this relay's store holds with Vespa grouping
-queries, publishes it as a public JSON document, and charts it on a page:
+**The page counts the store itself, live, over the relay's own websocket.** It
+opens one anonymous socket beside the page (same origin, so it works behind a
+path prefix too), waives the read lens with `include:spam`, and asks NIP-45
+`COUNT`s over windows the engine answers in milliseconds. Nothing on the server
+recomputes a corpus number on a timer, so nothing on the page can be stale: a
+number is as old as the moment it was asked, and a hidden tab asks nothing.
 
-- **corpus** — events, distinct pubkeys, distinct kinds, the age of the newest
-  event, and how many events are dated in the *future* (clock skew and spam;
-  every freshness number excludes them)
-- **trust** — observers, score providers, stored scores, and pubkeys carrying
-  projected trust state. The one section reading a second document type, and the
-  only place a silently-empty web of trust shows up: `scoredPubkeys` at zero
-  means every ranked search is falling back to unranked, which looks identical
-  to a healthy relay on every other panel
-- **kinds** — EVERY kind in the store, with distinct authors and the
-  `created_at` span. This replaced `/kind_stats.html` (whose url now 301s to the
-  page): that page asked one NIP-45 `COUNT` per kind it already knew to name, so
-  a kind nobody had registered was invisible on the only page that would have
-  revealed it — a grouping histogram enumerates instead
-- **activity** — events and publishing pubkeys per UTC day, week and month, plus
-  the hour-of-day shape. Three granularities and not one re-aggregated: events
-  sum across buckets, distinct authors do not, so a weekly author count has to
-  be asked of the engine per week
-- **kindActivity** — a daily series per kind, for the largest few
-- **relayDistribution** — the relays this store's NIP-65 lists name
-- **zaps** — kind-9735 receipt counts, and the wallets that signed them
+| panel | asks | re-asked |
+|---|---|---|
+| **Right now** | the newest `created_at` (a `REQ` with `limit: 1`); events created in the last minute, hour and 24 hours | every 15s (the day: 60s) |
+| **Events per hour** | one `COUNT` per UTC hour, last 24 | the open hour every 30s, the one before every 2m, the rest every 10m |
+| **Events per day** | one `COUNT` per UTC day, last 30 | today every 2m, yesterday every 10m, the rest hourly |
+| **Kinds · last 24 hours** | one `COUNT` per kind over the last day, and over the last hour for the kinds that moved. The kinds are the router's `sync.mirrors.kinds` plus any found among the newest 100 events, or every kind the UI can name when no router writes beside this relay | every 10m |
+| **People and trust** | totals of kinds that hold one event per author — profiles (0), follow lists (3), relay lists (10002), trust observers (10040) — so each is a count of pubkeys | every 30m |
+| **Whole store** | `COUNT` over everything | only when the reader presses for it |
+
+Measured on the live deployment (470M events): a 24-hour window answers in
+~50ms, a per-kind day in ~10ms, a 30-day window in ~1s; one page load is
+about 380 asks and the steady state is under one a second. The whole-store
+count is ~9s and a walk over every document, which is why it waits for a press.
+Every window is **bounded above at now**: `created_at` is author-signed, and a
+note dated in 2100 would otherwise count in every window reaching the present.
+
+What it no longer shows, and why: distinct authors (a pubkey set per bucket is
+the grouping that OOMKilled the engine), the per-kind all-time totals and spans,
+the hour-of-day shape, the NIP-65 relay distribution and the zap services — each
+was a Vespa grouping over the whole corpus that took minutes and ran behind the
+server every few hours. Any of them can still be answered with a NIP-45 `COUNT`
+by a reader prepared to wait for it.
+
+Everything is counted **anonymously**: the store gates an authenticated reader to
+authors that reader has scored, so the same query under an operator's lens would
+answer a smaller, different question under an identical label.
+
+The numbers describe **this relay's store**, not the Nostr network. Read against
+a network-wide dashboard they are a coverage ratio, which is the useful number
+for a mirroring relay — but a total below one is not a fault, and the document
+says so in its own `scope` field.
+
+**`GET /stats.json` on the relay** says who this relay is (`relay`, `scope`) and
+carries one section:
+
 - **sync** — present only where a router writes beside this relay, and reduced
   to ONE member: `mirrors`, what the mirror was ever going to hold — `kinds`,
   the union of the kind filters of the streams that pull down, from
@@ -85,76 +104,27 @@ queries, publishes it as a public JSON document, and charts it on a page:
   kind bound — there is then no bound to apply, and a union over the other
   streams would be smaller than the truth. It stays on this side because it is a
   fact about THIS relay that clients read, and the relay has to answer it while
-  the router is stopped.
+  the router is stopped. The page's kinds table counts this set.
 
   **How far the mirror has walked, and what it is doing, are not here.** They
-  were — two cards drawn from `SYNC_STATE_FILE`, `SYNC_SWEEP_STATE_FILE` and
-  `SYNC_PROGRESS_FILE`, read off the shared volume — and they moved to the sync
-  service's own status page at `SYNC_STATUS_PORT` (7778). A file cannot say
-  whether the process writing it is alive, so that arrangement needed a
-  heartbeat in the document and a staleness reading on the relay's side, and a
-  mirror down for a day still published the card a mirror mid-cycle did. A
-  request answers it
+  live on the sync service's own status page at `SYNC_STATUS_PORT` (7778): a
+  file cannot say whether the process writing it is alive, and a request can.
 
-Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
-present, and the page renders them as **ages** rather than dates: "kind 1 four
-minutes ago, kind 30023 six days ago" localises which stream stalled, where a
-column of timestamps makes the reader do the subtraction.
-
-Everything is counted **anonymously**: the store gates an authenticated reader to
-authors that reader has scored, so the same query under an operator's lens would
-answer a smaller, different question under an identical label.
-
-The numbers describe **this relay's store**, not the Nostr network. Read against
-a network-wide dashboard they are a coverage ratio, which is the useful number
-for a mirroring relay — but a total below one is not a fault, and the document
-says so in its own `scope` field.
-
-Two sections are computed but incomplete, and carry a `note` saying what they leave
-out. **Zaps** has receipt counts but no satoshis: the amount lives in the
-`bolt11` tag and in the kind-9734 request nested in `description`, both
-multi-character tag names that `tag_index` cannot address, and `content` is
-summary-only — so no grouping query can reach it. **Relay distribution** counts
-how many lists name each relay but cannot split read from write: that marker is
-an `r` tag's *third* element, and `tag_index` stores only `<letter>:<value>`.
-Both want a walk over their kind, which is the job neither has yet.
-
-The document is computed in **two passes on two schedules**, because what feeds
-it is not within an order of magnitude of itself in cost. The router's heartbeat
-is a file read; every engine query is a walk over the documents it matches, and
-a distinct-authors-per-month series over four years of corpus is minutes.
-
-| pass | sections | why it is on that cadence |
-|---|---|---|
-| **counters** | `sync` | bounded by something other than the corpus: three file reads for the router's heartbeat, and no engine query |
-| **charts** | `corpus`, `trust`, `kinds`, `authors`, `activity`, `kindActivity`, `zaps`, `relayDistribution` | costs scale with the store or with a populous kind: a `count()` over the whole store for the event total, a walk over every stored kind-30382 score for the trust chain, full-corpus histograms, `group(pubkey)` over everything, one pubkey set **per bucket** for the distinct-author series, every tag pair on every kind-10002, and every one of millions of kind-9735 receipts to name a handful of wallets |
-
-**A `count()` visits every document it matches**, and a `kind` filter bounds
-the group set, not the walk. That is why the event total and the trust chain
-are with the charts despite being counts: run every minute, they walked the
-whole store and every stored score sixty times an hour. `corpus.newestEvent` is
-the maximum of the histogram's per-kind spans, bounded to the present, so it
-costs no query of its own and is as fresh as the charts pass.
-
-Each section states its own `generatedAt`, each pass its own
-`tiers.<name>.{generatedAt,tookMs,everySeconds}`, and every query its own
-`queryMs` — so the tiering above is checkable against your corpus rather than
-taken on faith, and a query that has outgrown the fast cadence can be found and
-moved. The page follows the fastest cadence the document states.
+The document is schema 3: the corpus sections of schema 2 (`corpus`, `trust`,
+`kinds`, `authors`, `activity`, `kindActivity`, `zaps`, `relayDistribution`)
+left with the rollup that computed them.
 
 | var | meaning | default |
 |---|---|---|
-| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs. `0` or negative turns it off; the document then carries only the chart sections | `60` |
-| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — every engine query, the corpus totals and trust chain included, and the setting that has always meant the corpus-wide groupings. `0` or negative disables it — a legitimate choice on a busy box, since the walks compete with client reads, at the cost of every corpus number on the page; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it: the state file serves the last document meanwhile, and a relay with none shows the page's waiting card until that pass lands | `900` |
-| `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
+| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the document is rebuilt — a read of the router's manifest, no engine query. `0` or negative turns it off; `/stats.json` then serves whatever the state file holds, or 503, and the page shows its waiting card | `60` |
+| `STATS_INTERVAL_SECONDS` | **retired.** It scheduled the corpus-wide grouping pass, which no longer exists; a relay that still has it set says so at boot and otherwise ignores it | — |
+| `STATS_FILE` | where the document is persisted, so a restart serves the last one. Written atomically (temp file + move) | `/var/lib/vespa-relay/stats.json` |
 
-`GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
-publishing it is most of the point — anyone can chart this relay's coverage
-without scraping the page's markup. It carries an `ETag` and answers `304` to a
-conditional request, which is what makes polling it cheap. The one rule to hold
-when adding fields: everything in the document is a fact about **stored events**,
-never about clients. `/pressure` caps its `samples` field for exactly that
-reason.
+`GET /stats.json` is public, like `GET /pressure` and the other stats pages. It
+carries an `ETag` and answers `304` to a conditional request, which is what
+makes polling it cheap. The one rule to hold when adding fields: everything in
+the document is a fact about **stored events**, never about clients.
+`/pressure` caps its `samples` field for exactly that reason.
 
 ## Relay identity (NIP-11)
 
@@ -717,7 +687,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
 | `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | any |
-| `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` / `NEG_FRAME_SIZE_LIMIT` / `EXPIRATION_SWEEP_SECONDS` / `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | any |
+| `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` / `NEG_FRAME_SIZE_LIMIT` / `EXPIRATION_SWEEP_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | any |
 | `STORE_METRICS_LOG_SECONDS` | both | any |
 | `SYNC_UP_INTERVAL_SECONDS` | sync | `10` or more |
 | `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |

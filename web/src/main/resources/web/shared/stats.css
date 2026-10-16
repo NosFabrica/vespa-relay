@@ -77,6 +77,8 @@ h2 + :not(.card-sub) { margin-top: .5rem; }
 .chart .mark { fill: var(--accent); }
 .chart .hit { fill: transparent; }
 .chart .mark.on { fill: var(--text); }
+/* The open bucket: still filling, so it must not read as a dip. */
+.chart .mark.partial { opacity: .5; }
 .wrap { overflow-x: auto; }
 /* The long tables run to thousands of rows: bounded height with a sticky
    header, so the column labels are still there 400 rows down. */
@@ -193,8 +195,7 @@ p.cov-none { margin-bottom: .5rem; }
 .chip.warn { background: var(--warn-soft); color: var(--warn); }
 
 /* The last hour of a gauge, inside the chip that carries its level.
-   `currentColor` so the trace inherits the chip's tone. `.trend`, not
-   `.spark`: the kind-activity card carries `chart spark` sparklines. */
+   `currentColor` so the trace inherits the chip's tone. */
 .trend { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
 .trend path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
 /* A sample with a gap on either side: a lone reading between two outages
@@ -453,14 +454,6 @@ td.share i { display: block; height: .5rem; border-radius: 0 2px 2px 0; backgrou
 /* A verdict the router has retired. Same treatment as .vd-grade.retired. */
 .badge.retired { background: transparent; color: var(--muted); border: 1px solid var(--muted); opacity: .7; text-decoration: line-through; }
 .err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
-/* The granularity toggle: one row above the series it drives. */
-.seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }
-.seg button {
-  font: inherit; font-size: .85rem; padding: .35rem .8rem; border: 0; cursor: pointer;
-  background: transparent; color: var(--muted); border-right: 1px solid var(--line);
-}
-.seg button:last-child { border-right: 0; }
-.seg button.on { background: var(--bar); color: var(--text); font-weight: 600; }
 
 /* ---- controls ----------------------------------------------------------
    Styled at the element: a raw `input[type=search]` inherits the platform's
@@ -483,7 +476,7 @@ input[type=search]::-webkit-search-cancel-button:hover { opacity: 1; }
 @media (prefers-color-scheme: dark) {
   input[type=search]::-webkit-search-cancel-button { filter: invert(1); }
 }
-/* A standalone action, as opposed to `.seg`'s joined toggle. Same family. */
+/* A standalone action. */
 .btn {
   font: inherit; font-size: .85rem; padding: .35rem .8rem; cursor: pointer;
   border: 1px solid var(--line); border-radius: .4rem;
@@ -495,14 +488,6 @@ input[type=search]::-webkit-search-cancel-button:hover { opacity: 1; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .btn:disabled { opacity: .55; cursor: progress; }
-.sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .9rem 1.2rem; }
-.spark-cell { min-width: 0; }
-.spark-head { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; font-size: .8rem; margin-bottom: .2rem; }
-.spark-kind { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.spark-peak { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.chart.spark { height: 2.5rem; }
-.tiles.inline { grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); margin-bottom: 1rem; }
-td.relay { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; word-break: break-all; }
 .err code { word-break: break-all; }
 footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
 /* One line per cadence, tight enough to read as one block. */

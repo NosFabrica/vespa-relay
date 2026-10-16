@@ -258,8 +258,8 @@ the page unreachable rather than more private. The pulse site is on its own port
 behind the guard, not instead of it: the guard is the boundary that matters, the port is the one
 that survives a mistake in it, and it should still be bound on the private side of the network.
 
-**`/pulse.json` is built per request, `no-store`, no ETag.** `/stats.json` costs Vespa queries,
-so it is rolled up on a clock and served from memory with a validator; the pulse document is a
+**`/pulse.json` is built per request, `no-store`, no ETag.** `/stats.json` changes once a
+minute at most, so it is rolled up on a clock and served from memory with a validator; the pulse document is a
 read of in-process counters, so rolling it up would only make it older, and every field moves
 (`generatedAt` above all) so a validator would never match. It must not sit in any cache: the
 page's whole method is differencing two consecutive polls, and this is admin-only content. The

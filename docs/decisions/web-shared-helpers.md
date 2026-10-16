@@ -170,8 +170,7 @@ face markup; they differed only in how big the face was and in which of the
 three parts (picture, generated fallback, score chip) they had forgotten.
 
 **The pulse page polls every two seconds.** `/pulse.json` is a read of in-process counters,
-not a rollup of Vespa queries, so it costs the relay nothing comparable to the stats page's
-thirty-second floor, and a thirty-second window smooths away the spike an operator opened the
+not a Vespa query, so it costs the relay nothing comparable to the stats page's COUNTs, and a thirty-second window smooths away the spike an operator opened the
 page to see. `shared/pulse.js` differences cumulative counters into rates over that window.
 
 **Rates are measured on the server's own clock, never the browser's.** `windowOf` takes the
