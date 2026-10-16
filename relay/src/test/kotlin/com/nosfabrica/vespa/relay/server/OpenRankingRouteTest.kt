@@ -47,6 +47,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.net.URI
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse.BodyHandlers
@@ -119,8 +121,24 @@ class OpenRankingRouteTest {
             serving(ore(answering(house to ready(ScoredSearch.Hit(alice, 812.5), ScoredSearch.Hit(bob, 3.0)))))
             val res = client.search("""{"observer":"$house","query":"alice"}""")
             assertEquals(HttpStatusCode.OK, res.status)
-            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":812.5},{"pubkey":"$bob","rank":3.0}],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":812.5},{"pubkey":"$bob","rank":3.0}],"ttl":300,"algorithm":"relevance","observer":"$house","rank_service":"$service"}"""), json(res.bodyAsText()))
             assertEquals(listOf(Ask("alice", house, 100)), asked, "limit defaults to 100")
+        }
+
+    @Test
+    fun `the answer names the observer that ranked it and that observer's own rank service`() =
+        testApplication {
+            val povService = "9c".repeat(32)
+            serving(ore(answering(house to ready(ScoredSearch.Hit(bob, 9.0)), pov to ScoredSearch(listOf(ScoredSearch.Hit(alice, 1.0)), povService))))
+            val global = json(client.search("""{"observer":"$house","query":"alice"}""").bodyAsText()).jsonObject
+            assertEquals(JsonPrimitive("relevance"), global["algorithm"])
+            assertEquals(JsonPrimitive(house), global["observer"])
+            assertEquals(JsonPrimitive(service), global["rank_service"])
+            // An upper-case pov is ranked through, and named as, its canonical lower-case key.
+            val personal = json(client.search(personal(pov.uppercase())).bodyAsText()).jsonObject
+            assertEquals(JsonPrimitive("relevance-pov"), personal["algorithm"])
+            assertEquals(JsonPrimitive(pov), personal["observer"])
+            assertEquals(JsonPrimitive(povService), personal["rank_service"])
         }
 
     @Test
@@ -234,7 +252,7 @@ class OpenRankingRouteTest {
         testApplication {
             serving(ore(answering(house to ready(ScoredSearch.Hit(alice, 9.0), ScoredSearch.Hit(bob, 8.0), ScoredSearch.Hit(pov, 7.0)))))
             val res = client.search("""{"observer":"$house","query":"alice","limit":2}""")
-            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":9.0},{"pubkey":"$bob","rank":8.0}],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":9.0},{"pubkey":"$bob","rank":8.0}],"ttl":300,"algorithm":"relevance","observer":"$house","rank_service":"$service"}"""), json(res.bodyAsText()))
         }
 
     @Test
@@ -268,7 +286,7 @@ class OpenRankingRouteTest {
             serving(ore(answering(house to ready(ScoredSearch.Hit(bob, 9.0)), pov to ready(ScoredSearch.Hit(alice, 7.25)))))
             val res = client.search(personal())
             assertEquals(HttpStatusCode.OK, res.status)
-            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":7.25}],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(json("""{"results":[{"pubkey":"$alice","rank":7.25}],"ttl":300,"algorithm":"relevance-pov","observer":"$pov","rank_service":"$service"}"""), json(res.bodyAsText()))
             assertEquals(listOf(Ask("alice", pov, 100)), asked)
         }
 
@@ -288,7 +306,7 @@ class OpenRankingRouteTest {
             serving(ore(answering(pov to ready())))
             val res = client.search(personal())
             assertEquals(HttpStatusCode.OK, res.status)
-            assertEquals(json("""{"results":[],"ttl":300}"""), json(res.bodyAsText()))
+            assertEquals(json("""{"results":[],"ttl":300,"algorithm":"relevance-pov","observer":"$pov","rank_service":"$service"}"""), json(res.bodyAsText()))
         }
 
     @Test

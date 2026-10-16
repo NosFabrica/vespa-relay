@@ -125,7 +125,7 @@ internal fun Route.openRanking(ore: OpenRanking) {
                     // A no-op once finished; a failed or cancelled search is no sample, only no longer in flight.
                     read?.abandon()
                 }
-            call.answer(found, ask.pov, ask.limit)
+            call.answer(found, ask)
         } finally {
             ore.slots.release()
         }
@@ -139,10 +139,11 @@ internal fun Route.openRanking(ore: OpenRanking) {
  */
 private suspend fun ApplicationCall.answer(
     found: ScoredSearch,
-    pov: String?,
-    limit: Int,
+    ask: SearchAsk.Valid,
 ) {
-    if (found.rankService != null) return respondText(found.toResults(limit), ContentType.Application.Json)
+    val service = found.rankService
+    if (service != null) return respondText(found.toResults(ask, service), ContentType.Application.Json)
+    val pov = ask.pov
     if (pov == null) {
         return respondError(HttpStatusCode.ServiceUnavailable, "the provider's House Observer has no trust provider list (kind 10040) naming a rank service on this relay yet; retry later")
     }
@@ -236,10 +237,23 @@ private fun String.shown(): String {
     return clean.substring(0, clean.offsetByCodePoints(0, MAX_SHOWN)) + "..."
 }
 
-private fun ScoredSearch.toResults(limit: Int): String =
+/**
+ * ORE-05's `results` and `ttl`, then whose view ranked them, in the same body: the `algorithm`
+ * served, the `observer` whose trust weighted the text match (the pov for `relevance-pov`, the
+ * proxy's House Observer for `relevance`), and the `rank_service` that observer's 10040 names,
+ * whose 30382 cards supplied the trust. ORE-05 defines neither, and nothing in it forbids them:
+ * they exist because a separate lookup of the House Observer (`/.well-known/nostr.json`) can
+ * never be bound to one answer, and a consumer that keeps the answer as evidence needs to say
+ * whose view it was. Unsigned, like the rest of an HTTPS answer: a claim of this relay, not a
+ * Nostr signature. Brainstorm's server forwards the body as is, so they reach its clients.
+ */
+private fun ScoredSearch.toResults(
+    ask: SearchAsk.Valid,
+    service: String,
+): String =
     buildJsonObject {
         putJsonArray("results") {
-            hits.take(limit).forEach {
+            hits.take(ask.limit).forEach {
                 addJsonObject {
                     put("pubkey", it.pubkey)
                     put("rank", it.score)
@@ -247,6 +261,9 @@ private fun ScoredSearch.toResults(limit: Int): String =
             }
         }
         put("ttl", RESULTS_TTL_SECONDS)
+        put("algorithm", if (ask.pov == null) RELEVANCE else RELEVANCE_POV)
+        put("observer", ask.observer)
+        put("rank_service", service)
     }.toString()
 
 private const val SEARCH_PATH = "/search/pubkeys"
