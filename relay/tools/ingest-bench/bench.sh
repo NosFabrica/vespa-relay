@@ -29,6 +29,11 @@ AMY=${AMY:-amy}
 RELAY_BIN=${RELAY_BIN:-$REPO/relay/build/install/vespa-relay/bin/vespa-relay}
 RUN=$OUT/runs/$(date +%Y%m%d-%H%M%S)-$NAME
 mkdir -p "$RUN"
+# Every step below needs Docker, and most of them hide its errors: say so once, up front.
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is not reachable; the arm needs it for Vespa." >&2
+  exit 1
+fi
 # The relay this harness started, by pid, never by pattern: on a host running the compose
 # relay, a `pgrep RelayMainKt` would find that container's JVM too.
 PIDFILE=$OUT/relay.pid
