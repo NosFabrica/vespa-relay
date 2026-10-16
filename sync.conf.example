@@ -406,12 +406,17 @@ streams {
     # this store holds. Their sibling state kinds are deliberately NOT here:
     # 819 (merge accepted) and 30819 (wiki redirect) are wired in quartz but
     # implement no `SearchableEvent`, so this stream, which mirrors what is
-    # worth searching, has nothing to do with them. The ask is 152 kinds wide
+    # worth searching, has nothing to do with them. The ask is 155 kinds wide
     # now; relays that cap kinds per filter refuse the whole REQ rather than
     # trimming it, and `FilterWidths` is what learns each relay's cap from its
     # refusal and re-sends the leg in chunks — so widening this list costs
     # nothing on a relay that answers it and one learned chunking on one that
     # does not.
+    #
+    # The Open Markets kinds travel with the 30402 listings they describe:
+    # 30405 collections, 30406 shipping options and 31555 product reviews,
+    # searchable once quartz parses them. Shopstr reuses 30405 and 30406 for
+    # encrypted carts and escrow records; quartz stores those and indexes nothing.
     #
     # The trusted families (1985, 30382-30385, 30392-30395) are here because a
     # search EXPANDS them: a hit on one is answered with the records it points
@@ -445,7 +450,8 @@ streams {
             30040, 30041, 30045, 30054, 30055, 30063, 30142, 30175, 30176,
             30177, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315,
             30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395,
-            30402, 30617, 30620, 30817, 30818, 31337, 31871, 31872, 31873,
+            30402, 30405, 30406, 30617, 30620, 30817, 30818, 31337, 31555,
+            31871, 31872, 31873,
             31890, 31922, 31923, 31924, 31925, 31987, 31990, 32176, 32267,
             33401, 33863, 34139, 34235, 34236, 34259, 34550, 35128, 35129,
             36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002,
