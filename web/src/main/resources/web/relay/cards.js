@@ -86,8 +86,11 @@ export function barChart(points, { label, height = 130 }) {
   for (let i = points.length - 1; i >= 0; i -= stride) {
     const p = points[i];
     if (!p.tick) continue;
-    const anchor = i === points.length - 1 ? "end" : i === 0 ? "start" : "middle";
-    const t = svgEl("text", { class: "tick", x: PAD_L + i * band + band / 2, y: H - 6, "text-anchor": anchor });
+    // The end labels are anchored at their band's outer edge, so each still sits under its own bar.
+    const last = i === points.length - 1;
+    const anchor = last ? "end" : i === 0 ? "start" : "middle";
+    const x = last ? PAD_L + (i + 1) * band : i === 0 ? PAD_L + i * band : PAD_L + i * band + band / 2;
+    const t = svgEl("text", { class: "tick", x, y: H - 6, "text-anchor": anchor });
     t.textContent = p.tick;
     svg.appendChild(t);
   }
