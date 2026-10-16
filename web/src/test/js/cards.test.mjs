@@ -12,6 +12,7 @@ const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../main/re
 const { seedProfiles } = await import(new URL("../../main/resources/web/shared/profiles.js", import.meta.url));
 const { seedGroupEvents } = await import(new URL("../../main/resources/web/shared/groupnames.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../main/resources/web/shared/parents.js", import.meta.url));
+const { titleOf } = await import(new URL("../../main/resources/web/shared/format.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -58,6 +59,12 @@ const FIXTURES = [
   [31923, ev(31923, [["title", "Meetup"], ["start", String(now + 86400)]]), "Meetup"],
   [31924, ev(31924, [["title", "My calendar"], ["a", "31923:x:y"]]), "1 event"],
   [30402, ev(30402, [["title", "Bike for sale"], ["price", "250", "USD"], ["location", "Berlin"], ["image", "https://x/bike.jpg"]], "good bike"), "250 USD"],
+  [30405, ev(30405, [["d", "wallets"], ["title", "Hardware Wallets"], ["summary", "cold storage"], ["a", `30402:${pk}:trezor`],
+    ["a", `30402:${pk}:coldcard`], ["image", "https://x/wallets.jpg"], ["location", "Lisbon"]], "Every wallet we stock."), "2 products"],
+  [30406, ev(30406, [["d", "std"], ["title", "Standard Shipping"], ["price", "5.99", "USD"], ["country", "US", "CA"],
+    ["region", "US-FL"], ["service", "standard"], ["carrier", "UPS"], ["duration", "24", "72", "H"]], "regional shipping"), "24–72 hours"],
+  [31555, ev(31555, [["d", `a:30402:${pk2}:bike`], ["rating", "1", "thumb"], ["rating", "0.8", "value"], ["rating", "0.6", "delivery"]],
+    "Rides well, arrived late."), "thumbs up"],
   [30018, ev(30018, [], JSON.stringify({ name: "Widget", description: "a widget", price: 10, currency: "EUR", images: ["https://x/w.jpg"] })), "10 EUR"],
   [30017, ev(30017, [], JSON.stringify({ name: "My stall", description: "shop", currency: "USD" })), "My stall"],
   [9041,  ev(9041, [["amount", "2100000000"]], "help the cause"), "2,100,000 sats"],
@@ -375,6 +382,15 @@ const FIXTURES = [
   [45010, ev(45010, [["d", "spec"], ["h", "chan"], ["title", "Launch Plan"], ["type", "doc"], ["op", "create"], ["ar", "1"]], "step one: ship"), "Launch Plan"],
   [46030, ev(46030, [["d", "f00dbabe"]], "looks good"), "approves a workflow step"],
   [46031, ev(46031, [["d", "f00dbabe"]], "not yet"), "denies a workflow step"],
+  // The kinds quartz 25a3f37c83 made searchable.
+  [1624,  ev(1624, [["e", eid, "wss://git.example", "root"], ["p", pk2], ["k", "1621"]], "## Why this matters\nIt breaks on every boot."), "covers an issue"],
+  [5128,  ev(5128, [["a", `35128:${pk}:blog`], ["path", "/index.html", "ab".repeat(32)], ["title", "My Blog"], ["description", "the March build"]]), "snapshot of"],
+  [30031, ev(30031, [["d", "cats"], ["title", "Cat Stickers"], ["description", "cats doing things"], ["sticker", "loaf", "https://x/loaf.webp", "sfw"]]), "emoji-grid stickers"],
+  [30301, ev(30301, [["d", "roadmap"], ["title", "Roadmap"], ["description", "what ships next"], ["col", "todo", "To Do", "0"], ["col", "done", "Done", "2"], ["col", "doing", "Doing", "1"], ["p", pk2]]), "Roadmap"],
+  [30302, ev(30302, [["d", "c1"], ["title", "Write the docs"], ["description", "every endpoint"], ["a", `30301:${pk}:roadmap`], ["s", "Doing"], ["p", pk2]]), "Write the docs"],
+  [33402, ev(33402, [["d", "legs"], ["title", "Leg Day"], ["type", "strength"], ["rounds", "3"], ["exercise", `33401:${pk}:back-squat`, "", "100", "5", "8", "normal"], ["exercise", `33401:${pk}:lunge`, "", "", "12", "", "warmup"]], "go heavy"), "Leg Day"],
+  [36767, ev(36767, [["d", "dusk"], ["title", "Dusk"], ["description", "a dark theme"], ["c", "#1a1b26", "background"], ["c", "#c0caf5", "text"], ["c", "#7aa2f7", "primary"], ["f", "Inter", "https://x/inter.woff2", "body"], ["t", "theme"]]), "theme-swatch"],
+  [38385, ev(38385, [["d", pk], ["y", "mostro", "Lisbon Mostro"], ["z", "info"], ["mostro_version", "0.14.0"], ["fee", "0.006"], ["min_order_amount", "100"], ["max_order_amount", "1000000"], ["fiat_currencies_accepted", "EUR,USD"], ["pow", "0"], ["protocol_version", "1"]]), "Lisbon Mostro"],
 ];
 
 // Every registered kind has a fixture, and every fixture targets a registered kind.
@@ -460,6 +476,8 @@ const ROW_SAYS = [
   // The ones whose fact has to be read out of somewhere first.
   [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
   [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
+  [30405, "Hardware Wallets · 2 products · cold storage"], [30406, "Standard Shipping · 5.99 USD · standard · 24–72 hours · US, CA"],
+  [31555, "reviews bike · thumbs up · 85% overall · Rides well"],
   [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
   // A citation leads with the source, not with the note about it.
   [32, "Chapter Two · Ursula Franklin · The Real World vol 2"], [33, "claude-opus-5 · what is a relay?"],
@@ -499,6 +517,12 @@ const ROW_SAYS = [
   [40008, "fix the off-by-one · a.kt · abcdef1"], [40901, "general · everything else"],
   [43003, "reports progress on a job · running · halfway"], [11316, "Weather MCP · forecasts over nostr"],
   [33331, "Chair · 4 vertices · 2 faces"], [15, "the receipt · image/jpeg · 120.6 KB"],
+  // The kinds quartz 25a3f37c83 brought: each row says what the kind exists to carry.
+  [1624, "covers an issue · It breaks on every boot."],
+  [5128, "My Blog · one pinned website build · 1 file · the March build"],
+  [30031, "Cat Stickers · 1 sticker · cats doing things"], [30301, "Roadmap · To Do → Doing → Done · what ships next"],
+  [30302, "Write the docs · Doing · every endpoint"], [33402, "Leg Day · 2 sets · strength · 3 rounds · go heavy"],
+  [36767, "Dusk · a dark theme · #1a1b26 · #c0caf5 · #7aa2f7"], [38385, "Lisbon Mostro · open · fee 0.6% · EUR, USD"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
@@ -1509,6 +1533,123 @@ assert(card(ev(38000, [["d", "sybil test vote 7"]])).includes("no app this page 
 assert.strictEqual(badgeOf(card(ev(38000, [["k", "1"], ["u", "https://x"], ["election", "E"]]))), "ballot",
   "a non-mint `k` rules the recommendation out before the ballot is checked");
 
+// ---- Open Markets: listings, collections, shipping options, reviews ----------
+//
+// A listing's permalink keeps every word and every fact its merchant wrote; the preview stays short.
+const bike = ev(30402, [["d", "bike"], ["title", "Bike"], ["price", "250", "USD"], ["summary", "a city bike"],
+  ["status", "sold"], ["visibility", "pre-order"], ["stock", "3"], ["type", "simple", "physical"], ["t", "bikes"], ["t", "Bikes"],
+  ["spec", "frame", "steel"], ["image", "https://x/b2.jpg", "", "2"], ["image", "https://x/b1.jpg", "", "1"], ["image", "https://x/b3.jpg"],
+  ["shipping_option", `30406:${pk}:std`], ["a", `30405:${pk}:wallets`]], "Ridden twice, kept indoors.");
+const bikeFull = card(bike, { full: true });
+assert(bikeFull.includes("a city bike") && bikeFull.includes("Ridden twice, kept indoors."),
+  "a listing's permalink shows its summary and its description, not one in place of the other");
+assert(!card(bike).includes("Ridden twice"), "…and the preview stays at the summary");
+assert(/status-pill[^"]*">sold</.test(card(bike)) && /status-pill[^"]*">pre-order</.test(card(bike)),
+  "a sold or pre-order listing says so at both depths");
+assert(bikeFull.includes("<dt>stock</dt><dd>3</dd>") && bikeFull.includes("<dt>format</dt><dd>physical</dd>"),
+  "stock and the physical format are facts on the card");
+assert((bikeFull.match(/>#bikes</gi) || []).length === 1 && bikeFull.includes(`href="/?q=%23bikes"`),
+  "a listing's categories are hashtag chips, each once");
+assert(bikeFull.includes("<dt>frame</dt><dd>steel</dd>"), "a spec is a fact on the permalink");
+assert(bikeFull.indexOf("b1.jpg") < bikeFull.indexOf("b2.jpg") && bikeFull.indexOf("b2.jpg") < bikeFull.indexOf("b3.jpg"),
+  "the permalink draws every image, in the order the merchant sorted them");
+assert(!card(bike).includes("b1.jpg"), "…and the preview draws none");
+assert(bikeFull.includes(`href="/${naddr(`30406:${pk}:std`)}"`) && bikeFull.includes(`href="/${naddr(`30405:${pk}:wallets`)}"`),
+  "a listing links the shipping options and collections it names");
+assert(rowOf(bike).sub.includes("sold"), "the row says a listing is sold");
+const plain = card(ev(30402, [["title", "Lamp"], ["price", "5", "EUR"]], "a lamp"), { full: true });
+assert(!plain.includes("status-pill") && !plain.includes("<dt>stock</dt>") && !plain.includes("<dt>format</dt>"),
+  "a listing that says nothing of its availability or format is not given any");
+assert(card(ev(30402, [["title", "L"], ["type", "physical"]]), { full: true }).includes("<dt>format</dt><dd>physical</dd>"),
+  "a format written in the type slot is still the format");
+// An address is linked as written: a `d` of "bike " or "my  bike" is another product than "bike".
+for (const d of ["std ", "my  std"]) {
+  assert(card(ev(30402, [["title", "L"], ["shipping_option", `30406:${pk}:${d}`]]), { full: true }).includes(`href="/${naddr(`30406:${pk}:${d}`)}"`),
+    `a listing links the shipping option "${d}" by its own d`);
+}
+assert(card(ev(30402, [["title", "L"], ["visibility", "hidden"]])).includes(">hidden<"), "a hidden listing is marked hidden");
+
+// A collection names its products and links them; a `d`-only 30405 is Shopstr's encrypted cart.
+const wallets = FIXTURES.find(([k]) => k === 30405)[1];
+const walletsFull = card(wallets, { full: true });
+assert(walletsFull.includes("Hardware Wallets") && walletsFull.includes("cold storage") && walletsFull.includes("Every wallet we stock."),
+  "a collection's permalink shows its title, its summary and its description");
+assert(walletsFull.includes(`href="/${naddr(`30402:${pk}:trezor`)}"`) && walletsFull.includes("wallets.jpg"),
+  "…links every product it holds and draws its image");
+assert(!card(wallets).includes("wallets.jpg"), "…and the preview carries no banner");
+assert(walletsFull.includes("<dt>location</dt><dd>Lisbon</dd>"), "a collection's location is a fact");
+// Shopstr's shapes as written: a cart is NIP-44 ciphertext with no tags at all; an escrow record adds a `d` and a `type`.
+const nip44 = Buffer.from([2, ...Array.from({ length: 98 }, (_, i) => (i * 37 + 11) & 255)]).toString("base64");
+const cart = ev(30405, [], nip44);
+for (const opts of [undefined, { full: true }]) {
+  assert(!card(cart, opts).includes("0 products") && !card(cart, opts).includes(nip44.slice(0, 24)),
+    "a Shopstr cart is not drawn as a collection, and its ciphertext is not drawn at all");
+  assert.strictEqual(badgeOf(card(cart, opts)), "kind 30405", "…nor badged as one");
+}
+assert.strictEqual(rowOf(cart).name, "a kind 30405 event, not a collection", "the cart's row says what it is not");
+const withProducts = (n, extra = []) => ev(30405, [...extra, ...Array.from({ length: n }, (_, i) => ["a", `30402:${pk}:p${i}`])]);
+assert.strictEqual(badgeOf(card(withProducts(1))), "collection", "one product address is enough to be a collection");
+// A preview only counts the products; it never encodes them.
+const bigShelf = withProducts(5000);
+const shelfStarted = Date.now();
+const shelfPreview = card(bigShelf), shelfRow = rowOf(bigShelf);
+const shelfTook = Date.now() - shelfStarted;
+assert(shelfPreview.includes("5,000 products") && shelfRow.sub.startsWith("5,000 products"), "a collection's products are counted");
+assert(shelfTook < 80, `a 5000-product collection must not cost ${shelfTook}ms to preview`);
+for (const d of ["bike ", "my  bike"]) {
+  const shelf = card(ev(30405, [["title", "S"], ["a", `30402:${pk}:${d}`], ["shipping_option", `30406:${pk}:${d}`]]), { full: true });
+  assert(shelf.includes(`href="/${naddr(`30402:${pk}:${d}`)}"`) && shelf.includes(`href="/${naddr(`30406:${pk}:${d}`)}"`),
+    `a collection links the product and shipping option "${d}" by their own d`);
+}
+// A real collection may list no products yet; its title is enough.
+assert.strictEqual(badgeOf(card(ev(30405, [["d", "c"], ["title", "Krux DIY Wallets"]]))), "collection");
+
+// A shipping option says what it costs, how fast, where it goes, and who carries it.
+const ship = FIXTURES.find(([k]) => k === 30406)[1];
+const shipFull = card(ship, { full: true });
+for (const fact of ["Standard Shipping", "5.99 USD", ">standard<", "US, CA", "US-FL", "UPS", "24–72 hours"]) {
+  assert(shipFull.includes(fact), `a shipping option's permalink shows ${fact}`);
+}
+const pickup = card(ev(30406, [["title", "Store Pickup"], ["price", "0", "USD"], ["service", "pickup"], ["location", "123 Main St"]]), { full: true });
+assert(pickup.includes("<dt>pickup at</dt><dd>123 Main St</dd>"), "a pickup option says where to pick up");
+const escrow = ev(30406, [["d", "shopstr:p2pk-escrow:6f1c2b9e-4d7a-4e21-9b3c-0a5f8e7d6c41"], ["type", "p2pk-escrow"]], nip44);
+assert.strictEqual(badgeOf(card(escrow)), "kind 30406", "a Shopstr escrow record is not badged a shipping option");
+assert(!card(escrow, { full: true }).includes(nip44.slice(0, 24)), "…nor is its ciphertext drawn");
+assert.strictEqual(rowOf(escrow).name, "a kind 30406 event, not a shipping option", "…and its row says what it is not");
+const shipWith = (...tags) => card(ev(30406, [["title", "T"], ...tags]), { full: true });
+assert(shipWith(["price-weight", "0.75", "kg", ""]).includes("+0.75 per kg"), "an empty trailing value is not the rate's unit");
+assert(shipWith(["price-weight", "0.75", "USD", "kg"]).includes("+0.75 USD per kg"), "…and a currency still reads");
+assert(shipWith(["duration", "2", "1", "W"]).includes("1–2 weeks"), "a reversed delivery window reads low to high");
+
+// A review links the product it reviews, and its score is the Open Markets total.
+const review = FIXTURES.find(([k]) => k === 31555)[1];
+const reviewFull = card(review, { full: true });
+assert(reviewFull.includes(`href="/${naddr(`30402:${pk2}:bike`)}"`), "a review card links to the reviewed product");
+assert(reviewFull.includes("85% overall"), "the total is half the thumb plus half the categories' mean");
+assert(reviewFull.includes("value 80%") && reviewFull.includes("delivery 60%"), "each category's score is shown");
+assert(reviewFull.includes("Rides well, arrived late."), "…and the review's words");
+assert(card(ev(31555, [["d", `a:30402:${pk2}:x`], ["rating", "0", "thumb"]])).includes("thumbs down") &&
+  card(ev(31555, [["d", `a:30402:${pk2}:x`], ["rating", "0", "thumb"]])).includes("0% overall"),
+  "a thumb alone is the total");
+for (const opts of [undefined, { full: true }]) {
+  assert(!card(review, opts).includes(`a:30402:`), "a review's raw `d` is never its title");
+}
+assert(!rowOf(review).name.includes("a:30402:"), "…nor its row's name");
+assert.strictEqual(titleOf(ev(31555, [["d", `a:30402:${pk2}:x`]])), null, "a `d` naming another event's address is no title");
+assert.strictEqual(titleOf(ev(31555, [["d", `30402:${pk2}:x`]])), null, "…with or without the `a:` prefix");
+assert.strictEqual(titleOf(ev(30402, [["d", "bike"]])), "bike", "a plain `d` is still a title");
+const reviewing = (d) => ev(31555, [["d", `a:30402:${pk2}:${d}`], ["rating", "1", "thumb"]]);
+assert(card(reviewing("bike "), { full: true }).includes(`href="/${naddr(`30402:${pk2}:bike `)}"`),
+  "a review links the product by its `d` as written");
+for (const d of ["6f1c2b9e-4d7a-4e21-9b3c-0a5f8e7d6c41", "ab".repeat(32)]) {
+  assert.strictEqual(rowOf(reviewing(d)).name, "reviews a listing", "an opaque product `d` is not shown");
+  assert(!card(reviewing(d), { full: true }).replace(/<details[\s\S]*?<\/details>/g, "").includes(d), "…on the card either");
+}
+for (const bad of ["0x1", "1e0", "", " "]) {
+  assert(!/thumbs|overall/.test(card(ev(31555, [["d", "r"], ["rating", bad, "thumb"]]))), `a rating of "${bad}" is not a score`);
+}
+assert(card(ev(31555, [["d", "r"], ["rating", ".5", "thumb"]])).includes("50% overall"), "a decimal with no leading digit is a score");
+
 // A NIP-17 file's key is on the event, never on the page; nor is a NIP-29 invite code.
 const sealed = FIXTURES.find(([k]) => k === 15)[1];
 for (const opts of [undefined, { full: true }]) {
@@ -1559,5 +1700,95 @@ assert(card(jsonArtifact).includes("a JSON document") && card(jsonArtifact, { fu
 // A decentralized-list item links the list it adds to when the `z` is an address or an id.
 assert(card(ev(39999, [["z", `39998:${pk2}:books`], ["name", "Dune"]])).includes('href="/naddr1'), "an item links its list by address");
 assert(card(ev(9999, [["z", eid], ["t", "Rex"]])).includes(`href="/${noteId(eid)}"`), "…or by id");
+
+// ---- the kinds quartz 25a3f37c83 made searchable ----------------------------------------
+
+// 30301 is three things, decided per event in quartz's order: a verification, a board, or neither.
+const verification = ev(30301, [
+  ["d", "app.wallet:1.2.0:android:" + "cd".repeat(32)], ["i", "app.wallet"], ["version", "1.2.0"], ["platform", "android"],
+  ["status", "reproducible"], ["x", "cd".repeat(32)], ["issue-tracker-url", "https://x/issues/9"],
+], JSON.stringify({ description: "Wallet 1.2.0 for Android reproduces", content: "Built twice in Docker; the APKs match byte for byte." }));
+const vFull = card(verification, { full: true });
+assert.strictEqual(badgeOf(vFull), "build verification", "a WalletScrutiny verification is badged as one, not as a board");
+assert(vFull.includes("status-pill lead open") && vFull.includes(">reproducible<") && vFull.includes("app.wallet 1.2.0 · android"),
+  "…leads with its verdict and what was built");
+assert(vFull.includes("Wallet 1.2.0 for Android reproduces") && vFull.includes("byte for byte") && !vFull.includes("{&quot;"),
+  "…reads its JSON content as a description and a report, never printing the JSON");
+assert.strictEqual(rowOf(verification).name, "reproducible · app.wallet 1.2.0 · android", "…and its row leads with the verdict");
+// Quartz checks the verification first, so one that also carries a `title` is still a verification.
+assert.strictEqual(badgeOf(card(ev(30301, [["i", "w"], ["status", "reproducible"], ["title", "W"]]))), "build verification",
+  "an `i` + `status` event is a verification even with a board's title");
+assert(card(ev(30301, [["i", "w"], ["status", "ftbfs"]])).includes("fails to build"), "a verdict code reads in words");
+assert(card(ev(30301, [["i", "w"], ["status", "new_code"]])).includes(">new code<"), "…and one quartz does not know still shows");
+const board = FIXTURES.find(([k]) => k === 30301)[1];
+assert.strictEqual(badgeOf(card(board)), "kanban board");
+assert(/To Do[\s\S]*Doing[\s\S]*Done/.test(card(board, { full: true })), "a board's columns read in their `order`, not tag order");
+const planner = ev(30301, [["d", "t1"], ["b", "ab".repeat(16)], ["status", "open"]], nip44);
+for (const opts of [undefined, { full: true }]) {
+  assert.strictEqual(badgeOf(card(planner, opts)), "kind 30301", "a planner's encrypted task is neither a board nor a verification");
+  assert(!card(planner, opts).includes(nip44.slice(0, 24)), "…and its ciphertext is not drawn");
+}
+assert.strictEqual(rowOf(planner).name, "a kind 30301 event, not a board or a verification");
+assert.strictEqual(badgeOf(card(ev(30301, [["col", "a", "Inbox"]]))), "kanban board", "a named column alone is a board");
+
+// A card: its column, its board, and who it is assigned to; Fieldbook's memberships are not cards.
+const kcard = card(FIXTURES.find(([k]) => k === 30302)[1], { full: true });
+assert(kcard.includes(">Doing<") && kcard.includes(`href="/${naddr(`30301:${pk}:roadmap`)}"`) && kcard.includes("assigned to 1 person"),
+  "a Kanban card shows its column, links its board and counts its assignees");
+const membership = ev(30302, [["d", "m"], ["client", "fieldbook"], ["a", `30300:${pk}:team`]], JSON.stringify({ role: "member" }));
+assert.strictEqual(badgeOf(card(membership)), "kind 30302", "a Fieldbook membership is not a Kanban card");
+assert.strictEqual(rowOf(membership).name, "a kind 30302 event, not a Kanban card");
+assert(card(ev(30302, [["a", `30301:${pk}:roadmap`]])).includes("on <a"), "a card with no title still names its board");
+assert(card(ev(30302, [["title", "T"], ["k", "1621"], ["e", eid]]), { full: true }).includes("tracks a kind 1621 event"),
+  "a tracker card says what it mirrors");
+
+// A Mostro instance: open unless it says it is down, its fee as a percentage, and its currencies.
+const mostro = card(FIXTURES.find(([k]) => k === 38385)[1], { full: true });
+for (const fact of ["status-pill lead open", "fee 0.6%", "orders 100 sats – 1,000,000 sats", ">EUR<", ">USD<", "<dt>escrow</dt><dd>lightning</dd>"]) {
+  assert(mostro.includes(fact), `a Mostro instance shows ${fact}`);
+}
+assert(!mostro.includes("<dt>proof of work</dt>"), "a pow of 0 is no requirement, and is not drawn as one");
+assert(card(ev(38385, [["z", "info"], ["maintenance_mode", "true"]])).includes("status-pill lead closed\">maintenance"), "an instance in maintenance says so");
+assert(card(ev(38385, [["z", "info"], ["fiat_currencies_accepted", ""]])).includes("trades every currency"),
+  "an empty currency list is the spec's every currency");
+const paygress = ev(38385, [["d", "lease-1"], ["t", "paygress"]], JSON.stringify({ revoked: true }));
+assert.strictEqual(badgeOf(card(paygress)), "kind 38385", "Paygress on 38385 is not a Mostro instance");
+assert.strictEqual(rowOf(paygress).name, "a kind 38385 event, not a Mostro instance");
+
+// A theme draws its own colors, and nothing but a six-digit hex reaches a style attribute.
+const theme = card(FIXTURES.find(([k]) => k === 36767)[1], { full: true });
+assert(theme.includes('style="background: #1a1b26; color: #c0caf5"') && theme.includes('style="background: #7aa2f7"'),
+  "a theme is drawn in its own background, text and primary colors");
+assert(theme.includes("Inter (body)"), "…and names its fonts");
+const hostileTheme = card(ev(36767, [["title", "X"], ["c", "#fff;background:url(https://x/t)", "background"], ["c", "red", "text"]]), { full: true });
+assert(!hostileTheme.includes("url(") && !hostileTheme.includes("theme-swatch"), "a color that is not #rrggbb never reaches a style attribute");
+const copied = card(ev(36767, [["title", "Mine"], ["a", `36767:${pk2}:dusk`], ["p", pk2]]), { full: true });
+assert(copied.includes(`href="/${naddr(`36767:${pk2}:dusk`)}"`) && copied.includes(`href="/${npub(pk2)}"`),
+  "a copied theme credits the definition and the person it came from");
+
+// Stickers are drawn at sticker size; the ones rated nsfw are counted and never drawn.
+const pack = card(ev(30031, [["title", "P"], ["sticker", "ok", "https://x/ok.png"], ["sticker", "lewd", "https://x/lewd.png", "nsfw"]]), { full: true });
+assert(pack.includes("https://x/ok.png") && !pack.includes("https://x/lewd.png") && pack.includes("1 sticker marked nsfw"),
+  "an nsfw sticker is counted, not shown");
+
+// A workout plan lists its sets, and RUNSTR's activity word in `exercise` is not one.
+const plan = card(FIXTURES.find(([k]) => k === 33402)[1], { full: true });
+assert(plan.includes("100 kg × 5 reps · RPE 8") && plan.includes("12 reps · warmup") && plan.includes(`href="/${naddr(`33401:${pk}:back-squat`)}"`),
+  "a plan's sets read as prescribed and link the exercise they use");
+assert(card(ev(33402, [["exercise", `33401:${pk}:pull-up`, "", "-20", "8"]]), { full: true }).includes("20 kg assisted × 8 reps"),
+  "a negative weight is assistance");
+assert(!card(ev(33402, [["title", "Run"], ["exercise", "running"]])).includes("1 set"), "an activity word is not a set");
+
+// A cover note says what it covers and links it; a snapshot links the site it pins.
+const cover = card(FIXTURES.find(([k]) => k === 1624)[1]);
+assert(cover.includes(`href="/${noteId(eid)}`) && cover.includes(`href="/${npub(pk2)}"`), "a cover note links the item it covers and that item's author");
+assert(card(ev(1624, [["e", eid], ["k", "1618"]], "x")).includes("covers a pull request"), "…named by its `k`");
+assert(!card(FIXTURES.find(([k]) => k === 1624)[1]).includes("## ") && card(FIXTURES.find(([k]) => k === 1624)[1], { full: true }).includes("## Why"),
+  "a cover note previews its prose, not its markdown marks, and keeps the whole note on its page");
+assert(card(FIXTURES.find(([k]) => k === 5128)[1], { full: true }).includes(`href="/${naddr(`35128:${pk}:blog`)}"`),
+  "a website snapshot links the site it pins");
+
+// A 30406 with only a `country` is a shipping option, as quartz reads it.
+assert.strictEqual(badgeOf(card(ev(30406, [["d", "s"], ["country", "BR"]]))), "shipping option", "a country is enough to be a shipping option");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);
