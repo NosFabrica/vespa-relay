@@ -1163,8 +1163,25 @@ quartz = "96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1"
 #
 # LEXICOGRAPHIC: '94aa…' < 'a34c…': the losing direction, moot — nothing else names the store.
 #
-# Prev a34cc5df39, 8c95193705, d1adf0ff91 (above).
-vespaEventStore = "94aad0feea7e"
+# 437712208b = vespa-eventstore branch claude/awesome-edison-x5mb5y, one commit over 94aad0feea7e:
+# the feed body written in one pass instead of through a JsonObject tree (EventDoc.feedJson,
+# byte-identical to the tree, checked over all 65,536 UTF-16 units). Engine code only; the relay's
+# CPU per published kind 3 fell 3-5% (docs/ingest-benchmark.md).
+#   git merge-base --is-ancestor 94aad0feea7e 437712208b   # verified
+#
+# GATED, on this pin with quartz 96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1: the store at 437712208b,
+# its unit build (799 tests, 0 failures) and its integration suite against a real Vespa 8.763.13
+# in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design, 0 failures), read off the
+# result XML. This relay's own gate is in the commit that set this line.
+#
+# SPELLED WITH 10 HEX DIGITS: the full 40-digit spelling's first build hit the same transient
+# maven-publish resolution failure as 94aad0feea; `com.github.NosFabrica` serves store and engine
+# at 437712208b.
+#
+# LEXICOGRAPHIC: '4377…' < '94aa…': the losing direction, moot — nothing else names the store.
+#
+# Prev 94aad0feea7e, a34cc5df39, 8c95193705, d1adf0ff91 (above).
+vespaEventStore = "437712208b"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
