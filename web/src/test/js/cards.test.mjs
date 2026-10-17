@@ -391,6 +391,19 @@ const FIXTURES = [
   [33402, ev(33402, [["d", "legs"], ["title", "Leg Day"], ["type", "strength"], ["rounds", "3"], ["exercise", `33401:${pk}:back-squat`, "", "100", "5", "8", "normal"], ["exercise", `33401:${pk}:lunge`, "", "", "12", "", "warmup"]], "go heavy"), "Leg Day"],
   [36767, ev(36767, [["d", "dusk"], ["title", "Dusk"], ["description", "a dark theme"], ["c", "#1a1b26", "background"], ["c", "#c0caf5", "text"], ["c", "#7aa2f7", "primary"], ["f", "Inter", "https://x/inter.woff2", "body"], ["t", "theme"]]), "theme-swatch"],
   [38385, ev(38385, [["d", pk], ["y", "mostro", "Lisbon Mostro"], ["z", "info"], ["mostro_version", "0.14.0"], ["fee", "0.006"], ["min_order_amount", "100"], ["max_order_amount", "1000000"], ["fiat_currencies_accepted", "EUR,USD"], ["pow", "0"], ["protocol_version", "1"]]), "Lisbon Mostro"],
+  // OpenAgents, shaped like what its CLI publishes on relay.openagents.com: the text is inside JSON.
+  [30184, ev(30184, [["d", "explain-error"], ["t", "oa:ext:listing:v1"]], JSON.stringify({
+    v: 1, requires: [], type: "listing", package: `${pk}:explain-error`, state: "published",
+    release: { id: eid, pubkey: pk, kind: 3184 }, title: "Explain this error",
+    description: "Reads a failing command's output and explains the likely cause." })), "Explain this error"],
+  [3184,  ev(3184, [["t", "oa:ext:release:v1"]], JSON.stringify({
+    v: 1, requires: [], type: "release", package: `${pk}:explain-error`, version: "0.1.0",
+    manifest: { digest: `sha256:${"ab".repeat(32)}`, size: 1244, media_type: "application/json", schema: "openagents.package.v1" },
+    fee_msat: 10000, payout: "spark1pgss8je5hl8eprmtgml379sdxewt82pnsvazh7jf8xlu7c5gkkcljp3j2lzey0" })), "10 sats per call"],
+  [30180, ev(30180, [["d", "echo"], ["t", "oa:cap:v1"], ["t", "oa:profile:adapter"], ["t", "oa:transport:nostr-cj"]], JSON.stringify({
+    v: 1, requires: ["oa-x402-v1"], id: `${pk}:x402/echo`, profile: "adapter", summary: "echo bytes over Nostr",
+    binding_contract: { interface: "openagents.x402.native.v1", transport: "nostr-cj", operations: ["echo"],
+      remote: { worker: pk2, relays: ["wss://relay.openagents.com"] } } })), "paid (x402)"],
 ];
 
 // Every registered kind has a fixture, and every fixture targets a registered kind.
@@ -523,6 +536,9 @@ const ROW_SAYS = [
   [30031, "Cat Stickers · 1 sticker · cats doing things"], [30301, "Roadmap · To Do → Doing → Done · what ships next"],
   [30302, "Write the docs · Doing · every endpoint"], [33402, "Leg Day · 2 sets · strength · 3 rounds · go heavy"],
   [36767, "Dusk · a dark theme · #1a1b26 · #c0caf5 · #7aa2f7"], [38385, "Lisbon Mostro · open · fee 0.6% · EUR, USD"],
+  // OpenAgents: what was searched for leads — never the JSON it was read out of.
+  [30184, "Explain this error · Reads a failing command's output"], [3184, "explain-error 0.1.0 · 10 sats per call"],
+  [30180, "x402/echo · echo bytes over Nostr"],
 ];
 for (const [kind, expect] of ROW_SAYS) {
   const fixture = FIXTURES.find(([k]) => k === kind)[1];
