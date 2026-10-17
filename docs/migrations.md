@@ -484,10 +484,12 @@ If the nine-kind walk above has not run yet, run both lists on one boot:
 30405, 30406, 31555, 33402, 36767, 38385
 ```
 
-## Migration: OpenAgents kinds become searchable (quartz `e5bdf1bd37`)
+## Migration: OpenAgents kinds become searchable (quartz `e5bdf1bd37`, pinned at `99d05ee122`)
 
-The relay's quartz pin moves the derivation; the store pin moves with it, to
-`ece7b81ca8`, which also carries the store's one-pass feed writer and
+The relay's quartz pin moves the derivation (`e5bdf1bd37`; the pin itself is
+`99d05ee122`, whose further commits are relay-client fixes that move no
+derivation); the store pin moves with it, to `0aed31fda8` (store main, PR #167),
+which also carries the store's one-pass feed writer and
 `VESPA_FEED_COMPRESSION` (neither changes what is stored). **30184** (extension
 listings), **3184** (extension releases) and **30180** (capability discovery)
 gain search fields, read from their JSON bodies: a listing's title and slug, then
