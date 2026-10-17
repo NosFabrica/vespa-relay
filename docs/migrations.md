@@ -484,6 +484,39 @@ If the nine-kind walk above has not run yet, run both lists on one boot:
 30405, 30406, 31555, 33402, 36767, 38385
 ```
 
+## Migration: OpenAgents kinds become searchable (quartz `e5bdf1bd37`)
+
+The relay's quartz pin moves the derivation; the store pin moves with it, to
+`ece7b81ca8`, which also carries the store's one-pass feed writer and
+`VESPA_FEED_COMPRESSION` (neither changes what is stored). **30184** (extension
+listings), **3184** (extension releases) and **30180** (capability discovery)
+gain search fields, read from their JSON bodies: a listing's title and slug, then
+its description; a release's package slug, then its version; a capability's
+`package/component` path and operation ids, its summary, and its interface id.
+Their `t` tags are protocol markers (`oa:ext:listing:v1`, `oa:cap:v1`, …), so
+none of them fills the hashtag role. No kind that was already searchable
+extracts differently in this range. The web cards for all three came with #264.
+
+**The schema does not move.** Read `configChangeActions` anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below. Remove both settings once the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+3184, 30180, 30184
+```
+
+If the walks above have not run yet, run every list on one boot:
+
+```
+1022, 1624, 3184, 5128, 30017, 30018, 30019, 30020, 30024, 30031, 30180,
+30184, 30301, 30302, 30405, 30406, 31555, 33402, 36767, 38385
+```
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus
