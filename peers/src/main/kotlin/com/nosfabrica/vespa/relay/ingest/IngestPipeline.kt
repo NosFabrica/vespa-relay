@@ -85,6 +85,8 @@ class IngestPipeline(
         val skipVerify: Boolean,
         val origin: IngestOrigin,
         val onOutcome: ((IEventStore.InsertOutcome) -> Unit)?,
+        /** What it holds of [intakeBudget], returned once its pass is over. */
+        val weight: Long,
     )
 
     private val workers = tuning.concurrency
@@ -92,6 +94,9 @@ class IngestPipeline(
 
     /** How many downloaded events may wait for ingest. */
     val capacity = tuning.queue?.coerceIn(1, MAX_INBOUND_QUEUE) ?: (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+
+    /** Parsed bytes the events taken in and not yet written may hold, when [IngestTuning.queueBytes] asks for a bound. */
+    private val intakeBudget = tuning.queueBytes?.let { ByteBudget(it) }
 
     /** How many events one worker takes per pass, capped to its fair share of the channel. */
     private val batchSize = tuning.batch.coerceAtMost((capacity / workers).coerceAtLeast(1))
@@ -185,11 +190,14 @@ class IngestPipeline(
             onOutcome?.let { deliver(it, SUPPRESSED) }
             return
         }
+        // Before it is counted as queued: a publish waiting here is the connection's backpressure,
+        // like a full channel, and holds nothing of the pipeline yet.
+        val weight = intakeBudget?.let { budget -> approxHeapBytes(event).also { budget.acquire(it) } } ?: 0L
         // Counted before the send and taken back if it fails, or a fast worker decrements first.
         queued.incrementAndGet()
         var handedOff = false
         try {
-            val inbound = Inbound(event, skipVerify, origin, onOutcome)
+            val inbound = Inbound(event, skipVerify, origin, onOutcome, weight)
             // The fast path first, so `parked` counts only a send that suspends.
             if (this.inbound.trySend(inbound).isSuccess) {
                 handedOff = true
@@ -210,7 +218,10 @@ class IngestPipeline(
             onOutcome?.let { deliver(it, SHUTTING_DOWN) }
         } finally {
             // `send` also throws CancellationException on shutdown.
-            if (!handedOff) queued.decrementAndGet()
+            if (!handedOff) {
+                queued.decrementAndGet()
+                intakeBudget?.release(weight)
+            }
         }
     }
 
@@ -284,6 +295,7 @@ class IngestPipeline(
             } finally {
                 // Whatever the pass did not answer, a fault took: every submission hears exactly once.
                 answers.rest(IEventStore.InsertOutcome.Failed(RejectionReason.INSERT_FAILED))
+                intakeBudget?.let { budget -> budget.release(batch.sumOf { it.weight }) }
                 busySince.set(worker, 0)
             }
         }
@@ -906,4 +918,11 @@ data class IngestTuning(
      * holds a parsed copy in the heap, up to the relay's frame limit each.
      */
     val queue: Int? = null,
+    /**
+     * Parsed bytes the events taken in and not yet written may hold, waiting in the channel or in
+     * a worker's pass, estimated by [approxHeapBytes]; null is no bound beyond [queue]'s count. A
+     * relay sets one: its publishes may each be as large as its frame limit, and a count alone lets
+     * a flood of such events take the heap. One event over the budget is still admitted alone.
+     */
+    val queueBytes: Long? = null,
 )

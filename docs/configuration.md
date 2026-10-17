@@ -183,6 +183,7 @@ reason.
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
 | `RELAY_INGEST` | how publishes reach the store. `pipeline` writes them through the mirror's `IngestPipeline`: several workers, each batch dropping what the store already holds or has a newer version of before checking a signature, each publish answered with the store's verdict. `queue` keeps quartz's single-writer `IngestQueue`, which verifies every event and commits one batch at a time. Anything else stops the boot. See [ingest-benchmark.md](ingest-benchmark.md) | `pipeline` |
 | `RELAY_INGEST_CONCURRENCY` | the pipeline's workers. The store serializes commits, so a second worker buys overlap (one plans while the other commits), not parallel writes. `1`-`64` | `2` |
+| `RELAY_INGEST_QUEUE_MB` | the most parsed publishes the pipeline may hold, waiting or in a worker's pass, in megabytes of a deliberately high estimate. A publish past it waits, which holds back that connection the way a full queue does. The count alone was no bound on memory: a 256 KB frame parses to ~476 KB, so a flood of full frames could hold ~1.9 GB, against ~0.55 GB under quartz's queue; 512 is ~840 such events, ~400 MB of real heap, and ordinary traffic meets the count first. One event larger than the whole budget is still taken, alone. `16`-`65536` | `512` |
 | `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: quartz's 64, sized for SQLite, held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). With the pipeline, one batch per worker may wait in front of the workers (the queue path holds four); each waiting publish is a parsed event in the heap. `1`-`8192`; anything else stops the boot | `1000` with the pipeline, `64` with the queue |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
@@ -727,6 +728,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |
 | `RELAY_INGEST` | relay | `pipeline` or `queue` |
 | `RELAY_INGEST_CONCURRENCY` | relay | `1`–`64` |
+| `RELAY_INGEST_QUEUE_MB` | relay | `16`–`65536` |
 | `RELAY_INGEST_BATCH` | relay | `1`–`8192` |
 | `VESPA_FEED_COMPRESSION` | both | `auto`, `gzip` or `none` |
 | `SYNC_INGEST_CONCURRENCY` | sync | `1`–`64` |

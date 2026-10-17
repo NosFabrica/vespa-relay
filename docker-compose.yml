@@ -254,6 +254,7 @@ services:
       RELAY_INGEST: ${RELAY_INGEST:-}
       RELAY_INGEST_CONCURRENCY: ${RELAY_INGEST_CONCURRENCY:-}
       RELAY_INGEST_BATCH: ${RELAY_INGEST_BATCH:-}
+      RELAY_INGEST_QUEUE_MB: ${RELAY_INGEST_QUEUE_MB:-}
       # The store's feed transport: none here, where Vespa is a container on
       # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
       # when VESPA_URL is across a WAN.

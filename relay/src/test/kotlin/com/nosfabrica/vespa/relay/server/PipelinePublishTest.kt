@@ -98,8 +98,13 @@ class PipelinePublishTest {
     @Test
     fun `RELAY_INGEST picks the writer and the pipeline's shape`() {
         // One batch per worker may wait: the relay's publishes are buffered by their senders.
-        assertEquals(IngestTuning(2, 1_000, queue = 2_000), relayIngestFromEnv(emptyMap()).tuning)
-        assertEquals(IngestTuning(4, 4_096, queue = 16_384), relayIngestFromEnv(mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096")).tuning)
+        // And a byte bound over them, since every publish may be a full frame.
+        assertEquals(IngestTuning(2, 1_000, queue = 2_000, queueBytes = 512L shl 20), relayIngestFromEnv(emptyMap()).tuning)
+        assertEquals(
+            IngestTuning(4, 4_096, queue = 16_384, queueBytes = 64L shl 20),
+            relayIngestFromEnv(mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096", "RELAY_INGEST_QUEUE_MB" to "64")).tuning,
+        )
+        assertFailsWith<IllegalStateException> { relayIngestFromEnv(mapOf("RELAY_INGEST_QUEUE_MB" to "8")) }
         val queue = relayIngestFromEnv(mapOf("RELAY_INGEST" to "queue"))
         assertNull(queue.tuning)
         assertEquals(64, queue.batch)
