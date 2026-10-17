@@ -134,7 +134,7 @@ function capabilityCard(ev, opts) {
     (opts && opts.full && relays.length ? relayRows([...new Set(relays)].map((url) => ({ url })), opts) : "");
   return shell(ev, opts, inner, [
     ["profile", profile ? esc(clip(profile, 32)) : null],
-    ["transport", transports.length ? esc(transports.join(", ")) : null],
+    ["transport", transports.length ? esc(clip(transports.join(", "), 72)) : null],
     ["interface", c.iface ? `<span class="mono">${esc(clip(c.iface, 72))}</span>` : null],
     ["served by", c.workers.length ? c.workers.map((w) => personLink(w.worker)).join(", ") : null],
     ["endpoint", c.endpoint ? extLink(c.endpoint) : null],

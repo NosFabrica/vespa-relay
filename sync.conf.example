@@ -428,7 +428,7 @@ streams {
     # this store holds. Their sibling state kinds are deliberately NOT here:
     # 819 (merge accepted) and 30819 (wiki redirect) are wired in quartz but
     # implement no `SearchableEvent`, so this stream, which mirrors what is
-    # worth searching, has nothing to do with them. The ask is 155 kinds wide
+    # worth searching, has nothing to do with them. The ask is 158 kinds wide
     # now; relays that cap kinds per filter refuse the whole REQ rather than
     # trimming it, and `FilterWidths` is what learns each relay's cap from its
     # refusal and re-sends the leg in chunks — so widening this list costs
@@ -439,6 +439,12 @@ streams {
     # 30405 collections, 30406 shipping options and 31555 product reviews,
     # searchable once quartz parses them. Shopstr reuses 30405 and 30406 for
     # encrypted carts and escrow records; quartz stores those and indexes nothing.
+    #
+    # OpenAgents' catalog (3184 plugin releases, 30180 capability heads, 30184
+    # plugin listings) is asked of every certified relay here, as well as of
+    # its one home relay in the `openAgents` stream above, so a publisher who
+    # moves or adds relays is still found. Searchable once the store's quartz
+    # pin carries their `SearchableEvent` classes.
     #
     # The trusted families (1985, 30382-30385, 30392-30395) are here because a
     # search EXPANDS them: a hit on one is answered with the records it points
