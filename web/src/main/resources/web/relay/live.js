@@ -48,8 +48,11 @@ export function wantedAsks(now) {
   asks.push({ key: "newest", verb: "req", filter: { limit: 1, until: now }, ttl: 15, read: (evs) => (evs[0] ? evs[0].created_at : null) });
   count("last.60", { since: now - MINUTE, until: now }, 15);
   count("last.3600", { since: now - HOUR, until: now }, 15);
-  // A whole kind walks every event of it (kind 0 is tens of millions), and a population moves
-  // slowly: half-hourly, and `heavy`, so at most one is in flight.
+  // A whole kind walks every event of it, and a population moves slowly: half-hourly, and `heavy`,
+  // so at most one is in flight. Measured on search.brainstorm.world (2026-10-17): kind 0, 60.6M
+  // events, 1.3-1.4s; kind 3 ~120ms; kind 10002 ~200ms; the windows and the newest event 30-40ms.
+  // The relay answers one socket's asks in order, so a window asked behind kind 0 waits ~1.1s for
+  // it; other sockets do not (33ms), and five page loads at once finished all five in 1.9s.
   for (const k of PEOPLE_KINDS) asks.push({ key: `people.${k}`, verb: "count", filter: { kinds: [k] }, ttl: 1800, heavy: true });
   return asks;
 }
