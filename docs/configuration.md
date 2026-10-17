@@ -96,10 +96,13 @@ queries, publishes it as a public JSON document, and charts it on a page:
   mirror down for a day still published the card a mirror mid-cycle did. A
   request answers it
 
-Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
-present, and the page renders them as **ages** rather than dates: "kind 1 four
-minutes ago, kind 30023 six days ago" localises which stream stalled, where a
-column of timestamps makes the reader do the subtraction.
+Per-kind `lastSeen` is bounded to the present, and the page renders it as an
+**age** rather than a date: "kind 1 four minutes ago, kind 30023 six days ago"
+localises which stream stalled, where a column of timestamps makes the reader do
+the subtraction. The age is measured from the rollup's own time, under an
+"As of" line, so a table computed hours ago does not read every kind as hours
+quiet. How fresh the store is *now* is not in the document at all: the page's
+*Right now* panel asks the relay itself, over its websocket.
 
 Everything is counted **anonymously**: the store gates an authenticated reader to
 authors that reader has scored, so the same query under an operator's lens would
@@ -132,9 +135,9 @@ a distinct-authors-per-month series over four years of corpus is minutes.
 **A `count()` visits every document it matches**, and a `kind` filter bounds
 the group set, not the walk. That is why the event total and the trust chain
 are with the charts despite being counts: run every minute, they walked the
-whole store and every stored score sixty times an hour. `corpus.newestEvent` is
-the maximum of the histogram's per-kind spans, bounded to the present, so it
-costs no query of its own and is as fresh as the charts pass.
+whole store and every stored score sixty times an hour. There is no
+`corpus.newestEvent` (it left in schema 3): as fresh as the charts pass meant
+hours old, so the page counts freshness live over the relay's websocket.
 
 Each section states its own `generatedAt`, each pass its own
 `tiers.<name>.{generatedAt,tookMs,everySeconds}`, and every query its own

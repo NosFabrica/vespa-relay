@@ -23,11 +23,9 @@ package com.nosfabrica.vespa.relay.maintenance
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -168,7 +166,7 @@ class StatsRollupTest {
     @Test
     fun `a pass states its own cadence`() {
         runBlocking {
-            val doc = rollup(FakeQueries()).compute(StatsTier.CHARTS, previous = null, everySeconds = 900)
+            val doc = rollup(FakeQueries()).compute(StatsTier.CHARTS, everySeconds = 900)
             val tier = assertNotNull(doc["tiers"]).jsonObject["charts"]!!.jsonObject
 
             assertEquals(900, tier["everySeconds"]!!.jsonPrimitive.content.toInt())
@@ -188,7 +186,8 @@ class StatsRollupTest {
             val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
             val corpus = charts["corpus"]!!.jsonObject["data"]!!.jsonObject
 
-            assertEquals(setOf("events", "futureDated", "newestEvent", "asOf"), corpus.keys)
+            // No `newestEvent`: a pass hours old cannot say how fresh the store is; the page asks the relay.
+            assertEquals(setOf("events", "futureDated", "asOf"), corpus.keys)
             assertEquals(
                 setOf("scoredPubkeys", "observers", "providers", "scores"),
                 charts["trust"]!!.jsonObject["data"]!!.jsonObject.keys,
@@ -202,44 +201,34 @@ class StatsRollupTest {
         }
     }
 
-    // ---- the newest event -----------------------------------------------------
+    // ---- per-kind freshness ---------------------------------------------------
 
-    /** Read off the histogram's own spans, so the most optimistically dated spam is not the newest. */
+    /** Read off the histogram's own spans, so the most optimistically dated spam is not a kind's newest. */
     @Test
-    fun `the newest event is bounded at the present`() {
+    fun `a kind's last event is bounded at the present`() {
         runBlocking {
             val queries = FakeQueries()
             val doc = rollup(queries).compute(StatsTier.CHARTS)
             val spans = queries.asked.filter { it.pipeline == StatsYql.spanBy("kind") }
 
             assertEquals(listOf(StatsYql.upTo(NOW)), spans.map { it.where }, "one span query, and it stops at now")
-            assertEquals(1_754_581_422L, doc.newestEvent())
-        }
-    }
-
-    /**
-     * `newestEvent` is an absolute timestamp, so the maximum of the previous
-     * document's two copies and the fresh spans is as true as when it was taken.
-     */
-    @Test
-    fun `the newest event survives a quiet window and never goes backwards`() {
-        runBlocking {
-            val quiet = rollup(FakeQueries(spans = EMPTY_GROUPS))
-            assertNull(
-                quiet.compute(StatsTier.CHARTS)["corpus"]!!.jsonObject["data"]!!.jsonObject["newestEvent"],
-                "nothing measured and nothing known is an absent number, not a zero",
+            val kind0 =
+                doc["kinds"]!!
+                    .jsonObject["data"]!!
+                    .jsonObject["all"]!!
+                    .jsonArray
+                    .map { it.jsonObject }
+                    .single { it["kind"]!!.jsonPrimitive.content == "0" }
+            assertEquals(1_754_581_422L, kind0["lastSeen"]!!.jsonPrimitive.content.toLong())
+            assertEquals(
+                NOW,
+                doc["kinds"]!!
+                    .jsonObject["data"]!!
+                    .jsonObject["asOf"]!!
+                    .jsonPrimitive.content
+                    .toLong(),
+                "the page measures every lastSeen from the bound the spans were cut at",
             )
-
-            val carried = quiet.compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_900_000_000L))
-            assertEquals(1_900_000_000L, carried.newestEvent())
-
-            // A document missing `corpus` still carries the newest in its per-kind spans.
-            val fromKinds = quiet.compute(StatsTier.CHARTS, previousWith(kindsLastSeen = 1_800_000_000L))
-            assertEquals(1_800_000_000L, fromKinds.newestEvent())
-
-            // Fresh spans beat an older carry and lose to a newer one.
-            assertEquals(1_754_581_422L, rollup(FakeQueries()).compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_700_000_000L)).newestEvent())
-            assertEquals(1_900_000_000L, rollup(FakeQueries()).compute(StatsTier.CHARTS, previousWith(corpusNewest = 1_900_000_000L)).newestEvent())
         }
     }
 
@@ -263,7 +252,7 @@ class StatsRollupTest {
     @Test
     fun `a serve-only relay publishes no sync section`() {
         runBlocking {
-            val doc = rollup(FakeQueries()).compute(StatsTier.COUNTERS, previous = null, everySeconds = 60)
+            val doc = rollup(FakeQueries()).compute(StatsTier.COUNTERS, everySeconds = 60)
 
             assertNull(doc["sync"])
             assertFalse(
@@ -278,43 +267,6 @@ class StatsRollupTest {
     }
 
     // ---- helpers ------------------------------------------------------------
-
-    private fun JsonObject.newestEvent(): Long? =
-        this["corpus"]
-            ?.jsonObject
-            ?.get("data")
-            ?.jsonObject
-            ?.get("newestEvent")
-            ?.jsonPrimitive
-            ?.content
-            ?.toLong()
-
-    /** A previously served document carrying a freshness in one of the two places it can live. */
-    private fun previousWith(
-        corpusNewest: Long? = null,
-        kindsLastSeen: Long? = null,
-    ) = buildJsonObject {
-        corpusNewest?.let {
-            put("corpus", buildJsonObject { put("data", buildJsonObject { put("newestEvent", it) }) })
-        }
-        kindsLastSeen?.let {
-            put(
-                "kinds",
-                buildJsonObject {
-                    put(
-                        "data",
-                        buildJsonObject {
-                            put("total", 1)
-                            put(
-                                "all",
-                                Json.parseToJsonElement("""[{"kind":1,"events":9,"firstSeen":1,"lastSeen":$it}]"""),
-                            )
-                        },
-                    )
-                },
-            )
-        }
-    }
 
     private companion object {
         const val NOW = 1_800_000_000L
@@ -344,8 +296,5 @@ class StatsRollupTest {
         const val COUNTS_BY_DAY =
             """{"id":"toplevel","children":[{"id":"group:root:0","children":[{"id":"grouplist:time.date(created_at)","children":[
               {"id":"group:string:2025-1-5","value":"2025-1-5","fields":{"count()":1}}]}]}]}"""
-
-        /** A window nothing was published in: the grouping matched, and returned no groups. */
-        const val EMPTY_GROUPS = """{"id":"toplevel","fields":{"totalCount":0}}"""
     }
 }

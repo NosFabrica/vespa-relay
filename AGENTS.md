@@ -181,7 +181,7 @@ web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
   resources/index.html        the search UI; its behaviour is resources/web/ (app.js, searchfield.js, paging.js, feed.js,
                               entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
-  resources/stats.html        the one status page; web/sync/ and web/monitor/ hold each plane's cards
+  resources/stats.html        the one status page; web/relay/, web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs

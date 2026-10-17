@@ -40,8 +40,9 @@ visits every document, and the live store held 28.7M scores, so every minute
 walked the whole corpus once and every score twice (the provider grouping and
 the score count), with a count over the whole reputation store beside them. The members
 kept their places in the document, since the page reads them there. What it
-cost is `newestEvent` at the charts cadence rather than the minute; it is now
-read off the histogram's spans for free, and the page's staleness line is a day.
+cost was `newestEvent` at the charts cadence rather than the minute — hours old
+by design, so in schema 3 it left the document and the page asks the relay for
+its newest event over the websocket instead.
 
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
