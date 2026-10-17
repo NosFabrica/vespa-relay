@@ -33,6 +33,7 @@ import "./cards/dvm.js";
 import "./cards/chess.js";
 import "./cards/moderation.js";
 import "./cards/declists.js";
+import "./cards/openagents.js";
 import "./cards/kanban.js";
 
 /**
