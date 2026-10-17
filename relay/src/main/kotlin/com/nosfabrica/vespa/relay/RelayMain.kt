@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
+import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
@@ -56,11 +58,11 @@ import com.nosfabrica.vespa.relay.server.config.denyKindsFromEnv
 import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
-import com.nosfabrica.vespa.relay.server.config.ingestBatchFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.openRankingFromEnv
 import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
+import com.nosfabrica.vespa.relay.server.config.relayIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.server.config.requireReadLensFromEnv
 import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFromEnv
@@ -301,6 +303,14 @@ fun main() {
     val servingPressure = ServingPressure()
     // On maintenanceScope, so a check still running at shutdown dies with it.
     val trustNotice = TrustNotice(store, maintenanceScope)
+    val ingestSettings = relayIngestFromEnv(env)
+    // Its own scope: shutdown stops the writers after the connections, never before.
+    val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val ingest = ingestSettings.tuning?.let { probedIngestPipeline(store, it, ingestScope).also(IngestPipeline::start) }
+    println(
+        "relay: publishes write through " +
+            (ingestSettings.tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${ingestSettings.batch}"),
+    )
     val relay =
         NostrRelayServer(
             store = store,
@@ -319,7 +329,8 @@ fun main() {
             rejectFutureSeconds = rejectFutureSeconds,
             requireReadLens = requireReadLens,
             searchConcurrencyPerConnection = searchConcurrencyPerConnectionFromEnv(env),
-            ingestBatch = ingestBatchFromEnv(env),
+            ingestBatch = ingestSettings.batch,
+            ingest = ingest,
         )
 
     val sweeper = ExpirationSweeper(store, expirationSweepSecondsFromEnv(env)).start()
@@ -375,6 +386,9 @@ fun main() {
             pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
+            ingest?.closeIntake()
+            ingestScope.cancel()
+            ingest?.close()
             store.close()
         },
     )

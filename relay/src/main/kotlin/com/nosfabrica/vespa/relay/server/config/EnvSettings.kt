@@ -22,12 +22,14 @@ package com.nosfabrica.vespa.relay.server.config
 
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.PubKeys
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.server.Cidr
 import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.SearchGate
+import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
@@ -123,12 +125,59 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.strictInt("SEARCH_CONCURRENCY_PER_CONNECTION", 0..Int.MAX_VALUE) ?: SearchGate.DEFAULT_PERMITS
 
 /**
- * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset keeps quartz's
- * 64, sized for SQLite. Measured on staging 2026-10-13 under a 5.3M-event kind-3 publish: the
- * write lock held 93-98% of each 5-minute window, batches at the 64 cap, 170-320 ms per batch,
- * so publishing topped out near 200-380 events/s. Set but unparseable stops the boot.
+ * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset is [default]:
+ * quartz's 64 for its queue, sized for SQLite; the mirror's batch for the pipeline. Set but
+ * unparseable stops the boot.
  */
-fun ingestBatchFromEnv(env: Map<String, String>): Int = env.strictInt("RELAY_INGEST_BATCH", 1..MAX_INGEST_BATCH) ?: IngestQueue.DEFAULT_MAX_BATCH
+fun ingestBatchFromEnv(
+    env: Map<String, String>,
+    default: Int = IngestQueue.DEFAULT_MAX_BATCH,
+): Int = env.strictInt("RELAY_INGEST_BATCH", 1..MAX_INGEST_BATCH) ?: default
+
+/**
+ * How publishes reach the store. `RELAY_INGEST=pipeline` (the default) writes them through the
+ * mirror's [com.nosfabrica.vespa.relay.ingest.IngestPipeline], `RELAY_INGEST_CONCURRENCY` workers
+ * wide, holding at most `RELAY_INGEST_QUEUE_MB` of parsed publishes; `queue` keeps quartz's
+ * single-writer [IngestQueue]. Null [tuning] means the queue.
+ */
+data class RelayIngest(
+    val tuning: IngestTuning?,
+    val batch: Int,
+)
+
+fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
+    when (env.strictChoice("RELAY_INGEST", setOf("pipeline", "queue")) ?: "pipeline") {
+        "queue" -> {
+            // Read anyway: a malformed value stops the boot in either mode, like every strict setting.
+            env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
+            env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536)
+            RelayIngest(null, ingestBatchFromEnv(env))
+        }
+
+        else -> {
+            val batch = ingestBatchFromEnv(env, DEFAULT_PIPELINE_BATCH)
+            val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
+            val queueMb = env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
+            // One batch per worker waiting: enough to keep every worker fed, and no deeper, since
+            // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
+            // And a byte bound over waiting plus in-pass events, because a count is no bound on
+            // bytes when every publish may be a full frame.
+            RelayIngest(IngestTuning(concurrency, batch, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L), batch)
+        }
+    }
+
+/** The mirror's own defaults (`RouterConfig`), so one store sees one write shape. */
+private const val DEFAULT_PIPELINE_BATCH = 1_000
+private const val DEFAULT_PIPELINE_CONCURRENCY = 2
+
+/**
+ * Parsed publishes the pipeline may hold, in the estimate's (high) megabytes. Measured
+ * 2026-10-17: a 256 KB frame, the relay's limit, parses to ~476 KB, so the count cap alone (2,000
+ * waiting plus two 1,000-event passes) let a flood of full frames hold ~1.9 GB of a ~4.2 GB
+ * default heap, where quartz's queue held ~0.55 GB. 512 estimated MB is ~840 such events,
+ * ~400 MB real; typical kind 3s (~53 KB) stay under the count cap long before this.
+ */
+private const val DEFAULT_PIPELINE_QUEUE_MB = 512
 
 /** The largest batch docs/decisions/ingest.md measured through the store (2 x 8192). */
 private const val MAX_INGEST_BATCH = 8_192
