@@ -77,7 +77,8 @@ internal class ClientRetractionReads(
         val result =
             client.fetchAllWithHooks(filters = mapOf(url to listOf(Filter(ids = ids))), idleTimeoutMs = NEG_IDLE_MS) { relay, event ->
                 if (relay == url) onEvent(event)
-                true
+                // Handed on above; true would have quartz keep every event in a result list no one reads.
+                false
             }
         return result.doneReasons[url] == DONE_REASON_EOSE && url !in result.stalled && url !in result.dead
     }
@@ -203,8 +204,11 @@ internal class RetractionAudit(
             )
         }
         if (compared && !observed.drained) {
+            // The clock stays put, so without a backoff the whole audit would re-run at every attempt spacing.
+            val inARow = bands.noteIncompleteAudit(stream.name, url, ownedAsk)
             System.err.println(
-                "router: ${stream.name} ${url.url} did not answer every by-id ask in full — the band stays unverified",
+                "router: ${stream.name} ${url.url} did not answer every by-id ask in full — the band stays unverified" +
+                    " ($inARow audit(s) in a row; the next waits longer)",
             )
         }
         if (diff.haveIds.isEmpty()) return

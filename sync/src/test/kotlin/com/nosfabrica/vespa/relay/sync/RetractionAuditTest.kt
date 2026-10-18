@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyIdDiff
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -38,10 +39,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** What the retraction audit may claim: a band is verified only by a comparison it saw through to the end. */
 class RetractionAuditTest {
@@ -83,11 +87,17 @@ class RetractionAuditTest {
         }
     }
 
-    private fun verifiedAfter(reads: Relay): Long? {
+    private val period = stream.negentropySyncThePastSeconds!!
+    private val spacing = SyncBands.attemptSpacingSeconds(period)
+
+    /** One audit of [ask] against [reads], recorded into [bands]; returns the owned ask the clock is kept on. */
+    private fun audit(
+        reads: Relay,
+        bands: SyncBands,
+    ): Filter {
         val scope = CoroutineScope(SupervisorJob())
         try {
             val store = NostrSemanticsStore(InMemoryEventIndex())
-            val bands = SyncBands(null)
             val audit =
                 RetractionAudit(
                     reads = reads,
@@ -96,12 +106,53 @@ class RetractionAuditTest {
                     ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1), null, null, scope, null, null),
                     refusedIds = RefusedIds.disabled(),
                 )
+            val before = reads.asked
             runBlocking { audit.reconcileAndDelete(stream, relay, ask, sharedAuthors = emptySet()) }
-            assertEquals(1, reads.asked, "the premise: the diff owed an id, so a by-id ask went out")
-            return bands.verifiedAt(stream.name, relay, assertNotNull(audit.ownedAskOf(stream, ask)))
+            assertEquals(before + 1, reads.asked, "the premise: the diff owed an id, so a by-id ask went out")
+            return assertNotNull(audit.ownedAskOf(stream, ask))
         } finally {
             scope.cancel()
         }
+    }
+
+    private fun verifiedAfter(reads: Relay): Long? {
+        val bands = SyncBands(null)
+        return bands.verifiedAt(stream.name, relay, audit(reads, bands))
+    }
+
+    @Test
+    fun `an audit that keeps ending short backs off and never waits past its own period`() {
+        val bands = SyncBands(null)
+        val short = Relay(answersInFull = false)
+        val owned = audit(short, bands)
+        val t = nowSeconds()
+        assertFalse(bands.claimAudit(stream.name, relay, owned, period, now = t + spacing + 60), "one short audit already waits past the plain spacing")
+
+        repeat(4) { audit(short, bands) }
+        val after = nowSeconds()
+        assertFalse(bands.claimAudit(stream.name, relay, owned, period, now = t + period - 120), "five in a row wait longer still")
+        assertTrue(bands.claimAudit(stream.name, relay, owned, period, now = after + period + 60), "but never longer than the audit's own period")
+    }
+
+    @Test
+    fun `a restart does not re-run an audit its backoff is holding off`() {
+        val f = File.createTempFile("sync-bands", ".json").also { it.delete() }
+        try {
+            val owned = SyncBands(f).use { audit(Relay(answersInFull = false), it) }
+            val rebooted = SyncBands(f)
+            assertFalse(rebooted.claimAudit(stream.name, relay, owned, period, now = nowSeconds() + 60), "the backoff is on disk, not only in memory")
+            assertNull(rebooted.verifiedAt(stream.name, relay, owned), "and it claims no coverage the download never earned")
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun `a verified audit starts the backoff over`() {
+        val bands = SyncBands(null)
+        val owned = audit(Relay(answersInFull = false), bands)
+        audit(Relay(answersInFull = true), bands)
+        assertEquals(1, bands.noteIncompleteAudit(stream.name, relay, owned), "the next short audit is the first in a row again")
     }
 
     @Test

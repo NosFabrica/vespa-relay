@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchRes
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.booleanOrNull
@@ -97,6 +98,15 @@ class SyncBands(
     /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
 
+    /** Audits in a row that compared but could not download in full, and when the last one ended. */
+    data class IncompleteAudits(
+        val count: Int,
+        val at: Long,
+    )
+
+    /** Persisted, so a restart does not re-run an audit its backoff is still holding off. */
+    private val incomplete = ConcurrentHashMap<VerifiedKey, IncompleteAudits>()
+
     /** One piece of held state's owner: a coverage or stream key, the filter's JSON, the relay. */
     data class Held(
         val key: String,
@@ -116,7 +126,7 @@ class SyncBands(
     ): Int {
         val held = HashSet<Held>()
         coverageByStream.forEach { (key, coverage) -> coverage.export().keys.forEach { held += Held(key, it.filter, it.relay) } }
-        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
         val clocksBefore = unowned.stamps()
         val doomed = unowned.expired(held, owned, now)
         if (doomed.isEmpty()) {
@@ -135,15 +145,15 @@ class SyncBands(
                 coverageByStream.replace(key, old, SyncCoverage(refetchThePastSecondsFor(key), onChange = { changed() }).also { it.restore(kept) })
             }
         }
-        for (map in listOf(verified.keys, cannot.keys, attempts.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
         changed()
         System.err.println("router: forgot ${doomed.size} band(s) no roster unit has owned for ${UnownedClock.UNOWNED_TTL_SECONDS / 86_400}d")
         return doomed.size
     }
 
     /**
-     * The audit gate: due by [auditDueAt] and outside the attempt spacing. True claims the
-     * attempt, so an audit that cannot complete is not retried on every visit.
+     * The audit gate: due by [auditDueAt] and outside the attempt spacing, which grows with each
+     * [noteIncompleteAudit]. True claims the attempt, so an audit that cannot complete is not retried on every visit.
      */
     fun claimAudit(
         stream: String,
@@ -156,9 +166,28 @@ class SyncBands(
         val dueAt = auditDueAt(stream, url, filter, negentropySyncThePastSeconds, band)
         if (dueAt != null && now < dueAt) return false
         val key = VerifiedKey(stream, filter.toJson(), url.url, band)
-        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(negentropySyncThePastSeconds)) return false
+        val behind = incomplete[key]
+        val last = maxOf(attempts[key] ?: 0L, behind?.at ?: 0L)
+        if (now - last < attemptSpacingSeconds(negentropySyncThePastSeconds, behind?.count ?: 0)) return false
         attempts[key] = now
         return true
+    }
+
+    /**
+     * An audit that compared but left ids undownloaded: its clock stays where it was, so this
+     * backs off the next attempt instead. Returns how many have ended so in a row.
+     */
+    fun noteIncompleteAudit(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        band: String = "",
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Int {
+        val key = VerifiedKey(stream, filter.toJson(), url.url, band)
+        val after = incomplete.compute(key) { _, was -> IncompleteAudits((was?.count ?: 0) + 1, at) }!!
+        changed()
+        return after.count
     }
 
     /**
@@ -334,7 +363,9 @@ class SyncBands(
             drained,
         )
         if (reconciledThrough != null) {
-            verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = reconciledThrough
+            val key = VerifiedKey(stream, filter.toJson(), url.url, band)
+            verified[key] = reconciledThrough
+            incomplete.remove(key)
             changed()
         }
     }
@@ -396,7 +427,9 @@ class SyncBands(
         if (reachesFloor && !bridges) {
             coverage(stream).record(url, filter, null, null, paged = false, reconciledThrough = through, observedByKind = null, drained = false)
         }
-        verified[VerifiedKey(stream, filter.toJson(), url.url, band)] = verifiedAt
+        val key = VerifiedKey(stream, filter.toJson(), url.url, band)
+        verified[key] = verifiedAt
+        incomplete.remove(key)
         changed()
     }
 
@@ -509,15 +542,11 @@ class SyncBands(
                 return@forEach
             }
             if (streamOrFlatKey == CANNOT_RECONCILE) {
-                o.forEach { (stream, byBand) ->
-                    byBand.jsonObject.forEach { (band, byFilter) ->
-                        byFilter.jsonObject.forEach { (filter, byRelay) ->
-                            byRelay.jsonObject.forEach { (relay, entry) ->
-                                cannotOf(entry.jsonObject)?.let { cannot[VerifiedKey(stream, filter, relay, band)] = it }
-                            }
-                        }
-                    }
-                }
+                readByKey(o) { key, entry -> cannotOf(entry.jsonObject)?.let { cannot[key] = it } }
+                return@forEach
+            }
+            if (streamOrFlatKey == INCOMPLETE_AUDITS) {
+                readByKey(o) { key, entry -> incompleteOf(entry.jsonObject)?.let { incomplete[key] = it } }
                 return@forEach
             }
             // Told apart by shape: a filter is serialised JSON and can never be named `min`.
@@ -544,6 +573,7 @@ class SyncBands(
         coverageByStream.clear()
         verified.clear()
         cannot.clear()
+        incomplete.clear()
         unowned.clear()
     }
 
@@ -646,6 +676,7 @@ class SyncBands(
             }
             putBandClocks()
             putCannotReconcile()
+            putIncompleteAudits()
             putUnownedSince()
         }
 
@@ -695,17 +726,41 @@ class SyncBands(
         return CannotReconcile(strikes, at, o["why"]?.jsonPrimitive?.contentOrNull ?: "")
     }
 
+    /** One audit backoff, as it is written. */
+    private fun incompleteOf(c: IncompleteAudits): JsonObject =
+        buildJsonObject {
+            put("count", c.count)
+            put("at", c.at)
+        }
+
+    /** One audit backoff read back, or null for an entry too damaged to stand for one. */
+    private fun incompleteOf(o: JsonObject): IncompleteAudits? {
+        val count = o["count"]?.jsonPrimitive?.intOrNull ?: return null
+        val at = o["at"]?.jsonPrimitive?.longOrNull ?: return null
+        return IncompleteAudits(count, at)
+    }
+
     /**
      * The bands negentropy cannot walk, in the same stream/band/filter/relay nesting as the
      * clocks. Written apart from the coverage so a band with no coverage at all — which is
      * exactly what one of these is — still has somewhere to say so.
      */
-    private fun JsonObjectBuilder.putCannotReconcile() {
-        if (cannot.isEmpty()) return
+    private fun JsonObjectBuilder.putCannotReconcile() = putByKey(CANNOT_RECONCILE, cannot) { cannotOf(it) }
+
+    /** The audits backing off an incomplete download, so a restart does not re-run one at once. */
+    private fun JsonObjectBuilder.putIncompleteAudits() = putByKey(INCOMPLETE_AUDITS, incomplete) { incompleteOf(it) }
+
+    /** [entries] under [section] in the stream/band/filter/relay nesting; nothing when empty. */
+    private fun <T> JsonObjectBuilder.putByKey(
+        section: String,
+        entries: Map<VerifiedKey, T>,
+        write: (T) -> JsonObject,
+    ) {
+        if (entries.isEmpty()) return
         put(
-            CANNOT_RECONCILE,
+            section,
             buildJsonObject {
-                cannot.entries.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
+                entries.entries.groupBy { it.key.stream }.forEach { (stream, ofStream) ->
                     put(
                         stream,
                         buildJsonObject {
@@ -714,7 +769,7 @@ class SyncBands(
                                     band,
                                     buildJsonObject {
                                         ofBand.groupBy { it.key.filter }.forEach { (filter, ofFilter) ->
-                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, cannotOf(it.value)) } })
+                                            put(filter, buildJsonObject { ofFilter.forEach { put(it.key.relay, write(it.value)) } })
                                         }
                                     },
                                 )
@@ -724,6 +779,20 @@ class SyncBands(
                 }
             },
         )
+    }
+
+    /** The inverse of [putByKey]: every entry of a section, with the key it was filed under. */
+    private fun readByKey(
+        section: JsonObject,
+        read: (VerifiedKey, JsonElement) -> Unit,
+    ) {
+        section.forEach { (stream, byBand) ->
+            byBand.jsonObject.forEach { (band, byFilter) ->
+                byFilter.jsonObject.forEach { (filter, byRelay) ->
+                    byRelay.jsonObject.forEach { (relay, entry) -> read(VerifiedKey(stream, filter, relay, band), entry) }
+                }
+            }
+        }
     }
 
     /** The unowned clocks, so a restart does not hand every orphan a fresh grace period. */
@@ -764,6 +833,19 @@ class SyncBands(
          */
         internal fun attemptSpacingSeconds(negentropySyncThePastSeconds: Long): Long = (negentropySyncThePastSeconds / 4).coerceIn(900L, 21_600L)
 
+        /** The spacing after [incompleteInARow] audits that left ids undownloaded: doubling, capped at the audit's own period. */
+        internal fun attemptSpacingSeconds(
+            negentropySyncThePastSeconds: Long,
+            incompleteInARow: Int,
+        ): Long {
+            val base = attemptSpacingSeconds(negentropySyncThePastSeconds)
+            if (incompleteInARow <= 0) return base
+            return (base shl incompleteInARow.coerceAtMost(MAX_BACKOFF_DOUBLINGS)).coerceAtMost(maxOf(base, negentropySyncThePastSeconds))
+        }
+
+        /** Enough doublings to reach any period from the spacing's floor, few enough that the shift cannot overflow. */
+        private const val MAX_BACKOFF_DOUBLINGS = 20
+
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE
 
@@ -781,6 +863,9 @@ class SyncBands(
 
         /** Where the impossible bands are written, beside [BAND_CLOCKS] and out of the url namespace. */
         private const val CANNOT_RECONCILE = "#cannotReconcile"
+
+        /** Where the audit backoffs are written, beside [CANNOT_RECONCILE]. */
+        private const val INCOMPLETE_AUDITS = "#incompleteAudits"
 
         /** Where the unowned clocks are written, out of the stream namespace like the others. */
         private const val UNOWNED_SINCE = "#unownedSince"

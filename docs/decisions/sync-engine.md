@@ -355,6 +355,19 @@ only an EOSE as answered; one unanswered chunk leaves the band unverified, so
 the next audit compares again. The delete half is unaffected: its licence is
 the completed reconcile, not the download.
 
+**An audit that ends short backs off.** Leaving the band unverified also left
+its clock where it was, so a relay that never answered one by-id chunk in full
+had the whole audit (store snapshot, reconcile, delete pass) re-run at every
+attempt spacing instead of once per period, and at once after every restart,
+since the attempt stamps live in memory. `SyncBands.noteIncompleteAudit`
+counts the short audits in a row and doubles the spacing per one, capped at
+the audit's own period; the count is persisted (`#incompleteAudits`) and ends
+on the next verified record. It claims no coverage: the band stays unverified.
+
+**The by-id hook keeps nothing.** `fetchAllWithHooks` retains every event
+whose hook returns true in a result list; `fetchIds` hands each event on as it
+arrives and reads only `doneReasons`, so it returns false.
+
 **No size guard on the delete.** A provider that retracts a subject usually
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer
