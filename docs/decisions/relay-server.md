@@ -189,6 +189,18 @@ delivers `""`.
 sha256 of the whole body, so the handler can only check size after reading;
 an unbounded receive was a pre-auth OOM vector for anyone who found the port.
 
+**The NIP-86 token's signer is checked before the body is read.** The size cap
+alone left a slowloris: anyone could reach the rpc by sending its
+`Content-Type`, and quartz checks NIP-98 only after the whole body arrives, so
+each connection could trickle up to a megabyte with no deadline. The route now
+decodes the token from the header and refuses a missing, malformed, stale,
+wrongly addressed or forged one, or one signed by a non-admin, without reading a
+byte; the payload hash and replay check still run in quartz after the body.
+An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
+`Connection: close`, as NIP-FE does) and at most `Nip86Admin.concurrency` run
+at once, refused with a `503` rather than queued, since a queue is what a
+stolen admin token would fill.
+
 **A slow websocket consumer is disconnected, not throttled.** Dropping EVENT or
 EOSE frames would corrupt NIP-01 semantics. The polite close frame queues
 behind the very congestion that tripped it, so the session is cancelled after

@@ -532,6 +532,10 @@ A call is a `POST /` with `Content-Type: application/nostr+json+rpc`, as NIP-86
 has it. The [HTTP commands](#commands-over-http-nip-fe) answer every other POST
 to `/`, so with them on (the default) an admin tool that leaves the type off gets
 a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
+The token is checked before the body is read: a call not signed by an admin, for
+another url, or more than 60s off the relay's clock is a `401`/`403` from its
+headers alone. Four admin calls run at once (a fifth is a `503`), and a body
+still arriving after 10s is a `408`.
 
 ## Serving over Tor (a `.onion` endpoint)
 
