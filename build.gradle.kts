@@ -38,21 +38,29 @@ allprojects {
     }
 }
 
-// Installs .git-hooks into .git/hooks, resolving the worktree layout where .git is a file.
+// Installs .git-hooks where git reads them: the common dir's hooks/, which a linked worktree shares.
 val installGitHook =
     tasks.register<Copy>("installGitHook") {
-        val dotGit = File(rootProject.rootDir, ".git")
-        val hooksDir: File =
-            if (dotGit.isFile) {
-                val gitDir = File(dotGit.readText().trim().replace("gitdir: ", ""))
-                File(gitDir, "hooks")
-            } else {
-                File(dotGit, "hooks")
+        val root = rootProject.rootDir
+        val dotGit = File(root, ".git")
+        // CI and image builds have no developer to protect, and a Docker context has no .git at all.
+        onlyIf { System.getenv("CI") == null && dotGit.exists() }
+        val hooksDir =
+            providers.provider {
+                val gitDir =
+                    if (dotGit.isFile) {
+                        root.resolve(dotGit.readText().trim().removePrefix("gitdir:").trim())
+                    } else {
+                        dotGit
+                    }
+                val common = gitDir.resolve("commondir")
+                val commonDir = if (common.isFile) gitDir.resolve(common.readText().trim()) else gitDir
+                commonDir.resolve("hooks").canonicalFile
             }
-        from(File(rootProject.rootDir, ".git-hooks/pre-commit"))
-        from(File(rootProject.rootDir, ".git-hooks/pre-push"))
+        from(File(root, ".git-hooks/pre-commit"))
+        from(File(root, ".git-hooks/pre-push"))
         into(hooksDir)
-        filePermissions { unix("0777") }
+        filePermissions { unix("0755") }
     }
 
 subprojects {

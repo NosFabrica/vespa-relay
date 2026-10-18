@@ -10,7 +10,15 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
+        // JitPack serves quartz and the store and nothing else, so a coordinate missing upstream cannot be
+        // substituted from it; the group is spelled both ways because JitPack caches per spelling.
+        exclusiveContent {
+            forRepository { maven { url = uri("https://jitpack.io") } }
+            filter {
+                includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
+                includeGroupByRegex("""com\.github\.vitorpamplona\.amethyst""")
+            }
+        }
     }
 }
 
