@@ -234,6 +234,21 @@ class StatsRollupTest {
 
     // ---- what a failure costs ------------------------------------------------
 
+    /** A failure's own message can quote a host or a body; the public document carries only its class. */
+    @Test
+    fun `a failed query publishes no exception text`() {
+        runBlocking {
+            val queries = FakeQueries(failing = setOf(StatsYql.TOTAL))
+            val corpus = rollup(queries).compute(StatsTier.CHARTS)["corpus"]!!.jsonObject
+            val errors = corpus["errors"]!!.jsonObject.values.map { it.jsonPrimitive.content }
+            assertTrue(errors.isNotEmpty())
+            errors.forEach {
+                assertFalse("refused" in it, "the exception's own words were published: $it")
+                assertEquals("IllegalStateException (detail in the relay log)", it)
+            }
+        }
+    }
+
     /** Which queries can afford the fast cadence is a measurement; a slow refusal is its own problem. */
     @Test
     fun `every query is timed, including the ones that fail`() {

@@ -561,7 +561,8 @@ internal class StatsRollup(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            attempts.errors[key] = e.message ?: e.toString()
+            if (e !is StatsQueryFailed) System.err.println("stats: $key failed: $e")
+            attempts.errors[key] = publicReason(e)
             null
         } finally {
             attempts.queryMs[key] = System.currentTimeMillis() - startedMs
@@ -700,7 +701,7 @@ internal fun launchStatsRollup(
                     // compute() catches per query, so this is the assembly itself breaking.
                     System.err.println("stats: ${tier.member} rollup failed (${e.message}) — serving the previous document")
                     // Marked by tier: one cadence can fail for hours while the other keeps publishing.
-                    snapshot.markStale("the last ${tier.member} rollup failed: ${e.message ?: e.javaClass.simpleName}", tier = tier.member)
+                    snapshot.markStale("the last ${tier.member} rollup failed: ${publicReason(e)}", tier = tier.member)
                 }
             delay(everySeconds * 1000)
         }

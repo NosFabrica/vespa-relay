@@ -162,6 +162,15 @@ the body names content nodes, container hostnames and internal ports, all of
 which rode out on the first failed aggregation. The YQL stays in the message
 because it is our own and is the whole diagnostic value.
 
+**Only a `StatsQueryFailed` message is published; anything else is its class.**
+Routing Vespa's body through `failed()` left three other ways out: a transport
+exception (`http.send`) whose message names the engine's host and port, a
+`parseToJsonElement` error that quotes the input it choked on (a proxy's error
+page), and any exception from the rollup's own code. `publicReason` is the one
+vocabulary for `/stats.json`'s `errors` and its stale marker, as the ORE route
+has one for its 503: the message of an exception this code wrote, or the
+exception's class with "detail in the relay log", where the whole text goes.
+
 **A client-side timeout far past any answer.** The bundled query profile puts
 Vespa's own deadline at its maximum with soft timeout off so a slow aggregation
 finishes rather than returning a quiet half-answer; a tight timeout here would
