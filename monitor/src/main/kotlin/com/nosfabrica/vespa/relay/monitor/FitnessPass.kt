@@ -155,6 +155,9 @@ class FitnessPass(
         LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false),
         OUR_TLS("the dial failed TLS where our direct handshake succeeded, so our transport did", serverAnswered = false),
         TLS_UNCHECKED("the dial failed TLS and no direct handshake could check it", serverAnswered = false),
+        RATE_LIMITED("the relay rate limited us", serverAnswered = true),
+        UNRECOGNISED("the dial gave up in words we do not recognise", serverAnswered = false),
+        PARTLY_REFUSED("it refused some shapes and went quiet on the rest", serverAnswered = true),
     }
 
     /** What the second page came back with, boxed for [Reconciled]'s reason. */
@@ -693,34 +696,12 @@ class FitnessPass(
         val shape = chosen?.second
         val readMs = answered?.firstPageMs
         if (answered == null) {
-            // Never spoke, or refused every shape. [Silence] tells the two apart.
-            return when (val cause = Silence.of(lastReason)) {
-                Silence.TLS -> {
-                    tlsFailed(url, defer)
-                }
-
-                Silence.UPGRADE -> {
-                    upgradeRefused(lastReason, defer)
-                }
-
-                // The pre-probe resolved this name moments ago, so a dial that could not is our resolver.
-                Silence.NAME -> {
-                    unmeasured("the dial could not resolve a name the pre-probe had resolved")
-                    null
-                }
-
-                else -> {
-                    if (lastReason == null) {
-                        // Nothing came back at all, which is what our own socket layer produces when it
-                        // is the broken thing: nothing is published and the url is measured again next pass.
-                        null
-                    } else {
-                        // Only a transport word reaches here. A refusal or route word is text, not proof:
-                        // the typed pre-probe owns `dead` for those, and it let this url through.
-                        Outcome(Verdict.SILENT, cause.reason)
-                    }
-                }
+            // A relay that CLOSED one shape spoke, so it is not silent, and the quiet shapes keep it unproven.
+            if (refusals.isNotEmpty()) {
+                defer(Deferral.PARTLY_REFUSED)
+                return null
             }
+            return silenced(url, lastReason, unmeasured, defer)
         }
 
         val walked = answered.compliance
@@ -852,6 +833,49 @@ class FitnessPass(
             rttReadMs = readMs,
         )
     }
+
+    /**
+     * The grade for a url no shape heard from, read off the last transport word. Only a word that is
+     * evidence earns `silent`; a rate limit, or words [Silence] does not know, earn nothing.
+     */
+    private suspend fun silenced(
+        url: NormalizedRelayUrl,
+        lastReason: String?,
+        unmeasured: (String) -> Unit,
+        defer: (Deferral) -> Unit,
+    ): Outcome? =
+        when (val cause = Silence.of(lastReason)) {
+            Silence.TLS -> {
+                tlsFailed(url, defer)
+            }
+
+            Silence.UPGRADE -> {
+                upgradeRefused(lastReason, defer)
+            }
+
+            // The pre-probe resolved this name moments ago, so a dial that could not is our resolver.
+            Silence.NAME -> {
+                unmeasured("the dial could not resolve a name the pre-probe had resolved")
+                null
+            }
+
+            // A server answered and asked us to come back later, which says nothing about the relay.
+            Silence.RATE_LIMITED -> {
+                defer(Deferral.RATE_LIMITED)
+                null
+            }
+
+            Silence.UNKNOWN -> {
+                // No words at all is our own socket layer as often as the relay, and is left unmeasured.
+                if (lastReason != null) defer(Deferral.UNRECOGNISED)
+                null
+            }
+
+            // A refusal or route word is text, not proof: the typed pre-probe owns `dead`, and it let this url through.
+            Silence.REFUSED, Silence.NO_ROUTE, Silence.TIMEOUT -> {
+                Outcome(Verdict.SILENT, cause.reason)
+            }
+        }
 
     /**
      * The NIP-66 payload for one url: what the dial measured, over what the document claimed.

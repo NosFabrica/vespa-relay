@@ -499,3 +499,12 @@ it compiling; `ConsistencyPass.applyVerdicts`, `RelayConsistency.adopt` and
 `AliasMonitor.generation` were the same: reachable from tests alone. A test
 that asserted a real property through one of them now asserts it through the
 record or the path production takes (`replace` for a lapsed verdict).
+
+**`silent` needs a transport word that is evidence.** The silence branch
+signed `silent` for everything `Silence` did not route elsewhere, which took
+in an HTTP 429 (a server answering), terminal text the table has not been
+taught (`UNKNOWN`), and a relay that CLOSED one shape and went quiet on the
+others. None of those supports "never answered": a rate limit and an
+unrecognised word are deferred and measured again next pass, and a partial
+refusal is deferred as a server that answered. Only `REFUSED`, `NO_ROUTE` and
+`TIMEOUT` still earn `silent`.

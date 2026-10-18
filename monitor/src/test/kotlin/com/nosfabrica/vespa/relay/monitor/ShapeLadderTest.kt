@@ -37,6 +37,7 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -209,6 +210,14 @@ class ShapeLadderTest {
 
         assertEquals(Verdict.RESTRICTED.value, grade)
         assertTrue(evidence!!.contains("only NWC requests"), evidence)
+    }
+
+    @Test
+    fun `a relay that refuses one shape and goes quiet on the rest is not graded silent`() {
+        // It spoke, so it is not silent, and the quiet shapes leave a refusal of everything unproven.
+        val (grade, _) = grade { if (it == null) Answer.Refuses("blocked: filter must name kinds") else Answer.Silent }
+
+        assertNull(grade)
     }
 
     @Test
