@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
+import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
@@ -56,6 +58,7 @@ import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
 import com.nosfabrica.vespa.relay.server.config.RelayAddresses
 import com.nosfabrica.vespa.relay.server.config.RelayEndpoint
 import com.nosfabrica.vespa.relay.server.config.RelayFiles
+import com.nosfabrica.vespa.relay.server.config.RelayIngest
 import com.nosfabrica.vespa.relay.server.config.StatsIntervals
 import com.nosfabrica.vespa.relay.server.config.allowKindsFromEnv
 import com.nosfabrica.vespa.relay.server.config.allowPubkeysFromEnv
@@ -64,7 +67,6 @@ import com.nosfabrica.vespa.relay.server.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpFromWs
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
-import com.nosfabrica.vespa.relay.server.config.ingestBatchFromEnv
 import com.nosfabrica.vespa.relay.server.config.maintenanceSwitchesFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
@@ -74,6 +76,7 @@ import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayEndpointFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayFilesFromEnv
+import com.nosfabrica.vespa.relay.server.config.relayIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.server.config.requireReadLensFromEnv
 import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFromEnv
@@ -127,7 +130,10 @@ fun main() {
     val statsSnapshot = startStats(boot, maintenance)
     val profile = startProfile(boot, store, maintenance)
     val servingPressure = ServingPressure()
-    val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance))
+    // Its own scope: shutdown stops the writers after the connections, never before.
+    val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val ingest = startIngest(boot, store, ingestScope)
+    val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance), ingest)
     val sweeper = ExpirationSweeper(store, boot.expirationSweepSeconds).start()
     applyQuartzLogLevel(env)
     val pulseSite = startPulseSite(boot, store, storeOpenedAt)
@@ -140,6 +146,9 @@ fun main() {
             pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
+            ingest?.closeIntake()
+            ingestScope.cancel()
+            ingest?.close()
             store.close()
         },
     )
@@ -176,7 +185,7 @@ private class Boot(
     val kindAllow: Set<Int>,
     val kindDeny: Set<Int>,
     val searchConcurrency: Int,
-    val ingestBatch: Int,
+    val ingest: RelayIngest,
     val expirationSweepSeconds: Long,
     val pulse: Pulse,
 )
@@ -260,7 +269,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         kindAllow = allowKindsFromEnv(env),
         kindDeny = denyKindsFromEnv(env),
         searchConcurrency = searchConcurrencyPerConnectionFromEnv(env),
-        ingestBatch = ingestBatchFromEnv(env),
+        ingest = relayIngestFromEnv(env),
         expirationSweepSeconds = expirationSweepSecondsFromEnv(env),
         pulse = pulseFromEnv(env, adminPubkeys),
     )
@@ -382,6 +391,7 @@ private fun buildRelay(
     store: VespaEventStore,
     pressure: ServingPressure,
     trustNotice: TrustNotice,
+    ingest: IngestPipeline?,
 ): NostrRelayServer =
     NostrRelayServer(
         store = store,
@@ -400,8 +410,23 @@ private fun buildRelay(
         rejectFutureSeconds = boot.rejectFutureSeconds,
         requireReadLens = boot.requireReadLens,
         searchConcurrencyPerConnection = boot.searchConcurrency,
-        ingestBatch = boot.ingestBatch,
+        ingestBatch = boot.ingest.batch,
+        ingest = ingest,
     )
+
+/** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
+private fun startIngest(
+    boot: Boot,
+    store: VespaEventStore,
+    scope: CoroutineScope,
+): IngestPipeline? {
+    val tuning = boot.ingest.tuning
+    println(
+        "relay: publishes write through " +
+            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
+    )
+    return tuning?.let { probedIngestPipeline(store, it, scope).also(IngestPipeline::start) }
+}
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
 private fun startPulseSite(

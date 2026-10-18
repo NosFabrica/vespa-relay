@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerBase
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
@@ -68,8 +69,9 @@ import kotlin.coroutines.CoroutineContext
 
 /**
  * The Nostr relay: quartz's protocol engine ([RelayServerBase]) over the Vespa-backed store.
- * [limits] are enforced by the engine and render the NIP-11 `limitation` block. [close] shuts the
- * connections and the ingest writer, not the store, which the composition root owns.
+ * [limits] are enforced by the engine and render the NIP-11 `limitation` block. Publishes go to
+ * [ingest] when given, else to a quartz [IngestQueue] built here. [close] shuts the connections and
+ * that queue, never a given [ingest] or the store, which the composition root owns.
  */
 class NostrRelayServer(
     store: IEventStore,
@@ -98,6 +100,7 @@ class NostrRelayServer(
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
     // Published events one store write may take; see ingestBatchFromEnv.
     ingestBatch: Int = IngestQueue.DEFAULT_MAX_BATCH,
+    ingest: EventIngest? = null,
 ) : RelayServerBase(
         // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
@@ -118,21 +121,28 @@ class NostrRelayServer(
         listener = listener,
         limits = limits,
     ) {
-    private val ingest =
-        IngestQueue(
-            store = store,
-            parentContext = parentContext,
-            maxBatch = ingestBatch,
-            capacity = ingestCapacity(ingestBatch),
-            verify = { it.verify() },
-        )
+    /** The queue this server built, and so the one it closes; null when the root handed it an [EventIngest]. */
+    private val ownQueue =
+        if (ingest != null) {
+            null
+        } else {
+            IngestQueue(
+                store = store,
+                parentContext = parentContext,
+                maxBatch = ingestBatch,
+                capacity = ingestCapacity(ingestBatch),
+                verify = { it.verify() },
+            )
+        }
+
+    private val ingest: EventIngest = ingest ?: ownQueue!!
 
     private val searchGate = SearchGate(searchConcurrencyPerConnection)
 
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store), coldChecks)
+        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, liveGatesOf(store), coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
@@ -143,7 +153,7 @@ class NostrRelayServer(
 
     override fun close() {
         closeConnections()
-        ingest.close()
+        ownQueue?.close()
         scope.cancel()
     }
 }

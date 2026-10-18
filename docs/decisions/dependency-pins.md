@@ -45,6 +45,78 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+99d05ee122 = amethyst main @ 2026-10-17, the merge of vitorpamplona/amethyst#4522. 38 commits over
+e5bdf1bd37 (below), 12 of them touching quartz/, all in the relay client and its OkHttp socket
+(#4517, #4521, #4522). What this relay reaches, through peers (NostrClient over
+BasicOkHttpWebSocket), sync's walks (RelayReads.page = fetchAllPages) and the monitor:
+
+  A WALK LOSES NO EVENT WHEN ITS RELAY HANGS UP (#4517). Events of a page the relay dropped mid-way
+    were skipped as already seen, and the socket's backlog was thrown away at the close: the
+    socket now delivers every message received before the end (#4521), and a relay that hung up
+    on a page it was serving is redialed at once.
+  A FRESH CONNECTION REPLAYS ITS SUBSCRIPTIONS FIRST (#4521): what was sent while the socket was
+    opening no longer races the replay, and a replaced socket's late EOSE no longer reaches the new
+    session.
+  AN EXCEPTION FROM A WALK'S onEvent REACHES THE CALLER (#4522); it was logged as an unparseable
+    frame and the walk went on without the event. Sync's onEvent throws only on cancellation
+    (IngestPipeline.submit absorbs a closed channel), so this changes nothing it does today.
+  availableRelaysFlow EMITS (#4522): it held the pool's live key view and stopped emitting after
+    the first relay. RelaySockets.close reads its value, which stays current.
+  Also #4522: a tagsAll-only filter change is re-sent; fetchAsFlow/subscribeAsFlow stop copying
+  per event; RelayStat counters are atomic. Unused here: EventCache (commons).
+  SEARCH DERIVATION, through the store: none. nip50Search, nip01Core.store/core and relay.filters
+  have no diff in the range.
+
+NO ARROW: the store at 0aed31fda8e8 (below) names 99d05ee122 too, so every quartz line in all six
+  modules reads it.
+  ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+
+DIRECTION: e5bdf1bd37 is a strict ancestor of this.
+  git merge-base --is-ancestor e5bdf1bd37 99d05ee122   # verified
+
+Spelled with 10 hex digits: `com.github.vitorpamplona.amethyst` serves quartz and quartz-jvm at
+  99d05ee122.
+
+LEXICOGRAPHIC: '99d0…' < 'e5bd…': would lose a conflict unforced; moot under force(libs.quartz),
+  and with the store naming the same string there is no conflict.
+
+Prev e5bdf1bd37, on this branch only (never on main): the merge of vitorpamplona/amethyst#4515.
+60 commits over ce7f4db1b6, 21 of them touching quartz/. What this relay reached:
+
+  EventIngest (#4510). LiveEventStore takes it instead of the concrete IngestQueue, which is how
+    the relay's publishes reach IngestPipeline (RELAY_INGEST). IngestQueue implements it unchanged.
+  OK FOR AN OVERSIZED EVENT (#4510). A frame over max_message_length got a NOTICE and no OK, so a
+    publisher pipelining EVENTs waited each one out; it now gets `OK false invalid: … too large`.
+  THE CLIENT POOL, reached by the mirror and the monitor (#4515). NostrClient no longer drops a
+    relay from its pool on a stale sample of what it wants: that disconnected the socket under an
+    EVENT just sent, whose OK never came (a one-at-a-time publisher stalled ~45 s per drop until
+    the keep-alive redialed). And a relay that drops soon after its dial is redialed when its
+    backoff ends, not at the next 60 s sweep. Also from #4514: listener and auth-responder
+    registrations no longer lost under concurrency; fetchAsFlow completes on a refusal.
+  NEGATIVE LIMITS (#4514, LimitsPolicy). `"limit":-1` is served like an absent limit (the
+    default page) instead of reaching the store, where "no limit" would walk past max_limit.
+  NIP-11 (#4514). A document with kind ranges in its retention or a fee above Int range parses
+    instead of failing whole; the monitor reads other relays' documents.
+  SEARCH DERIVATION, through the store. Additive: the OpenAgents kinds 30184 (extension listing),
+    3184 (extension release) and 30180 (capability discovery) become searchable, read from their
+    JSON bodies, their protocol-marker `t` tags kept out of the hashtag role. No kind already
+    searchable extracts differently. Owed and written: docs/migrations.md ("OpenAgents kinds
+    become searchable"). The cards (web/.../cards/openagents.js) came with #264.
+  Unused here: publishStream / publishRawStream / publishRaw, fetchAllPagesResuming; the SQLite
+  store's fixes in the range (this relay's store is Vespa).
+
+(ce7f4db1b6 is a strict ancestor of e5bdf1bd37, as are 020e714858 and 96100f4309, this branch's
+earlier pins.)
+
+Prev 020e714858, on this branch only (never on main): the amethyst #4510 merge, the ingest
+series above without #4514 and #4515.
+
+Prev ce7f4db1b6 = amethyst main @ 2026-10-16, the merge of vitorpamplona/amethyst#4506: Open Markets
+Prev 96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1, on this branch only (never on main): the first
+three commits of the #4510 series (EventIngest, OK false for an oversized EVENT, publishStream)
+over main d7df3040; superseded by their merge above.
+
+
 Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 
 ce7f4db1b6 = amethyst main @ 2026-10-16, the merge of vitorpamplona/amethyst#4506: Open Markets
@@ -228,6 +300,50 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+Prev 437712208b = vespa-eventstore branch claude/awesome-edison-x5mb5y, one commit over 94aad0feea7e:
+the feed body written in one pass instead of through a JsonObject tree (EventDoc.feedJson,
+byte-identical to the tree, checked over all 65,536 UTF-16 units). Engine code only; the relay's
+CPU per published kind 3 fell 3-5% (docs/ingest-benchmark.md).
+  git merge-base --is-ancestor 94aad0feea7e 437712208b   # verified
+
+GATED, on this pin with quartz 96100f4309200bca4a9cbacfa7bd4ab9bceaf1d1: the store at 437712208b,
+its unit build (799 tests, 0 failures) and its integration suite against a real Vespa 8.763.13
+in Docker (23 tests, 22 passed, StagingCorpusIT skipped by design, 0 failures), read off the
+result XML. This relay's own gate is in the commit that set this line.
+
+SPELLED WITH 10 HEX DIGITS: the full 40-digit spelling's first build hit the same transient
+maven-publish resolution failure as 94aad0feea; `com.github.NosFabrica` serves store and engine
+at 437712208b.
+
+LEXICOGRAPHIC: '4377…' < '94aa…': the losing direction, moot — nothing else names the store.
+
+
+0aed31fda8 = vespa-eventstore main @ 2026-10-17, the merge of PR #167: store main 28a6020ca1c4
+(above) plus the one-pass feed writer (437712208b, below), VESPA_FEED_COMPRESSION (the feed
+client's compression switch; its default stays `auto`, docker-compose.yml sets `none`,
+docs/ingest-benchmark.md), and the store's own quartz pin moved to 99d05ee122, this relay's.
+Store code over 28a6020ca1c4 is the feed writer and that switch; over ece7b81ca8 (this branch's
+previous pin) only the quartz pin and its notes.
+  git merge-base --is-ancestor 28a6020ca1c4 0aed31fda8   # verified
+  git merge-base --is-ancestor ece7b81ca8 0aed31fda8     # verified
+
+GATED, the store at 307e83f (its merged head) with quartz 99d05ee122: its unit build (803 tests,
+0 failures, run locally) and its CI on that commit, lint, build and integration against a real
+Vespa, all green (integration finished after the merge). The integration suite last ran locally
+at ece7b81ca8 (23 tests, 22 passed, StagingCorpusIT skipped by design, 0 failures); nothing the
+store calls moved between the two quartz pins. This relay's own gate is in the commit that set
+this line.
+
+SPELLED WITH 12 HEX DIGITS: the 10-digit spelling's first JitPack build hit the transient
+maven-publish resolution failure again (com.vanniktech.maven.publish 0.37.0 not found), and JitPack
+keeps a failed build per version string. com.github.NosFabrica serves store and engine at
+0aed31fda8e8, and the store's pom names engine at 0aed31fda8e8 and quartz-jvm at 99d05ee122.
+
+LEXICOGRAPHIC: '0aed…' < 'ece7…': the losing direction, moot — nothing else names the store.
+
+Prev ece7b81ca8 and 75be510686 (this branch only): PR #167's head with quartz e5bdf1bd37, and
+before that 020e714858. Prev 28a6020ca1c4, 437712208b (above), 94aad0feea7e.
+
 The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 
 e1ecd7f23e = store main through PR #97, ten commits over 2bc79f5f40, and the
