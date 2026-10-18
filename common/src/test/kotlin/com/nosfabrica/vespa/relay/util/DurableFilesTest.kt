@@ -51,6 +51,20 @@ class DurableFilesTest {
     }
 
     @Test
+    fun `a write from an interrupted thread completes and hands the interrupt back`() {
+        val dir = Files.createTempDirectory("durable").toFile()
+        val target = dir.resolve("state.json")
+        Thread.currentThread().interrupt()
+        try {
+            writeDurably(target, "after interrupt")
+            assertTrue(Thread.currentThread().isInterrupted, "the caller's interrupt is still pending")
+        } finally {
+            Thread.interrupted()
+        }
+        assertEquals("after interrupt", target.readText())
+    }
+
+    @Test
     fun `nothing to quarantine is null`() {
         val dir = Files.createTempDirectory("durable").toFile()
         assertNull(quarantine(dir.resolve("absent.json")))

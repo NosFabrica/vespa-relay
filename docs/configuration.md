@@ -157,7 +157,10 @@ without scraping the page's markup. It carries an `ETag` and answers `304` to a
 conditional request, which is what makes polling it cheap. The one rule to hold
 when adding fields: everything in the document is a fact about **stored events**,
 never about clients. `/pressure` caps its `samples` field for exactly that
-reason.
+reason. Beside it, `/pressure`'s `liveGate` counts the live events dropped
+since boot because their author's trust check failed (`failed`) or got no
+store read in time (`shed`); either growing means gated live feeds are missing
+events.
 
 ## Relay identity (NIP-11)
 
@@ -534,8 +537,9 @@ to `/`, so with them on (the default) an admin tool that leaves the type off get
 a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
 The token is checked before the body is read: a call not signed by an admin, for
 another url, or more than 60s off the relay's clock is a `401`/`403` from its
-headers alone. Four admin calls run at once (a fifth is a `503`), and a body
-still arriving after 10s is a `408`.
+headers alone. Four admin calls may upload their bodies at once (a fifth is a
+`503`; a long purge behind a ban holds none of them), and a body still arriving
+after 10s is a `408`.
 
 ## Serving over Tor (a `.onion` endpoint)
 

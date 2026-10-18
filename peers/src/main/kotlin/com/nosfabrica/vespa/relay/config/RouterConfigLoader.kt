@@ -136,7 +136,7 @@ object RouterConfigLoader {
             )
         val pageTarget = env.strictInt("SYNC_NEG_PAGE_TARGET", 0..Int.MAX_VALUE) ?: 100_000
         val pageMin = env.strictInt("SYNC_NEG_PAGE_MIN", 1..Int.MAX_VALUE) ?: 1_000
-        val pageMax = env.strictInt("SYNC_NEG_PAGE_MAX", pageMin..Int.MAX_VALUE) ?: 1_000_000
+        val pageMax = env.strictInt("SYNC_NEG_PAGE_MAX", pageMin..Int.MAX_VALUE) ?: maxOf(DEFAULT_NEG_PAGE_MAX, pageMin)
         val pageSlack = env.strictLong("SYNC_NEG_PAGE_SLACK_SECONDS", 0L..Long.MAX_VALUE) ?: 60L
         return parse(
             inline,
@@ -151,7 +151,6 @@ object RouterConfigLoader {
             ingestDedupChunk = dedupChunk,
             negPageTarget = pageTarget,
             negPageMin = pageMin,
-            // Already at least pageMin: its strictInt range starts there.
             negPageMax = pageMax,
             negPageSlackSec = pageSlack,
         ).let {
@@ -399,16 +398,33 @@ object RouterConfigLoader {
         min: Int,
     ): Int? = longAtLeast(where, path, min.toLong())?.let { getInt(path) }
 
-    /** A re-check period: 0 (always due) or at least [MIN_PERIOD_SECONDS], whichever spelling carries it. */
+    /** A scalar re-check period, at least [MIN_PERIOD_SECONDS]: shorter is a re-walk loop, not a schedule. */
     private fun Config.period(
         where: String,
         path: String,
     ): Long? {
         if (!hasPath(path)) return null
         val value = getLong(path)
-        require(value == 0L || value >= MIN_PERIOD_SECONDS) {
-            "router: $where has `$path = $value` — it must be 0 (always due) or at least $MIN_PERIOD_SECONDS; " +
-                "a shorter period is a re-walk loop, not a schedule"
+        require(value >= MIN_PERIOD_SECONDS) {
+            "router: $where has `$path = $value` — it must be at least $MIN_PERIOD_SECONDS; a shorter period is a " +
+                "re-walk loop, not a schedule (a band that should be audited on every visit is a tier list's `every = 0`)"
+        }
+        return value
+    }
+
+    /**
+     * A tier's cadence. Any length is honoured, and 0 means every visit; a re-fetch at 0 re-pages the whole
+     * band on every visit and never accumulates coverage, so only the audit may ask for it.
+     */
+    private fun Config.tierEvery(
+        where: String,
+        key: String,
+    ): Long {
+        val value = getLong("every")
+        require(value >= 0) { "router: $where has `every = $value` — a cadence cannot be negative" }
+        require(value > 0 || key != "refetch") {
+            "router: $where has `every = 0` — a re-fetch due on every visit re-pages the whole band each time and " +
+                "never finishes; give it a period"
         }
         return value
     }
@@ -547,7 +563,7 @@ object RouterConfigLoader {
                 refuseUnknownKeys(t, where, setOf("every", "maxAge"))
                 SyncTier(
                     maxAgeSeconds = t.longAtLeast(where, "maxAge", 1L),
-                    everySeconds = t.period(where, "every")!!,
+                    everySeconds = t.tierEvery(where, key),
                 )
             }
         require(tiers.isNotEmpty()) { "router: stream '$stream' has an empty `$key` — remove the key to schedule nothing" }
@@ -981,8 +997,11 @@ object RouterConfigLoader {
 
     private const val MONITOR_CONFIG = "the monitor config"
 
-    /** The shortest re-check period either spelling accepts, beside 0 for always due. */
+    /** The shortest re-check period a scalar accepts; a tier list carries anything shorter. */
     private const val MIN_PERIOD_SECONDS = 3_600L
+
+    /** The widest negentropy page by default; raised to `SYNC_NEG_PAGE_MIN` when that is set higher. */
+    private const val DEFAULT_NEG_PAGE_MAX = 1_000_000
 
     private const val RENAMED_TO_NEGENTROPY_SYNC =
         "renamed to negentropySyncThePastSeconds (it clocks the reconcile of the whole past, against relays that " +

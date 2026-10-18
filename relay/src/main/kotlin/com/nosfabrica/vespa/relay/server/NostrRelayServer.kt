@@ -52,6 +52,7 @@ import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -59,6 +60,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
@@ -125,11 +129,17 @@ class NostrRelayServer(
 
     private val searchGate = SearchGate(searchConcurrencyPerConnection)
 
+    private val coldChecks = ColdAuthorChecks()
+
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store))
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store), coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
+
+    /** Live events the gate dropped since boot: their cold-author check failed, or got no read in time. */
+    val liveGateFailed: Long get() = coldChecks.failures
+    val liveGateShed: Long get() = coldChecks.shedding
 
     override fun close() {
         closeConnections()
@@ -243,7 +253,7 @@ internal class ObserverBackend(
                 when (live.admitsNow(event)) {
                     true -> send()
                     false -> Unit
-                    null -> coldChecks.start(this, { live.admits(event) }, send)
+                    null -> coldChecks.start(this, event.pubKey, { live.admitsNow(event) }, { live.admits(event) }, send)
                 }
             }
         }
@@ -277,50 +287,107 @@ internal class ObserverBackend(
 }
 
 /**
- * The store reads that judge a live event from an author the gate has not cached, bounded across
- * the relay. Fail closed: a read that fails, or one past [max] in flight, drops its event, counted.
+ * The store reads that judge a live event from an author the gate has not cached, bounded across the
+ * relay. Fail closed: a check whose read fails, or that gets no read slot within [queueMillis], drops its event, counted.
  */
 internal class ColdAuthorChecks(
     val max: Int = MAX_IN_FLIGHT,
+    private val maxWaiting: Int = MAX_WAITING,
+    private val queueMillis: Long = QUEUE_MS,
     private val everyMillis: Long = SAY_EVERY_MS,
     private val now: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = System.err::println,
 ) {
+    private enum class Read { DONE, FAILED, SHED, ABANDONED }
+
     private val slots = Semaphore(max)
+    private val checks = AtomicInteger()
+    private val reads = ConcurrentHashMap<String, CompletableDeferred<Read>>()
     private val failed = AtomicLong()
     private val shed = AtomicLong()
     private val lastSaidAt = AtomicLong(Long.MIN_VALUE)
 
-    /** Events dropped because their check failed, and because [max] checks were already running. */
+    /** Events dropped because their check failed, and because no read slot came free in time. */
     val failures: Long get() = failed.get()
     val shedding: Long get() = shed.get()
 
-    /** Judges one event in [scope] and calls [send] if [admits] says so; returns at once. */
+    /**
+     * Judges one event by [author] in [scope] and calls [send] if admitted; returns at once. Checks on
+     * one author wait on the read already in flight, then ask [known], which answers once the cache is warm.
+     */
     fun start(
         scope: CoroutineScope,
+        author: String,
+        known: () -> Boolean?,
         admits: suspend () -> Boolean,
         send: () -> Unit,
     ) {
-        if (!slots.tryAcquire()) {
-            shed.incrementAndGet()
-            say(null)
+        if (checks.incrementAndGet() > maxWaiting) {
+            checks.decrementAndGet()
+            dropShed()
             return
         }
-        // Released on completion, not in the body: a launch into a cancelled scope never runs its body.
-        scope
-            .launch {
-                val admitted =
-                    try {
-                        admits()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        failed.incrementAndGet()
-                        say(e)
-                        false
-                    }
-                if (admitted) send()
-            }.invokeOnCompletion { slots.release() }
+        // Counted down on completion, not in the body: a launch into a cancelled scope never runs its body.
+        scope.launch { if (judge(author, known, admits)) send() }.invokeOnCompletion { checks.decrementAndGet() }
+    }
+
+    private suspend fun judge(
+        author: String,
+        known: () -> Boolean?,
+        admits: suspend () -> Boolean,
+    ): Boolean {
+        val mine = CompletableDeferred<Read>()
+        val ahead = reads.putIfAbsent(author, mine)
+        if (ahead != null) {
+            when (ahead.await()) {
+                Read.FAILED -> return false.also { failed.incrementAndGet() }
+                Read.SHED -> return false.also { dropShed() }
+                Read.DONE, Read.ABANDONED -> known()?.let { return it }
+            }
+            // This subscription's rule reads a cell the read ahead did not warm: read it alongside.
+        }
+        val leads = ahead == null || reads.putIfAbsent(author, mine) == null
+        var outcome = Read.ABANDONED
+        try {
+            if (!takeSlot()) {
+                outcome = Read.SHED
+                dropShed()
+                return false
+            }
+            try {
+                return admits().also { outcome = Read.DONE }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                outcome = Read.FAILED
+                failed.incrementAndGet()
+                say(e)
+                return false
+            } finally {
+                slots.release()
+            }
+        } finally {
+            if (leads) {
+                reads.remove(author, mine)
+                mine.complete(outcome)
+            }
+        }
+    }
+
+    /** A read slot within [queueMillis]; the flag keeps a slot won just as the timeout fires. */
+    private suspend fun takeSlot(): Boolean {
+        if (slots.tryAcquire()) return true
+        var held = false
+        withTimeoutOrNull(queueMillis) {
+            slots.acquire()
+            held = true
+        }
+        return held
+    }
+
+    private fun dropShed() {
+        shed.incrementAndGet()
+        say(null)
     }
 
     private fun say(cause: Exception?) {
@@ -329,12 +396,21 @@ internal class ColdAuthorChecks(
         if (last != Long.MIN_VALUE && t - last < everyMillis) return
         if (!lastSaidAt.compareAndSet(last, t)) return
         val why = cause?.let { " (last: ${it::class.simpleName}: ${it.message?.take(80)})" } ?: ""
-        log("live gate: ${failed.get()} cold-author check(s) failed$why, ${shed.get()} shed past $max in flight — those live events were not delivered")
+        log(
+            "live gate: ${failed.get()} cold-author check(s) failed$why, ${shed.get()} shed waiting on $max reads in flight" +
+                " — those live events were not delivered",
+        )
     }
 
     companion object {
         /** Store reads in flight for cold authors across every subscription. */
-        const val MAX_IN_FLIGHT = 256
+        const val MAX_IN_FLIGHT = 512
+
+        /** Checks running or parked at once; one waiting on another's read holds no read slot. */
+        const val MAX_WAITING = 16_384
+
+        /** How long a check waits for a read slot before its event is dropped. */
+        const val QUEUE_MS = 5_000L
 
         private const val SAY_EVERY_MS = 60_000L
     }

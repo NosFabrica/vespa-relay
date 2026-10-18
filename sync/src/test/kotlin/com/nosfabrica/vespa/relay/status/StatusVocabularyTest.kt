@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.sync.SweepState
@@ -469,6 +470,15 @@ class StatusVocabularyTest {
             undefined.isEmpty(),
             "published with no term, so a reader needs the source to read them: $undefined",
         )
+    }
+
+    @Test
+    fun `every number the sync section publishes has a term in the mirror's own words`() {
+        // The plane's lookup has no fallback, so a mirror member filed under the monitor's section is caught
+        // here. This fixture also carries the monitor's processors, whose rows read the monitor's words.
+        val monitorWords = StatusVocabulary.termsFor(StatusVocabulary.TERMS, StatusPlane.MONITOR).keys
+        val undefined = publishedMembers() - selfDescribing - monitorWords - StatusVocabulary.termsFor(document(), StatusPlane.MIRROR).keys
+        assertTrue(undefined.isEmpty(), "published on the mirror's page with no mirror or shared term: $undefined")
     }
 
     @Test

@@ -163,7 +163,8 @@ async function render() {
   repairs(d);
   degraded(d);
   explain();
-  foot.textContent = `generated ${isoOf(d.generatedAt) || d.generatedAt || "?"}`;
+  // The document stamps an ISO string; a number would be unix seconds.
+  foot.textContent = `generated ${typeof d.generatedAt === "number" ? isoOf(d.generatedAt) : d.generatedAt || "?"}`;
 }
 
 render();

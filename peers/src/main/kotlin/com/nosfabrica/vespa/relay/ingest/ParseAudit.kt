@@ -170,6 +170,16 @@ class ParseAudit(
         writeDurably(outFile, json.encodeToString(JsonObject.serializer(), report))
     }
 
+    private var writeFailureLoggedAt = 0L
+
+    /** A report that cannot be written is said, at most once a minute, rather than quietly going stale. */
+    private fun reportWriteFailed(e: Throwable) {
+        val now = System.currentTimeMillis()
+        if (now - writeFailureLoggedAt < WRITE_FAILURE_LOG_MS) return
+        writeFailureLoggedAt = now
+        System.err.println("parse audit: could not write ${outFile.path} (${e.javaClass.simpleName}: ${e.message}); the report is stale")
+    }
+
     /** Rewrite the report every [intervalSec] on a daemon thread. */
     fun startPeriodicFlush(intervalSec: Long): ParseAudit {
         flusher =
@@ -180,7 +190,7 @@ class ParseAudit(
                     } catch (_: InterruptedException) {
                         return@Thread
                     }
-                    runCatching { writeReport() }
+                    runCatching { writeReport() }.onFailure { reportWriteFailed(it) }
                     if (findings.isNotEmpty()) System.err.println(summary())
                 }
             }.apply {
@@ -260,6 +270,9 @@ class ParseAudit(
         private val json = Json { prettyPrint = true }
 
         private const val FLUSHER_JOIN_MS = 5_000L
+
+        /** How often an unwritable report is said again. */
+        private const val WRITE_FAILURE_LOG_MS = 60_000L
 
         const val MAX_FINDINGS = 256
 

@@ -355,6 +355,19 @@ only an EOSE as answered; one unanswered chunk leaves the band unverified, so
 the next audit compares again. The delete half is unaffected: its licence is
 the completed reconcile, not the download.
 
+**An audit that ends short backs off.** Leaving the band unverified also left
+its clock where it was, so a relay that never answered one by-id chunk in full
+had the whole audit (store snapshot, reconcile, delete pass) re-run at every
+attempt spacing instead of once per period, and at once after every restart,
+since the attempt stamps live in memory. `SyncBands.noteIncompleteAudit`
+counts the short audits in a row and doubles the spacing per one, capped at
+the audit's own period; the count is persisted (`#incompleteAudits`) and ends
+on the next verified record. It claims no coverage: the band stays unverified.
+
+**The by-id hook keeps nothing.** `fetchAllWithHooks` retains every event
+whose hook returns true in a result list; `fetchIds` hands each event on as it
+arrives and reads only `doneReasons`, so it returns false.
+
 **No size guard on the delete.** A provider that retracts a subject usually
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer
@@ -408,3 +421,21 @@ file synced before the rename, the directory after it), and a parse failure
 in `PersistedJsonState.read` quarantines the file as `<name>.corrupt-<ms>` and
 empties every map, so the process starts from a clean state rather than from
 half a file.
+
+**Only a bad document is quarantined; an unreadable file stops the boot.** The
+quarantine wrapped the read as well as the parse, so an `IOException` (EACCES
+after the image moved to uid 10001, EIO) or an `OutOfMemoryError` moved a good
+file aside and started the mirror empty, a full re-walk for a permission fix.
+`read` now lets an `IOException` from reading fail the boot with the file's
+path and the `chown` that fixes it, leaves the file in place, and quarantines
+only on what restoring the parsed document throws short of an `Error`:
+`getValue` and friends throw beyond `SerializationException`, and every one of
+them is about the document's shape.
+
+**The flusher is stopped, never interrupted.** `close()` interrupted it and
+went straight to its own flush. An interrupt landing in `writeDurably`'s
+directory `force` closes the channel, `:common` swallows that as a filesystem
+that cannot sync a directory, the write still counted as saved, and `close`'s
+flush then saw nothing owed: the rename was never made durable. The flusher
+now waits on a latch `close` counts down, `close` joins it, and only then
+writes what is outstanding.

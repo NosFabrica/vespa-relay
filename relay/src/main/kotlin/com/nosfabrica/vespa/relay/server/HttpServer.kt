@@ -52,6 +52,8 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * The NIP-11 relay identity served on `GET /` (Accept: application/nostr+json).
@@ -171,7 +173,8 @@ fun serveRelay(
                 get("/pressure") {
                     val samples = p.sampleCount().coerceAtMost(ServingPressure.MIN_SAMPLES.toLong())
                     call.respondText(
-                        """{"meanMs":${p.meanMs()},"samples":$samples}""",
+                        """{"meanMs":${p.meanMs()},"samples":$samples,""" +
+                            """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}}}""",
                         ContentType.Application.Json,
                     )
                 }
@@ -243,7 +246,7 @@ internal fun Route.trustHealth(
 
 /**
  * `explain` for anonymous callers: one store read per pubkey per [ttlMillis], at most [maxInFlight]
- * at once; [answer] is null when every slot is taken. Only a well-formed key is cached.
+ * at once; [answer] is null when every slot is taken. Only a well-formed key's `ok` answer is cached.
  */
 internal class ExplainGate(
     private val ask: suspend (String) -> JsonObject,
@@ -272,6 +275,8 @@ internal class ExplainGate(
             } finally {
                 slots.release()
             }
+        // A failure is the engine's state, not the pubkey's: the next ask reads again.
+        if (answer["ok"]?.jsonPrimitive?.booleanOrNull == false) return answer
         key?.let { k ->
             synchronized(cache) {
                 cache[k] = Cached(answer, now())

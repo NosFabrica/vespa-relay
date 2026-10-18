@@ -49,7 +49,7 @@ import io.ktor.server.routing.routing
  */
 const val PAGE_CONTENT_SECURITY_POLICY =
     "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self'; " +
-        "img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; " +
+        "img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; " +
         "connect-src 'self' https: http: wss: ws:; manifest-src 'self'; object-src 'none'; " +
         "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 

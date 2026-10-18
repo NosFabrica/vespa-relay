@@ -77,6 +77,14 @@ prints `visit workers alive/configured`. The periodic loops (`repeatEvery`:
 the phase flush, the progress document, the health and stats lines) guard
 each tick the same way.
 
+**A unit outlives the VM error that killed its worker.** The rethrow skipped
+the re-arm: the `finally` cleared the unit's in-flight mark, but neither the
+requeue nor the revisit timer ran, so the unit dropped out of the rotation
+until its roster asks changed, while the replacement worker had nothing to
+draw for it. The loop now arms the revisit before rethrowing, on the timer
+even when a requeue was parked, so a visit that exhausts the heap is not
+re-run at once.
+
 **Eviction disarms the pending revisit.** The delay is read when the timer is
 armed, so a unit armed while tailed got the tailed cadence (half an hour
 against five minutes) and the visit after an eviction found the old timer
@@ -192,6 +200,14 @@ of ids per round bought nothing.
 permit wrapped the snapshot, up to eight reconcile rounds and the paced
 publish loop, so one slow upstream held every other `up` stream's snapshot
 behind its pushes. The permit is now released once the ids are read.
+
+**One push loop per stream, not per url.** Releasing the gate after the
+snapshot bounded the build but not the holding: `upUpstreams()` yields one
+entry per (stream, url), and with a loop per entry every url of a stream held
+its own copy of a possibly multi-GB id set through up to eight rounds and the
+paced publish, all at once. The stream now takes one snapshot per interval and
+pushes it to its urls in turn, so the live snapshots are bounded by the number
+of `up` streams; a url that fails still leaves the rest their turn.
 
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before

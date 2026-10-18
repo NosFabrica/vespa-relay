@@ -1645,7 +1645,7 @@ class RouterConfigTest {
             // Zero is no timeout at all to OkHttp.
             "connectionTimeout = 0\n" + static.format("") to listOf("connectionTimeout = 0", "at least 1"),
             static.format("negentropySyncThePastSeconds = 5") to listOf("negentropySyncThePastSeconds = 5", "at least 3600"),
-            static.format("negentropy = [ { every = 60 } ]") to listOf("every = 60", "at least 3600"),
+            static.format("refetch = [ { every = 0 } ]") to listOf("every = 0", "never finishes"),
             static.format("refetch = [ { maxAge = 0, every = 86400 }, { every = 604800 } ]") to listOf("maxAge = 0", "at least 1"),
             static.format("refetch = [ { maxAge = -5, every = 86400 }, { every = 604800 } ]") to listOf("maxAge = -5", "at least 1"),
             sourced.format("", "refreshSeconds = 5") to listOf("refreshSeconds = 5", "at least 60"),
@@ -1667,13 +1667,21 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `both spellings of a schedule obey one bound`() {
+    fun `a scalar period is at least an hour and a tier takes any cadence the audit can run`() {
         fun stream(body: String) = RouterConfigLoader.parse("""streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], $body } }""").streams.single()
 
-        // Zero is always due in the list, so it is in the scalar that is the list's single band.
-        assertEquals(stream("negentropy = [ { every = 0 } ]").negentropySchedule, stream("negentropySyncThePastSeconds = 0").negentropySchedule)
         assertEquals(stream("refetch = [ { every = 3600 } ]").refetchSchedule, stream("refetchThePastSeconds = 3600").refetchSchedule)
-        for (body in listOf("negentropySyncThePastSeconds = 1800", "negentropy = [ { every = 1800 } ]")) {
+        // A tier's cadence is honoured as written, as it always was: an operator's half-hourly audit still boots.
+        assertEquals(1800L, stream("negentropy = [ { every = 1800 } ]").negentropySchedule.single().everySeconds)
+        assertEquals(0L, stream("negentropy = [ { every = 0 } ]").negentropySchedule.single().everySeconds)
+        for (body in listOf(
+            "negentropySyncThePastSeconds = 0",
+            "negentropySyncThePastSeconds = 1800",
+            "refetchThePastSeconds = 0",
+            // A re-fetch due on every visit re-pages the whole band each time and never finishes.
+            "refetch = [ { every = 0 } ]",
+            "negentropy = [ { every = -1 } ]",
+        )) {
             assertFailsWith<IllegalArgumentException>(body) { stream(body) }
         }
     }

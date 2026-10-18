@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -364,6 +365,38 @@ class VisitQueueTest {
                     assertEquals("fine", visited.receive(), "the same worker draws the next unit")
                 }
                 assertEquals(1, q.workersAlive, "and is still counted as drawing units")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a visit that dies of a VM error ends its worker but keeps its unit in the rotation`() =
+        runBlocking {
+            val died = Channel<Throwable>(Channel.UNLIMITED)
+            val scope = CoroutineScope(SupervisorJob() + CoroutineExceptionHandler { _, e -> died.trySend(e) })
+            val q = VisitQueue<String>(scope)
+            val visits = AtomicInteger()
+            val visited = Channel<Int>(Channel.UNLIMITED)
+
+            fun worker() =
+                scope.launch {
+                    q.visitLoop(stillWanted = { true }, revisitDelayMs = { 100L }) {
+                        val n = visits.incrementAndGet()
+                        visited.send(n)
+                        if (n == 1) throw OutOfMemoryError("staged")
+                    }
+                }
+            worker()
+            try {
+                withTimeout(5_000) {
+                    q.offer("unit")
+                    assertEquals(1, visited.receive())
+                    assertTrue(died.receive() is OutOfMemoryError, "the VM error still ends the worker")
+                    // The pool's replacement; the unit must come back to it without anyone offering it again.
+                    worker()
+                    assertEquals(2, visited.receive(), "the unit is revisited on its timer")
+                }
             } finally {
                 scope.cancel()
             }

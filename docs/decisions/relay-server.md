@@ -201,6 +201,12 @@ An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
 at once, refused with a `503` rather than queued, since a queue is what a
 stolen admin token would fill.
 
+**The admin slot covers the upload, not the handling.** It was held through
+quartz's dispatch, which awaits the purge behind a ban (`store.delete`), so a
+purge that took minutes turned every other admin call, reads included, into a
+`503`. The trickling body is the only exposure the slot exists for; once the
+body is in, the call runs without one.
+
 **A slow websocket consumer is disconnected, not throttled.** Dropping EVENT or
 EOSE frames would corrupt NIP-01 semantics. The polite close frame queues
 behind the very congestion that tripped it, so the session is cancelled after
@@ -236,6 +242,12 @@ said rather than thrown.** Without the sync a power loss could leave the rename
 pointing at an empty file, which loads as no bans at all. A disk that refuses
 the write keeps the previous file and logs; the ban already applies in memory,
 and throwing turned an enforced ban into an RPC 500.
+
+**A ban list the relay cannot read is refused as unreadable, not as bad JSON.**
+The read and the parse shared one catch, so a bind mount the image's uid 10001
+could not read stopped the boot with "it is not JSON (AccessDeniedException)",
+which sends an operator to inspect a file that is fine. An I/O failure now
+names its cause and the `chown`; a failed save carries the same hint.
 
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went
@@ -390,10 +402,23 @@ or when it is cancelled waiting, so the gate needs no disconnect hook at all.
 such event on each gated subscription launched its own store read, unbounded,
 and a failed read was swallowed by `runCatching` along with cancellation. The
 reads now run under `ColdAuthorChecks.MAX_IN_FLIGHT` across every
-subscription; past it the event is dropped, as the gate already drops one whose
-read failed, and both are counted and said once a minute. Concurrent reads for
-one author are coalesced in the store's `TrustCells`, so the bound counts
-events waiting, not distinct reads. A subscription closing is not a failure.
+subscription; a check that gets no slot in time is dropped, as the gate
+already drops one whose read failed, and both are counted and said once a
+minute. A subscription closing is not a failure.
+
+**Cold-author checks coalesce per author before taking a slot.** The bound was
+first taken per subscription that saw the event, while the store's
+`TrustCells` already merged their reads, so a hundred gated feeds meeting one
+burst of cold authors (most of a global feed, on a 60s cell TTL) used the bound
+up on waiters and silently dropped live events. One read per author is now in
+flight; every other check on that author waits on it without a slot and then
+asks its own gate's cache, and only one whose rule reads a cell that read did
+not warm (another rank service) reads for itself. Keyed by author alone because
+the gate's rules are the store's; the cost of a miss is one extra wait, never a
+wrong answer. Waiting checks are bounded separately and far higher, a check
+queues up to `QUEUE_MS` for a slot instead of dropping at once, and the
+waiters on a failed read fail closed with it. The dropped counts are on
+`GET /pressure` as `liveGate`.
 
 **The trust pages are public, and `explain` is bounded and cached.** The pulse
 is gated because it quotes what people searched for; every field on
@@ -404,6 +429,9 @@ pubkey, which reveals nothing NIP-01 does not, and is about the projection,
 not the person. It is one store read per anonymous request, so `ExplainGate`
 caches each well-formed key's answer for 30s (a junk key is never cached, so
 it cannot evict a real one) and runs four at once, answering a `503` past that.
+An `ok:false` answer is not cached: it describes the engine at that moment,
+and cached it kept telling callers the store was failing for 30s after it
+recovered; the four-at-once bound is what holds the store's load meanwhile.
 
 **The engine's limits have ranges.** They were parsed as any whole number, so
 `MAX_LIMIT=0` or `MAX_MESSAGE_LENGTH=-1` booted cleanly and then refused or
@@ -437,7 +465,10 @@ through the store, and the queue holds four batches before a submit suspends.
 **What a reader's own data can make a sign-in cost is bounded.** A 10040 is
 the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
 service it named went into one store filter and one NOTICE. `TrustNotice`
-checks the first `MAX_RANK_SERVICES` and says how many it skipped. Likewise
+checks the first `MAX_RANK_SERVICES`, and when the list names more it says
+nothing about scores at all: the cards may be under a service it skipped, and
+a `restricted:` NOTICE telling a reader their ranking is broken when it works
+is a claim the check cannot support. Likewise
 `MultiAddressAuthPolicy` remembered every identity a connection signed in as,
 and a client can mint keys without end, so it tells at most `MAX_TOLD` per
 connection and then stops telling rather than growing the set.

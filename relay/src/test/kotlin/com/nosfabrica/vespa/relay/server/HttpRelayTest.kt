@@ -408,6 +408,33 @@ class HttpRelayTest {
     }
 
     @Test
+    fun `a ban whose purge runs long holds no admin slot, so other admin calls are served meanwhile`() {
+        val purging = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val slow =
+            Nip86Admin(BanStore(), setOf(alice.pubKey), origin, purge = {
+                purging.complete(Unit)
+                release.await()
+            }, concurrency = 1)
+        serving(admin = slow) { base ->
+            val ban = """{"method":"banpubkey","params":["${NostrSignerSync().pubKey}","spam"]}"""
+            val banned =
+                java.util.concurrent.CompletableFuture.supplyAsync {
+                    post(base, ban, authorization = token(ban), contentType = "application/nostr+json+rpc")
+                }
+            try {
+                runBlocking { kotlinx.coroutines.withTimeout(5_000) { purging.await() } }
+                val list = """{"method":"listbannedpubkeys","params":[]}"""
+                val read = post(base, list, authorization = token(list), contentType = "application/nostr+json+rpc")
+                assertEquals(200, read.status, "an admin read while a purge runs: ${read.body}")
+            } finally {
+                release.complete(Unit)
+            }
+            assertEquals(200, banned.get(5, java.util.concurrent.TimeUnit.SECONDS).status)
+        }
+    }
+
+    @Test
     fun `the relay URL's POST is NIP-86 for its Content-Type and a command for any other`() {
         serving(admin = admin()) { base ->
             val rpc = post(base, """{"method":"supportedmethods","params":[]}""", contentType = "application/nostr+json+rpc; charset=utf-8")

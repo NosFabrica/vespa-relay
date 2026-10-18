@@ -48,15 +48,13 @@ class StatusVocabularyPlanesTest {
     fun `the flat vocabulary still defines every name, a per-plane pair as both`() {
         val flat = StatusVocabulary.TERMS["stage"]!!.jsonPrimitive.content
         assertTrue(definitionOf(StatusPlane.MIRROR) in flat && definitionOf(StatusPlane.MONITOR) in flat, flat)
-        // A plane's lookup falls back to the flat map, so a section a name is filed under never hides it.
-        for (plane in StatusPlane.entries) {
-            assertEquals(StatusVocabulary.TERMS.keys, StatusVocabulary.termsFor(StatusVocabulary.TERMS, plane).keys)
-        }
     }
 
     @Test
-    fun `a document gets only the names it publishes, whichever plane it is`() {
+    fun `a plane's document never reads the other plane's words`() {
+        // `queued` is the mirror's visit queue; the monitor publishes no such member, so it has no meaning there.
         val doc = buildJsonObject { put("queued", JsonPrimitive(3)) }
-        for (plane in StatusPlane.entries) assertEquals(setOf("queued"), StatusVocabulary.termsFor(doc, plane).keys)
+        assertEquals(setOf("queued"), StatusVocabulary.termsFor(doc, StatusPlane.MIRROR).keys)
+        assertEquals(emptySet(), StatusVocabulary.termsFor(doc, StatusPlane.MONITOR).keys)
     }
 }

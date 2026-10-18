@@ -79,7 +79,8 @@ class TrustNotice(
         // The reader's list can carry thousands of tags; one store filter and one NOTICE take the first few.
         val services = named.take(MAX_RANK_SERVICES)
         val cards = read(scoreCardFilter(services)) ?: return emptyList()
-        return if (cards.isEmpty()) listOf(noScores(services, dropped = named.size - services.size)) else emptyList()
+        // A service past the cap may hold the cards, so absence is only claimed over the whole list.
+        return if (cards.isEmpty() && services.size == named.size) listOf(noScores(services)) else emptyList()
     }
 
     /** Every service this list names for ranking, matching what the provider map resolves. */
@@ -130,16 +131,10 @@ class TrustNotice(
 
         internal val NO_RANK_SERVICE = RESTRICTED.format("your kind 10040 names no usable 30382:rank service")
 
-        /** Rank services one check asks about and names; a list naming more is said to. */
+        /** Rank services one check asks about; a list naming more is never told it has no scores. */
         internal const val MAX_RANK_SERVICES = 8
 
         /** Named, because a provider never mirrored is the operator's fix, not the reader's. */
-        internal fun noScores(
-            services: List<HexKey>,
-            dropped: Int = 0,
-        ): String {
-            val more = if (dropped > 0) " (and $dropped more your list names, not checked)" else ""
-            return RESTRICTED.format("no kind 30382 from ${services.joinToString(", ")}$more here yet")
-        }
+        internal fun noScores(services: List<HexKey>): String = RESTRICTED.format("no kind 30382 from ${services.joinToString(", ")} here yet")
     }
 }
