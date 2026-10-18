@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
 import com.typesafe.config.Config
@@ -121,6 +122,7 @@ object RouterConfigLoader {
         val upInterval = env.strictLong("SYNC_UP_INTERVAL_SECONDS", 10L..Long.MAX_VALUE) ?: 300L
         val ingestConcurrency = env.strictInt("SYNC_INGEST_CONCURRENCY", 1..64) ?: 2
         val ingestBatch = env.strictInt("SYNC_INGEST_BATCH", 1..20_000) ?: 1000
+        val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
         // Removed settings are refused, never ignored.
         require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
@@ -146,9 +148,11 @@ object RouterConfigLoader {
             syncOrigin = syncOrigin,
             monitorOrigin = monitorOrigin,
         ).copy(
+            ingestDedupChunk = dedupChunk,
             negPageTarget = pageTarget,
             negPageMin = pageMin,
-            negPageMax = pageMax.coerceAtLeast(pageMin),
+            // Already at least pageMin: its strictInt range starts there.
+            negPageMax = pageMax,
             negPageSlackSec = pageSlack,
         ).let {
             if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))

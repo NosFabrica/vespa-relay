@@ -290,3 +290,17 @@ version stage applies, but it runs before the writer lock: a NIP-09 deletion
 of the newer version landing inside that window drops an event the store
 would have taken, until the next full resync re-offers it. Accepted, because
 the window is one batch wide and the loss is recoverable.
+
+**A probe that throws teaches its gate nothing.** The dedup and version
+probes used to catch `Throwable`, answer "nothing held", and record that
+answer to their `ProbeGate`, so a store briefly refusing queries read as a 0%
+hit rate and dropped the probe to one batch in 32 long after the store
+recovered. A failure now skips the gate, is counted beside it on the
+`ingest probes` stats line (`id N failed`), and is logged at most once a
+minute. An `Error` is no longer the probe's to swallow.
+
+**`VESPA_DEDUP_CHUNK` is read with the rest of the ingest sizing.** It was
+read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
+`ExceptionInInitializerError` on the first batch rather than a boot refusal,
+and a test could not set it. It now rides `IngestTuning` from
+`RouterConfigLoader.fromEnv`.

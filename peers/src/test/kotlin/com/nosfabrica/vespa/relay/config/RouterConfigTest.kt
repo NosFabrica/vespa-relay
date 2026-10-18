@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -1011,6 +1012,19 @@ class RouterConfigTest {
             }
         assertTrue("SYNC_NEG_PAGE_MAX='100'" in e.message.orEmpty())
         assertTrue("at least 10000" in e.message.orEmpty())
+    }
+
+    @Test
+    fun `the dedup probe's chunk is read with the rest of the ingest sizing and a bad one stops the boot`() {
+        val tuned = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "VESPA_DEDUP_CHUNK" to "2000"))
+        assertEquals(2000, tuned!!.ingestTuning().dedupChunk)
+        val stock = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig))
+        assertEquals(IngestTuning.DEFAULT_DEDUP_CHUNK, stock!!.ingestTuning().dedupChunk)
+        val e =
+            assertFailsWith<IllegalStateException> {
+                RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "VESPA_DEDUP_CHUNK" to "0"))
+            }
+        assertTrue("VESPA_DEDUP_CHUNK='0'" in e.message.orEmpty(), e.message)
     }
 
     @Test
