@@ -141,3 +141,12 @@ evictions in ten minutes, nearly all of them three quiet relays trading one
 tail. The prompt visit now takes only a spare permit; its next ordinary visit
 may evict again, so a pair can still trade a tail, at the revisit cadence rather
 than back to back. The next live run counted 25 evictions.
+
+**The tails and the status projection live beside the pool, not in it.**
+`VisitPool.kt` had grown past 1,300 lines holding three jobs: the visit
+itself, the live tails with their yield-scored eviction and permit hand-over,
+and everything the status page reads. `TailBook` now owns the tails, their
+yields and the eviction marks; `PoolStatus` owns the in-flight and live rows,
+the per-relay table, each stream's limits, schedule and phase, and the
+progress counters, reading the pool's state and writing none of it. The pool
+keeps the visit, the roster and the workers.

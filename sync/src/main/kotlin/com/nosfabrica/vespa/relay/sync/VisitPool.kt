@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -109,51 +109,53 @@ internal class VisitPool(
     /** Offers, collisions and revisit timers. */
     private val queue = VisitQueue<VisitKey>(scope)
 
-    /** One held live subscription and the socket claim that rides with it. */
-    private class Tail(
-        val subId: String,
-        /** The roster's ask identity when the tail was opened; a change re-opens the tail. */
-        val wantsAtOpen: Set<String>,
-        /** The kind cap the tail was opened at; a newly learned cap re-opens the tail. */
-        val capAtOpen: Int? = null,
-        val openedMs: Long = System.currentTimeMillis(),
-        /** The live permit, held for the tail's life and released by [dropTail]. */
-        val hold: PoolLimits.Hold,
-    ) {
-        val events = AtomicLong()
+    /** The visits in progress, by unit; [status] reads them. */
+    private val ongoing = ConcurrentHashMap<VisitKey, OngoingVisit>()
 
-        @Volatile var lastEventMs: Long = openedMs
+    /** The pool's running totals. */
+    private val counters = PoolCounters()
+
+    /** Why visits end early, counted by reason. */
+    private val aborts = VisitAborts()
+
+    /** Set when a stream's phase row is stale; the flush loop clears it. */
+    private val phasesDirty = AtomicBoolean(false)
+
+    private fun phasesChanged() {
+        phasesDirty.set(true)
     }
 
-    private val tails = ConcurrentHashMap<VisitKey, Tail>()
-    private val tailSeq = AtomicInteger()
+    /** The live tails and the yields that rank them. */
+    private val tails =
+        TailBook(
+            reads = reads,
+            sockets = sockets,
+            limits = limits,
+            widths = widths,
+            ingest = ingest,
+            queue = queue,
+            roster = { currentRoster },
+            onArrived = { counters.poolReceived.incrementAndGet() },
+            onChange = ::phasesChanged,
+        )
 
-    /**
-     * What a relay has delivered lately: a score that halves every [YIELD_HALF_LIFE_MS].
-     * Decides which relays keep tails when the budget is short and how soon a relay is revisited.
-     */
-    private class Yield {
-        val arrived = AtomicLong()
-
-        @Volatile var score: Double = 0.0
-
-        @Volatile var foldedAtMs: Long = System.currentTimeMillis()
-
-        /** Folds what arrived into the decayed score and returns it. Racy by design: a priority hint. */
-        fun foldedScore(nowMs: Long): Double {
-            val fresh = arrived.getAndSet(0)
-            val dtMs = (nowMs - foldedAtMs).coerceAtLeast(0)
-            if (fresh > 0 || dtMs > YIELD_HALF_LIFE_MS / 8) {
-                score = score * Math.pow(0.5, dtMs.toDouble() / YIELD_HALF_LIFE_MS) + fresh
-                foldedAtMs = nowMs
-            }
-            return score
-        }
-    }
-
-    private val yields = ConcurrentHashMap<NormalizedRelayUrl, Yield>()
-
-    private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
+    /** The pool as the status page reads it. */
+    private val status =
+        PoolStatus(
+            streams = streams,
+            bands = bands,
+            limits = limits,
+            widths = widths,
+            schedule = schedule,
+            retraction = retraction,
+            queue = queue,
+            tails = tails,
+            ongoing = ongoing,
+            aborts = aborts,
+            counters = counters,
+            phases = phases,
+            roster = { currentRoster },
+        )
 
     /**
      * Is a producer of ours parked in the full ingest queue on this relay's events? A parked
@@ -161,283 +163,39 @@ internal class VisitPool(
      */
     private fun heldByUs(url: NormalizedRelayUrl): Boolean = ingest.parkedOn(url) > 0
 
-    /** Visits not dialled because the ingest queue was full at the claim. */
-    private val visitsHeldByIngest = AtomicLong()
-
-    /** What a row is doing: the pool word the page groups by, and the sentence it prints. */
-    private class Stage(
-        /** One of the `POOL_` constants, or null for a visit between jobs. */
-        val pool: String?,
-        val word: String,
-    )
-
-    /** One visit in progress, for the in-flight list; tails are listed separately. */
-    private class OngoingVisit(
-        val startedMs: Long,
-    ) {
-        @Volatile var stream: String? = null
-
-        @Volatile var stage: Stage = CLAIMING
-
-        /** The `created_at` second the walk or audit window has reached. */
-        @Volatile var pagingUntil: Long? = null
-
-        val events = AtomicLong()
-
-        /** Any sign of life: an event, an answered ask, a negentropy frame, a window opening. */
-        @Volatile var lastActivityMs: Long = startedMs
-    }
-
-    private val ongoing = ConcurrentHashMap<VisitKey, OngoingVisit>()
-
     /** Where a unit's next visit starts, after one cut short; absent starts at the first ask. */
     private val resumeAt = ConcurrentHashMap<VisitKey, Int>()
 
     /** Units turned away before dialling: they retry after [TURNED_AWAY_RETRY_MS], not a revisit's wait. */
     private val turnedAway = ConcurrentHashMap.newKeySet<VisitKey>()
 
-    /** Units whose tail was just evicted: the prompt visit catches up and does not evict in turn. */
-    private val evicted = ConcurrentHashMap.newKeySet<VisitKey>()
-
-    /** Counts one arrived event: the pool, the relay's yield, and the visit or tail it came by. */
+    /** Counts one event a visit delivered: the pool, the relay's yield, and the visit's own row. */
     private fun arrived(
         url: NormalizedRelayUrl,
-        ongoingVisit: OngoingVisit?,
-        tail: Tail? = null,
+        ongoingVisit: OngoingVisit,
     ) {
-        poolReceived.incrementAndGet()
-        yieldOf(url).arrived.incrementAndGet()
-        ongoingVisit?.let {
-            it.events.incrementAndGet()
-            it.lastActivityMs = System.currentTimeMillis()
-        }
-        tail?.let {
-            it.events.incrementAndGet()
-            it.lastEventMs = System.currentTimeMillis()
-        }
+        counters.poolReceived.incrementAndGet()
+        tails.credit(url)
+        ongoingVisit.events.incrementAndGet()
+        ongoingVisit.lastActivityMs = System.currentTimeMillis()
     }
 
-    /**
-     * The visits currently serving one stream, quietest first. Published whole: a row is a
-     * worker, so the list is bounded by the worker count.
-     */
-    private fun inFlightFor(stream: String): InFlight {
-        val nowMs = System.currentTimeMillis()
-        val rows =
-            ongoing
-                .entries
-                .filter { it.key.stream == stream }
-                .map { (key, row) ->
-                    val heldForSec = ((nowMs - row.startedMs) / 1000).coerceAtLeast(0)
-                    InFlight.Relay(
-                        relay = key.url.url,
-                        heldForSec = heldForSec,
-                        // A visit holds its socket from its first moment, so the two clocks agree.
-                        transferringForSec = heldForSec,
-                        events = row.events.get(),
-                        quietForSec = ((nowMs - row.lastActivityMs) / 1000).coerceAtLeast(0),
-                        stage = row.stage.word,
-                        pool = row.stage.pool,
-                        pagingUntil = row.pagingUntil,
-                    )
-                }.sortedWith(QUIETEST_FIRST)
-        return InFlight(relays = rows, omitted = 0)
-    }
+    /** Every (relay, stream) unit on the roster, for the status page's per-relay table. */
+    internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> = status.primeUnits()
 
-    /**
-     * Every (relay, stream) unit on the roster, for the status page's per-relay table, read
-     * off one roster snapshot.
-     */
-    internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
-        val snapshot = currentRoster
-        // One pass for the whole table; the same question asked per row would scan the map
-        // thousands of times.
-        val cannotReconcile = bands.cannotReconcileByUnit()
-        val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
-        // A banded stream's audit files its reconcile under the bare name, which no band key is.
-        val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
-        val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
-        for ((url, byStream) in snapshot.asks) {
-            for ((stream, unit) in byStream) {
-                val key = VisitKey(url, stream)
-                val abort = aborts.last(stream, url)
-                out +=
-                    RelayStatusReport.PrimeUnit(
-                        relay = url.url,
-                        stream = stream,
-                        // The same strings the bands are keyed under, so the report joins on them.
-                        coverageKeys = coverageKeys[stream] ?: listOf(stream),
-                        askKeys = unit.identity,
-                        visiting = ongoing.containsKey(key),
-                        live = tails.containsKey(key),
-                        speaksNegentropy = snapshot.speaksNegentropy[url],
-                        // Any band of this unit that negentropy cannot walk; the per-band split
-                        // is on the stream's schedule rows, which is where a band is the subject.
-                        negentropyRefusedWhy = cannotReconcile[stream to url.url],
-                        watched = snapshot.watches(url, stream),
-                        kindCap = widths.capFor(url),
-                        abortReason = abort?.reason?.says,
-                        abortSaid = abort?.said,
-                        abortAtSec = abort?.atSec ?: 0,
-                        auditKey = auditKeys[stream],
-                    )
-            }
-        }
-        return out
-    }
-
-    /**
-     * Every open tail subscription, quietest first, in the row shape of [inFlightFor].
-     * Published whole: the set is bounded by the streams' live budgets.
-     */
-    internal fun livePool(): InFlight {
-        val nowMs = System.currentTimeMillis()
-        val rows =
-            tails
-                .entries
-                .map { (key, tail) ->
-                    val heldForSec = ((nowMs - tail.openedMs) / 1000).coerceAtLeast(0)
-                    InFlight.Relay(
-                        relay = key.url.url,
-                        stream = key.stream,
-                        heldForSec = heldForSec,
-                        // A tail holds its socket for its whole life, so the two clocks agree.
-                        transferringForSec = heldForSec,
-                        events = tail.events.get(),
-                        quietForSec = ((nowMs - tail.lastEventMs) / 1000).coerceAtLeast(0),
-                        stage = TAILING.word,
-                        pool = TAILING.pool,
-                    )
-                }.sortedWith(QUIETEST_FIRST)
-        return InFlight(relays = rows, omitted = 0)
-    }
-
-    /** One stream's cap, use and deferrals per job, including the uncapped ones. */
-    private fun limitsFor(stream: String): List<StreamPhases.Limit> =
-        PoolLimits.JOBS.map { (job, _) ->
-            StreamPhases.Limit(
-                job = job,
-                cap = limits.capFor(stream, job),
-                inUse = limits.heldBy(stream, job),
-                deferred = limits.deferred(stream, job),
-            )
-        }
-
-    private class ScheduleCache(
-        val atMs: Long,
-        val rows: Map<String, List<StreamPhases.Scheduled>>,
-    )
-
-    @Volatile
-    private var scheduleCache: ScheduleCache? = null
-
-    /** When one stream's scheduled re-reads come due, cached for [SCHEDULE_CACHE_MS]. */
-    private fun scheduleFor(stream: String): List<StreamPhases.Scheduled> {
-        val nowMs = System.currentTimeMillis()
-        val cached = scheduleCache
-        if (cached != null && nowMs - cached.atMs < SCHEDULE_CACHE_MS) return cached.rows[stream].orEmpty()
-        val fresh = schedule.rows(currentRoster.asks, nowSeconds())
-        scheduleCache = ScheduleCache(nowMs, fresh)
-        return fresh[stream].orEmpty()
-    }
-
-    private fun phasesChanged() {
-        phasesDirty.set(true)
-    }
-
-    /** Publishes each stream's relay, tail and queue counts, one walk per collection. */
-    private fun flushPhases() {
-        val phases = phases ?: return
-        val queuedByStream = queue.waitingBy { it.stream }
-        val tailedByStream = tails.keys.groupingBy { it.stream }.eachCount()
-        val relaysByStream = HashMap<String, Int>()
-        for (byStream in currentRoster.asks.values) {
-            for (name in byStream.keys) relaysByStream.merge(name, 1, Int::plus)
-        }
-        for (stream in streams) {
-            phases.set(
-                stream.name,
-                StreamPhases.Phase.Rotating(
-                    relays = relaysByStream[stream.name] ?: 0,
-                    tailed = tailedByStream[stream.name] ?: 0,
-                    queued = queuedByStream[stream.name] ?: 0,
-                ),
-            )
-        }
-    }
-
-    private val phasesDirty =
-        java.util.concurrent.atomic
-            .AtomicBoolean(false)
-
-    private val evictedTails = AtomicLong()
-
-    private val poolReceived = AtomicLong()
-    private val visitsRun = AtomicLong()
-    private val auditsRun = AtomicLong()
-
-    /** Audits not attempted because the monitor measured the relay as not answering NEG-OPEN. */
-    private val auditsSkipped = AtomicLong()
-
-    /** Why visits end early, counted by reason. */
-    private val aborts = VisitAborts()
-
-    /** Windows an audit could not read and did not claim. */
-    private val auditsRefusedWindows = AtomicLong()
-
-    /** Bands that read as impossible: the relay will not open negentropy for that ask. */
-    private val auditsCannotRun = AtomicLong()
-
-    /**
-     * Retraction audits, which ride the same clock and the same pool but are not sweeps. Counted
-     * apart: summed into `negentropyRuns` they made 7 finished sweeps read as 37.
-     */
-    private val retractionsRun = AtomicLong()
+    /** Every open tail subscription, quietest first. */
+    internal fun livePool(): InFlight = status.livePool()
 
     fun start() {
         if (streams.isEmpty()) return
         warnOnSocketBudget(streams)
         progress.phase("rotating")
-        progress.counts {
-            // Names must not collide with anything else on the progress document.
-            listOf(
-                Processors.Count("roster", roster.size.toLong()),
-                // Units of work, not relays: `visiting + awaitingVisit + between` sums to this.
-                Processors.Count(
-                    "rosterVisits",
-                    currentRoster.asks.values
-                        .sumOf { it.size }
-                        .toLong(),
-                ),
-                Processors.Count("awaitingVisit", queue.waiting.toLong()),
-                Processors.Count("visiting", queue.visiting.toLong()),
-                Processors.Count("liveHeld", tails.size.toLong()),
-                Processors.Count("visitsRun", visitsRun.get()),
-                Processors.Count("visitsHeldByIngest", visitsHeldByIngest.get()),
-                Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == POOL_NEGENTROPY }.toLong()),
-                Processors.Count("negentropyRuns", auditsRun.get()),
-                Processors.Count("negentropySkipped", auditsSkipped.get()),
-                Processors.Count("negentropyRefused", auditsRefusedWindows.get()),
-                Processors.Count("negentropyCannotRun", auditsCannotRun.get()),
-                Processors.Count("retractionRuns", retractionsRun.get()),
-                Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
-                Processors.Count("liveEvicted", evictedTails.get()),
-                Processors.Count("poolReceived", poolReceived.get()),
-                Processors.Count("narrowedRelays", widths.narrowed.toLong()),
-            ) + aborts.counts()
-        }
-        for (stream in streams) {
-            phases?.names(
-                stream.name,
-                inFlight = { inFlightFor(stream.name) },
-                limits = { limitsFor(stream.name) },
-                schedule = { scheduleFor(stream.name) },
-            )
-        }
-        flushPhases()
+        progress.counts { status.counts() }
+        status.registerPhases()
+        status.flushPhases()
         scope.launch { rosterLoop() }
         scope.launch {
-            repeatEvery(PHASE_FLUSH_MS, "phase flush") { if (phasesDirty.getAndSet(false)) flushPhases() }
+            repeatEvery(PHASE_FLUSH_MS, "phase flush") { if (phasesDirty.getAndSet(false)) status.flushPhases() }
         }
         repeat(workers) { launchWorker() }
     }
@@ -464,7 +222,7 @@ internal class VisitPool(
                         if (turnedAway.remove(key)) {
                             TURNED_AWAY_RETRY_MS
                         } else {
-                            revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
+                            revisitDelayMs(tails.yieldScore(key.url, System.currentTimeMillis()) ?: 0.0, tails.has(key))
                         }
                     },
                     onEscape = ::recordFailure,
@@ -504,16 +262,9 @@ internal class VisitPool(
         val next = built.asks
         val previous = currentRoster.asks
         currentRoster = built
-        // Per unit: a relay can leave one stream's roster and stay on another's.
-        for (key in tails.keys.filter { !wantedBy(built, it) }) {
-            dropTail(key)
-        }
-        for (url in previous.keys - next.keys) {
-            yields.remove(url)
-        }
+        tails.retain(wanted = { wantedBy(built, it) }, goneUrls = previous.keys - next.keys)
         resumeAt.keys.removeIf { !wantedBy(built, it) }
         turnedAway.removeIf { !wantedBy(built, it) }
-        evicted.removeIf { !wantedBy(built, it) }
         var enqueued = 0
         for (url in next.keys) {
             // Queue a unit when its ask set is news: new to the roster, or its asks changed.
@@ -595,7 +346,7 @@ internal class VisitPool(
         // A download into a full queue parks its first event and silences the
         // socket; skipped like a refused permit, and retried shortly.
         if (ingest.isFull()) {
-            visitsHeldByIngest.incrementAndGet()
+            counters.visitsHeldByIngest.incrementAndGet()
             turnAway(key)
             return
         }
@@ -606,12 +357,11 @@ internal class VisitPool(
                 turnAway(key)
                 return
             }
-        visitsRun.incrementAndGet()
+        counters.visitsRun.incrementAndGet()
         // A prompt requeue can reach here past an earlier turn-away; this visit's own wait applies.
         turnedAway.remove(key)
-        val mayEvict = !evicted.remove(key)
+        val mayEvict = !tails.takeEvicted(key)
         val ongoingVisit = OngoingVisit(System.currentTimeMillis())
-        ongoingVisit.stream = key.stream
         ongoing[key] = ongoingVisit
         sockets.claim(url)
         try {
@@ -664,7 +414,7 @@ internal class VisitPool(
             aborts.cleared(key.stream, url)
             ongoingVisit.stage = FINISHING
             healer.drain(url)
-            openTail(key, mayEvict)
+            tails.open(key, mayEvict)
         } finally {
             ongoing.remove(key)
             sockets.release(url)
@@ -870,7 +620,7 @@ internal class VisitPool(
         val tiers = ask.stream.negentropySchedule
         if (tiers.isEmpty()) return
         if (speaksNegentropy == false) {
-            auditsSkipped.incrementAndGet()
+            counters.auditsSkipped.incrementAndGet()
             return
         }
         val now = nowSeconds()
@@ -943,8 +693,8 @@ internal class VisitPool(
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
-        auditsRun.incrementAndGet()
-        auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
+        counters.auditsRun.incrementAndGet()
+        counters.auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
         // The band's third state. `complete` and the ordinary incomplete both describe a walk
         // that happened; this one could not start, so the band is neither — and saying so is
         // what keeps it out of the backlog it can never leave.
@@ -952,7 +702,7 @@ internal class VisitPool(
             val why = outcome.failure?.detail ?: "the relay would not open negentropy"
             val strikes = bands.noteCannotReconcile(stream.name, url, ask.filter, band, why, auditStarted)
             if (strikes == SyncBands.STRIKES_BEFORE_IMPOSSIBLE) {
-                auditsCannotRun.incrementAndGet()
+                counters.auditsCannotRun.incrementAndGet()
                 System.err.println(
                     "router: audit ${stream.name}${if (band.isEmpty()) "" else " [$band]"} ${url.url} — the relay refused" +
                         " to open negentropy $strikes time(s) in a row ($why); this band is neither verified nor" +
@@ -1036,125 +786,7 @@ internal class VisitPool(
             sharedAuthors,
             onActivity = { ongoingVisit.lastActivityMs = System.currentTimeMillis() },
         ) { arrived(url, ongoingVisit) }
-        retractionsRun.incrementAndGet()
-    }
-
-    /**
-     * Opens this unit's live tail, `since` [TAIL_OVERLAP_SECONDS] behind now so the seam with
-     * the catch-up cannot drop an event. A sitting tail whose asks or kind cap changed is
-     * re-opened. The socket claim lives until the roster drops the unit. Without [mayEvict] it
-     * takes only a spare permit: a unit just evicted would otherwise evict back.
-     */
-    private suspend fun openTail(
-        key: VisitKey,
-        mayEvict: Boolean,
-    ) {
-        val url = key.url
-        val snapshot = currentRoster
-        val urlAsks = asksFor(snapshot, key)
-        if (urlAsks.isEmpty()) return
-        val wantsNow = snapshot.asks[url]?.get(key.stream)?.identity ?: return
-        val capNow = widths.capFor(url)
-        val sitting = tails[key]
-        if (sitting != null) {
-            if (sitting.wantsAtOpen == wantsNow && sitting.capAtOpen == capNow) return
-            dropTail(key)
-        }
-        // A spare permit within the stream's budget, or one earned by evicting its weakest tail.
-        // `trySpare` does not count a deferral: a full live budget is normal, not refused work.
-        val hold = limits.trySpare(key.stream, POOL_LIVE) ?: (if (mayEvict) earnTail(key) else null) ?: return
-        val subId = "visit-tail-${tailSeq.incrementAndGet()}"
-        // Built before the listener closes over it, so the first burst lands on the counters.
-        val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
-
-        // Every way out before the publish hands back exactly what was taken.
-        fun abandon(untail: Boolean = false) {
-            if (untail) reads.untail(subId)
-            sockets.release(url)
-            hold.release()
-        }
-        // Claim and subscribe before publishing, so a concurrent dropTail meets a fully formed tail.
-        sockets.claim(url)
-        try {
-            reads.tail(subId, url, widths.chunkAll(url, tailFilters(urlAsks, nowSeconds() - TAIL_OVERLAP_SECONDS))) { event ->
-                arrived(url, ongoingVisit = null, tail = tail)
-                // Scope is re-checked per event against the live roster, so a relay cannot widen ingest.
-                var any = false
-                var allTrusted = true
-                var healContent = false
-                var healRetractions = false
-                currentRoster.asks[url]?.get(key.stream)?.forEachCandidate(event.pubKey) { ask ->
-                    if (!ask.filter.match(event)) return@forEachCandidate
-                    any = true
-                    allTrusted = allTrusted && ask.stream.trusted
-                    healContent = healContent || ask.stream.healContent
-                    healRetractions = healRetractions || ask.stream.healRetractions
-                }
-                if (any) ingest.submit(event, allTrusted, IngestOrigin(url, healContent, healRetractions))
-            }
-        } catch (e: CancellationException) {
-            abandon()
-            throw e
-        } catch (e: Exception) {
-            abandon()
-            System.err.println("router: tail ${key.stream} ${url.url} failed to open: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
-            return
-        }
-        if (tails.putIfAbsent(key, tail) != null) {
-            abandon(untail = true)
-            return
-        }
-        // The roster may have dropped this unit between the read above and the publish.
-        if (!wantedBy(currentRoster, key)) {
-            dropTail(key)
-            return
-        }
-        phasesChanged()
-    }
-
-    /**
-     * Earns this unit a live permit by evicting the same stream's weakest tail, or returns
-     * null. The candidate must win on yield, not tie, so a pool of equals does not churn. The
-     * evicted tail's permit is handed over, never released, so no other worker can take it between.
-     */
-    private fun earnTail(candidate: VisitKey): PoolLimits.Hold? {
-        val nowMs = System.currentTimeMillis()
-        val mine = yieldOf(candidate.url).foldedScore(nowMs)
-        // One fold per tail: `foldedScore` drains what arrived, so a second read differs.
-        var weakest: VisitKey? = null
-        var weakestScore = Double.MAX_VALUE
-        for (key in tails.keys) {
-            if (key == candidate || key.stream != candidate.stream) continue
-            val score = yieldOf(key.url).foldedScore(nowMs)
-            if (score < weakestScore) {
-                weakest = key
-                weakestScore = score
-            }
-        }
-        if (weakest == null || weakestScore >= mine) return null
-        // Another path dropped it first and released its permit; ask for one like anyone else.
-        val handedOver = detachTail(weakest) ?: return limits.tryHold(candidate.stream, POOL_LIVE)
-        evictedTails.incrementAndGet()
-        if (wantedBy(currentRoster, weakest)) {
-            evicted += weakest
-            queue.offer(weakest)
-        }
-        return handedOver
-    }
-
-    private fun dropTail(key: VisitKey) {
-        detachTail(key)?.release()
-    }
-
-    /** Takes [key]'s tail down and returns its live permit unreleased, or null when none was up. */
-    private fun detachTail(key: VisitKey): PoolLimits.Hold? {
-        val tail = tails.remove(key) ?: return null
-        reads.untail(tail.subId)
-        sockets.release(key.url)
-        // The revisit timer was armed on the tailed cadence; let the next visit arm the untailed one.
-        queue.disarm(key)
-        phasesChanged()
-        return tail.hold
+        counters.retractionsRun.incrementAndGet()
     }
 
     companion object {
@@ -1213,12 +845,6 @@ internal class VisitPool(
             }
         }
 
-        /** Quietest first, then longest held, then url. The front end applies the same order. */
-        private val QUIETEST_FIRST =
-            compareByDescending<InFlight.Relay> { it.quietForSec }
-                .thenByDescending { it.heldForSec }
-                .thenBy { it.relay }
-
         const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
 
         /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
@@ -1240,14 +866,14 @@ internal class VisitPool(
         /** The fifth budgeted job: a stream's dial width. Appears in the limits, never on a row. */
         const val JOB_VISITING = "visiting"
 
-        private val CLAIMING = Stage(null, STAGE_CLAIMING)
-        private val ASKING = Stage(null, STAGE_ASKING)
-        private val CATCHING_UP = Stage(POOL_CATCHING_UP, STAGE_PAGING)
-        private val REFETCHING = Stage(POOL_REFETCHING, STAGE_REFETCHING)
-        private val NEGENTROPY = Stage(POOL_NEGENTROPY, STAGE_NEGENTROPY)
-        private val RETRACTING = Stage(POOL_NEGENTROPY, STAGE_RETRACTING)
-        private val FINISHING = Stage(null, STAGE_FINISHING)
-        private val TAILING = Stage(POOL_LIVE, STAGE_TAILING)
+        internal val CLAIMING = Stage(null, STAGE_CLAIMING)
+        internal val ASKING = Stage(null, STAGE_ASKING)
+        internal val CATCHING_UP = Stage(POOL_CATCHING_UP, STAGE_PAGING)
+        internal val REFETCHING = Stage(POOL_REFETCHING, STAGE_REFETCHING)
+        internal val NEGENTROPY = Stage(POOL_NEGENTROPY, STAGE_NEGENTROPY)
+        internal val RETRACTING = Stage(POOL_NEGENTROPY, STAGE_RETRACTING)
+        internal val FINISHING = Stage(null, STAGE_FINISHING)
+        internal val TAILING = Stage(POOL_LIVE, STAGE_TAILING)
 
         /**
          * Whether a leg walks time the band already covers (a re-fetch) rather than time
