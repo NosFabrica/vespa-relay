@@ -248,8 +248,8 @@ class VerdictCadenceTest {
             withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
             val second = synchronized(attempted) { attempted.toList() }
 
-            assertEquals(LANDED_BEFORE_WEDGE + FitnessPass.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
-            assertEquals(FitnessPass.PUBLISH_WEDGE_LIMIT, second.size)
+            assertEquals(LANDED_BEFORE_WEDGE + VerdictWrites.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
+            assertEquals(VerdictWrites.PUBLISH_WEDGE_LIMIT, second.size)
             // None of the writes the wedge cut landed, so the next batch starts at the earliest of them.
             assertEquals(
                 first[LANDED_BEFORE_WEDGE],

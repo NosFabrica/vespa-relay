@@ -52,8 +52,8 @@ class ConsistencyPass(
     /** The proxy, for the gate alone. */
     tor: TorTransport? = null,
     /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
-    private val publishDeadlineMs: Long = FitnessPass.PUBLISH_DEADLINE_MS,
-    private val writeConcurrency: Int = FitnessPass.WRITE_CONCURRENCY,
+    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
+    private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
     /** Every url the monitor knows, by server: a stand-in may be a url outside this batch. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
 ) {
@@ -164,10 +164,10 @@ class ConsistencyPass(
                 earned.keys.sortedBy { it.url },
                 writeConcurrency,
                 publishDeadlineMs,
-                FitnessPass.PUBLISH_WEDGE_LIMIT,
-                FitnessPass.PUBLISH_WEDGE_BUDGET_MS,
+                VerdictWrites.PUBLISH_WEDGE_LIMIT,
+                VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
                 progress,
-                STAGE_PUBLISH,
+                VerdictWrites.STAGE_PUBLISH,
             ) { url ->
                 val e = earned.getValue(url)
                 record.publishConsistency(
@@ -483,8 +483,5 @@ class ConsistencyPass(
         const val STAGE_REACHABILITY = "pre-probe"
 
         const val STAGE_LADDER = "paired walk"
-
-        /** The one stage that is not a dial: the record edit that puts a verdict down. */
-        const val STAGE_PUBLISH = FitnessPass.STAGE_PUBLISH
     }
 }

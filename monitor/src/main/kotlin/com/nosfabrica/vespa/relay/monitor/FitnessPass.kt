@@ -76,13 +76,13 @@ class FitnessPass(
     private val tor: TorTransport? = null,
     private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
     /** The wall clock on one verdict write. */
-    private val publishDeadlineMs: Long = PUBLISH_DEADLINE_MS,
+    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
     /** The wall clock on the NEG-OPEN. */
     private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
     /** How much wall time one batch may lose to a store that is not answering. */
-    private val publishWedgeBudgetMs: Long = PUBLISH_WEDGE_BUDGET_MS,
+    private val publishWedgeBudgetMs: Long = VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
     /** Verdict writes in flight at once. */
-    private val writeConcurrency: Int = WRITE_CONCURRENCY,
+    private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
     /** A direct handshake to a url whose dial failed TLS, on the pre-probe's route; the default checks nothing. */
     private val tlsCheck: suspend (NormalizedRelayUrl) -> TlsAnswer = { TlsAnswer.UNCHECKED },
     /** The NEG-OPEN, the only thing this pass asks [client] for. */
@@ -127,7 +127,7 @@ class FitnessPass(
             val urls = (queued.keys - overtaken.keys).sortedBy { it.url }
             progress.measuring(urls.size, Processors.UNIT_VERDICT)
             val tally =
-                writeEach(urls, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
+                writeEach(urls, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, VerdictWrites.STAGE_PUBLISH) { url ->
                     queued.getValue(url).write()
                 }
             // Removed only if still the write that landed: a batch may have queued a newer one meanwhile.
@@ -218,6 +218,75 @@ class FitnessPass(
         val reachedServer: Boolean get() = tested && !preProbe && !tls && verdict != Verdict.SILENT
     }
 
+    /** What one batch learned, url by url, while its dials run concurrently. */
+    private class Batch {
+        val outcomes = ConcurrentHashMap<NormalizedRelayUrl, Outcome>()
+
+        /** Beside the outcomes, not on them: the document and the REQ fail independently. */
+        val readings = ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>()
+
+        /** Events the dials handed to ingest. */
+        val downloaded = AtomicInteger()
+
+        /** Urls this pass gave up on rather than measured; [abandoned] names a bounded few. */
+        val abandonedCount = AtomicInteger()
+
+        val abandoned: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Urls the per-url deadline cut after the dial had earned a verdict. These publish. */
+        val cutLate = AtomicInteger()
+
+        /** Urls whose NEG-OPEN was cut by its own wall clock; the grade is already earned. */
+        val negOpenCut = AtomicInteger()
+
+        /** Urls whose second page was cut by its own; these are graded on one page. */
+        val secondPageCut = AtomicInteger()
+
+        /** Urls that end with no `pageable` claim at all. */
+        val pageUnproven = AtomicInteger()
+
+        /** Urls this pass asked and got no answer of any kind about. Never published. */
+        val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
+
+        /** Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published. */
+        val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
+
+        /** Urls whose lookup failed with no reason in it. */
+        fun lookups(): Set<NormalizedRelayUrl> = deferred.filterValues { it == Deferral.LOOKUP_UNEXPLAINED }.keys
+
+        /** Their hosts: one host's cached failure repeats across all of its paths, so it counts once. */
+        fun lookupHosts(): Int = lookups().mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+
+        /** Every other deferral, by why. */
+        fun deferredCounts(): Map<String, Int> =
+            deferred.values
+                .filter { it != Deferral.LOOKUP_UNEXPLAINED }
+                .groupingBy { it.why }
+                .eachCount()
+
+        /** The per-url deadline fired on [url]. */
+        fun cut(url: NormalizedRelayUrl) {
+            if (outcomes.containsKey(url)) {
+                // Cut late, and the verdict stands: our clock firing one step later does not un-tell it.
+                cutLate.incrementAndGet()
+            } else if (!deferred.containsKey(url)) {
+                // No verdict is written: our timeout is not a fact about the relay.
+                if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
+                abandonedCount.incrementAndGet()
+            }
+        }
+    }
+
+    /** How a batch's writes went, for its report. */
+    private class Written(
+        val tally: VerdictWrites,
+        /** Inherited verdicts left standing because the record already carries them. */
+        val skipped: Int,
+        val waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        val withdrawn: Set<NormalizedRelayUrl>,
+        val withdrawalsPending: Int,
+    )
+
     /**
      * Measure [candidates] and write a verdict for each. Returns how many events the dials
      * delivered to [onEvent].
@@ -232,250 +301,220 @@ class FitnessPass(
         if (candidates.isEmpty()) return 0
         progress.begin("measuring fitness")
         val startedMs = System.currentTimeMillis()
-        val outcomes = ConcurrentHashMap<NormalizedRelayUrl, Outcome>()
-        // Beside the outcomes, not on them: the document and the REQ fail independently.
-        val readings = ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>()
-        val downloaded = AtomicInteger()
-        // Urls this pass gave up on rather than measured; the names are bounded.
-        val abandonedCount = AtomicInteger()
-        val abandoned = ConcurrentHashMap.newKeySet<String>()
-        // Urls the same clock cut after the dial had earned a verdict. These publish.
-        val cutLate = AtomicInteger()
-        // Urls whose NEG-OPEN was cut by its own wall clock; the grade is already earned.
-        val negOpenCut = AtomicInteger()
-        // Urls whose second page was cut by its own; these are graded on one page.
-        val secondPageCut = AtomicInteger()
-        // Urls that end with no `pageable` claim at all.
-        val pageUnproven = AtomicInteger()
-        // Urls this pass asked and got no answer of any kind about. Never published.
-        val unmeasured = ConcurrentHashMap<NormalizedRelayUrl, String>()
-        // Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published.
-        val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
+        val batch = Batch()
         try {
             // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
             val mates = world().matesOf(candidates)
             // After the passes before this one wrote; without the standing folds an alias would be graded as its own relay.
             val held = readStanding("fitness", label) { record.load(candidates + mates) } ?: return 0
-            // The free refusals first: standing verdicts other passes paid dials for.
-            val folded = foldedAway(held, candidates)
-            for ((alias, canonical) in folded) {
-                outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}", tested = false)
-            }
-            val remaining = candidates.filter { it !in folded }
-            val shaky = inconsistent(held, remaining)
-            for (url in shaky) {
-                outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
-            }
-
+            val graded = gradeFreeRefusals(held, candidates, batch.outcomes)
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
-            val graded = remaining.filter { it !in shaky }
             val waiting = AliasFolding.heldAmong(held, graded, mates)
             val toDial = graded.filter { it !in waiting }
             // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
-            dialEach(
-                toDial,
-                gate,
-                probe::deadlineMs,
-                progress,
-                cut = { url ->
-                    if (outcomes.containsKey(url)) {
-                        // Cut late, and the verdict stands: our clock firing one step later does not un-tell it.
-                        cutLate.incrementAndGet()
-                    } else if (!deferred.containsKey(url)) {
-                        // No verdict is written: our timeout is not a fact about the relay.
-                        if (abandoned.size < MAX_ABANDONED_NAMED) abandoned += url.url
-                        abandonedCount.incrementAndGet()
-                    }
-                },
-            ) { url ->
-                measureOne(url, anchor, reach, sockets, outcomes, unmeasured, deferred, readings, downloaded, negOpenCut, secondPageCut, pageUnproven, onEvent)
+            dialEach(toDial, gate, probe::deadlineMs, progress, cut = batch::cut) { url ->
+                measureOne(url, anchor, reach, sockets, batch, onEvent)
             }
 
-            // The batch guard: when our own dialling breaks it breaks for every url at once, so
-            // nothing is published, the clean-looking verdicts included. The share is over the dials
-            // that went out; a url set aside before any server could answer is outside it. A lookup
-            // with no reason in it is our resolver as often as the name, and counts once per host,
-            // since one host's cached failure repeats across all of its paths.
-            val dialled = toDial.size
-            val lookups = deferred.filterValues { it == Deferral.LOOKUP_UNEXPLAINED }.keys
-            val lookupHosts = lookups.mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
-            val wentOut = dialled - deferred.values.count { !it.serverAnswered } + lookupHosts
-            val blind = unmeasured.size + abandonedCount.get() + lookupHosts
-            val deferredCounts =
-                deferred.values
-                    .filter { it != Deferral.LOOKUP_UNEXPLAINED }
-                    .groupingBy { it.why }
-                    .eachCount()
-            if (wentOut >= GUARD_FLOOR && blind > wentOut * GUARD_SHARE) {
-                System.err.println(
-                    "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
-                        "answer at all (${(100.0 * blind / wentOut).toInt()}%, over the ${(100 * GUARD_SHARE).toInt()}% " +
-                        "guard). A network does not go dark in one pass — this router could not dial. " +
-                        "${outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
-                )
-                report(
-                    label,
-                    candidates.size,
-                    emptyMap(),
-                    startedMs,
-                    abandonedCount.get(),
-                    abandoned,
-                    unmeasured.size,
-                    downloaded.get(),
-                    deferredCounts = deferredCounts,
-                    lookups = lookups.size,
-                    lookupHosts = lookupHosts,
-                    cutLate = cutLate.get(),
-                    negOpenCut = negOpenCut.get(),
-                    secondPageCut = secondPageCut.get(),
-                    pageUnproven = pageUnproven.get(),
-                )
-                return downloaded.get()
+            if (refusesToPublish(label, toDial, batch)) {
+                report(label, candidates.size, startedMs, batch, written = null)
+                return batch.downloaded.get()
             }
-
-            // The TLS guard: certificates do not fail together, but our truststore or clock fails them all.
-            val tlsDead = toDial.filter { outcomes[it]?.tls == true }
-            val tlsDialled = toDial.count { it.url.startsWith("wss://", ignoreCase = true) && tor?.routes(it) != true && outcomes[it]?.preProbe != true }
-            if (tlsDead.size > tlsDialled * TLS_GUARD_SHARE) {
-                System.err.println(
-                    "router: fitness [$label] — WITHHOLDING ${tlsDead.size} TLS `dead` verdict(s): our own direct handshake " +
-                        "failed too on ${tlsDead.size} of $tlsDialled wss dial(s), over the ${(100 * TLS_GUARD_SHARE).toInt()}% guard. " +
-                        "That many certificates do not fail at once — this is more likely our truststore or clock. " +
-                        "They are measured again next pass.",
-                )
-                for (url in tlsDead) outcomes.remove(url)
-            }
-
-            // The dark-network guard: a failure is believed only beside proof that our network
-            // reaches others, so a batch where too few did withholds every verdict no server spoke for.
-            val provedGone = toDial.filter { outcomes[it]?.preProbe == true }
-            val reached = toDial.count { outcomes[it]?.reachedServer == true } + deferred.values.count { it.serverAnswered }
-            if (looksDark(dialled, provedGone.size, reached)) {
-                val unspoken = toDial.filter { url -> outcomes[url]?.let { it.tested && !it.reachedServer } == true }
-                if (unspoken.isNotEmpty()) {
-                    System.err.println(
-                        "router: fitness [$label] — WITHHOLDING ${unspoken.size} `dead`/`silent` verdict(s): ${provedGone.size} of " +
-                            "$dialled dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
-                            "at once — this is more likely our resolver or egress. They are measured again next pass.",
-                    )
-                    for (url in unspoken) outcomes.remove(url)
-                }
-            }
-
-            // The writes, after the dials and several at a time, each under its own wall clock: the
-            // store's client carries no read deadline, and a cut write is not retried.
-            var skipped = 0
-            // An inherited verdict is written only when it would change something: re-stamping
-            // `measured-at` on what this pass did not test would make it immortal.
-            val standing = held.fitness
-            // Ordered by url and resumed where the last batch stopped, so the wedge limits below do
-            // not drop the same tail every pass.
-            val order = outcomes.keys.sortedBy { it.url }
-            val resumeFrom = writeCursors[label]?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
-            // -1 is a cursor sorting past everything this batch holds; it wraps to the top as index 0 does.
-            val rotated = if (resumeFrom <= 0) order else order.subList(resumeFrom, order.size) + order.subList(0, resumeFrom)
-            // Cleared up front, so a throw mid-loop cannot leave the next batch resuming at a url
-            // never reached.
-            writeCursors.remove(label)
-            // The position moves to the writes. There are more of them than there were dials — a
-            // url folded onto another, or already failed by the stability gate, is graded without a
-            // socket — so leaving the dial position up would sit full at `toDial` for the whole
-            // write, with `quietForSec` climbing on a pass writing thousands of verdicts.
-            progress.measuring(rotated.size, Processors.UNIT_VERDICT)
-            val toWrite =
-                rotated.filter { url ->
-                    // `rotated` is `outcomes`' own key set, so every url here has one.
-                    val outcome = outcomes.getValue(url)
-                    // The evidence has to match too: re-folded onto a different canonical is not the
-                    // same statement.
-                    val unchanged = !outcome.tested && standing[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true
-                    if (unchanged) {
-                        skipped++
-                        progress.attempted()
-                    }
-                    !unchanged
-                }
-            val measuredAt = nowSeconds()
-            val writes =
-                toWrite.associateWith { url ->
-                    val outcome = outcomes.getValue(url)
-                    val facts = factsOf(url, outcome, readings[url])
-                    suspend {
-                        record.publishFitness(
-                            url = url,
-                            status = outcome.verdict.value,
-                            evidence = outcome.evidence,
-                            pageable = outcome.pageable,
-                            nip77 = outcome.nip77,
-                            compliant = outcome.compliant,
-                            facts = facts,
-                            measuredAt = measuredAt,
-                        ) != null
-                    }
-                }
-            val tally =
-                writeEach(toWrite, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
-                    writes.getValue(url)()
-                }
-            tally.resumeAt?.let { writeCursors[label] = it.url }
-            // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
-            val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
-            val withdrawals = unprimed.associateWith { url -> suspend { record.retireFitness(url) != null } }
-            // A stopped batch means the store is not answering; the withdrawals wait with the unwritten grades.
-            val withdrawn =
-                if (unprimed.isEmpty() || tally.stoppedBy != null) {
-                    emptySet()
-                } else {
-                    progress.measuring(unprimed.size, Processors.UNIT_VERDICT)
-                    writeEach(unprimed, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_WITHDRAW) { url ->
-                        withdrawals.getValue(url)()
-                    }.stored
-                }
-            // This batch's decision replaces whatever waited for these urls; a url it decided nothing about keeps its write.
-            for (url in outcomes.keys + waiting.keys) pending.remove(url)
-            for ((url, write) in writes) if (url !in tally.stored) pending[url] = Pending(measuredAt, outcomes.getValue(url).verdict.value, write)
-            for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = Pending(measuredAt, null, withdraw)
+            withholdTlsDead(label, toDial, batch)
+            withholdUnspoken(label, toDial, batch)
+            val written = write(label, held, waiting, batch)
             if (label != AliasMonitor.FAST_LANE) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
-                val prime = candidates.filterTo(HashSet()) { url -> outcomes[url]?.let { it.verdict == Verdict.PRIME } ?: (url !in withdrawn && held.fitness[url]?.value == Verdict.PRIME.value) }
+                val prime =
+                    candidates.filterTo(HashSet()) { url ->
+                        batch.outcomes[url]?.let { it.verdict == Verdict.PRIME } ?: (url !in written.withdrawn && held.fitness[url]?.value == Verdict.PRIME.value)
+                    }
                 progress.sharedHosts(PrimeCensus.of(prime, held))
             }
-
-            report(
-                label,
-                candidates.size,
-                outcomes.values.groupingBy { it.verdict }.eachCount(),
-                startedMs,
-                abandonedCount.get(),
-                abandoned,
-                unmeasured.size,
-                downloaded.get(),
-                deferredCounts = deferredCounts,
-                lookups = lookups.size,
-                lookupHosts = lookupHosts,
-                unwrittenCount = outcomes.size - tally.published - skipped,
-                wedgedWrites = tally.wedged,
-                declinedWrites = tally.declined,
-                cutLate = cutLate.get(),
-                resumeAt = writeCursors[label],
-                skippedWrites = skipped,
-                stoppedBy = tally.stoppedBy,
-                negOpenCut = negOpenCut.get(),
-                secondPageCut = secondPageCut.get(),
-                pageUnproven = pageUnproven.get(),
-                waiting = waiting.size,
-                waitingServers = waiting.values.toSet().size,
-                withdrawn = withdrawn.size,
-                withdrawalsPending = unprimed.size - withdrawn.size,
-            )
+            report(label, candidates.size, startedMs, batch, written)
         } finally {
             progress.finish()
         }
-        return downloaded.get()
+        return batch.downloaded.get()
+    }
+
+    /** Grades, at no dial, the urls other passes' standing verdicts already refuse, and returns the rest. */
+    private fun gradeFreeRefusals(
+        held: RelayVerdictRecord.Verdicts,
+        candidates: List<NormalizedRelayUrl>,
+        outcomes: MutableMap<NormalizedRelayUrl, Outcome>,
+    ): List<NormalizedRelayUrl> {
+        val folded = foldedAway(held, candidates)
+        for ((alias, canonical) in folded) {
+            outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}", tested = false)
+        }
+        val remaining = candidates.filter { it !in folded }
+        val shaky = inconsistent(held, remaining)
+        for (url in shaky) {
+            outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag", tested = false)
+        }
+        return remaining.filter { it !in shaky }
+    }
+
+    /**
+     * The batch guard: when our own dialling breaks it breaks for every url at once, so nothing is
+     * published, the clean-looking verdicts included. True when it refused, having said so.
+     */
+    private fun refusesToPublish(
+        label: String,
+        toDial: List<NormalizedRelayUrl>,
+        batch: Batch,
+    ): Boolean {
+        // The share is over the dials that went out: a url set aside before any server could answer is outside it.
+        val lookupHosts = batch.lookupHosts()
+        val wentOut = toDial.size - batch.deferred.values.count { !it.serverAnswered } + lookupHosts
+        val blind = batch.unmeasured.size + batch.abandonedCount.get() + lookupHosts
+        if (wentOut < GUARD_FLOOR || blind <= wentOut * GUARD_SHARE) return false
+        System.err.println(
+            "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
+                "answer at all (${(100.0 * blind / wentOut).toInt()}%, over the ${(100 * GUARD_SHARE).toInt()}% " +
+                "guard). A network does not go dark in one pass — this router could not dial. " +
+                "${batch.outcomes.size} verdict(s) dropped unwritten; every url is measured again next pass.",
+        )
+        return true
+    }
+
+    /** The TLS guard: certificates do not fail together, but our truststore or clock fails them all. */
+    private fun withholdTlsDead(
+        label: String,
+        toDial: List<NormalizedRelayUrl>,
+        batch: Batch,
+    ) {
+        val outcomes = batch.outcomes
+        val tlsDead = toDial.filter { outcomes[it]?.tls == true }
+        val tlsDialled = toDial.count { it.url.startsWith("wss://", ignoreCase = true) && tor?.routes(it) != true && outcomes[it]?.preProbe != true }
+        if (tlsDead.size <= tlsDialled * TLS_GUARD_SHARE) return
+        System.err.println(
+            "router: fitness [$label] — WITHHOLDING ${tlsDead.size} TLS `dead` verdict(s): our own direct handshake " +
+                "failed too on ${tlsDead.size} of $tlsDialled wss dial(s), over the ${(100 * TLS_GUARD_SHARE).toInt()}% guard. " +
+                "That many certificates do not fail at once — this is more likely our truststore or clock. " +
+                "They are measured again next pass.",
+        )
+        for (url in tlsDead) outcomes.remove(url)
+    }
+
+    /**
+     * The dark-network guard: a failure is believed only beside proof that our network reaches
+     * others, so a batch where too few did withholds every verdict no server spoke for.
+     */
+    private fun withholdUnspoken(
+        label: String,
+        toDial: List<NormalizedRelayUrl>,
+        batch: Batch,
+    ) {
+        val outcomes = batch.outcomes
+        val provedGone = toDial.count { outcomes[it]?.preProbe == true }
+        val reached = toDial.count { outcomes[it]?.reachedServer == true } + batch.deferred.values.count { it.serverAnswered }
+        if (!looksDark(toDial.size, provedGone, reached)) return
+        val unspoken = toDial.filter { url -> outcomes[url]?.let { it.tested && !it.reachedServer } == true }
+        if (unspoken.isEmpty()) return
+        System.err.println(
+            "router: fitness [$label] — WITHHOLDING ${unspoken.size} `dead`/`silent` verdict(s): $provedGone of " +
+                "${toDial.size} dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
+                "at once — this is more likely our resolver or egress. They are measured again next pass.",
+        )
+        for (url in unspoken) outcomes.remove(url)
+    }
+
+    /**
+     * The batch's grades, several at a time and each under its own wall clock, then the withdrawals
+     * its waiting urls owe. What the store does not take waits in [pending].
+     */
+    private suspend fun write(
+        label: String,
+        held: RelayVerdictRecord.Verdicts,
+        waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        batch: Batch,
+    ): Written {
+        val outcomes = batch.outcomes
+        val order = writeOrder(label, outcomes.keys)
+        // The position moves to the writes, which outnumber the dials: a free refusal costs no socket.
+        progress.measuring(order.size, Processors.UNIT_VERDICT)
+        val toWrite =
+            order.filter { url ->
+                val standing = inherited(url, outcomes.getValue(url), held)
+                if (standing) progress.attempted()
+                !standing
+            }
+        val measuredAt = nowSeconds()
+        val writes = toWrite.associateWith { url -> gradeWrite(url, outcomes.getValue(url), batch.readings[url], measuredAt) }
+        val tally =
+            writeEach(toWrite, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, VerdictWrites.STAGE_PUBLISH) { url ->
+                writes.getValue(url)()
+            }
+        tally.resumeAt?.let { writeCursors[label] = it.url }
+        // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
+        val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
+        val withdrawals = unprimed.associateWith { url -> suspend { record.retireFitness(url) != null } }
+        // A stopped batch means the store is not answering; the withdrawals wait with the unwritten grades.
+        val withdrawn =
+            if (unprimed.isEmpty() || tally.stoppedBy != null) {
+                emptySet()
+            } else {
+                progress.measuring(unprimed.size, Processors.UNIT_VERDICT)
+                writeEach(unprimed, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_WITHDRAW) { url ->
+                    withdrawals.getValue(url)()
+                }.stored
+            }
+        // This batch's decision replaces whatever waited for these urls; a url it decided nothing about keeps its write.
+        for (url in outcomes.keys + waiting.keys) pending.remove(url)
+        for ((url, write) in writes) if (url !in tally.stored) pending[url] = Pending(measuredAt, outcomes.getValue(url).verdict.value, write)
+        for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = Pending(measuredAt, null, withdraw)
+        return Written(tally, order.size - toWrite.size, waiting, withdrawn, unprimed.size - withdrawn.size)
+    }
+
+    /** [urls] by url, resumed where [label]'s last batch stopped, so the wedge limits do not drop the same tail every pass. */
+    private fun writeOrder(
+        label: String,
+        urls: Collection<NormalizedRelayUrl>,
+    ): List<NormalizedRelayUrl> {
+        val order = urls.sortedBy { it.url }
+        val resumeFrom = writeCursors[label]?.let { c -> order.indexOfFirst { it.url >= c } } ?: 0
+        // Cleared up front, so a throw mid-write cannot leave the next batch resuming at a url never reached.
+        writeCursors.remove(label)
+        // -1 is a cursor sorting past everything this batch holds; it wraps to the top as index 0 does.
+        return if (resumeFrom <= 0) order else order.subList(resumeFrom, order.size) + order.subList(0, resumeFrom)
+    }
+
+    /**
+     * An untested verdict the record already carries word for word, evidence included. Re-signing it
+     * would stamp a fresh `measured-at` on what this pass did not test, which would make it immortal.
+     */
+    private fun inherited(
+        url: NormalizedRelayUrl,
+        outcome: Outcome,
+        held: RelayVerdictRecord.Verdicts,
+    ): Boolean = !outcome.tested && held.fitness[url]?.let { it.value == outcome.verdict.value && it.evidence == outcome.evidence } == true
+
+    /** One url's grade as a write, stamped with when it was measured so a replay keeps that time. */
+    private fun gradeWrite(
+        url: NormalizedRelayUrl,
+        outcome: Outcome,
+        reading: RelayDocument.Reading?,
+        measuredAt: Long,
+    ): suspend () -> Boolean {
+        val facts = factsOf(url, outcome, reading)
+        return {
+            record.publishFitness(
+                url = url,
+                status = outcome.verdict.value,
+                evidence = outcome.evidence,
+                pageable = outcome.pageable,
+                nip77 = outcome.nip77,
+                compliant = outcome.compliant,
+                facts = facts,
+                measuredAt = measuredAt,
+            ) != null
+        }
     }
 
     /**
@@ -487,14 +526,7 @@ class FitnessPass(
         anchor: Long,
         reach: suspend (NormalizedRelayUrl) -> Reach,
         sockets: Sockets,
-        outcomes: ConcurrentHashMap<NormalizedRelayUrl, Outcome>,
-        unmeasured: ConcurrentHashMap<NormalizedRelayUrl, String>,
-        deferred: ConcurrentHashMap<NormalizedRelayUrl, Deferral>,
-        readings: ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>,
-        downloaded: AtomicInteger,
-        negOpenCut: AtomicInteger,
-        secondPageCut: AtomicInteger,
-        pageUnproven: AtomicInteger,
+        batch: Batch,
         onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_REACHABILITY)
@@ -505,7 +537,7 @@ class FitnessPass(
                 throw e
             } catch (e: Exception) {
                 // The pre-probe throwing is this box failing to ask, not evidence about the server.
-                unmeasured[url] = "the reachability probe itself threw ${e.javaClass.simpleName}"
+                batch.unmeasured[url] = "the reachability probe itself threw ${e.javaClass.simpleName}"
                 return
             }
         when (reached) {
@@ -514,52 +546,43 @@ class FitnessPass(
             }
 
             Reach.PROVED_UNREACHABLE -> {
-                outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe", preProbe = true)
+                batch.outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe", preProbe = true)
                 return
             }
 
             // Our proxy not answering says nothing about the relay behind it, nor about our clearnet dials.
             Reach.TRANSPORT_DOWN -> {
-                if (tor?.routes(url) == true) deferred[url] = Deferral.TOR_DOWN else unmeasured[url] = "our own transport is not answering"
+                if (tor?.routes(url) == true) batch.deferred[url] = Deferral.TOR_DOWN else batch.unmeasured[url] = "our own transport is not answering"
                 return
             }
 
             Reach.UNEXPLAINED -> {
-                deferred[url] = Deferral.LOOKUP_UNEXPLAINED
+                batch.deferred[url] = Deferral.LOOKUP_UNEXPLAINED
                 return
             }
         }
         progress.holding(url.url, STAGE_DOCUMENT)
-        document?.read(url)?.let { readings[url] = it }
+        document?.read(url)?.let { batch.readings[url] = it }
         progress.holding(url.url, STAGE_LADDER)
         sockets.claim(url)
         try {
             val outcome =
-                dialVerdict(
-                    url,
-                    anchor,
-                    settled = { outcomes[url] = it },
-                    negOpenCut = negOpenCut,
-                    secondPageCut = secondPageCut,
-                    pageUnproven = pageUnproven,
-                    unmeasured = { why -> unmeasured[url] = why },
-                    defer = { why -> deferred[url] = why },
-                ) { event ->
-                    downloaded.incrementAndGet()
+                dialVerdict(url, anchor, batch) { event ->
+                    batch.downloaded.incrementAndGet()
                     onEvent(event)
                 }
             if (outcome != null) {
-                outcomes[url] = outcome
-            } else if (!deferred.containsKey(url)) {
-                unmeasured.putIfAbsent(url, "no EOSE, no CLOSED and no transport reason on any rung")
+                batch.outcomes[url] = outcome
+            } else if (!batch.deferred.containsKey(url)) {
+                batch.unmeasured.putIfAbsent(url, "no EOSE, no CLOSED and no transport reason on any rung")
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // Our instrument giving up, unless the ladder already settled a verdict: a url in both
             // maps would feed the batch guard's blind share on a dial that answered.
-            if (!outcomes.containsKey(url) && !deferred.containsKey(url)) {
-                unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
+            if (!batch.outcomes.containsKey(url) && !batch.deferred.containsKey(url)) {
+                batch.unmeasured[url] = "the dial threw ${e.javaClass.simpleName} before the relay said anything"
             }
         } finally {
             sockets.release(url)
@@ -634,23 +657,13 @@ class FitnessPass(
     private suspend fun dialVerdict(
         url: NormalizedRelayUrl,
         anchor: Long,
-        /**
-         * The verdict, handed over the moment the ladder has earned it and before any step without
-         * its own wall clock, so the per-url deadline cannot cost it. A later return replaces it.
-         */
-        settled: (Outcome) -> Unit,
-        /** Bumped when the NEG-OPEN's own wall clock fires. */
-        negOpenCut: AtomicInteger,
-        /** Bumped when the second page's does; that url is graded on one page. */
-        secondPageCut: AtomicInteger,
-        /** Bumped for urls that end with no `pageable` claim at all. Not a fault. */
-        pageUnproven: AtomicInteger,
-        /** Why a url earned no verdict, where the dial knows better than "nothing came back". */
-        unmeasured: (String) -> Unit,
-        /** A url set aside on an answer that is neither a verdict nor our dialling failing. */
-        defer: (Deferral) -> Unit,
+        batch: Batch,
         onEvent: suspend (Event) -> Unit,
     ): Outcome? {
+        // Handed over the moment the ladder has earned it, so the per-url deadline cannot cost it.
+        val settled: (Outcome) -> Unit = { batch.outcomes[url] = it }
+        val unmeasured: (String) -> Unit = { batch.unmeasured[url] = it }
+        val defer: (Deferral) -> Unit = { batch.deferred[url] = it }
         var lastReason: String? = null
         // The first shape that served events, else the first answered with an empty EOSE.
         var served: Pair<AliasProbe.Window, List<Int>?>? = null
@@ -765,11 +778,11 @@ class FitnessPass(
                 }
             }
         // Boxed for [Reconciled]'s reason: only the clock firing belongs in the count.
-        if (floor != null && asked == null) secondPageCut.incrementAndGet()
+        if (floor != null && asked == null) batch.secondPageCut.incrementAndGet()
         val second = asked?.window
 
         // An empty first page proves the relay answers, not that it can be walked; no claim is published.
-        if (second == null) pageUnproven.incrementAndGet()
+        if (second == null) batch.pageUnproven.incrementAndGet()
 
         val pageable =
             when {
@@ -836,7 +849,7 @@ class FitnessPass(
                     },
                 )
             }
-        if (reconciled == null) negOpenCut.incrementAndGet()
+        if (reconciled == null) batch.negOpenCut.incrementAndGet()
         val nip77 = reconciled?.fact
 
         return Outcome(
@@ -918,68 +931,59 @@ class FitnessPass(
     /** NIP-66's `n`, from the same predicate the dial uses. */
     private fun network(url: NormalizedRelayUrl): String = if (tor?.routes(url) == true) NETWORK_TOR else NETWORK_CLEARNET
 
+    /** The batch's log lines and its row's counts. [written] is null on the guard's refuse-to-publish path. */
     private fun report(
         label: String,
         candidates: Int,
-        byVerdict: Map<Verdict, Int>,
         startedMs: Long,
-        abandonedCount: Int,
-        abandoned: Set<String>,
-        /** Urls this pass asked and learned nothing from; absent from the counts. */
-        unmeasuredCount: Int,
-        /** Events the dials handed to ingest. */
-        downloadedCount: Int,
-        /** Urls set aside, by why; outside the counts and outside the blind share. */
-        deferredCounts: Map<String, Int> = emptyMap(),
-        /** Urls whose lookup failed with no reason in it, and their hosts: blind, once per host. */
-        lookups: Int = 0,
-        lookupHosts: Int = 0,
-        /** Earned verdicts that never reached the store. Zero on the guard's refuse-to-publish path. */
-        unwrittenCount: Int = 0,
-        /** Of which this many hit the per-write deadline. */
-        wedgedWrites: Int = 0,
-        /** And this many the store answered and still failed. */
-        declinedWrites: Int = 0,
-        /** Urls the per-url deadline cut after the dial had earned a verdict. These publish. */
-        cutLate: Int = 0,
-        /** The url the next batch's write loop resumes at; null when every earned verdict was written. */
-        resumeAt: String? = null,
-        /** Inherited verdicts the loop did not re-sign because the record already carries them. */
-        skippedWrites: Int = 0,
-        /** Which limit ended the batch, in words, or null when it ran to its end. */
-        stoppedBy: String? = null,
-        /** Urls whose NEG-OPEN was cut by its own wall clock; never a verdict. */
-        negOpenCut: Int = 0,
-        /** Urls whose second page was cut by its own; still graded, on one page. */
-        secondPageCut: Int = 0,
-        /** Urls that ended with no `pageable` claim at all. */
-        pageUnproven: Int = 0,
-        /** Urls waiting on the fold behind another url of their server, and how many servers that is. */
-        waiting: Int = 0,
-        waitingServers: Int = 0,
-        /** Of the waiting urls, how many had their standing `prime` taken back, and how many still wait for the store. */
-        withdrawn: Int = 0,
-        withdrawalsPending: Int = 0,
+        batch: Batch,
+        written: Written?,
     ) {
+        val byVerdict =
+            if (written == null) {
+                emptyMap()
+            } else {
+                batch.outcomes.values
+                    .groupingBy { it.verdict }
+                    .eachCount()
+            }
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
             "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts" +
-                "; $downloadedCount event(s) downloaded",
+                "; ${batch.downloaded.get()} event(s) downloaded",
         )
-        // Own lines, only when there were any: these urls are absent from the counts above.
-        if (unmeasuredCount > 0) {
+        reportSetAside(label, batch)
+        if (written != null) reportWrites(label, batch, written)
+        val waiting = written?.waiting?.size ?: 0
+        progress.counts {
+            Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } } +
+                Processors.Count(WAITING_ON_FOLD, waiting.toLong()) +
+                // Live, not the batch's: it falls as the retries land.
+                Processors.Count(PENDING_WRITES, pending.size.toLong())
+        }
+    }
+
+    /** One line per way a url left this batch with no verdict, or with less of one; only when there were any. */
+    private fun reportSetAside(
+        label: String,
+        batch: Batch,
+    ) {
+        val unmeasured = batch.unmeasured.size
+        if (unmeasured > 0) {
             System.err.println(
-                "router: fitness [$label] — $unmeasuredCount url(s) answered nothing at all, no verdict written: " +
+                "router: fitness [$label] — $unmeasured url(s) answered nothing at all, no verdict written: " +
                     "no EOSE, no CLOSED and no transport reason on any rung, or our own resolver, route or socket layer failing",
             )
         }
+        val lookups = batch.lookups().size
         if (lookups > 0) {
             System.err.println(
-                "router: fitness [$label] — $lookups url(s) on $lookupHosts host(s) failed the lookup with no reason left " +
+                "router: fitness [$label] — $lookups url(s) on ${batch.lookupHosts()} host(s) failed the lookup with no reason left " +
                     "to read, no verdict written; counted once per host as this router failing to dial, since our resolver " +
                     "fails that way as readily as the name",
             )
         }
+        val deferredCounts = batch.deferredCounts()
         if (deferredCounts.isNotEmpty()) {
             val why = deferredCounts.entries.sortedByDescending { it.value }.joinToString { "${it.value} x ${it.key}" }
             System.err.println(
@@ -987,26 +991,29 @@ class FitnessPass(
                     "counted as this router failing to dial: $why",
             )
         }
+        val abandonedCount = batch.abandonedCount.get()
         if (abandonedCount > 0) {
-            val named = abandoned.sorted().joinToString()
-            val more = if (abandonedCount > abandoned.size) " (+${abandonedCount - abandoned.size} more)" else ""
+            val named = batch.abandoned.sorted().joinToString()
+            val more = if (abandonedCount > batch.abandoned.size) " (+${abandonedCount - batch.abandoned.size} more)" else ""
             System.err.println(
                 "router: fitness [$label] — gave up on $abandonedCount url(s) at the per-url deadline, no verdict written: $named$more",
             )
         }
+        val negOpenCut = batch.negOpenCut.get()
         if (negOpenCut > 0) {
             System.err.println(
                 "router: fitness [$label] — $negOpenCut NEG-OPEN(s) cut at the ${NIP77_DEADLINE_MS / 1000}s wall clock; " +
                     "no nip77 fact published for them, which is our clock and NOT the relay declining",
             )
         }
+        val secondPageCut = batch.secondPageCut.get()
         if (secondPageCut > 0) {
             System.err.println(
                 "router: fitness [$label] — $secondPageCut second page(s) cut at our own wall clock; those urls " +
-                    "were graded on ONE page, which is the state #187 is about — our clock, and NOT the relay " +
-                    "ignoring a cursor",
+                    "were graded on ONE page — our clock, and NOT the relay ignoring a cursor",
             )
         }
+        val pageUnproven = batch.pageUnproven.get()
         if (pageUnproven > 0) {
             System.err.println(
                 "router: fitness [$label] — $pageUnproven url(s) carry NO `pageable` claim: nothing came back to " +
@@ -1014,56 +1021,59 @@ class FitnessPass(
                     "pass earned",
             )
         }
-        if (waiting > 0) {
-            System.err.println(
-                "router: fitness [$label] — $waiting url(s) on $waitingServers server(s) wait on the fold behind another " +
-                    "url of the same server, not dialled; $withdrawn standing `prime` grade(s) taken back. The fold " +
-                    "has not said whether those paths are their own relays, so only the server's stand-in is graded",
-            )
-        }
-        if (withdrawalsPending > 0) {
-            System.err.println(
-                "router: fitness [$label] — $withdrawalsPending standing `prime` grade(s) NOT taken back yet: the store " +
-                    "did not take the batch's writes" + (stoppedBy?.let { " ($it)" }.orEmpty()) +
-                    ". They wait with the unwritten grades and are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)}, not next sweep",
-            )
-        }
+        val cutLate = batch.cutLate.get()
         if (cutLate > 0) {
             System.err.println(
                 "router: fitness [$label] — $cutLate url(s) ran past the per-url deadline AFTER earning a verdict; " +
                     "the verdict stands and was written, but the dial did not finish",
             )
         }
-        if (skippedWrites > 0) {
+    }
+
+    /** What the store took of the batch's writes, and what it is still owed. */
+    private fun reportWrites(
+        label: String,
+        batch: Batch,
+        written: Written,
+    ) {
+        val tally = written.tally
+        if (written.waiting.isNotEmpty()) {
             System.err.println(
-                "router: fitness [$label] — $skippedWrites inherited verdict(s) left standing: the record already carries " +
+                "router: fitness [$label] — ${written.waiting.size} url(s) on ${written.waiting.values.toSet().size} server(s) wait on " +
+                    "the fold behind another url of the same server, not dialled; ${written.withdrawn.size} standing `prime` grade(s) " +
+                    "taken back. The fold has not said whether those paths are their own relays, so only the server's stand-in is graded",
+            )
+        }
+        if (written.withdrawalsPending > 0) {
+            System.err.println(
+                "router: fitness [$label] — ${written.withdrawalsPending} standing `prime` grade(s) NOT taken back yet: the store " +
+                    "did not take the batch's writes" + (tally.stoppedBy?.let { " ($it)" }.orEmpty()) +
+                    ". They wait with the unwritten grades and are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)}, not next sweep",
+            )
+        }
+        if (written.skipped > 0) {
+            System.err.println(
+                "router: fitness [$label] — ${written.skipped} inherited verdict(s) left standing: the record already carries " +
                     "them and this pass dialled nothing for them, so re-signing would refresh a measurement it did not take",
             )
         }
         // The pass ended abnormally: the verdicts were earned and the store would not take them.
-        if (unwrittenCount > 0) {
-            val dropped = unwrittenCount - wedgedWrites - declinedWrites
-            val parts =
-                buildList {
-                    if (wedgedWrites > 0) add("$wedgedWrites write(s) hit the per-write store deadline")
-                    if (declinedWrites > 0) add("$declinedWrites write(s) failed outright with the store answering")
-                    if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each")
-                    // Never nested under `dropped`, which can be zero or negative when a batch
-                    // stops on its last urls.
-                    if (stoppedBy != null) add("the batch stopped because $stoppedBy")
-                }
-            System.err.println(
-                "router: fitness [$label] — $unwrittenCount earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
-                    "they are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)} until the store takes them" +
-                    (resumeAt?.let { ", and the next batch's writes START at $it so the same tail is not dropped twice" }.orEmpty()),
-            )
-        }
-        progress.counts {
-            Verdict.entries.mapNotNull { v -> byVerdict[v]?.let { Processors.Count(v.value, it.toLong()) } } +
-                Processors.Count(WAITING_ON_FOLD, waiting.toLong()) +
-                // Live, not the batch's: it falls as the retries land.
-                Processors.Count(PENDING_WRITES, pending.size.toLong())
-        }
+        val unwritten = batch.outcomes.size - tally.published - written.skipped
+        if (unwritten <= 0) return
+        val dropped = unwritten - tally.wedged - tally.declined
+        val parts =
+            buildList {
+                if (tally.wedged > 0) add("${tally.wedged} write(s) hit the per-write store deadline")
+                if (tally.declined > 0) add("${tally.declined} write(s) failed outright with the store answering")
+                if (dropped > 0) add("the remaining $dropped were dropped rather than paying the deadline each")
+                // Never nested under `dropped`, which can be zero or negative when a batch stops on its last urls.
+                tally.stoppedBy?.let { add("the batch stopped because $it") }
+            }
+        System.err.println(
+            "router: fitness [$label] — $unwritten earned verdict(s) NOT written: ${parts.joinToString(", ")}; " +
+                "they are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)} until the store takes them" +
+                (writeCursors[label]?.let { ", and the next batch's writes START at $it so the same tail is not dropped twice" }.orEmpty()),
+        )
     }
 
     companion object {
@@ -1223,9 +1233,6 @@ class FitnessPass(
         /** The one ask below the ladder's window, a REQ and not a rung of it. */
         const val STAGE_COMPLIANCE = "second page"
 
-        /** The one stage that is not a dial: the record edit that puts a verdict down. */
-        const val STAGE_PUBLISH = "verdict write"
-
         /** The record edit that takes a waiting url's `prime` back. */
         const val STAGE_WITHDRAW = "prime withdrawn"
 
@@ -1237,18 +1244,6 @@ class FitnessPass(
 
         /** The row's phase while it replays them. */
         const val RETRYING_WRITES = "retrying writes"
-
-        /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
-        const val PUBLISH_DEADLINE_MS = 60_000L
-
-        /** Verdict writes in flight at once; each is its own record, so they never race. */
-        const val WRITE_CONCURRENCY = 16
-
-        /** Consecutive deadline hits before the batch stops; reset by every write the store answers. */
-        const val PUBLISH_WEDGE_LIMIT = 3
-
-        /** Wall time a batch may lose to unanswered writes; the run limit alone misses an alternating store. */
-        const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
 
         const val MAX_ABANDONED_NAMED = 32
 

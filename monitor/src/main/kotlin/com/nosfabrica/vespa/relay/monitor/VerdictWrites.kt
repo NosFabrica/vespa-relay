@@ -38,7 +38,25 @@ internal class VerdictWrites(
     val resumeAt: NormalizedRelayUrl?,
     /** The urls whose write the store took. */
     val stored: Set<NormalizedRelayUrl> = emptySet(),
-)
+) {
+    /** The limits every pass's verdict writes run under. */
+    companion object {
+        /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
+        const val PUBLISH_DEADLINE_MS = 60_000L
+
+        /** Verdict writes in flight at once; each is its own record, so they never race. */
+        const val WRITE_CONCURRENCY = 16
+
+        /** Consecutive deadline hits before the batch stops; reset by every write the store answers. */
+        const val PUBLISH_WEDGE_LIMIT = 3
+
+        /** Wall time a batch may lose to unanswered writes; the run limit alone misses an alternating store. */
+        const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
+
+        /** The one stage that is not a dial: the record edit that puts a verdict down. */
+        const val STAGE_PUBLISH = "verdict write"
+    }
+}
 
 /**
  * Verdict writes under one set of limits across every [write] call a pass makes: each url is its own
