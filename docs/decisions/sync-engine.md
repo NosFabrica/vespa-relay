@@ -421,3 +421,13 @@ file synced before the rename, the directory after it), and a parse failure
 in `PersistedJsonState.read` quarantines the file as `<name>.corrupt-<ms>` and
 empties every map, so the process starts from a clean state rather than from
 half a file.
+
+**Only a bad document is quarantined; an unreadable file stops the boot.** The
+quarantine wrapped the read as well as the parse, so an `IOException` (EACCES
+after the image moved to uid 10001, EIO) or an `OutOfMemoryError` moved a good
+file aside and started the mirror empty, a full re-walk for a permission fix.
+`read` now lets an `IOException` from reading fail the boot with the file's
+path and the `chown` that fixes it, leaves the file in place, and quarantines
+only on what restoring the parsed document throws short of an `Error`:
+`getValue` and friends throw beyond `SerializationException`, and every one of
+them is about the document's shape.

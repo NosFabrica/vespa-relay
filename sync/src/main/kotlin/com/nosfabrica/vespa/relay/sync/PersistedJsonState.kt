@@ -26,6 +26,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -39,6 +40,8 @@ internal class PersistedJsonState(
     private val flusherName: String,
     /** The whole document from the owner's maps; called outside every lock but the build's own. */
     private val build: () -> JsonObject,
+    /** Reads the file's text; a seam for tests, since a root test JVM can read any file. */
+    private val readText: (File) -> String = { it.readText() },
 ) : AutoCloseable {
     /** Bumped after every change lands, so a document built at a generation holds every change up to it. */
     private val generation = AtomicLong()
@@ -71,8 +74,8 @@ internal class PersistedJsonState(
     }
 
     /**
-     * Hands the file's root to [restore]. A file that fails part way is moved aside and [discard]
-     * empties what [restore] had filled, so the owner starts clean, never from half a file.
+     * Hands the file's root to [restore]. A file whose content fails part way is moved aside and [discard]
+     * empties what [restore] had filled; a file that cannot be read at all stops the boot and is left in place.
      */
     fun read(
         restore: (JsonObject) -> Unit,
@@ -80,7 +83,25 @@ internal class PersistedJsonState(
     ): Boolean {
         val f = file ?: return true
         if (!f.isFile) return true
-        val failure = runCatching { restore(Json.parseToJsonElement(f.readText()).jsonObject) }.exceptionOrNull() ?: return true
+        val text =
+            try {
+                readText(f)
+            } catch (e: IOException) {
+                // The file may be fine and the disk or the permissions not: quarantining it would throw a good state away.
+                throw IOException(
+                    "router: cannot read $what from ${f.path} (${e.message}); the file is left as it is. If the process " +
+                        "user changed (the image runs as uid 10001), give it the directory: chown -R 10001:10001 ${f.absoluteFile.parent}",
+                    e,
+                )
+            }
+        // Restore reads only the parsed document, so whatever it throws short of an Error is about the file's shape.
+        val failure =
+            try {
+                restore(Json.parseToJsonElement(text).jsonObject)
+                return true
+            } catch (e: RuntimeException) {
+                e
+            }
         discard()
         // A lost state file costs one re-walk; refusing to start costs the mirror.
         val aside = quarantine(f)
