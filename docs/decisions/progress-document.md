@@ -134,3 +134,14 @@ after. The phase, its clock, the pass count and the last pass's stamps were
 separate volatile fields that `finish` wrote one by one, so a reader could see
 a pass stamped as ended and not yet counted; they are one immutable `State`
 swapped by compare-and-set.
+
+**The glossary is filed per plane, and a name may mean one thing per
+document.** It was one object holding every definition in a single flat
+namespace, so a member both planes publish under different meanings carried
+both in one string (`stage`: "On a probe pass: … In `ingest stages`: …"). The
+prose now lives in `SharedTerms`, `MirrorTerms` and `MonitorTerms`; each
+document asks `termsFor(document, plane)`, and a name defined in both planes
+reads its own plane's words. The flat `TERMS` remains the union, with a
+per-plane pair read as both, so `StatusVocabularyTest`'s two-way pinning is
+unchanged, and a plane's lookup falls back to it, so a term filed under the
+other plane is never hidden from a document that publishes it.
