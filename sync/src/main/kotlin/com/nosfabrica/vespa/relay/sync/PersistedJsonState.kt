@@ -24,9 +24,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -71,15 +74,25 @@ internal class PersistedJsonState(
         savedAt = if (dirty) NEVER_SAVED else generation.get()
     }
 
-    /** Parses the file and hands its root to [restore]; an absent file is an empty start. */
-    fun read(restore: (JsonObject) -> Unit) {
-        val f = file ?: return
-        if (!f.isFile) return
-        runCatching { restore(Json.parseToJsonElement(f.readText()).jsonObject) }
-            .onFailure {
-                // A lost state file costs one re-walk; refusing to start costs the mirror.
-                System.err.println("router: could not read $what from ${f.path} (${it.message}); starting fresh")
-            }
+    /**
+     * Hands the file's root to [restore]. A file that fails part way is moved aside and [discard]
+     * empties what [restore] had filled, so the owner starts clean, never from half a file.
+     */
+    fun read(
+        restore: (JsonObject) -> Unit,
+        discard: () -> Unit,
+    ): Boolean {
+        val f = file ?: return true
+        if (!f.isFile) return true
+        val failure = runCatching { restore(Json.parseToJsonElement(f.readText()).jsonObject) }.exceptionOrNull() ?: return true
+        discard()
+        // A lost state file costs one re-walk; refusing to start costs the mirror.
+        val aside = quarantine(f)
+        System.err.println(
+            "router: could not read $what from ${f.path} (${failure.message}); starting from an empty state" +
+                (aside?.let { ", the unreadable file kept as ${it.name}" } ?: ", and the unreadable file could not be moved aside"),
+        )
+        return false
     }
 
     /** The document at the current generation, shared by the status page and the flush. */
@@ -150,19 +163,43 @@ internal class PersistedJsonState(
 // Pretty-printed for a human reader.
 private val prettyJson = Json { prettyPrint = true }
 
-/** Replaces [target] with [doc] via a temp file and an atomic move, so a reader never sees half a document. */
+/** Replaces [target] with [doc] so a crash leaves the old document or the new one, never half of either. */
 internal fun writeJsonFile(
     target: File,
     doc: JsonObject,
+) = writeDurably(target, prettyJson.encodeToString(JsonObject.serializer(), doc).toByteArray(Charsets.UTF_8))
+
+/**
+ * The same contract as `:common`'s `util.writeDurably`, which this module's base does not carry
+ * yet: the temp file reaches the device before the rename, and the rename before this returns.
+ */
+private fun writeDurably(
+    target: File,
+    bytes: ByteArray,
 ) {
     val dir = target.absoluteFile.parentFile
     dir.mkdirs()
     val tmp = File(dir, "${target.name}.tmp")
-    tmp.writeText(prettyJson.encodeToString(JsonObject.serializer(), doc))
-    // ATOMIC_MOVE asked for explicitly; without it the JVM may fall back to copy+delete.
     try {
-        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    } catch (_: AtomicMoveNotSupportedException) {
-        Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        FileOutputStream(tmp).use { out ->
+            out.write(bytes)
+            out.fd.sync()
+        }
+        try {
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    } catch (e: Exception) {
+        tmp.delete()
+        throw e
     }
+    // The rename is durable only once the directory entry is; a filesystem that cannot sync one is left as is.
+    runCatching { FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) } }
+}
+
+/** `:common`'s `util.quarantine`: [file] moved aside as `<name>.corrupt-<epochMillis>`, or null when it could not be. */
+private fun quarantine(file: File): File? {
+    val aside = File(file.absoluteFile.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}")
+    return runCatching { Files.move(file.toPath(), aside.toPath()) }.map { aside }.getOrNull()
 }

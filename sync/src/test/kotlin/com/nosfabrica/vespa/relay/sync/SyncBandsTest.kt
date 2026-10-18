@@ -722,6 +722,41 @@ class SyncBandsTest {
         val c = SyncBands(f)
         assertEquals(0, c.size())
         assertEquals(listOf(profiles), c.legs(mirror, relay, profiles), "no band, so fetch everything")
+        f.absoluteFile.parentFile
+            .listFiles { it -> it.name.startsWith("${f.name}.corrupt-") }
+            ?.forEach { it.delete() }
+    }
+
+    @Test
+    fun `a file that fails part way is kept aside and nothing of it is believed`() {
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(mirror, relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+            flush()
+        }
+        // A readable stream first, then an entry that stops the parse after it was restored.
+        val damaged =
+            Json
+                .parseToJsonElement(f.readText())
+                .jsonObject
+                .toMutableMap()
+                .apply { put("zz", Json.parseToJsonElement("7")) }
+        val text = JsonObject(damaged).toString()
+        f.writeText(text)
+
+        val c = SyncBands(f)
+        assertNull(c.band(mirror, relay, profiles), "half a file is not a file: the band read before the damage is dropped too")
+        val aside =
+            f.absoluteFile.parentFile
+                .listFiles { it -> it.name.startsWith("${f.name}.corrupt-") }
+                .orEmpty()
+        assertEquals(1, aside.size, "the unreadable file is moved aside")
+
+        c.record(mirror, other, profiles, 1_700_003_000L, 1_700_004_000L, paged = true)
+        c.flush()
+        assertEquals(text, aside.single().readText(), "and the next flush does not overwrite the evidence")
+        assertNotNull(bandIn(f, mirror, other), "while the state file itself carries on")
+        aside.single().delete()
         f.delete()
     }
 

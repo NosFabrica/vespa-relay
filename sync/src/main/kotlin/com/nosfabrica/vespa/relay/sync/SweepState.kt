@@ -207,27 +207,38 @@ class SweepState(
     fun flush() = state.flush()
 
     private fun load() {
-        state.read { root ->
-            root["peers"]?.jsonObject?.forEach { (url, v) ->
-                val o = v.jsonObject
-                peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
+        state.read(restore = ::restore, discard = ::forgetEverything)
+    }
+
+    /** Empties every map the file fills, so a half-read file leaves nothing behind. */
+    private fun forgetEverything() {
+        peers.clear()
+        sweeps.clear()
+        preStream.clear()
+        unowned.clear()
+    }
+
+    /** Fills the maps from the file's root. */
+    private fun restore(root: JsonObject) {
+        root["peers"]?.jsonObject?.forEach { (url, v) ->
+            val o = v.jsonObject
+            peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
+        }
+        root[UNOWNED_SINCE]?.jsonObject?.forEach { (url, ts) -> ts.jsonPrimitive.longOrNull?.let { unowned.restore(url, it) } }
+        root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
+            val o = v.jsonObject
+            // Migration shim, told apart by shape: a filter is serialised JSON and can never be named `downTo`.
+            if (o["downTo"] != null) {
+                val at = streamOrFlatKey.indexOf('|')
+                if (at <= 0 || at == streamOrFlatKey.length - 1) return@forEach
+                val relay = streamOrFlatKey.substring(0, at)
+                val filter = streamOrFlatKey.substring(at + 1)
+                preStream[filter to relay] = mark(o) ?: return@forEach
+                return@forEach
             }
-            root[UNOWNED_SINCE]?.jsonObject?.forEach { (url, ts) -> ts.jsonPrimitive.longOrNull?.let { unowned.restore(url, it) } }
-            root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
-                val o = v.jsonObject
-                // Migration shim, told apart by shape: a filter is serialised JSON and can never be named `downTo`.
-                if (o["downTo"] != null) {
-                    val at = streamOrFlatKey.indexOf('|')
-                    if (at <= 0 || at == streamOrFlatKey.length - 1) return@forEach
-                    val relay = streamOrFlatKey.substring(0, at)
-                    val filter = streamOrFlatKey.substring(at + 1)
-                    preStream[filter to relay] = mark(o) ?: return@forEach
-                    return@forEach
-                }
-                o.forEach { (filter, byRelay) ->
-                    byRelay.jsonObject.forEach { (relay, m) ->
-                        sweeps[Cursor(streamOrFlatKey, filter, relay)] = mark(m.jsonObject) ?: return@forEach
-                    }
+            o.forEach { (filter, byRelay) ->
+                byRelay.jsonObject.forEach { (relay, m) ->
+                    sweeps[Cursor(streamOrFlatKey, filter, relay)] = mark(m.jsonObject) ?: return@forEach
                 }
             }
         }

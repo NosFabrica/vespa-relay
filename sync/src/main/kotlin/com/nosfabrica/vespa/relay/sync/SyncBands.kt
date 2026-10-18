@@ -504,68 +504,80 @@ class SyncBands(
      */
     private fun load(): Int {
         var pruned = 0
-        var parsed = false
-        state.read { root ->
-            root.forEach { (streamOrFlatKey, v) ->
-                val o = v.jsonObject
-                if (streamOrFlatKey == BAND_CLOCKS) {
-                    o.forEach { (stream, byBand) ->
-                        byBand.jsonObject.forEach { (band, byFilter) ->
-                            byFilter.jsonObject.forEach { (filter, byRelay) ->
-                                byRelay.jsonObject.forEach { (relay, ts) ->
-                                    ts.jsonPrimitive.longOrNull?.let { verified[VerifiedKey(stream, filter, relay, band)] = it }
-                                }
-                            }
-                        }
-                    }
-                    return@forEach
-                }
-                if (streamOrFlatKey == UNOWNED_SINCE) {
-                    o.forEach { (key, byFilter) ->
-                        byFilter.jsonObject.forEach { (filter, byRelay) ->
-                            byRelay.jsonObject.forEach { (relay, ts) ->
-                                ts.jsonPrimitive.longOrNull?.let { unowned.restore(Held(key, filter, relay), it) }
-                            }
-                        }
-                    }
-                    return@forEach
-                }
-                if (streamOrFlatKey == CANNOT_RECONCILE) {
-                    o.forEach { (stream, byBand) ->
-                        byBand.jsonObject.forEach { (band, byFilter) ->
-                            byFilter.jsonObject.forEach { (filter, byRelay) ->
-                                byRelay.jsonObject.forEach { (relay, entry) ->
-                                    cannotOf(entry.jsonObject)?.let { cannot[VerifiedKey(stream, filter, relay, band)] = it }
-                                }
-                            }
-                        }
-                    }
-                    return@forEach
-                }
-                // Told apart by shape: a filter is serialised JSON and can never be named `min`.
-                if (o["min"] != null) {
-                    pruned++
-                    return@forEach
-                }
-                val restored = LinkedHashMap<SyncCoverage.BandKey, SyncCoverage.Band>()
-                o.forEach { (filter, byRelay) ->
-                    byRelay.jsonObject.forEach { (relay, band) ->
-                        bandOf(band.jsonObject)?.let { restored[SyncCoverage.BandKey(relay, filter)] = it }
-                        band.jsonObject["verifiedAt"]?.jsonPrimitive?.longOrNull?.let {
-                            verified[VerifiedKey(streamOrFlatKey, filter, relay)] = it
-                        }
-                    }
-                }
-                if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
-            }
-            parsed = true
-        }
+        val parsed =
+            state.read(restore = { root -> pruned = restore(root) }, discard = ::forgetEverything)
         // A count from a parse that stopped is not a fact about the file.
         if (!parsed) return 0
         if (pruned > 0) {
             System.err.println("router: dropped $pruned pre-stream band(s) from ${file?.path} — flat keys name no stream, so nothing can ever claim them")
         }
         return pruned
+    }
+
+    /** Fills the maps from the file's root and returns how many flat pre-stream keys it skipped. */
+    private fun restore(root: JsonObject): Int {
+        var pruned = 0
+        root.forEach { (streamOrFlatKey, v) ->
+            val o = v.jsonObject
+            if (streamOrFlatKey == BAND_CLOCKS) {
+                o.forEach { (stream, byBand) ->
+                    byBand.jsonObject.forEach { (band, byFilter) ->
+                        byFilter.jsonObject.forEach { (filter, byRelay) ->
+                            byRelay.jsonObject.forEach { (relay, ts) ->
+                                ts.jsonPrimitive.longOrNull?.let { verified[VerifiedKey(stream, filter, relay, band)] = it }
+                            }
+                        }
+                    }
+                }
+                return@forEach
+            }
+            if (streamOrFlatKey == UNOWNED_SINCE) {
+                o.forEach { (key, byFilter) ->
+                    byFilter.jsonObject.forEach { (filter, byRelay) ->
+                        byRelay.jsonObject.forEach { (relay, ts) ->
+                            ts.jsonPrimitive.longOrNull?.let { unowned.restore(Held(key, filter, relay), it) }
+                        }
+                    }
+                }
+                return@forEach
+            }
+            if (streamOrFlatKey == CANNOT_RECONCILE) {
+                o.forEach { (stream, byBand) ->
+                    byBand.jsonObject.forEach { (band, byFilter) ->
+                        byFilter.jsonObject.forEach { (filter, byRelay) ->
+                            byRelay.jsonObject.forEach { (relay, entry) ->
+                                cannotOf(entry.jsonObject)?.let { cannot[VerifiedKey(stream, filter, relay, band)] = it }
+                            }
+                        }
+                    }
+                }
+                return@forEach
+            }
+            // Told apart by shape: a filter is serialised JSON and can never be named `min`.
+            if (o["min"] != null) {
+                pruned++
+                return@forEach
+            }
+            val restored = LinkedHashMap<SyncCoverage.BandKey, SyncCoverage.Band>()
+            o.forEach { (filter, byRelay) ->
+                byRelay.jsonObject.forEach { (relay, band) ->
+                    bandOf(band.jsonObject)?.let { restored[SyncCoverage.BandKey(relay, filter)] = it }
+                    band.jsonObject["verifiedAt"]?.jsonPrimitive?.longOrNull?.let {
+                        verified[VerifiedKey(streamOrFlatKey, filter, relay)] = it
+                    }
+                }
+            }
+            if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
+        }
+        return pruned
+    }
+
+    /** Empties every map the file fills, so a half-read file leaves nothing behind. */
+    private fun forgetEverything() {
+        coverageByStream.clear()
+        verified.clear()
+        cannot.clear()
+        unowned.clear()
     }
 
     /** One band, as it is written. */
