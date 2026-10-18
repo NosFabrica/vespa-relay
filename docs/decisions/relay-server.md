@@ -412,3 +412,17 @@ truncated every frame. Each is now positive, `MAX_MESSAGE_LENGTH` at least 512
 256, and a `DEFAULT_LIMIT` set above `MAX_LIMIT` stops the boot. An unset
 `DEFAULT_LIMIT` follows a lowered `MAX_LIMIT` instead, because a deployment that
 only lowered the ceiling meant the default to come with it.
+
+**`RelayMain` reads its environment in one place, before the network.**
+`main()` had grown to some 320 lines with about thirty raw `env[...]` reads
+between the side effects, a stats interval parsed by hand that accepted
+negatives, and `RELAY_HTTP_URL` read twice with different fallbacks: the raw
+`RELAY_URL` for NIP-98's `u`, the normalized one for the icon. The reads now
+live in tested `…FromEnv` functions (`RelaySettings.kt`, `EnvSettings.kt`),
+`readSettings` runs them all, and the ban file and the pulse guard among them,
+before the schema deploy, and `main()` is a list of named boot steps.
+`relayEndpointFromEnv` reads `RELAY_HTTP_URL` once; unset, the origin is
+`RELAY_URL` as the operator wrote it rather than the normalizer's spelling
+(which adds a trailing slash), because a NIP-98 `u` is compared as text and
+admin tools sign the url they were given. A blank value is unset everywhere,
+since compose delivers `""` for an unset `${X:-}`.

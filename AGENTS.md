@@ -167,9 +167,11 @@ sync/…/relay/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
                               StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/
-  RelayMain.kt                entrypoint; refuses to boot if SYNC_CONFIG* is set
-  server/config/              EnvSettings (`env.intOr(...)`, grep for it; ALLOW_PUBKEYS and the rest of the
-                              serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
+  RelayMain.kt                entrypoint: readSettings parses everything before the network, then named boot steps;
+                              refuses to boot if SYNC_CONFIG* is set
+  server/config/              EnvSettings (`env.intOr(...)`, grep for it; the engine's limits, ALLOW_PUBKEYS and the rest
+                              of the serving policy), RelaySettings (RELAY_URL + RELAY_HTTP_URL read once, NIP-11, stats
+                              intervals, state files), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),

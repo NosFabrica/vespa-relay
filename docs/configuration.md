@@ -147,8 +147,8 @@ moved. The page follows the fastest cadence the document states.
 
 | var | meaning | default |
 |---|---|---|
-| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs. `0` or negative turns it off; the document then carries only the chart sections | `60` |
-| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — every engine query, the corpus totals and trust chain included, and the setting that has always meant the corpus-wide groupings. `0` or negative disables it — a legitimate choice on a busy box, since the walks compete with client reads, at the cost of every corpus number on the page; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it: the state file serves the last document meanwhile, and a relay with none shows the page's waiting card until that pass lands | `900` |
+| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs, up to a week. `0` turns it off (a negative stops the boot); the document then carries only the chart sections | `60` |
+| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — every engine query, the corpus totals and trust chain included, and the setting that has always meant the corpus-wide groupings, up to a week. `0` disables it — a legitimate choice on a busy box, since the walks compete with client reads, at the cost of every corpus number on the page; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it: the state file serves the last document meanwhile, and a relay with none shows the page's waiting card until that pass lands | `900` |
 | `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
 
 `GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
@@ -729,7 +729,8 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `MIN_POW_DIFFICULTY` | relay | `0`–`256` |
 | `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | relay | `0` or more, lower at most upper |
 | `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | `0` or more |
-| `EXPIRATION_SWEEP_SECONDS` / `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | any |
+| `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | `0`–`604800` (`0` turns that tier off) |
+| `EXPIRATION_SWEEP_SECONDS` | relay | any |
 | `STORE_METRICS_LOG_SECONDS` | both | any |
 | `SYNC_UP_INTERVAL_SECONDS` | sync | `10` or more |
 | `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |
