@@ -240,6 +240,11 @@ but for `software`, `supported_nips` and the limitation flags there is no
 instrument at all, and publishing nothing left our records the least
 informative on the network. The measured half overwrites where they disagree.
 
+**The document fetch is cancellable.** It ran a blocking `execute()` on the
+shared IO pool, so the per-url deadline cancelling the fitness job did not
+end the read: the thread and the socket stayed held for the full call
+timeout. The call is enqueued and awaited, and a cancelled caller cancels it.
+
 ## Monitor status
 
 **The monitor has its own page.** Sync coverage answers "is the mirror
