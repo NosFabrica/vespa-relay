@@ -20,11 +20,14 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import java.io.File
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** REINDEX_FTS_KINDS: what it accepts, and the cursor file that must not resume one scope's walk under another. */
 class FtsReindexScopeTest {
@@ -80,5 +83,43 @@ class FtsReindexScopeTest {
         assertNull(resumableCursor(scoped, null), "the whole-corpus walk does not resume a scoped one")
         assertNull(resumableCursor(FtsCursor(null, "c2"), listOf(5)), "nor the reverse")
         assertEquals("c2", resumableCursor(FtsCursor(null, "c2"), null))
+    }
+
+    /** A walk that cannot save its position would restart from zero, so a failed save is said, not swallowed. */
+    @Test
+    fun `a cursor save that fails is reported, throttled, and its recovery said`() {
+        val dir = Files.createTempDirectory("fts-cursor").toFile()
+        try {
+            val file = File(dir, "cursor.txt")
+            val said = mutableListOf<String>()
+            var clock = 0L
+            val saver = FtsCursorSaver(file, everyMillis = 60_000, now = { clock }, log = { said += it })
+
+            saver.save(listOf(1), "c1")
+            assertEquals(FtsCursor(listOf(1), "c1"), decodeFtsCursor(file.readText()))
+            assertTrue(said.isEmpty(), "a good save says nothing: $said")
+
+            // A directory where the temp file goes: the write fails as a full disk would.
+            val blocker = File(dir, "cursor.txt.tmp").apply { mkdir() }
+            File(blocker, "keep").writeText("x")
+            saver.save(listOf(1), "c2")
+            assertEquals(1, said.size, "the first failure is said: $said")
+            assertContains(said[0], file.path)
+            clock = 30_000
+            saver.save(listOf(1), "c3")
+            assertEquals(1, said.size, "not once per page")
+            clock = 61_000
+            saver.save(listOf(1), "c4")
+            assertEquals(2, said.size, "but again once the window passes")
+            assertContains(said[1], "3 failed save(s)")
+            assertEquals("c1", decodeFtsCursor(file.readText()).cursor, "the last good cursor is kept")
+
+            blocker.deleteRecursively()
+            saver.save(listOf(1), "c5")
+            assertEquals("c5", decodeFtsCursor(file.readText()).cursor)
+            assertContains(said.last(), "again")
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

@@ -75,9 +75,11 @@ class TrustNotice(
         val lists = read(providerListFilter(pubkey)) ?: return emptyList()
         // 10040 is replaceable, so `limit = 1` cannot hand back a superseded list.
         val list = lists.firstOrNull() ?: return listOf(NO_PROVIDER)
-        val services = list.rankServices().ifEmpty { return listOf(NO_RANK_SERVICE) }
+        val named = list.rankServices().ifEmpty { return listOf(NO_RANK_SERVICE) }
+        // The reader's list can carry thousands of tags; one store filter and one NOTICE take the first few.
+        val services = named.take(MAX_RANK_SERVICES)
         val cards = read(scoreCardFilter(services)) ?: return emptyList()
-        return if (cards.isEmpty()) listOf(noScores(services)) else emptyList()
+        return if (cards.isEmpty()) listOf(noScores(services, dropped = named.size - services.size)) else emptyList()
     }
 
     /** Every service this list names for ranking, matching what the provider map resolves. */
@@ -128,7 +130,16 @@ class TrustNotice(
 
         internal val NO_RANK_SERVICE = RESTRICTED.format("your kind 10040 names no usable 30382:rank service")
 
+        /** Rank services one check asks about and names; a list naming more is said to. */
+        internal const val MAX_RANK_SERVICES = 8
+
         /** Named, because a provider never mirrored is the operator's fix, not the reader's. */
-        internal fun noScores(services: List<HexKey>) = RESTRICTED.format("no kind 30382 from ${services.joinToString(", ")} here yet")
+        internal fun noScores(
+            services: List<HexKey>,
+            dropped: Int = 0,
+        ): String {
+            val more = if (dropped > 0) " (and $dropped more your list names, not checked)" else ""
+            return RESTRICTED.format("no kind 30382 from ${services.joinToString(", ")}$more here yet")
+        }
     }
 }

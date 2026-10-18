@@ -154,6 +154,27 @@ class TrustNoticeTest {
             assertEquals(emptyList(), notice.notices(reader.pubKey))
         }
 
+    /** A 10040 is the reader's to write, so its size is too: one check costs one bounded filter and one short NOTICE. */
+    @Test
+    fun `a list naming more rank services than the cap is checked on the first few and says how many it skipped`() =
+        runBlocking {
+            val asked = Collections.synchronizedList(mutableListOf<Filter>())
+            val watched =
+                object : IEventStore by store {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        asked += filter
+                        return store.query(filter)
+                    }
+                }
+            val many = List(TrustNotice.MAX_RANK_SERVICES + 5) { "%064x".format(it + 1) }
+            store.insert(providerList(by = reader, tags = many.map { arrayOf("30382:rank", it, relayUrl.url) }))
+            val said = TrustNotice(watched, CoroutineScope(SupervisorJob())).notices(reader.pubKey)
+            assertEquals(listOf(TrustNotice.noScores(many.take(TrustNotice.MAX_RANK_SERVICES), dropped = 5)), said)
+            assertTrue("and 5 more" in said.single(), said.single())
+            val cardAsk = asked.single { it.kinds == listOf(30382) }
+            assertEquals(TrustNotice.MAX_RANK_SERVICES, cardAsk.authors?.size)
+        }
+
     @Test
     fun `somebody else's list is not yours`() =
         runBlocking {

@@ -20,51 +20,52 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.util.writeDurably
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /** File persistence for the NIP-86 [BanStore]. Only the moderation lists are durable. */
 object BanListFile {
     private val json = Json { prettyPrint = true }
 
-    /** Seeds [banStore] from [path] if the file exists and parses; otherwise a no-op. */
+    /**
+     * Seeds [banStore] from [path] if the file exists. One unreadable entry refuses the boot: serving
+     * with no bans, then overwriting the file on the next mutation, would lose every one of them.
+     */
     fun loadInto(
         path: String,
         banStore: BanStore,
     ) {
         val file = File(path)
         if (!file.exists()) return
-        // The field accessors throw on a wrong shape as the parse does on bad JSON; both are guarded.
-        runCatching {
-            val root = Json.parseToJsonElement(file.readText()).jsonObject
-            banStore.seedFromSnapshot(
-                root.pairs("bannedPubkeys"),
-                root.pairs("allowedPubkeys"),
-                root.pairs("bannedEvents"),
-                root.ints("allowedKinds"),
-                root.ints("disallowedKinds"),
-            )
-        }.onFailure { e ->
-            // Loud: a corrupt file means every ban stops being enforced.
-            System.err.println("nip86: could not read $path (${e.message}) — starting with EMPTY ban lists; the file will be overwritten on the next mutation")
-        }
+        val root =
+            try {
+                Json.parseToJsonElement(file.readText())
+            } catch (e: Exception) {
+                refuse(path, "it is not JSON (${e::class.simpleName})")
+            }
+        val doc = root as? JsonObject ?: refuse(path, "it is not a JSON object")
+        banStore.seedFromSnapshot(
+            doc.pairs(path, "bannedPubkeys"),
+            doc.pairs(path, "allowedPubkeys"),
+            doc.pairs(path, "bannedEvents"),
+            doc.ints(path, "allowedKinds"),
+            doc.ints(path, "disallowedKinds"),
+        )
     }
 
-    /** Writes [banStore]'s lists to [path] atomically. Synchronized: two writers would share one `.tmp` path. */
+    /** Writes [banStore]'s lists to [path] durably. Synchronized: two writers would share one `.tmp` path. */
     @Synchronized
     fun save(
         path: String,
@@ -78,40 +79,54 @@ object BanListFile {
                 putInts("allowedKinds", banStore.listAllowedKinds())
                 putInts("disallowedKinds", banStore.listDisallowedKinds())
             }
-        val bytes =
-            json
-                .encodeToString(
-                    kotlinx.serialization.json.JsonObject
-                        .serializer(),
-                    doc,
-                ).toByteArray(Charsets.UTF_8)
-        val target = File(path)
-        val tmp = File(path + ".tmp")
         try {
-            target.absoluteFile.parentFile?.mkdirs()
-            writeSynced(tmp, bytes)
-            try {
-                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        } catch (e: IOException) {
+            writeDurably(File(path), json.encodeToString(JsonObject.serializer(), doc))
+        } catch (e: Exception) {
             // Not thrown: the ban is already enforced in memory. It vanishes on restart, so said aloud.
-            tmp.delete()
             System.err.println("nip86: could not persist ban lists to $path (${e.message}) — the change holds until restart; the previous file is kept")
         }
     }
 
-    /** [bytes] at [file], on the device before this returns, so a rename never publishes an empty file. */
-    private fun writeSynced(
-        file: File,
-        bytes: ByteArray,
-    ) {
-        FileOutputStream(file).use { out ->
-            out.write(bytes)
-            out.fd.sync()
+    private fun refuse(
+        path: String,
+        why: String,
+    ): Nothing =
+        error(
+            "RELAY_STATE_FILE $path cannot be read as a ban list: $why. Refusing to start with no bans enforced; " +
+                "fix the entry, or move the file aside to start with empty lists.",
+        )
+
+    private fun JsonObject.listAt(
+        path: String,
+        key: String,
+    ): List<JsonElement> =
+        when (val value = this[key]) {
+            null -> emptyList()
+            is JsonArray -> value
+            else -> refuse(path, "$key is not a list")
         }
-    }
+
+    private fun JsonObject.pairs(
+        path: String,
+        key: String,
+    ): List<Pair<String, String>> =
+        listAt(path, key).mapIndexed { i, element ->
+            val entry = element as? JsonObject
+            val value = entry?.text("value")?.takeIf { it.isNotEmpty() }
+            val reason = entry?.let { if (it["reason"] == null) "" else it.text("reason") }
+            if (value == null || reason == null) refuse(path, "$key[$i] is not {\"value\": \"…\", \"reason\": \"…\"}")
+            value to reason
+        }
+
+    private fun JsonObject.ints(
+        path: String,
+        key: String,
+    ): List<Int> =
+        listAt(path, key).mapIndexed { i, element ->
+            (element as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull ?: refuse(path, "$key[$i] is not a kind number")
+        }
+
+    private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }
 
 /** A NIP-86 [BanStore], backed by [stateFile] when one is given: seeded on boot, rewritten on mutation. */
@@ -126,7 +141,7 @@ fun openBanStore(stateFile: String?): BanStore {
     return bs
 }
 
-private fun kotlinx.serialization.json.JsonObjectBuilder.putPairs(
+private fun JsonObjectBuilder.putPairs(
     key: String,
     pairs: List<Pair<String, String?>>,
 ) = putJsonArray(key) {
@@ -140,17 +155,7 @@ private fun kotlinx.serialization.json.JsonObjectBuilder.putPairs(
     }
 }
 
-private fun kotlinx.serialization.json.JsonObjectBuilder.putInts(
+private fun JsonObjectBuilder.putInts(
     key: String,
     ints: List<Int>,
 ) = putJsonArray(key) { ints.forEach { add(it) } }
-
-private fun kotlinx.serialization.json.JsonObject.pairs(key: String): List<Pair<String, String>> =
-    this[key]
-        ?.jsonArray
-        ?.map { element ->
-            val obj = element.jsonObject
-            (obj["value"]?.jsonPrimitive?.content ?: "") to (obj["reason"]?.jsonPrimitive?.content ?: "")
-        }.orEmpty()
-
-private fun kotlinx.serialization.json.JsonObject.ints(key: String): List<Int> = this[key]?.jsonArray?.map { it.jsonPrimitive.int }.orEmpty()

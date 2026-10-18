@@ -162,6 +162,15 @@ the body names content nodes, container hostnames and internal ports, all of
 which rode out on the first failed aggregation. The YQL stays in the message
 because it is our own and is the whole diagnostic value.
 
+**Only a `StatsQueryFailed` message is published; anything else is its class.**
+Routing Vespa's body through `failed()` left three other ways out: a transport
+exception (`http.send`) whose message names the engine's host and port, a
+`parseToJsonElement` error that quotes the input it choked on (a proxy's error
+page), and any exception from the rollup's own code. `publicReason` is the one
+vocabulary for `/stats.json`'s `errors` and its stale marker, as the ORE route
+has one for its 503: the message of an exception this code wrote, or the
+exception's class with "detail in the relay log", where the whole text goes.
+
 **A client-side timeout far past any answer.** The bundled query profile puts
 Vespa's own deadline at its maximum with soft timeout off so a slow aggregation
 finishes rather than returning a quiet half-answer; a tight timeout here would
@@ -219,6 +228,15 @@ stored" would replace a profile carrying a `nip05` with the two fields this
 file knows about. Bounded at ten minutes, because a wrong url must not retry
 for the life of the process.
 
+**One publisher, reading the document when it publishes.** Each NIP-86 rename
+once launched its own retry loop with its own snapshot of the document; the
+mutex serialized them but did not order them, so two renames during a cold
+engine could sign the older one last, as the newest kind 0. `RelayProfilePublisher`
+runs every publish on one job behind a conflated channel and reads the current
+document on each attempt, so a burst of renames costs one more publish and the
+last word is the last rename. The ten-minute budget is a monotonic deadline
+from the first try, as in `TrustReconcile`.
+
 ## FtsReindex
 
 **The walk repairs fed columns only, never derived ones.** `search_text_gram`
@@ -231,11 +249,17 @@ Such a column needs a Vespa REINDEX on the config server (a POST alone leaves
 the job `pending` forever; a redeploy dispatches it) or a full re-feed. See
 docs/migrations.md.
 
-**The cursor is persisted per page, by temp file and move.** An in-memory
+**The cursor is persisted per page, through `writeDurably`.** An in-memory
 cursor once threw away 12M events on a failed page. A bare `writeText`
 truncated mid-kill leaves a corrupt token that fails every resume until someone
 deletes it by hand. On a resumed run no denominator is printed: `total` counts
 only the remainder, and total/corpus would report 3% at completion.
+
+**A failed cursor save is said, once a minute.** The save was a `runCatching`
+with no failure branch and no fsync: a full disk let an hours-long walk run
+with no saved position, and the restart that started it over was the first
+sign. The walk still goes on, since the next page may save, and the first
+save that succeeds after a failure says so.
 
 **`runCatching` around a page must rethrow cancellation.** A shutdown mid-page
 arrived in the failure branch and printed a page failure and a retry for a page
@@ -248,6 +272,12 @@ second after start against a content node still loading 24M events, and the
 projection stayed empty for hours. Zero is indistinguishable from cold, so it is
 only accepted once the ten-minute wait budget is spent; a real failure past the
 budget serves unranked results rather than holding the relay off its port.
+
+**The budget is a deadline, not a sum of sleeps.** It once added 5s per retry
+and never counted the attempts themselves, so an engine that took minutes to
+fail each call kept the loop going for hours against a "ten-minute" budget.
+The loop now measures a `TimeSource.Monotonic` deadline from the first attempt;
+the time source is a parameter, so the test drives it.
 
 **The first failure prints its stack, whichever attempt it is on.** A success on
 attempt 1 followed by a throw on attempt 2 deserves the same diagnostic, or the

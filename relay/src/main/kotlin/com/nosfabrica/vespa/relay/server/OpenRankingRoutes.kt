@@ -238,14 +238,8 @@ private fun String.shown(): String {
 }
 
 /**
- * ORE-05's `results` and `ttl`, then whose view ranked them, in the same body: the `algorithm`
- * served, the `observer` whose trust weighted the text match (the pov for `relevance-pov`, the
- * proxy's House Observer for `relevance`), and the `rank_service` that observer's 10040 names,
- * whose 30382 cards supplied the trust. ORE-05 defines neither, and nothing in it forbids them:
- * they exist because a separate lookup of the House Observer (`/.well-known/nostr.json`) can
- * never be bound to one answer, and a consumer that keeps the answer as evidence needs to say
- * whose view it was. Unsigned, like the rest of an HTTPS answer: a claim of this relay, not a
- * Nostr signature. Brainstorm's server forwards the body as is, so they reach its clients.
+ * ORE-05's `results` and `ttl`, then whose view ranked them: the `algorithm` served, the `observer`
+ * whose trust weighted the match, and the `rank_service` its 10040 names (docs/decisions/relay-server.md).
  */
 private fun ScoredSearch.toResults(
     ask: SearchAsk.Valid,

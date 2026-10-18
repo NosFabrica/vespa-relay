@@ -45,6 +45,7 @@ import java.util.Collections
 import java.util.zip.GZIPInputStream
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -337,7 +338,74 @@ class HttpRelayTest {
         }
     }
 
-    private fun admin() = Nip86Admin(BanStore(), setOf(alice.pubKey), origin, purge = {})
+    private fun admin(
+        bodyTimeoutMs: Long = Nip86Admin.DEFAULT_BODY_TIMEOUT_MS,
+        concurrency: Int = Nip86Admin.DEFAULT_CONCURRENCY,
+    ) = Nip86Admin(BanStore(), setOf(alice.pubKey), origin, purge = {}, bodyTimeoutMs = bodyTimeoutMs, concurrency = concurrency)
+
+    private val rpcBody = """{"method":"supportedmethods","params":[]}"""
+
+    /**
+     * An rpc POST that promises [rpcBody] and sends none of it, so whatever answers came from the
+     * headers alone. The socket stays open, the upload unfinished, until [block] returns.
+     */
+    private fun stalledRpc(
+        base: String,
+        authorization: String?,
+        block: (statusLine: () -> String) -> Unit,
+    ) {
+        java.net.Socket("127.0.0.1", URI(base).port).use { socket ->
+            socket.soTimeout = 5_000
+            val head =
+                "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/nostr+json+rpc\r\n" +
+                    (authorization?.let { "Authorization: $it\r\n" } ?: "") +
+                    "Content-Length: ${rpcBody.length}\r\n\r\n"
+            socket.getOutputStream().apply { write(head.encodeToByteArray()) }.flush()
+            block { readLine(java.io.BufferedInputStream(socket.getInputStream())) }
+        }
+    }
+
+    /** Before the fix the body was awaited with no timeout, so these reads timed out instead. */
+    @Test
+    fun `a NIP-86 call is refused from its headers alone when no admin signed it`() {
+        val bob = NostrSignerSync()
+        serving(admin = admin()) { base ->
+            stalledRpc(base, authorization = null) { status -> assertContains(status(), " 401 ") }
+            stalledRpc(base, token(rpcBody, by = bob)) { status -> assertContains(status(), " 403 ") }
+            stalledRpc(base, token(rpcBody, at = "https://elsewhere.example")) { status -> assertContains(status(), " 401 ") }
+            val stale =
+                alice
+                    .sign(HTTPAuthorizationEvent.build(origin, "POST", rpcBody.encodeToByteArray(), System.currentTimeMillis() / 1000 - 600) {})
+                    .toAuthToken()
+            stalledRpc(base, stale) { status -> assertContains(status(), " 401 ") }
+        }
+    }
+
+    @Test
+    fun `an admin's NIP-86 call whose body trickles is dropped at the body timeout`() {
+        serving(admin = admin(bodyTimeoutMs = 700)) { base ->
+            val started = System.currentTimeMillis()
+            stalledRpc(base, token(rpcBody)) { status -> assertContains(status(), " 408 ") }
+            assertTrue(System.currentTimeMillis() - started < 4_000, "answered at the timeout, not at the socket's")
+            val whole = post(base, rpcBody, authorization = token(rpcBody), contentType = "application/nostr+json+rpc")
+            assertEquals(200, whole.status, "a whole body is still served: ${whole.body}")
+        }
+    }
+
+    @Test
+    fun `admin calls past the concurrency bound are refused, not queued`() {
+        serving(admin = admin(bodyTimeoutMs = 2_000, concurrency = 1)) { base ->
+            stalledRpc(base, token(rpcBody)) { status ->
+                Thread.sleep(200)
+                val busy = post(base, rpcBody, authorization = token(rpcBody), contentType = "application/nostr+json+rpc")
+                assertEquals(503, busy.status, busy.body)
+                assertEquals("1", busy.header("Retry-After"))
+                assertContains(status(), " 408 ")
+            }
+            val after = post(base, rpcBody, authorization = token(rpcBody), contentType = "application/nostr+json+rpc")
+            assertEquals(200, after.status, "the slot frees with the timed-out call: ${after.body}")
+        }
+    }
 
     @Test
     fun `the relay URL's POST is NIP-86 for its Content-Type and a command for any other`() {
