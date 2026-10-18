@@ -28,6 +28,7 @@ import kotlinx.serialization.json.putJsonArray
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The work this router does that is not a stream: the probe passes, the rotating pool, ingest,
@@ -116,6 +117,37 @@ class Processors {
         val urls: Int = 0,
     )
 
+    /**
+     * The servers graded `prime` under more than one url as the last sweep left them, so one server
+     * on the roster several times is a number rather than a hand count.
+     */
+    class SharedHosts(
+        /** Servers carrying more than one `prime` url. */
+        val hosts: Int,
+        /** The `prime` urls on them. */
+        val urls: Int,
+        /** Of those servers, how many hold two or more `prime` urls the fold has not proven their own relays. */
+        val unproven: Int,
+        /** The worst few, unproven first. Bounded at [MAX_SHARED_HOSTS]. */
+        val top: List<SharedHost>,
+    )
+
+    /** One server's `prime` urls and what the fold holds about each. */
+    class SharedHost(
+        val host: String,
+        val urls: Int,
+        /** Two or more of its `prime` urls are not measured as their own relays; decided over all of them, not [relays]. */
+        val unproven: Boolean,
+        /** Bounded at [MAX_SHARED_HOST_URLS]; [urls] is the whole count. */
+        val relays: List<FoldOf>,
+    )
+
+    /** One url and the fold's word on it: [FOLD_ALIAS], [FOLD_CANONICAL], [FOLD_DISTINCT], [FOLD_STALE] or [FOLD_NONE]. */
+    class FoldOf(
+        val relay: String,
+        val fold: String,
+    )
+
     /** One reason a total breaks down by, counted in events. [Undecided] counts hosts. */
     class Breakdown(
         val reason: String,
@@ -148,6 +180,8 @@ class Processors {
         val counts: List<Count>,
         /** Reasons a counter-shaped processor breaks its total down by; ingest's rejections, today. */
         val reasons: List<Breakdown> = emptyList(),
+        /** The fitness pass's census of servers graded more than once, or null before a sweep has taken one. */
+        val sharedHosts: SharedHosts? = null,
     )
 
     /** One pass's live position, swapped whole so a reader takes unit, size and count from one pass. */
@@ -163,21 +197,28 @@ class Processors {
         val lastUnitMs = AtomicLong(startedMs)
     }
 
+    /** The phase and the pass bookkeeping, swapped whole so a reader never sees half a [Handle.finish]. */
+    internal data class State(
+        val phase: String,
+        val sinceMs: Long,
+        val passes: Long = 0,
+        val startedMs: Long? = null,
+        val lastPassAtSec: Long? = null,
+        val lastPassSec: Long? = null,
+    ) {
+        /** The clock restarts only when the word changes. */
+        fun phased(
+            word: String,
+            nowMs: Long,
+        ): State = if (phase == word) this else copy(phase = word, sinceMs = nowMs)
+    }
+
     internal class Entry(
         val name: String,
-        @Volatile var phase: String,
-        @Volatile var sinceMs: Long,
+        phase: String,
+        sinceMs: Long,
     ) {
-        val passes = AtomicLong()
-
-        @Volatile
-        var startedMs: Long? = null
-
-        @Volatile
-        var lastPassAtSec: Long? = null
-
-        @Volatile
-        var lastPassSec: Long? = null
+        val state = AtomicReference(State(phase, sinceMs))
 
         /** Epoch millis the next pass is due, asked live. */
         @Volatile
@@ -198,6 +239,9 @@ class Processors {
 
         /** Latest result per stream, replacing rather than appending. */
         val work = ConcurrentHashMap<String, Work>()
+
+        @Volatile
+        var sharedHosts: SharedHosts? = null
     }
 
     private val entries = ConcurrentHashMap<String, Entry>()
@@ -216,26 +260,28 @@ class Processors {
         return Handle(entry)
     }
 
-    /** Every registered processor, in registration order, as of now. */
-    @Synchronized
-    fun snapshot(nowMs: Long = System.currentTimeMillis()): List<Snapshot> =
-        order.mapNotNull { name ->
-            val e = entries[name] ?: return@mapNotNull null
+    /** Every registered processor, in registration order, as of now. The suppliers run outside the lock. */
+    fun snapshot(nowMs: Long = System.currentTimeMillis()): List<Snapshot> {
+        val registered = synchronized(this) { order.mapNotNull { entries[it] } }
+        return registered.map { e ->
+            val s = e.state.get()
             Snapshot(
                 name = e.name,
-                phase = e.phase,
-                phaseForSec = ((nowMs - e.sinceMs) / 1000).coerceAtLeast(0),
-                passes = e.passes.get().takeIf { it > 0 || e.startedMs != null },
-                lastPassAt = e.lastPassAtSec,
-                lastPassSec = e.lastPassSec,
+                phase = s.phase,
+                phaseForSec = ((nowMs - s.sinceMs) / 1000).coerceAtLeast(0),
+                passes = s.passes.takeIf { it > 0 || s.startedMs != null },
+                lastPassAt = s.lastPassAtSec,
+                lastPassSec = s.lastPassSec,
                 nextInSec = e.nextAt?.invoke()?.let { ((it - nowMs) / 1000).coerceAtLeast(0) },
                 measuring = measuring(e, nowMs),
                 inFlight = holding(e, nowMs),
                 work = e.work.values.sortedBy { it.stream },
                 counts = e.counts?.invoke().orEmpty(),
                 reasons = e.reasons?.invoke().orEmpty(),
+                sharedHosts = e.sharedHosts,
             )
         }
+    }
 
     /** The pass in flight as of [nowMs], or null. */
     private fun measuring(
@@ -289,10 +335,8 @@ class Processors {
     ) {
         /** Say what this processor is doing. The clock restarts only when the word changes. */
         fun phase(word: String) {
-            if (entry.phase != word) {
-                entry.phase = word
-                entry.sinceMs = System.currentTimeMillis()
-            }
+            val now = System.currentTimeMillis()
+            entry.state.updateAndGet { it.phased(word, now) }
         }
 
         /** A pass has started. */
@@ -300,10 +344,10 @@ class Processors {
             word: String = MEASURING,
             nowMs: Long = System.currentTimeMillis(),
         ) {
-            entry.startedMs = nowMs
             entry.run = null
             entry.held.clear()
-            phase(word)
+            val now = System.currentTimeMillis()
+            entry.state.updateAndGet { it.copy(startedMs = nowMs).phased(word, now) }
         }
 
         /** A pass has ended, however it ended. Call from a `finally`. A finish with no begin does nothing. */
@@ -311,14 +355,22 @@ class Processors {
             word: String = IDLE,
             nowMs: Long = System.currentTimeMillis(),
         ) {
-            val startedMs = entry.startedMs ?: return
-            entry.lastPassSec = ((nowMs - startedMs) / 1000).coerceAtLeast(0)
-            entry.startedMs = null
+            val now = System.currentTimeMillis()
+            while (true) {
+                val s = entry.state.get()
+                val startedMs = s.startedMs ?: return
+                val ended =
+                    s
+                        .copy(
+                            passes = s.passes + 1,
+                            startedMs = null,
+                            lastPassAtSec = nowMs / 1000,
+                            lastPassSec = ((nowMs - startedMs) / 1000).coerceAtLeast(0),
+                        ).phased(word, now)
+                if (entry.state.compareAndSet(s, ended)) break
+            }
             entry.run = null
             entry.held.clear()
-            entry.lastPassAtSec = nowMs / 1000
-            entry.passes.incrementAndGet()
-            phase(word)
         }
 
         /** What this pass set out to walk, declared once its store reads have said. The rate is timed from here. */
@@ -328,6 +380,11 @@ class Processors {
             nowMs: Long = System.currentTimeMillis(),
         ) {
             entry.run = Run(unit, toProbe, nowMs)
+        }
+
+        /** Drop the position of work that was not a pass, such as a boot retraction, without counting a pass. */
+        fun clearMeasuring() {
+            entry.run = null
         }
 
         /** One more unit of this pass is behind it, however it ended. */
@@ -373,6 +430,11 @@ class Processors {
         /** What the last pass over [Work.stream]'s candidates achieved, replacing the previous row. */
         fun record(work: Work) {
             entry.work[work.stream] = work
+        }
+
+        /** The last sweep's census of servers graded more than once, replacing the previous one. */
+        fun sharedHosts(census: SharedHosts) {
+            entry.sharedHosts = census
         }
     }
 
@@ -431,6 +493,37 @@ class Processors {
                                         buildJsonObject {
                                             put("reason", r.reason)
                                             put("events", r.events)
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+                p.sharedHosts?.let { census ->
+                    put(
+                        "sharedHosts",
+                        buildJsonObject {
+                            put("hosts", census.hosts)
+                            put("urls", census.urls)
+                            put("unproven", census.unproven)
+                            putJsonArray("top") {
+                                for (h in census.top) {
+                                    add(
+                                        buildJsonObject {
+                                            put("host", h.host)
+                                            put("urls", h.urls)
+                                            put("unproven", h.unproven)
+                                            putJsonArray("relays") {
+                                                for (r in h.relays) {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("relay", r.relay)
+                                                            put("fold", r.fold)
+                                                        },
+                                                    )
+                                                }
+                                            }
                                         },
                                     )
                                 }
@@ -530,5 +623,29 @@ class Processors {
 
         /** Hosts named with their url counts, on the same terms as [MAX_UNDECIDED_EXAMPLES]. */
         const val MAX_UNDECIDED_HOSTS = 100
+
+        /** Servers named in [SharedHosts.top]. */
+        const val MAX_SHARED_HOSTS = 25
+
+        /** Urls named per server in [SharedHost.relays]. */
+        const val MAX_SHARED_HOST_URLS = 25
+
+        /** The fold's words for a url in [FoldOf]: folded onto another url. */
+        const val FOLD_ALIAS = "alias"
+
+        /** Other urls fold onto it. */
+        const val FOLD_CANONICAL = "canonical"
+
+        /** Measured and matched nothing it was compared to. */
+        const val FOLD_DISTINCT = "distinct"
+
+        /** A fold answer exists, under older rules or past its TTL. */
+        const val FOLD_STALE = "stale"
+
+        /** No fold answer at all. */
+        const val FOLD_NONE = "none"
+
+        /** The boot retraction is taking back grades signed under older rules; no pass runs until it ends. */
+        const val RETIRING = "retiring"
     }
 }

@@ -195,9 +195,9 @@ class AliasFoldingTest {
             assertEquals(listOf(urls.first()), fold.applyVerdicts(urls).dial, "100 urls, one dial")
             assertEquals(100, up.contacted.size, "every url has to answer before the group may fold")
             assertEquals(
-                300,
+                100 * AliasProbe.SHAPES.size,
                 up.dials.get(),
-                "the ladder is 3 rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
+                "the ladder is ${AliasProbe.SHAPES.size} rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
             )
         }
 
@@ -748,20 +748,18 @@ class AliasFoldingTest {
         }
 
     @Test
-    fun `a leader too thin to be a yardstick does not drag its group onto the wire`() =
+    fun `a host that is thin everywhere does not drag its group onto the wire`() =
         runBlocking {
-            // Under minSample, nothing can fold onto the leader or be cleared against it.
+            // Under minSample, nothing can fold onto a yardstick or be cleared against it.
             val store = newStore()
-            val a = RelayUrlNormalizer.normalize("wss://quiet.example")
-            val b = RelayUrlNormalizer.normalize("wss://quiet.example/alpha")
-            val c = RelayUrlNormalizer.normalize("wss://quiet.example/beacon")
+            val urls = (listOf("") + (0 until 2 * AliasFolding.THIN_ATTEMPTS).map { "p$it" }).map { RelayUrlNormalizer.normalize("wss://quiet.example/$it") }
             val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
             val up = Upstreams { thin }
 
-            folding(store, up).measure("t", listOf(a, b, c), canDial = { true })
+            folding(store, up).measure("t", urls, canDial = { true })
 
-            // The leader still costs one probe per pass, which is how its recovery is noticed.
-            assertEquals(setOf(a), up.contacted, "members were dialled behind a leader that could decide nothing")
+            // The search still costs its few probes per pass, which is how a recovery is noticed.
+            assertEquals(AliasFolding.THIN_ATTEMPTS, up.contacted.size, "members were fingerprinted behind no yardstick")
         }
 
     @Test
@@ -777,8 +775,8 @@ class AliasFoldingTest {
 
             assertEquals(1, folding(store, up).measure("t", listOf(secure, plain, other), canDial = { true }))
 
-            // The third url still has nothing to be measured against.
-            assertEquals(setOf(secure, plain), up.contacted)
+            // The third url was asked as a yardstick and is still too thin to be measured against.
+            assertTrue(up.contacted.size <= AliasFolding.YARDSTICK_ATTEMPTS)
             val reader = folding(store, upstreams()).applyVerdicts(listOf(secure, plain, other))
             assertEquals(mapOf(plain to secure), reader.aliases)
             assertEquals(listOf(secure, other), reader.dial)

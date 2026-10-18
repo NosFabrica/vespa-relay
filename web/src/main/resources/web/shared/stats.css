@@ -71,6 +71,10 @@ h2 + :not(.card-sub) { margin-top: .5rem; }
 }
 .tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
 .tile .v.stale { color: var(--warn); }
+/* Where the relay's live panels end and the rollup begins: everything under the
+   line is as old as its label says, so it reads as a break, not a heading. */
+.asof { display: flex; align-items: center; gap: .75rem; margin: .5rem 0 1.25rem; color: var(--muted); font-size: .85rem; }
+.asof::before, .asof::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .chart { width: 100%; display: block; overflow: visible; }
 .chart .grid { stroke: var(--grid); stroke-width: 1; }
 .chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }

@@ -204,9 +204,9 @@ object RelayDiscovery {
     }
 
     /**
-     * Records carrying [verdict] in our vocabulary, signed by these identities, re-checked since
-     * the floor. The tag index answers on the label's value alone, so the namespace and the
-     * author are re-checked on what comes back.
+     * Records whose current fitness label is [verdict], signed by these identities. The tag index
+     * answers on the label's value alone, so the author and the label are re-checked on what comes
+     * back, the label by [RelayVerdictRecord.currentFitnessLabel] like every other reader.
      */
     private suspend fun verdicts(
         store: IEventStore,
@@ -245,16 +245,10 @@ object RelayDiscovery {
                     ),
                 )
             }
+        val floor = now - maxAgeSeconds
         return queried.filter { event ->
-            val s =
-                event.tags.firstOrNull {
-                    it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
-                        it[0] == RelayVerdictRecord.LABEL_TAG &&
-                        it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
-                }
             (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
-                s != null &&
-                s[1] == verdict.value
+                RelayVerdictRecord.currentFitnessLabel(event, floor)?.get(1) == verdict.value
         }
     }
 

@@ -37,8 +37,9 @@ discovering exactly one relay never graded it and every visit-mode roster was
 permanently empty, issue 139's symptom by another route. The fold refuses a
 world of one itself.
 
-**The fingerprint is paged, from one shared anchor a minute behind the
-clock.** Across 60 live hosts, `max_limit` was 500, 100, 1024, 2100, 10000,
+**The fingerprint is paged, from one shared anchor half an hour behind the
+clock** (a minute, until the measurement under "The anchor is half an hour
+back" below). Across 60 live hosts, `max_limit` was 500, 100, 1024, 2100, 10000,
 nothing, or 0, and purplepag.es answers `{"limit": 1000}` with `CLOSED
 blocked: limit too high`. Unanchored, `nos.lol` against `nos.lol/cipher-zulu`
 scored 0.41 and escaped the fold on exactly the busy relay where duplication
@@ -246,3 +247,131 @@ rejected our NIP-42 key folded on its hostname alone and signed public
 from any server. Auth-refused urls are now unmeasured for that rule, and
 `FOLD_EPOCH` went to 3 with it so the folds signed under the old rule stop
 being read.
+
+**A plain canonical yields the lead to its secure twin.** `leaderOf` keeps an
+existing canonical as the yardstick so a new alias cannot re-point a verdict,
+and when that canonical was a `ws://` url every later path folded onto the
+unencrypted endpoint (`relay.damus.io/yankee-india` → `ws://relay.damus.io/`
+on staging). A plain canonical whose `wss://` twin is in the group and not
+folded now hands it the lead; the plain url is then measured against it and
+folds as a scheme twin, and its old aliases follow the chain.
+
+**The roster's fold view also holds back what the fold has not decided.**
+`applyVerdicts` returns `waiting` beside `aliases` and `standIns`: each
+undecided url onto the url fitness grades for its server, computed from the
+monitor's known set (`ServerIndex`, indexed by server so a roster rebuild
+does not walk forty thousand urls per stream) so both sides name the same
+stand-in. Trailing
+slashes, after a path or a query, and the scheme never name a different
+endpoint for this rule (`/ar` and `/ar/`, `?reject=3,6,7///` and its longer
+runs): a url waits on its decided twin first. Quartz's normalizer keeps those
+urls apart, so the records stay two; only the grade and the roster are one.
+
+**Who stands in is one rule, and never a url proven to be another relay.**
+Fitness and the roster elect through `eligibleIn`: a url the monitor knows,
+not inconsistent, standing ungraded or `prime`. A stand-in graded as refusing
+(restricted, silent, auth-refused) hands its server to the next path on the
+next sweep, or one refusing root would keep a path-routing server off the
+roster for good. A url measured `distinct` is never a stand-in: it is proven
+its own relay, not proven to be the undecided path beside it, and holding the
+outbox behind the inbox would send the outbox's authors to the wrong relay.
+That holds for a canonical the fold also cleared: on lang.relays.land `/es`
+is its own relay that `/es/` folds onto, and electing it held the quiet `/ar`
+behind a different language. A
+stand-in that itself waits on a twin hands its server straight to the twin, so
+no map has a chain for a one-hop re-key to stop halfway along. And where the
+monitor knows a canonical the stream does not name, the roster folds onto it
+rather than electing an alias in its place, which put one relay on the roster
+twice.
+
+**The consistency pass waits on the fold too.** It walked every url the fold
+had not folded away, so a server whose paths were all undecided was
+paired-walked once per path. Over Tor that is the expensive case: staging's
+status page showed `yzzss…onion/bravo-lima-yonder`, `/ember-glyph`,
+`/india-yankee` each "holding for 2m · paired walk" on a socket of the 32 Tor
+allows, 27 paths of one hidden service that answers on none of them. It now
+takes `AliasFolding.heldAmong` from the same `ServerIndex` fitness reads and
+walks only the stand-in; the rest report under their own reason, `waits on the
+fold behind another url of its server`, so the candidate set still divides
+once. In staging's records, 374 `.onion` servers carry more than one path
+(2,581 urls): on 292 of them (2,008 urls) no path answers at all, so no
+yardstick exists and the fold cannot decide them; on 64 the root is `prime`
+and every other path answered the upgrade with HTTP 404, correctly `dead`; 18
+folded. Tor's SOCKS replies were also untaught: `SOCKS: Host unreachable` (the
+hidden service could not be reached) and `SOCKS: TTL expired` read "a reason we
+do not recognise" on 1,399 of the 2,533 silent onion urls. `Silence` now places
+them as `no route to the host` and `it never answered in time`; the grade is
+`silent` either way, so no epoch bump.
+
+**The yardstick search walks past a thin window.** It stopped at the first
+url that answered at all, on the reading that a thin window is a fact about
+the host. On a path-routing host it is a fact about the path:
+`lang.relays.land/ar` served 7 events and `/zh` and `/es` 500 each, disjoint,
+so the whole group was "no yardstick" for good and waited behind a root that
+serves a web page. The search now goes on with two budgets, because the
+cap existed for silence: `YARDSTICK_ATTEMPTS` (3) urls silent or declined,
+each costing a deadline, and `THIN_ATTEMPTS` (12) thin answers, each one
+short page. Three was not enough on its own: `/ar`, `/ca` and `/cs` sort first
+on that host and are all quiet. The first thin window is kept for the
+scheme-twin exit. A host thin everywhere costs twelve small probes a pass
+instead of one. No epoch bump: a
+yardstick found this way is held to the same bars, so nothing an earlier
+verdict concluded changes.
+
+**Why some hosts stay undecided, as far as a full local run showed.** A sweep
+over 196 production relay lists (1,997 urls, 292 on the hosts #258 names)
+left 155 hosts undecided: 121 with no yardstick (mostly a single url that
+cannot answer, now also the thin-first case above), 21 our own transport, 12
+nothing to compare, and `relay.nostr.net`, whose leader shared 237 of 500 ids
+with its own second walk under the pass's load. Alone, the same walk repeats
+at 0.98 over 45 seconds at a 60-second anchor and at 1.00 at deeper ones,
+which read as "the anchor is not the cause". **That was wrong**: 45 seconds is
+too short a gap to see it, as the next paragraph measures. Undecided costs one
+roster entry per server, not one per path, because of the waiting rule above.
+
+**The anchor is half an hour back, because a minute-old window does not
+last.** Re-run over all 36,293 clearnet urls with the guard's line naming the
+second walk's size, every one of the 25 hosts that failed it got a FULL second
+walk (500 ids, 122 for fiatjaf.com) sharing 0 to 237 of the first: not a
+relay throttling or our transport cutting the walk, but a different window
+from the same anchor. Under a full sweep the second walk comes minutes after
+the first, since every member is fingerprinted in between. Walking the same
+anchor again after a gap, alone and unloaded:
+
+| host | 60s anchor, +1 / +3 / +7 min | 10 min anchor, +3 / +7 / +15 min | 1 h anchor, +3 / +7 / +15 min |
+|---|---|---|---|
+| `yabu.me` | 500 / 500 / **1** | 500 / 498 / 481 | 500 / 498 / 494 |
+| `relay.agentry.com` | 500 / 500 / **0** | 484 / 451 / 413 | 493 / 473 / 454 |
+| `relay.primal.net` | 479 / 475 / **118** | 500 / 499 / 495 | 495 / 495 / 494 |
+| `nos.lol` | 489 / 486 / **257** | 500 / 498 / 497 | 495 / 495 / 495 |
+| `temp.iris.to` | 498 / 498 / **260** | 500 / 498 / 497 | 500 / 500 / 499 |
+| `relay.nostr.net` | 334 / 332 / **146** of 344 | 350 / 347 / 346 of 350 | 321 / 321 / 321 of 326 |
+
+At a minute the window holds for a few minutes and then collapses, so recent
+events leave a relay after it has served them (the cliff at five to seven
+minutes looks like NIP-40 expirations; what it is matters less than when). At
+ten minutes and deeper the collapse is gone. A slower drift remains on hosts
+whose 500 ids span over an hour (`relay.agentry.com`, `relay.binaryrobot.com`
+and `schnorr.me` decay almost identically, one backend; `relay.angor.io`
+likewise), which loses 2-3 points a minute at any depth and is somewhat
+smaller the deeper the anchor. `relay.damus.io` answered at half an hour and
+errored at an hour, twice, which caps the depth. No relay in either run sent a
+NIP-01 `rate-limited:` refusal, so quartz's back-off handling (pinned at
+`25a3f37c83` for it) has nothing to act on here. No epoch bump: a verdict
+taken at the old anchor was proved at that anchor.
+
+Validated by the same full replay at thirty minutes: hosts failing the guard
+went from 25 (30 on the previous quartz) to 1, `tamby.mjex.me`, whose second
+walk never answered; aliases from 14,436 to 15,300; undecided hosts from 708 to
+680; every other grade within run-to-run noise, and still no server with two
+unproven primes. `relay.damus.io`'s root went ungraded in that run because it
+answered the upgrade with HTTP 503 during fitness, its per-IP budget
+(`read bandwidth budget exhausted (1048570 bytes/min per IP)`, worded as
+`ERROR:`, not NIP-01's `rate-limited:`), which fitness rightly defers.
+
+**The yardstick ladder is the fitness pass's shapes.** `leaderPrint` asked a
+bare filter, kinds 1, then group metadata, so an indexer refusing the first
+and empty on the second never gave a window and its paths could not fold.
+It walks `AliasProbe.SHAPES` now, and the group fingerprints through whichever
+shape answered.
+

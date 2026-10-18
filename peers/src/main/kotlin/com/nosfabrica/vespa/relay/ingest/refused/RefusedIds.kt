@@ -166,36 +166,35 @@ class RefusedIds(
         return false
     }
 
-    /** One completed download that the store refused. */
+    /**
+     * One completed download that the store refused. Decided by what each table's add reports,
+     * never by a lookup before it, so two refusals racing on one id still count as two.
+     */
     fun record(
         id: String,
         createdAt: Long,
     ): RecordOutcome {
         val epoch = epochFor(createdAt) ?: return RecordOutcome.OUT_OF_RANGE
         if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
-        if (epoch.candidate.contains(id)) {
-            return when (epoch.suppress.add(id)) {
+        if (!epoch.candidate.contains(id)) {
+            if (epoch.sealedOff) return RecordOutcome.REFUSED_FULL
+            when (epoch.candidate.add(id)) {
                 AddResult.FULL -> {
-                    seal(epochOf(createdAt), "suppress")
+                    return seal(epochOf(createdAt), "candidate")
                 }
 
-                else -> {
-                    suppressionsAdded.incrementAndGet()
-                    RecordOutcome.SUPPRESSED
+                AddResult.ADDED -> {
+                    candidatesAdded.incrementAndGet()
+                    return RecordOutcome.CANDIDATE
+                }
+
+                // Another refusal of this id landed between the lookup and the add: this one is the second.
+                AddResult.PRESENT -> {
+                    Unit
                 }
             }
         }
-        if (epoch.sealedOff) return RecordOutcome.REFUSED_FULL
-        return when (epoch.candidate.add(id)) {
-            AddResult.FULL -> {
-                seal(epochOf(createdAt), "candidate")
-            }
-
-            else -> {
-                candidatesAdded.incrementAndGet()
-                RecordOutcome.CANDIDATE
-            }
-        }
+        return addSuppression(epoch, epochOf(createdAt), id)
     }
 
     /** Straight to suppressed, for a relay's own `OK false` in the permanent class. */
@@ -203,23 +202,34 @@ class RefusedIds(
         id: String,
         createdAt: Long,
     ): RecordOutcome {
-        val key = epochOf(createdAt)
         val epoch = epochFor(createdAt) ?: return RecordOutcome.OUT_OF_RANGE
         if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
-        return when (epoch.suppress.add(id)) {
+        return addSuppression(epoch, epochOf(createdAt), id)
+    }
+
+    /** [id] into [epoch]'s suppress table, counted only by the add that actually placed it. */
+    private fun addSuppression(
+        epoch: Epoch,
+        key: Long,
+        id: String,
+    ): RecordOutcome =
+        when (epoch.suppress.add(id)) {
             AddResult.FULL -> {
                 seal(key, "suppress")
             }
 
-            else -> {
+            AddResult.ADDED -> {
                 suppressionsAdded.incrementAndGet()
                 RecordOutcome.SUPPRESSED
             }
+
+            AddResult.PRESENT -> {
+                RecordOutcome.ALREADY
+            }
         }
-    }
 
     /** Drop every epoch entirely below [floor], the lowest `created_at` any stream still asks for. */
-    fun retireBelow(floor: Long) {
+    private fun retireBelow(floor: Long) {
         val cutoff = epochOf(floor)
         epochs.keys.filter { it < cutoff }.forEach { retire(it, "entirely below created_at $floor") }
     }

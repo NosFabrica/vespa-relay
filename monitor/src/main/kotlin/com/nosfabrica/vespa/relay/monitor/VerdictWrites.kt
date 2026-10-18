@@ -35,6 +35,8 @@ internal class VerdictWrites(
     val wedged: Int,
     val stoppedBy: String?,
     val resumeAt: NormalizedRelayUrl?,
+    /** The urls whose write the store took. */
+    val stored: Set<NormalizedRelayUrl> = emptySet(),
 )
 
 /**
@@ -132,5 +134,5 @@ internal suspend fun writeEach(
     }
     // Completion order is not write order: writes started before the one that tripped the limit may not have landed.
     val resumeAt = if (stoppedBy == null) null else urls.indices.firstOrNull { !stored[it] }?.let(urls::get)
-    return VerdictWrites(published, declined, wedged, stoppedBy, resumeAt)
+    return VerdictWrites(published, declined, wedged, stoppedBy, resumeAt, urls.filterIndexedTo(HashSet()) { i, _ -> stored[i] })
 }

@@ -4,10 +4,10 @@
 // guessed at where they are missing — so nothing here computes a value the publisher did not
 // state.
 
-import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, OPAQUE_D } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, extLink, safeUrl,
-  tagOf, tagsOf, oneLine, fmtDuration, fmtTs, plural,
+  tagOf, tagsOf, oneLine, fmtDuration, fmtTs, plural, addrHref,
 } from "./base.js";
 
 // ---- 1301 / 33401, the workouts --------------------------------------------
@@ -77,6 +77,68 @@ function exerciseCard(ev, opts) {
   return shell(ev, opts, inner, [
     ["measured in", measured.length ? esc(clip(measured.join(" · "), 120)) : null],
   ]);
+}
+
+/**
+ * The sets a 33402 plan prescribes, quartz's `ExerciseSetTag`: `["exercise", "33401:<pk>:<d>",
+ * relay, weight, reps, rpe, set_type]`. Only the coordinate form is a set; RUNSTR's
+ * `["exercise", "running"]` is an activity word. Every set value may be blank, left for the user.
+ */
+const COORDINATE = /^\d+:[0-9a-f]{64}:./;
+const setsOf = (ev) => tagsOf(ev, "exercise").filter((t) => COORDINATE.test(t[1] || ""));
+
+/** One set, as the plan wrote it: "100 kg × 5 · RPE 8 · warmup", bodyweight when weight is blank. */
+function setText(t) {
+  const num = (v) => (/^-?\d+(?:\.\d+)?$/.test(oneLine(v)) ? oneLine(v) : "");
+  const kg = num(t[3]);
+  const reps = num(t[4]);
+  const load = kg ? (Number(kg) < 0 ? `${kg.slice(1)} kg assisted` : `${kg} kg`) : "";
+  return [
+    [load, reps && `${reps} reps`].filter(Boolean).join(" × "),
+    num(t[5]) && `RPE ${num(t[5])}`,
+    ["warmup", "drop", "failure"].includes(oneLine(t[6])) ? oneLine(t[6]) : "",
+  ].filter(Boolean).join(" · ");
+}
+
+/** The exercise a set points at, by its `d` when that is a readable slug. */
+const exerciseLabel = (coord) => {
+  const d = coord.split(":").slice(2).join(":");
+  return d && !OPAQUE_D.test(d) ? d.replace(/[-_]+/g, " ") : "an exercise";
+};
+
+/** The plan's shape: its format, rounds and timings, each only when published. */
+const planStats = (ev) => {
+  const count = (name) => (/^\d+$/.test(oneLine(tagOf(ev, name))) ? Number(oneLine(tagOf(ev, name))) : 0);
+  return [
+    oneLine(tagOf(ev, "type")),
+    count("rounds") ? plural(count("rounds"), "round") : "",
+    workoutDuration(ev),
+    count("interval") ? `${fmtDuration(count("interval"))} intervals` : "",
+    count("rest_between_rounds") ? `${fmtDuration(count("rest_between_rounds"))} rest` : "",
+  ].filter(Boolean).join(" · ");
+};
+
+/** 33402 — a workout plan: the sets a 1301 record follows, each pointing at a 33401 exercise. */
+function workoutTemplateCard(ev, opts) {
+  const sets = setsOf(ev);
+  const shown = opts && opts.full ? sets : sets.slice(0, 6);
+  const stats = planStats(ev);
+  const row = (t) => {
+    const href = addrHref(t[1]);
+    const label = esc(clip(exerciseLabel(t[1]), 40));
+    const what = setText(t);
+    return `<li>${href ? `<a href="${href}">${label}</a>` : label}${what ? ` — ${esc(what)}` : ""}</li>`;
+  };
+  const inner =
+    titleHtml(opts, titleOf(ev), 140) +
+    (stats ? `<div class="result-body muted">${esc(clip(stats, 120))}</div>` : "") +
+    bodyHtml(opts, ev.content, 300) +
+    (sets.length
+      ? `<div class="result-body">${esc(plural(sets.length, "set"))}</div>` +
+        `<ul class="ref-list">${shown.map(row).join("")}` +
+        `${sets.length > shown.length ? `<li class="muted-note">…and ${sets.length - shown.length} more</li>` : ""}</ul>`
+      : "");
+  return shell(ev, opts, inner);
 }
 
 // ---- 2473 / 12473, the birds -----------------------------------------------
@@ -178,6 +240,7 @@ function ps1SaveCard(ev, opts) {
 
 register([1301], workoutCard);
 register([33401], exerciseCard);
+register([33402], workoutTemplateCard);
 register([2473], birdCard);
 register([12473], birdexCard);
 register([1315], roadReportCard);
@@ -191,6 +254,10 @@ registerRow([33401], (ev) => ({
   name: titleOf(ev),
   sub: [[tagOf(ev, "equipment"), tagOf(ev, "difficulty")].map(oneLine).filter(Boolean).join(" · "), ev.content]
     .filter(Boolean).join(" · "),
+}));
+registerRow([33402], (ev) => ({
+  name: titleOf(ev) || "a workout plan",
+  sub: [plural(setsOf(ev).length, "set"), planStats(ev), ev.content].filter(Boolean).join(" · "),
 }));
 registerRow([2473], (ev) => {
   const first = speciesOf(ev)[0];

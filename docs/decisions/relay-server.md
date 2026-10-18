@@ -2,7 +2,7 @@
 
 The history behind `relay/.../RelayMain.kt`, the `server/` package (HttpServer,
 NostrRelayServer, the NIP-42 and lens policies, TrustNotice, SearchGate,
-BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpRelayGate) and `config/`
+BanListFile, RelayIcon, Nip86Route, RelayWebSocket, HttpRelayRoutes, HttpRelayGate, OpenRankingRoutes) and `config/`
 (RelayAddresses, EnvSettings, PubKeys), moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -40,8 +40,9 @@ visits every document, and the live store held 28.7M scores, so every minute
 walked the whole corpus once and every score twice (the provider grouping and
 the score count), with a count over the whole reputation store beside them. The members
 kept their places in the document, since the page reads them there. What it
-cost is `newestEvent` at the charts cadence rather than the minute; it is now
-read off the histogram's spans for free, and the page's staleness line is a day.
+cost was `newestEvent` at the charts cadence rather than the minute — hours old
+by design, so in schema 3 it left the document and the page asks the relay for
+its newest event over the websocket instead.
 
 **`RELAY_ICON` answers both NIP-11 and the favicon, in both directions.** A
 relay was pictured twice and answered differently each time. Once unset
@@ -340,3 +341,24 @@ the way out. NIP-86 already answered POSTs to `/`, so the two share the route,
 told apart by NIP-86's `application/nostr+json+rpc`; with the commands off, every
 POST is the rpc's, as before.
 
+**The relay is a public search backend for Brainstorm's Open Ranking.**
+ORE-05 has to show each hit's own engine score, which NIP-50 cannot carry: page
+assembly drops it, and an expanded subject has only its pointer's placement, so
+`POST /search/pubkeys` answers it here. Open Ranking lives in one place,
+`api.brainstorm.world`, which serves the whole ORE API and passes this route's
+answers through verbatim, so the relay serves no capability document. An earlier
+version kept the route private, reachable only from Brainstorm's cluster; that was
+dropped, because it ranks nothing a NIP-50 `observer:` search does not already rank,
+and a `.onion` forward would have reached past any ingress rule anyway. So it is
+public on every address, under the app-wide CORS like every other route, and only
+`ORE_CONCURRENCY` bounds it (no per-client cap): a search past it waits up to 2 s
+for a slot, as a websocket's searches queue, then is a `503`.
+The relay keeps no house observer, not even for this route: a global ORE algorithm
+needs one view, and the proxy names it in each request (`observer`), since which
+key is the house is Brainstorm's decision, already in its server. The observer's
+10040 decides the status and nothing is substituted (ORE-01): one naming a rank
+service is that observer's ranking, an empty `200` while the service's scores are
+still being mirrored, and a global search whose House Observer has none is a `503`,
+never an empty `200`. Nothing asks whether the scores are ready: an earlier version
+sampled the service's newest cards before each search to answer a `202`, a second
+engine query that eight cards could not settle anyway.

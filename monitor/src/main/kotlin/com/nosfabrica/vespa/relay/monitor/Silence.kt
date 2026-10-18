@@ -66,11 +66,23 @@ enum class Silence(
                         "no address associated",
                         "temporary failure in name resolution",
                     ),
-                NO_ROUTE to listOf("no route to host", "noroutetohost", "network is unreachable", "portunreachable"),
+                // The SOCKS replies are Tor's: "Host unreachable" is a hidden service it could not
+                // reach (offline, or no descriptor), the cause behind most silent `.onion` urls.
+                NO_ROUTE to
+                    listOf(
+                        "no route to host",
+                        "noroutetohost",
+                        "network is unreachable",
+                        "portunreachable",
+                        "socks: host unreachable",
+                        "socks: network unreachable",
+                        "socks server couldn't reach destination",
+                    ),
                 TLS to listOf("sslhandshake", "sslexception", "sslpeerunverified", "certificate", "trust anchor"),
                 UPGRADE to listOf("unexpected response code", "expected http 101", "not a websocket"),
                 // Timeout before refused: a refusal's only evidence is the `(ConnectException)` suffix.
-                TIMEOUT to listOf("timeout", "timed out", "sockettimeout"),
+                // Tor answers "TTL expired" when a circuit or rendezvous outlasts its own clock.
+                TIMEOUT to listOf("timeout", "timed out", "sockettimeout", "socks: ttl expired"),
                 REFUSED to listOf("connection refused", "econnrefused", "connectexception"),
             )
 

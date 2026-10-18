@@ -6,14 +6,14 @@ import { schemaFor } from "../../main/resources/web/shared/statspage.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
-/** What stats.html mounts with: the relay's document is a version ahead of the other two. */
-const versions = { relay: 2, sync: 1, monitor: 1 };
+/** What stats.html mounts with: the relay's document is versioned apart from the other two. */
+const versions = { relay: 3, sync: 1, monitor: 1 };
 
 const source = (path) => readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
 
 {
   // The relay's counters tier lands first, carrying the mirror's manifest as `sync` and no `corpus`.
-  const countersOnly = { schema: 2, relay: "wss://relay.example/", countedAs: "anonymous", sync: { status: "ok" } };
+  const countersOnly = { schema: 3, relay: "wss://relay.example/", countedAs: "anonymous", sync: { status: "ok" } };
   assert.equal(schemaFor(countersOnly, versions), versions.relay, "the relay's counters tier was read as a mirror document");
   const both = { ...countersOnly, corpus: { status: "ok" } };
   assert.equal(schemaFor(both, versions), versions.relay);
@@ -32,4 +32,18 @@ const source = (path) => readFileSync(new URL(`../../../../${path}`, import.meta
   assert.match(source("relay/src/main/kotlin/com/nosfabrica/vespa/relay/maintenance/StatsRollup.kt"), /put\("relay", relayUrl\)/);
   assert.doesNotMatch(source("sync/src/main/kotlin/com/nosfabrica/vespa/relay/status/SyncStatus.kt"), /put\("relay"/);
   ok("the relay's rollup names its relay and the mirror's status never does");
+}
+
+{
+  // The page, the rollup and this suite name one relay schema between them.
+  const html = source("web/src/main/resources/stats.html");
+  assert.match(html, new RegExp(`const SCHEMA = ${versions.relay};`), "stats.html and this suite disagree on the relay schema");
+  assert.match(
+    source("relay/src/main/kotlin/com/nosfabrica/vespa/relay/maintenance/StatsRollup.kt"),
+    new RegExp(`const val SCHEMA_VERSION = ${versions.relay}\\b`),
+    "the rollup and this suite disagree on the relay schema",
+  );
+  // Only the relay's page counts its store over a socket: the mirror's and the monitor's have none to count.
+  assert.match(html, /const isRelayDoc = \(doc\) => !!doc\.relay && !doc\.monitor;/);
+  ok("only the relay's document mounts the live panels, and every reader agrees on its schema");
 }

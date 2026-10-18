@@ -90,6 +90,8 @@ class NostrRelayServer(
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
     // A default parameter so the gate exists before the super constructor takes it as the listener.
     private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
+    // Published events one store write may take; see ingestBatchFromEnv.
+    ingestBatch: Int = IngestQueue.DEFAULT_MAX_BATCH,
 ) : RelayServerBase(
         // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
@@ -110,7 +112,14 @@ class NostrRelayServer(
         listener = searchGate.listening(listener),
         limits = limits,
     ) {
-    private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
+    private val ingest =
+        IngestQueue(
+            store = store,
+            parentContext = parentContext,
+            maxBatch = ingestBatch,
+            capacity = ingestCapacity(ingestBatch),
+            verify = { it.verify() },
+        )
 
     override val backend: SessionBackend =
         ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store))
@@ -124,6 +133,12 @@ class NostrRelayServer(
         scope.cancel()
     }
 }
+
+/**
+ * Room for four batches before a publisher's submit suspends, and never less than quartz's own
+ * queue, so the default batch keeps the default capacity.
+ */
+internal fun ingestCapacity(batch: Int): Int = (batch * 4).coerceAtLeast(IngestQueue.DEFAULT_CAPACITY)
 
 /**
  * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [queryRaw] and

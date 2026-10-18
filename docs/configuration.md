@@ -96,10 +96,13 @@ queries, publishes it as a public JSON document, and charts it on a page:
   mirror down for a day still published the card a mirror mid-cycle did. A
   request answers it
 
-Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
-present, and the page renders them as **ages** rather than dates: "kind 1 four
-minutes ago, kind 30023 six days ago" localises which stream stalled, where a
-column of timestamps makes the reader do the subtraction.
+Per-kind `lastSeen` is bounded to the present, and the page renders it as an
+**age** rather than a date: "kind 1 four minutes ago, kind 30023 six days ago"
+localises which stream stalled, where a column of timestamps makes the reader do
+the subtraction. The age is measured from the rollup's own time, under an
+"As of" line, so a table computed hours ago does not read every kind as hours
+quiet. How fresh the store is *now* is not in the document at all: the page's
+*Right now* panel asks the relay itself, over its websocket.
 
 Everything is counted **anonymously**: the store gates an authenticated reader to
 authors that reader has scored, so the same query under an operator's lens would
@@ -132,9 +135,9 @@ a distinct-authors-per-month series over four years of corpus is minutes.
 **A `count()` visits every document it matches**, and a `kind` filter bounds
 the group set, not the walk. That is why the event total and the trust chain
 are with the charts despite being counts: run every minute, they walked the
-whole store and every stored score sixty times an hour. `corpus.newestEvent` is
-the maximum of the histogram's per-kind spans, bounded to the present, so it
-costs no query of its own and is as fresh as the charts pass.
+whole store and every stored score sixty times an hour. There is no
+`corpus.newestEvent` (it left in schema 3): as fresh as the charts pass meant
+hours old, so the page counts freshness live over the relay's websocket.
 
 Each section states its own `generatedAt`, each pass its own
 `tiers.<name>.{generatedAt,tookMs,everySeconds}`, and every query its own
@@ -179,6 +182,7 @@ reason.
 |---|---|---|
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…`, comma/space-separated (bare hex is refused — it has no checksum). An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
+| `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: unset keeps quartz's 64, sized for SQLite, which held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). The queue in front of it holds four batches. `1`-`8192`; anything else stops the boot | `64` |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
 
@@ -317,6 +321,17 @@ lines back; another buffering proxy needs the same off.
 The wire format is NIP-FE as published on NostrHub (kind 30817,
 `d=nip-fe-nostr-over-http`); [proposals/nip-fe-relay-over-http.md](proposals/nip-fe-relay-over-http.md)
 carries a copy, and `relay/tools/nipfe-e2e.mjs` drives a running relay through it.
+
+## Search backend for Brainstorm's Open Ranking
+
+`POST /search/pubkeys` (README, "Search backend for Brainstorm's Open Ranking"):
+the backend `api.brainstorm.world` proxies ORE-05 to. Public, like the relay's
+NIP-50 search, on every address the relay answers at.
+
+| var | meaning | default |
+|---|---|---|
+| `ORE_ENABLED` | mount the route. `true`/`1`/`yes`/`on` turns it on; anything else that is not a boolean stops the boot | off |
+| `ORE_CONCURRENCY` | searches the relay may run at once, `1` or more; the next waits up to 2 s for a slot, then is a `503`. Each is a ranked read. It is the whole bound: there is no per-client cap, so one busy caller can hold every slot | `8` |
 
 ## Search: the subject travels with the pointer
 

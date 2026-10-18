@@ -40,8 +40,9 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
                             so the relay's, the mirror's and the monitor's
                             documents each draw their own cards from one file
   resources/web/            every module the pages import: shared/ (the design,
-                            the render engine, the protocol clients), sync/ and
-                            monitor/ (each plane's cards), cards/ (the search
+                            the render engine, the protocol clients), relay/,
+                            sync/ and monitor/ (each plane's cards; relay/ is
+                            the live "Right now" panels), cards/ (the search
                             UI's per-kind renderers). shared/asks.js is the
                             one to know before touching a search ask: the
                             relay's cost is the MATCH SET, not the limit
@@ -229,7 +230,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         live tail. docs/search-latency.md has the whole
                         measurement, including what the page and the store
                         changed beside it
-    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
+    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure, ORE search
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
     HttpRelayRoutes.kt  POST / (NIP-FE): one client frame, the host half of
@@ -244,6 +245,10 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     HttpRelayGate.kt    HTTP_RELAY_PER_CLIENT / HTTP_RELAY_TOTAL — the search
                         gate is per connection, and here every request is one
     Nip86Route.kt       the management API
+    OpenRankingRoutes.kt  ORE-05 POST /search/pubkeys, the public backend
+                        Brainstorm's server proxies; off unless ORE_ENABLED;
+                        the Observer's 10040 picks 200/422/503, and
+                        ORE_CONCURRENCY caps it
     BanListFile.kt      NIP-86 ban state that outlives the container
     ConnectionCountListener.kt  LOG_CONNECTIONS
   maintenance/          background jobs behind the server
@@ -813,6 +818,18 @@ relay/src/main/resources/
                         protocol feature to test, and thirty days of
                         distinct-pubkey counts is not a question to ask over a
                         websocket, so every chart here is a rollup read.
+                        EXCEPT THE TOP OF THE RELAY'S PAGE: *Right now* (the
+                        newest event, the last minute and hour) and *People and
+                        trust* (profiles, follow lists, relay lists) are asked
+                        live over the relay's own socket (web/relay/live.js), a
+                        REQ and NIP-45 COUNTs the engine answers in
+                        milliseconds, because a rollup hours old cannot say how
+                        fresh the store is. An "As of <age>" line divides them
+                        from the rollup, and the Kinds table's *Last event* is
+                        measured from that rollup's own time, not the reader's
+                        clock: the column says whether a kind is still in use,
+                        and a table six hours old would otherwise read every
+                        kind as six hours quiet.
                         The router's state is TWO cards off one `sync` section,
                         split by what each row decides. *Sync coverage* answers
                         "is the mirror keeping up": the constraint line, then
@@ -959,10 +976,9 @@ for it. **The tier is the section, never the query**, because a section carries
 one `generatedAt` for all of its members — which is what moved the store's
 distinct pubkeys out of `corpus` into its own `authors` section, and why
 `corpus.kinds` is gone in favour of the histogram's own `kinds.total`.
-`corpus.newestEvent` is the maximum of the histogram's per-kind spans (bounded
-to the present) and of the previous document's copy, so a failed span query
-never winds the tile back. It moved with `corpus` and is as fresh as the charts
-pass: the page's staleness line is a day, which a fifteen-minute cadence meets.
+`corpus.newestEvent` is gone (schema 3): at the charts cadence it was hours old
+by design, so the page asks the relay for its newest event over the websocket
+instead. Per-kind `lastSeen` stays, read against the section's `generatedAt`.
 A counters pass that produced no section does not publish a first document, or a
 fresh serve-only relay would swap the page's waiting card for a blank page.
 

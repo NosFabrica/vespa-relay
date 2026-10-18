@@ -14,11 +14,12 @@
 <!--
   The corpus this deployment holds, charted from GET /stats.json.
 
-  The JSON is the artifact and this page is one reader of it; only the verdicts
-  panel speaks the relay protocol, since it has no rollup to read. Every number
-  describes this store, counted anonymously. A stale or missing rollup is said,
-  never drawn as zeros. Charts are single-series: events and pubkeys are two
-  charts, never two y-axes.
+  The JSON is the artifact and this page is one reader of it. Two things speak the
+  relay protocol instead: the relay's live panels at the top, since a rollup hours
+  old cannot say what is happening now, and the verdicts panel, which has no rollup
+  to read. Every number describes this store, counted anonymously. A stale or
+  missing rollup is said, never drawn as zeros. Charts are single-series: events
+  and pubkeys are two charts, never two y-axes.
 -->
 <link rel="stylesheet" href="./web/shared/stats.css" />
 </head>
@@ -38,6 +39,9 @@
 import { kindLabel } from "./web/shared/kinds.js";
 import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "./web/shared/page.js";
 import { mountStatsPage } from "./web/shared/statspage.js";
+import { Relay } from "./web/shared/relay.js";
+import { LiveCounts, socketUrlOf } from "./web/relay/live.js";
+import { liveCards } from "./web/relay/cards.js";
 // Imported unconditionally: one page serves all three services (see PANELS).
 import { syncCard } from "./web/sync/cards.js";
 import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
@@ -45,11 +49,64 @@ import { monitorCard, verdictsCard } from "./web/monitor/cards.js";
 /** What to call a kind: the document's own name first, `kinds.js` as the fallback; the two sets are not nested. */
 const kindName = (kind, given) => given || kindLabel(kind);
 
-/** Past this an age is coloured. Not a verdict: a serve-only deployment has every right to an old corpus. */
-const STALE_CORPUS_SECONDS = 24 * 3600;
-
 /** The document schema this page reads; see SCHEMA_VERSION in StatsRollup. */
-const SCHEMA = 2;
+const SCHEMA = 3;
+
+/**
+ * The relay's document, as against the mirror's (which names no relay) and the monitor's (which
+ * carries `monitor`). Only the relay's page counts the store over a socket.
+ */
+const isRelayDoc = (doc) => !!doc.relay && !doc.monitor;
+
+/** Started on the first relay document and kept for the life of the tab. */
+let live = null;
+
+function livePanels() {
+  if (!live) {
+    // Same-origin, beside this page: `doc.relay` is the public url, which a local or tunnelled
+    // reader may not be able to reach.
+    const socketUrl = socketUrlOf(location.href);
+    const relay = new Relay(socketUrl, { lensless: true });
+    let cards = null;
+    live = new LiveCounts(relay, { onChange: () => cards && cards.update() });
+    cards = liveCards(live, socketUrl);
+    live.cards = cards.cards;
+    // Closed on pagehide, which keeps the page eligible for the back-forward cache.
+    window.addEventListener("pagehide", () => { try { relay.ws && relay.ws.close(); } catch (e) {} });
+    live.start();
+  }
+  return live.cards;
+}
+
+/** When the charts pass that computed everything under the divider ran, in epoch seconds; null when unstated. */
+function rolledUpAt(doc) {
+  const iso = doc.tiers?.charts?.generatedAt || doc.corpus?.generatedAt;
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+/** A section's own `generatedAt` in epoch seconds, or null. */
+function sectionAt(section) {
+  const t = section && section.generatedAt ? Date.parse(section.generatedAt) : NaN;
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+/**
+ * The line between the live panels and the rollup: everything under it is as old as it says.
+ * Its age is re-read on a timer, since the panel is only rebuilt when the rollup is.
+ */
+function asOfDivider(doc) {
+  const at = rolledUpAt(doc);
+  const line = el("div", "asof");
+  const label = el("span");
+  const tick = () => { label.textContent = at == null ? "As of the last rollup" : `As of ${ago(at)}`; };
+  tick();
+  if (at != null) label.title = `Everything below was rolled up at ${isoOf(at)}; the numbers above are live.`;
+  line.appendChild(label);
+  return { line, tick };
+}
+let divider = null;
+setInterval(() => divider && divider.tick(), 15000);
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -181,23 +238,6 @@ function tiles(doc) {
     wrap.appendChild(t);
   }
 
-  // Freshness is the headline: a relay whose mirror died keeps its event count.
-  if (d.newestEvent != null) {
-    const t = el("div", "tile");
-    const age = Math.max(0, Math.floor(Date.now() / 1000) - d.newestEvent);
-    const v = el("div", "v", ago(d.newestEvent));
-    if (age > STALE_CORPUS_SECONDS) {
-      v.classList.add("stale");
-      t.title =
-        "The newest event this relay holds is over a day old. Either the mirror has stopped, or this " +
-        "deployment serves without one — this page cannot tell which.";
-    } else {
-      t.title = isoOf(d.newestEvent);
-    }
-    t.appendChild(v);
-    t.appendChild(el("div", "k", "Newest event"));
-    wrap.appendChild(t);
-  }
   out.push(fitTiles(wrap));
 
   // `corpus.futureDated` is deliberately not drawn: a fact about the protocol,
@@ -505,6 +545,9 @@ function kindsCard(kinds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
   const all = d.all || [];
+  // The bound the spans were cut at; a document from before it was published falls back to the
+  // section's start, which on a large store is the histogram's runtime earlier.
+  const asOf = d.asOf ?? sectionAt(kinds);
   // No count in the sub: the filter row prints it.
   cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
   if (!all.length) return card;
@@ -534,6 +577,7 @@ function kindsCard(kinds) {
   // corpus. See StatsRollup.kindsSection.
   for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Last event", "n"]]) {
     const th = el("th", cls, label);
+    if (label === "Last event") th.title = "How long before this table was rolled up each kind's newest event was created";
     hr.appendChild(th);
   }
   thead.appendChild(hr);
@@ -550,8 +594,10 @@ function kindsCard(kinds) {
     share.appendChild(bar);
     tr.appendChild(share);
     // An age, not a date: "kind 30023 six days ago" localises the stalled stream.
-    // The rollup bounds lastSeen to the present.
-    const newest = el("td", "n", ago(k.lastSeen));
+    // Measured from the rollup, not from now: the question is whether a kind is
+    // still in use, and the whole table is as old as the "As of" line says. The
+    // rollup bounds lastSeen to its own present.
+    const newest = el("td", "n", ago(k.lastSeen, asOf ?? undefined));
     if (k.lastSeen != null) newest.title = isoOf(k.lastSeen);
     tr.appendChild(newest);
     tbody.appendChild(tr);
@@ -600,6 +646,16 @@ function activityPanel(activity) {
 const has = (doc, ...members) => members.some((m) => doc[m]);
 
 const PANELS = [
+  // `reads: []`: built once, because it holds its own socket and redraws itself.
+  { name: "live", reads: [], build: (doc) => (isRelayDoc(doc) ? livePanels() : []) },
+  {
+    name: "asOf",
+    reads: ["corpus", "kinds"],
+    build: (doc) => {
+      divider = isRelayDoc(doc) && has(doc, "corpus", "kinds") ? asOfDivider(doc) : null;
+      return divider ? [divider.line] : [];
+    },
+  },
   { name: "totals", reads: ["corpus", "authors", "kinds"], build: (doc) => (has(doc, "corpus") ? tiles(doc) : []) },
   { name: "trust", reads: ["trust"], build: (doc) => (has(doc, "trust") ? [trustCard(doc.trust)] : []) },
   { name: "activity", reads: ["activity"], build: (doc) => (has(doc, "activity") ? [activityPanel(doc.activity)] : []) },

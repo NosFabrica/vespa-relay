@@ -33,7 +33,16 @@ A key the loader does not read, at any level (the top, a stream, a filter, a
 the key: misspelt, it would otherwise leave its setting at the default while
 the file reads as if it were set. The same goes for a `relaySource`-only key
 (`refreshSeconds`, `exclude`, `gatedBy`, `maxRelaysPerList`) on a stream of
-static `urls`.
+static `urls`, a retired key (each refusal says what replaced it), a number
+outside its bound (the message names the key and the bound; nothing is quietly
+raised to it), and a `urls` or `exclude` entry that is not a relay url or a
+regex. The bounds: `connectionTimeout`, every `*Concurrency`,
+`maxRelaysPerList` and a tier's `maxAge` at least 1; a stream's
+`refreshSeconds` at least 60; a `relaySource` entry's `maxAgeSeconds` at least
+60 and its `refreshSeconds` at least 10; a re-check period, as
+`negentropySyncThePastSeconds`, `refetchThePastSeconds` or a tier's `every`, 0
+(always due) or at least 3600; the monitor's `sweepSeconds` at least 300 and
+its `fastLaneSeconds` 0 (off) or at least 30.
 
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
@@ -506,7 +515,7 @@ that can serve one stream and not another is still a useful visit.
 
 Unset means **uncapped**, not zero — a deployment that has never heard of these
 behaves exactly as it did, bounded by `visitConcurrency` alone. A configured `0`
-is floored to 1, for the same reason the pool's socket numbers are: zero is an
+is refused at boot, for the same reason the pool's socket numbers are: zero is an
 off switch wearing a tuning knob's name.
 
 **`maxLiveConcurrency` is the exception, and has to be.** The other three

@@ -228,6 +228,8 @@ const FUNNEL_TONE = {
   foldedAway: "mute",
   heldOutDead: "mute",
   recordedOnly: "mute",
+  // Another url of its server is walked instead, until the fold decides.
+  "waits on the fold behind another url of its server": "mute",
   // Ours: we could not carry it, or our probe broke.
   "declined by our own transport": "ours",
   "the probe failed mid-walk": "ours",

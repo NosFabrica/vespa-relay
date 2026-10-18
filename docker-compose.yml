@@ -18,7 +18,8 @@
 
 services:
   vespa:
-    image: vespaengine/vespa
+    # Pinned: a pull must never swap the engine under a deployed schema (docs/migrations.md).
+    image: vespaengine/vespa:8.763.13
     container_name: vespa
     hostname: vespa
     # A LIMIT, not a reservation. Without one every container sees the whole
@@ -143,6 +144,9 @@ services:
       HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
       HTTP_RELAY_CLIENT_HEADER: ${HTTP_RELAY_CLIENT_HEADER:-}
       HTTP_RELAY_TRUSTED_PROXIES: ${HTTP_RELAY_TRUSTED_PROXIES:-}
+      # ORE-05 search backend for Brainstorm's server, public; off by default.
+      ORE_ENABLED: ${ORE_ENABLED:-}
+      ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The SECOND address the same relay answers at, when the `onion` profile

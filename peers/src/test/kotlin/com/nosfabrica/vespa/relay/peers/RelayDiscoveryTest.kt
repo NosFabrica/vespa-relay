@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.config.RelayExcludes
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.config.TagCondition
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -35,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.Test
@@ -851,5 +853,35 @@ class RelayDiscoveryTest {
             assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = listOf(alive)).isEmpty())
             // An empty ask is not an unbounded one: the lane's quiet tick must not read the whole dead set.
             assertTrue(RelayDiscovery.undialable(store, authors, maxAgeSeconds = 86_400, among = emptyList()).isEmpty())
+        }
+
+    /** A record re-signed now, so its `created_at` is fresh whatever its `dead` label says. */
+    private suspend fun resignedDead(
+        monitor: NostrSignerInternal,
+        url: String,
+        measuredAt: Long,
+        epoch: String,
+    ): Event =
+        monitor.sign(
+            RelayDiscoveryEvent.build(RelayUrlNormalizer.normalize(url), "", nowSeconds()) {
+                add(arrayOf(RelayVerdictRecord.LABEL_TAG, "dead", RelayVerdictRecord.FITNESS_NAMESPACE, "nothing answered", measuredAt.toString(), epoch))
+            },
+        )
+
+    @Test
+    fun `a dead label ages on its own stamp and rules, not on the record's re-signing`() =
+        runBlocking {
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            val day = 86_400L
+            store.insert(resignedDead(monitor, "wss://long-ago.example", nowSeconds() - 10 * day, RelayVerdictRecord.FITNESS_EPOCH))
+            store.insert(resignedDead(monitor, "wss://old-rules.example", nowSeconds(), "0"))
+            store.insert(resignedDead(monitor, "wss://dead-now.example", nowSeconds(), RelayVerdictRecord.FITNESS_EPOCH))
+
+            assertEquals(
+                setOf(RelayUrlNormalizer.normalize("wss://dead-now.example")),
+                RelayDiscovery.undialable(store, listOf(monitor.pubKey), maxAgeSeconds = day),
+                "only a label measured inside the window under the current rules holds a url out",
+            )
         }
 }

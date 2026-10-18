@@ -39,19 +39,19 @@ timeout on purpose), so `monthSlicesFrom` cuts at calendar years: a month
 bucket must fall entirely inside one slice because distinct authors do not sum
 across a split, and years divide months exactly.
 
-**The newest event is asked over a two-day window, and carried forward.**
-Freshness is what the per-minute cadence is for, but the honest whole-corpus
-answer is the kinds histogram's spans. `recentNewest` asks the same
-`spanBy(kind)` with a window on it; a quiet window falls back to the previous
-document's `corpus.newestEvent` or per-kind spans, and the maximum is taken so
-the number only moves forward. A timestamp is exactly as true as when it was
-taken, which a count would not be.
+**The newest event is not rolled up; the page asks the relay.** It was
+`corpus.newestEvent`, the maximum of the kinds histogram's spans carried forward
+from the previous document, and so exactly as fresh as the charts pass — hours
+old by design, under a tile whose whole job was to say how fresh the store is.
+Schema 3 drops it. stats.html asks the relay over its own websocket instead (a
+`limit: 1` REQ, and NIP-45 COUNTs for the last minute and hour, each
+milliseconds), above an "As of" line that dates everything the rollup drew.
 
 **Every window is bounded above at now.** `created_at` is author-signed; the
 reference dashboard reported a `last_seen` of 4130944797 (the year 2100), which
 opens a day bucket 74 years out and squashes every real bar. Vespa also answers
 no bare aggregate: `all(output(max(created_at)))` fails with HTTP 500 and a
-null-pointer message, so the corpus-wide newest is derived from per-kind spans
+null-pointer message, so a kind's `lastSeen` comes from a grouping over kinds
 (`NO_BARE_AGGREGATES`).
 
 **Section status counts successes, not `data` emptiness.** The status was

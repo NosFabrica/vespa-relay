@@ -147,7 +147,7 @@ Note the column: `text`, the body tier, not `primary`. Upstream gave the family
 no `SearchFieldExtractor` branch, so the title rides the generic fallback into
 the TERTIARY tier — reached by trigram substring, not by the prefix/typo
 attributes other titled kinds get. That is Quartz's call to change, not ours;
-see the `vespaEventStore` comment in `gradle/libs.versions.toml`.
+see the `vespaEventStore` notes in `docs/decisions/dependency-pins.md`.
 
 ### The procedure
 
@@ -346,7 +346,7 @@ field the kind never joins into `indexableContent()` — a citation's `author` a
 `doi`, a relay review's `relay` url, a learning resource's schema.org facets —
 is still not indexed at all, so it cannot be searched for after this walk
 either. Both halves are upstream's to close, one branch per kind; the
-`vespaEventStore` note in `gradle/libs.versions.toml` carries the detail.
+`vespaEventStore` notes in `docs/decisions/dependency-pins.md` carry the detail.
 
 ## Migration: three kinds re-derived (quartz `ec16988e3a`, store `748dc5b8c6`)
 
@@ -388,7 +388,7 @@ takes from a known set of kinds:
   deletion reasons (5) and vanish reasons (62) among them — and **19 extract
   differently**, e.g. 14's subject becomes primary, 30030 emoji packs stop
   indexing their NIP-44 ciphertext. The full list is in the store's
-  `libs.versions.toml` note at that pin. Mostly **recall**.
+  `vespaEventStore` notes in `docs/decisions/dependency-pins.md`. Mostly **recall**.
 
 **The schema does not move**: `event.sd` and `services.xml` are untouched, so
 `configChangeActions` should come back empty. Read it anyway, per the top of
@@ -417,6 +417,71 @@ writes (client EVENTs, deletes, NIP-86), not the sync process's.
 30621, 31890, 33331, 33534, 34235, 34236, 38000, 39003, 39998, 39999, 40003,
 40006, 40007, 40008, 40099, 40901, 42000, 43001, 43002, 43003, 43004, 43005,
 43006, 45010, 46030, 46031
+```
+
+## Migration: nine kinds become searchable (quartz `25a3f37c83`)
+
+No store bump: the store calls quartz's `SearchFieldExtractor` at runtime, so
+moving the relay's quartz pin moves the derivation. The change is purely
+additive — kinds **1624** (NIP-34 cover notes), **5128** (site snapshots),
+**30024** (long-form drafts), **30031** (sticker packs), **30301 / 30302**
+(Kanban boards and cards; 30301 is also WalletScrutiny's build verification),
+**33402** (workout templates), **36767** (profile themes) and **38385** (Mostro
+info) gain search fields, and no kind that was already searchable extracts
+differently. Pure **recall**: until the reindex these kinds are simply not found
+by a NIP-50 search.
+
+**The schema does not move.** Read `configChangeActions` anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below, the kind-scoped walk of the entry above; remove both settings once
+the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+1624, 5128, 30024, 30031, 30301, 30302, 33402, 36767, 38385
+```
+
+## Migration: Open Markets kinds become searchable (quartz `ce7f4db1b6`)
+
+The relay's quartz pin moves the derivation, as in the entry above. The store
+pin also moves, to `28a6020ca1c4`, but only so the graph carries one quartz: it
+changes no store code. **30405** (product collections), **30406** (shipping options) and
+**31555** (product reviews) gain search fields. Shopstr's encrypted carts and
+escrow records on 30405 / 30406 do not: quartz parses them as unrecognized
+events, which stay addressable and are never indexed.
+
+**A correction to the entry above.** It says no kind that was already
+searchable extracts differently at `25a3f37c83`. That is wrong: the same range
+reads NIP-15 bodies leniently (amethyst `95e79db42`). A product or auction with
+no `id`, a string `price` or `quantity`, or an auction published in tag form
+failed the old decode and indexed nothing; such events now index their name and
+description. That is **30017 / 30018 / 30019 / 30020** and the **1022** bid
+confirmation. The store's own pin note at `ce7f4db1b6` lists them, and its
+`SearchExtractorsTest` shows a product of that shape indexing nothing at
+`68268da413`.
+
+**The schema does not move.** Read `configChangeActions` anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below. Remove both settings once the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+1022, 30017, 30018, 30019, 30020, 30405, 30406, 31555
+```
+
+If the nine-kind walk above has not run yet, run both lists on one boot:
+
+```
+1022, 1624, 5128, 30017, 30018, 30019, 30020, 30024, 30031, 30301, 30302,
+30405, 30406, 31555, 33402, 36767, 38385
 ```
 
 ## If a deploy is refused

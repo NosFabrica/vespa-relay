@@ -168,10 +168,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 - **Gradle resolves those hash conflicts lexicographically, and silently.**
   Pinning quartz to `6d518adddb` while the store carried `79f198c729` resolved
   to the latter — `'7' > '6'` — and nothing said so. Hence
-  `resolutionStrategy { force(libs.quartz) }` in EVERY module's build file —
-  each of `:common`, `:relay` and `:sync` resolves quartz independently, and a
-  new module must add its own force. Never remove one, and check that a pin
-  actually took effect.
+  `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention
+  (`build-logic/`): every module resolves quartz independently, and a module
+  applies the convention rather than carrying its own copy of the force. Never
+  remove it, and check that a pin actually took effect.
 
   Two habits follow from "hashes have no order", and the second is the one that
   gets skipped:
@@ -329,9 +329,8 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   aggregator and `all(output(max(created_at)))` fails with HTTP 500 and
   `Cannot invoke SingleResultNode.max(…) because "this.max" is null`, which
   reads like an engine bug and sends you looking in the wrong place. Anything
-  other than `count()` needs a `group(...) each(output(...))` around it. The
-  corpus-wide newest event is therefore DERIVED from the per-kind spans rather
-  than asked for.
+  other than `count()` needs a `group(...) each(output(...))` around it, which
+  is why per-kind `lastSeen` comes from `spanBy(kind)`.
 - **Freshness has to be bounded to the present.** `created_at` is author-signed,
   so an unbounded `max(created_at)` reports the corpus's most optimistically
   dated spam — a relay whose mirror died an hour ago reads as fresh "in 74
