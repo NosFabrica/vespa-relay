@@ -21,16 +21,12 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.SyncStream
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
  * What this router is configured to mirror, written as JSON where the relay can read it, so a
@@ -53,25 +49,14 @@ class SyncManifest(
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
         val f = file ?: return false
-        return runCatching {
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, nowSeconds)))
-            // Temp file plus an atomic move, so the relay never reads half a document.
-            try {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }.onFailure {
-            System.err.println("router: could not write the sync manifest to ${f.path} (${it.message}) — the relay cannot publish which kinds this mirror holds")
-        }.isSuccess
+        // The state files' own write, so the relay never reads half a document.
+        return runCatching { writeJsonFile(f, document(streams, nowSeconds)) }
+            .onFailure {
+                System.err.println("router: could not write the sync manifest to ${f.path} (${it.message}) — the relay cannot publish which kinds this mirror holds")
+            }.isSuccess
     }
 
     companion object {
-        // Pretty-printed for a human reader.
-        private val json = Json { prettyPrint = true }
-
         /** The document, pure, so it can be asserted without a filesystem. */
         fun document(
             streams: List<SyncStream>,

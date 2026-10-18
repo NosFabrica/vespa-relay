@@ -26,7 +26,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchRes
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.booleanOrNull
@@ -39,11 +38,7 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The router's sync bands: file persistence around quartz's [SyncCoverage], one coverage per
@@ -57,31 +52,10 @@ class SyncBands(
     /** Per-stream re-fetch periods. Fixed at construction: a coverage carries its period for the process's life. */
     private val perStream: Map<String, Long> = emptyMap(),
 ) : AutoCloseable {
-    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
-    private val generation = AtomicLong()
-
-    /** The generation the file holds; behind [generation], the next flush writes. */
-    @Volatile private var savedAt = NEVER_SAVED
-
-    /** The last snapshot and the generation it was built at. */
-    private class Built(
-        val generation: Long,
-        val doc: JsonObject,
-    )
-
-    @Volatile private var built: Built? = null
-
-    private val buildLock = Any()
-
-    /** Held for the disk write alone, so a status read never waits on the file. */
-    private val writeLock = Any()
+    private val state = PersistedJsonState(file, "sync bands", "sync-cursor-flush", ::build)
 
     /** Every mutation of persisted state ends here, after the mutation itself. */
-    private fun changed() {
-        generation.incrementAndGet()
-    }
-
-    @Volatile private var flusher: Thread? = null
+    private fun changed() = state.changed()
 
     private val coverageByStream = ConcurrentHashMap<String, SyncCoverage>()
 
@@ -307,7 +281,7 @@ class SyncBands(
     init {
         val pruned = load()
         // Reopening a file is not a change; a prune is, and only a write takes the keys off disk.
-        savedAt = if (pruned > 0) NEVER_SAVED else generation.get()
+        state.loaded(dirty = pruned > 0)
     }
 
     /** The bands of one stream, created on first use. */
@@ -516,52 +490,22 @@ class SyncBands(
     // ---- the file ------------------------------------------------------------
 
     /** Writes the map every [intervalSec] on a daemon thread. Unchanged intervals write nothing. */
-    fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SyncBands {
-        if (file == null) return this
-        flusher =
-            Thread {
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        Thread.sleep(intervalSec * 1000)
-                    } catch (_: InterruptedException) {
-                        return@Thread
-                    }
-                    flush()
-                }
-            }.apply {
-                isDaemon = true
-                name = "sync-cursor-flush"
-                start()
-            }
-        return this
-    }
+    fun startPeriodicFlush(intervalSec: Long = PersistedJsonState.DEFAULT_FLUSH_SECONDS): SyncBands = also { state.startPeriodicFlush(intervalSec) }
 
     /** Stop the periodic flush and write anything outstanding. */
-    override fun close() {
-        flusher?.interrupt()
-        flush()
-    }
+    override fun close() = state.close()
 
     /** Write the map if anything changed since the last write. */
-    fun flush() {
-        synchronized(writeLock) {
-            if (file == null || generation.get() == savedAt) return
-            val current = current()
-            // A failed write leaves [savedAt] behind, so the next tick retries it.
-            if (save(current.doc)) savedAt = current.generation
-        }
-    }
+    fun flush() = state.flush()
 
     /**
      * Reads the file and prunes the flat pre-stream keys, returning how many were dropped. A
      * flat key names no stream, so nothing can ever claim it.
      */
     private fun load(): Int {
-        val f = file ?: return 0
-        if (!f.isFile) return 0
         var pruned = 0
-        runCatching {
-            val root = Json.parseToJsonElement(f.readText()).jsonObject
+        var parsed = false
+        state.read { root ->
             root.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
                 if (streamOrFlatKey == BAND_CLOCKS) {
@@ -614,14 +558,12 @@ class SyncBands(
                 }
                 if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
             }
-        }.onFailure {
-            // A corrupt cursor file costs one re-sync; exiting costs the mirror.
-            System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
-            // A count from a parse that stopped is not a fact about the file.
-            pruned = 0
+            parsed = true
         }
+        // A count from a parse that stopped is not a fact about the file.
+        if (!parsed) return 0
         if (pruned > 0) {
-            System.err.println("router: dropped $pruned pre-stream band(s) from ${f.path} — flat keys name no stream, so nothing can ever claim them")
+            System.err.println("router: dropped $pruned pre-stream band(s) from ${file?.path} — flat keys name no stream, so nothing can ever claim them")
         }
         return pruned
     }
@@ -692,18 +634,8 @@ class SyncBands(
         )
     }
 
-    /** Every band this router holds, in the one shape [save] writes and the status page reads. */
-    internal fun snapshot(): JsonObject = current().doc
-
-    private fun current(): Built {
-        built?.takeIf { it.generation == generation.get() }?.let { return it }
-        synchronized(buildLock) {
-            built?.takeIf { it.generation == generation.get() }?.let { return it }
-            // Read before the build: a change landing during it leaves the result marked stale.
-            val at = generation.get()
-            return Built(at, build()).also { built = it }
-        }
-    }
+    /** Every band this router holds, in the one shape the file holds and the status page reads. */
+    internal fun snapshot(): JsonObject = state.current()
 
     private fun build(): JsonObject =
         buildJsonObject {
@@ -839,32 +771,7 @@ class SyncBands(
         )
     }
 
-    /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
-    private fun save(doc: JsonObject): Boolean {
-        val f = file ?: return true
-        return runCatching {
-            val text = json.encodeToString(JsonObject.serializer(), doc)
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(text)
-            // ATOMIC_MOVE asked for explicitly; without it the JVM may fall back to copy+delete.
-            try {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }.onFailure {
-            System.err.println("router: could not write sync bands to ${f.path}: ${it.message}")
-        }.isSuccess
-    }
-
     companion object {
-        /** Below every generation, so a store that has never written always has something to write. */
-        private const val NEVER_SAVED = -1L
-
-        // Pretty-printed for a human reader.
-        private val json = Json { prettyPrint = true }
-
         /**
          * Whether ground walked from [walkedTop] down to [walkedMin] meets [held] with no gap,
          * so widening one by the other claims only walked time. Nothing held always meets.
@@ -887,8 +794,6 @@ class SyncBands(
          * Floored above the revisit floor, capped so a weekly audit still retries within a shift.
          */
         internal fun attemptSpacingSeconds(negentropySyncThePastSeconds: Long): Long = (negentropySyncThePastSeconds / 4).coerceIn(900L, 21_600L)
-
-        private const val DEFAULT_FLUSH_SECONDS = 30L
 
         /** No period, as a number quartz's `isStale` can hold. Zero would mean always stale. */
         internal const val NEVER = Long.MAX_VALUE

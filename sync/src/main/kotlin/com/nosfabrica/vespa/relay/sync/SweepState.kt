@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -34,11 +33,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * What [NegentropyPager] must not forget between calls: how big a window a peer will reconcile,
@@ -85,35 +80,14 @@ class SweepState(
      */
     private val preStream = ConcurrentHashMap<Pair<String, String>, Reconciled>()
 
-    /** Bumped after every change lands, so a snapshot built at a generation holds every change up to it. */
-    private val generation = AtomicLong()
-
-    /** The generation the file holds; behind [generation], the next flush writes. */
-    @Volatile private var savedAt = NEVER_SAVED
-
-    /** The last snapshot and the generation it was built at. */
-    private class Built(
-        val generation: Long,
-        val doc: JsonObject,
-    )
-
-    @Volatile private var built: Built? = null
-
-    private val buildLock = Any()
-
-    /** Held for the disk write alone, so a status read never waits on the file. */
-    private val writeLock = Any()
+    private val state = PersistedJsonState(file, "sweep state", "sync-sweep-flush", ::build)
 
     /** Every mutation of persisted state ends here, after the mutation itself. */
-    private fun changed() {
-        generation.incrementAndGet()
-    }
-
-    @Volatile private var flusher: Thread? = null
+    private fun changed() = state.changed()
 
     init {
         load()
-        savedAt = generation.get()
+        state.loaded()
     }
 
     // ---- what a peer will reconcile -----------------------------------------
@@ -225,45 +199,15 @@ class SweepState(
 
     // ---- the file ------------------------------------------------------------
 
-    fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SweepState {
-        if (file == null) return this
-        flusher =
-            Thread {
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        Thread.sleep(intervalSec * 1000)
-                    } catch (_: InterruptedException) {
-                        return@Thread
-                    }
-                    flush()
-                }
-            }.apply {
-                isDaemon = true
-                name = "sync-sweep-flush"
-                start()
-            }
-        return this
-    }
+    /** Writes the cursors every [intervalSec] on a daemon thread. Unchanged intervals write nothing. */
+    fun startPeriodicFlush(intervalSec: Long = PersistedJsonState.DEFAULT_FLUSH_SECONDS): SweepState = also { state.startPeriodicFlush(intervalSec) }
 
-    override fun close() {
-        flusher?.interrupt()
-        flush()
-    }
+    override fun close() = state.close()
 
-    fun flush() {
-        synchronized(writeLock) {
-            if (file == null || generation.get() == savedAt) return
-            val current = current()
-            // A failed write leaves [savedAt] behind, so the next tick retries it.
-            if (save(current.doc)) savedAt = current.generation
-        }
-    }
+    fun flush() = state.flush()
 
     private fun load() {
-        val f = file ?: return
-        if (!f.isFile) return
-        runCatching {
-            val root = Json.parseToJsonElement(f.readText()).jsonObject
+        state.read { root ->
             root["peers"]?.jsonObject?.forEach { (url, v) ->
                 val o = v.jsonObject
                 peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
@@ -286,9 +230,6 @@ class SweepState(
                     }
                 }
             }
-        }.onFailure {
-            // Losing this costs one re-sweep; refusing to start costs the mirror.
-            System.err.println("router: could not read sweep state from ${f.path} (${it.message}); starting fresh")
         }
     }
 
@@ -307,18 +248,8 @@ class SweepState(
         return Reconciled(downTo, upTo, o["at"]?.jsonPrimitive?.longOrNull ?: 0L)
     }
 
-    /** Every cursor and peer cap, in the one shape [save] writes and the status page reads. */
-    internal fun snapshot(): JsonObject = current().doc
-
-    private fun current(): Built {
-        built?.takeIf { it.generation == generation.get() }?.let { return it }
-        synchronized(buildLock) {
-            built?.takeIf { it.generation == generation.get() }?.let { return it }
-            // Read before the build: a change landing during it leaves the result marked stale.
-            val at = generation.get()
-            return Built(at, build()).also { built = it }
-        }
-    }
+    /** Every cursor and peer cap, in the one shape the file holds and the status page reads. */
+    internal fun snapshot(): JsonObject = state.current()
 
     private fun build(): JsonObject =
         buildJsonObject {
@@ -368,27 +299,7 @@ class SweepState(
             if (stamps.isNotEmpty()) put(UNOWNED_SINCE, buildJsonObject { stamps.forEach { (url, at) -> put(url, at) } })
         }
 
-    private fun save(doc: JsonObject): Boolean {
-        val f = file ?: return true
-        return runCatching {
-            val text = json.encodeToString(JsonObject.serializer(), doc)
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(text)
-            try {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: AtomicMoveNotSupportedException) {
-                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }.onFailure {
-            System.err.println("router: could not write sweep state to ${f.path}: ${it.message}")
-        }.isSuccess
-    }
-
     companion object {
-        /** Below every generation, so a store that has never written always has something to write. */
-        private const val NEVER_SAVED = -1L
-
         /**
          * The cursor's identity: the stream, the filter with its time bounds removed, and the
          * peer. Taken once per sweep because it serialises the filter.
@@ -398,11 +309,6 @@ class SweepState(
             url: NormalizedRelayUrl,
             shape: Filter,
         ): Cursor = Cursor(stream, shape.copy(since = null, until = null, limit = null).toJson(), url.url)
-
-        // Pretty-printed for a human reader.
-        private val json = Json { prettyPrint = true }
-
-        private const val DEFAULT_FLUSH_SECONDS = 30L
 
         /** Beside `peers` and `sweeps`, which are all the status page reads. */
         private const val UNOWNED_SINCE = "unownedSince"
