@@ -91,6 +91,9 @@ class MonitorEngine(
         return StreamWorld.gradedSince(RelayVerdictRecord(store, s), urls, nowSeconds() - sweepSeconds)
     }
 
+    /** Of [urls], those fitness is still backing off from after a deferral. */
+    private fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = fitness?.backingOff(urls).orEmpty()
+
     /**
      * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
      * call order and the document draws in that order.
@@ -154,6 +157,7 @@ class MonitorEngine(
             onProbeEvent = onProbeEvent,
             progress = sourceProgress,
             recentlyGraded = ::recentlyGraded,
+            backingOff = ::backingOff,
         )
 
     /**
@@ -174,6 +178,7 @@ class MonitorEngine(
                 concurrency = monitorConcurrency,
                 tlsCheck = probe::tls,
                 world = { world.known },
+                sweepMs = sweepSeconds * 1000L,
             )
         }
 

@@ -535,3 +535,25 @@ resets, EOFs, OkHttp's `Canceled`) set every url aside and never tripped
 REFUSING TO PUBLISH. They are counted as an unexplained lookup is: blind, once
 per host, so one host's paths failing alike are one blind dial and a socket
 layer failing everywhere refuses the batch.
+
+**A url a relay deferred backs off before it is dialled again.** The three
+deferrals added for 429s, unrecognised words and partial refusals wrote
+nothing, and the fast lane drops only urls holding a grade younger than a
+sweep, so a relay that 429'd us and sits in any fresh relay list was dialled
+again on every 120-second tick, by the stability gate and by fitness. Every
+deferral where the relay's side ended the dial (a 5xx, a rate limit,
+unrecognised words, a partial refusal) now starts an in-memory, unsigned
+backoff of one sweep period, or as long as a `Retry-After` in the failure text
+asks, capped at a day. The fast lane's candidate set leaves those urls out
+before any pass sees them, and the sweep skips them too; since the next sweep
+starts at least one period after the deferral, it is the one that dials again.
+A url that answers clears its backoff.
+
+**A standing `prime` does not outlive a relay that keeps deferring.** Deferring
+writes nothing, so a `prime` measured before the relay began refusing stood for
+the whole 30-day TTL and kept it on every roster that selects on the grade. A
+sweep now withdraws it (`retireFitness`, the same path a waiting url's grade
+takes, so nothing negative is said) once the url has deferred two full sweeps
+in a row, a backoff still running counting as deferring, or as soon as it
+defers with a grade older than two sweep periods. The fast lane never
+withdraws: one tick is not a pattern.

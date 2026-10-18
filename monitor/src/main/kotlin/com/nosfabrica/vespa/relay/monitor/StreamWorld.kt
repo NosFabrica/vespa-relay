@@ -57,6 +57,8 @@ internal class StreamWorld(
     override val progress: Processors.Handle? = null,
     /** Of these urls, the ones holding a fitness grade younger than a sweep; the fast lane skips them. */
     private val recentlyGraded: suspend (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
+    /** Of these urls, the ones still backing off from a deferral; the fast lane skips them too. */
+    private val backingOff: (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
 ) : AliasMonitor.CandidateSource {
     /** What the last derivation started from and dropped. */
     @Volatile
@@ -231,7 +233,9 @@ internal class StreamWorld(
             } catch (e: Exception) {
                 emptySet()
             }
-        val handed = live.filterNot { it in graded }
+        // A relay that just asked us to come back later is not dialled again by the next tick.
+        val waiting = backingOff(live)
+        val handed = live.filterNot { it in graded || it in waiting }
         // Known from now on, so the roster elects a server's stand-in among the urls fitness may grade.
         if (handed.isNotEmpty()) known += handed
         return handed
