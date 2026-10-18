@@ -95,7 +95,7 @@ ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCen
 WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i   # the whole #185 fix running; ~20 minutes
 BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test --tests '*RelayListReadCostBench*' --rerun -i    # what a relay-list read costs; BENCH_LIST_VISIT=0 BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
 BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i   # what one arriving event costs ingest
-docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa                                    # a bare engine is enough for the next one
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa:8.763.13                           # a bare engine is enough for the next one
 ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i                        # real 10040s off a live relay through a real Vespa; -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
 
 docker compose up -d --build relay            # the usual dev loop (serving only)
@@ -119,7 +119,7 @@ TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-d
 ```
 
 Git hooks are installed by the build: pre-commit runs `spotlessCheck`, pre-push
-runs the tests. Run `spotlessApply` before committing.
+runs `check` (the tests, `archTest` and `jsTest`). Run `spotlessApply` before committing.
 
 ## Layout
 
