@@ -459,7 +459,10 @@ through the store, and the queue holds four batches before a submit suspends.
 **What a reader's own data can make a sign-in cost is bounded.** A 10040 is
 the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
 service it named went into one store filter and one NOTICE. `TrustNotice`
-checks the first `MAX_RANK_SERVICES` and says how many it skipped. Likewise
+checks the first `MAX_RANK_SERVICES`, and when the list names more it says
+nothing about scores at all: the cards may be under a service it skipped, and
+a `restricted:` NOTICE telling a reader their ranking is broken when it works
+is a claim the check cannot support. Likewise
 `MultiAddressAuthPolicy` remembered every identity a connection signed in as,
 and a client can mint keys without end, so it tells at most `MAX_TOLD` per
 connection and then stops telling rather than growing the set.
