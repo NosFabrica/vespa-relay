@@ -63,6 +63,38 @@ class RelayConfigTest {
         assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("MAX_SUBSCRIPTIONS" to "not-a-number")) }
     }
 
+    /** A zero or negative cap boots fine and then refuses every frame, so it is refused at boot instead. */
+    @Test
+    fun `a limit that would refuse every frame stops the boot`() {
+        for (key in listOf("MAX_MESSAGE_LENGTH", "MAX_SUBSCRIPTIONS", "MAX_FILTERS", "MAX_LIMIT", "DEFAULT_LIMIT", "MAX_SUBID_LENGTH", "MAX_EVENT_TAGS", "MAX_CONTENT_LENGTH")) {
+            for (bad in listOf("0", "-1")) {
+                val refused = assertFailsWith<IllegalStateException>("$key=$bad") { relayLimitsFromEnv(mapOf(key to bad)) }
+                assertTrue(refused.message.orEmpty().startsWith("$key="), refused.message)
+            }
+        }
+        assertFailsWith<IllegalStateException>("too small for any EVENT frame") { relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to "100")) }
+        assertFailsWith<IllegalStateException>("no hash meets it") { relayLimitsFromEnv(mapOf("MIN_POW_DIFFICULTY" to "257")) }
+        assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("MIN_POW_DIFFICULTY" to "-1")) }
+        assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("CREATED_AT_LOWER_LIMIT" to "-5")) }
+        assertEquals(0, relayLimitsFromEnv(mapOf("MIN_POW_DIFFICULTY" to "0")).minPowDifficulty)
+        for (key in listOf("NEG_FRAME_SIZE_LIMIT", "NEG_MAX_SYNC_EVENTS", "NEG_MAX_SESSIONS_PER_CONNECTION")) {
+            assertFailsWith<IllegalStateException>(key) { negentropySettingsFromEnv(mapOf(key to "-1")) }
+        }
+        // Zero sessions is the operator's switch for NIP-77, so it stays legal.
+        assertEquals(0, negentropySettingsFromEnv(mapOf("NEG_MAX_SESSIONS_PER_CONNECTION" to "0")).maxSessionsPerConnection)
+    }
+
+    @Test
+    fun `the default page may not exceed the largest page, nor the floor the ceiling`() {
+        val refused = assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("DEFAULT_LIMIT" to "500", "MAX_LIMIT" to "100")) }
+        assertTrue("DEFAULT_LIMIT=500" in refused.message.orEmpty(), refused.message)
+        val lowered = relayLimitsFromEnv(mapOf("MAX_LIMIT" to "40"))
+        assertEquals(40, lowered.defaultLimit, "an unset default follows a lowered ceiling rather than refusing the boot")
+        val ok = relayLimitsFromEnv(mapOf("DEFAULT_LIMIT" to "25", "MAX_LIMIT" to "40"))
+        assertEquals(25 to 40, ok.defaultLimit to ok.maxLimit)
+        assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("CREATED_AT_LOWER_LIMIT" to "200", "CREATED_AT_UPPER_LIMIT" to "100")) }
+    }
+
     @Test
     fun `an unreadable expansion cap stops the boot rather than disabling the splice`() {
         val d = SearchExpansionLimits.Default

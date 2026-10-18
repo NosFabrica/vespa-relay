@@ -404,3 +404,11 @@ pubkey, which reveals nothing NIP-01 does not, and is about the projection,
 not the person. It is one store read per anonymous request, so `ExplainGate`
 caches each well-formed key's answer for 30s (a junk key is never cached, so
 it cannot evict a real one) and runs four at once, answering a `503` past that.
+
+**The engine's limits have ranges.** They were parsed as any whole number, so
+`MAX_LIMIT=0` or `MAX_MESSAGE_LENGTH=-1` booted cleanly and then refused or
+truncated every frame. Each is now positive, `MAX_MESSAGE_LENGTH` at least 512
+(the smallest EVENT frame is about 350 characters), `MIN_POW_DIFFICULTY` at most
+256, and a `DEFAULT_LIMIT` set above `MAX_LIMIT` stops the boot. An unset
+`DEFAULT_LIMIT` follows a lowered `MAX_LIMIT` instead, because a deployment that
+only lowered the ceiling meant the default to come with it.
