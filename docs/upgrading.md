@@ -55,8 +55,5 @@ Each refusal names the key and the bound, so a refused boot says what to fix.
   failure or a relay that refused some shapes. Those are set aside unsigned,
   with a cooldown so a rate-limiting relay is not re-dialled on every fast-lane
   tick, and a standing `prime` the monitor can no longer re-measure is withdrawn.
-- **Roster and `gatedBy` verdict sources age a grade on its label's own stamp**,
-  not on the record's `created_at`, which every co-writer bumps. A stale
-  `prime` no longer re-enters the roster when another pass re-signs its record.
 - **`/pressure` gains `liveGate: { failed, shed }`**: cold-author live
   deliveries refused because the trust read failed or found no slot.

@@ -74,41 +74,10 @@ object RelayDiscovery {
         source: RelaySource,
     ): Boolean =
         dynamic.maxRelaysPerList == null &&
-            !selectsOnVerdictLabels(source) &&
             source.selects.isNotEmpty() &&
             source.selects.all {
                 it.tag != null && it.tag.length == 1 && it.urlIndex == 1 && it.where.isEmpty() && it.bindings.isEmpty()
             }
-
-    /** A source selecting monitor verdicts by label, which only the paged path can age on the label's own stamp. */
-    private fun selectsOnVerdictLabels(source: RelaySource): Boolean =
-        source.filter.kinds?.contains(RelayDiscoveryEvent.KIND) == true &&
-            !source.filter.tags
-                ?.get(RelayVerdictRecord.LABEL_TAG)
-                .isNullOrEmpty()
-
-    /**
-     * Whether [event] still carries a label [source] asked for, current by its own stamp and the rules epoch:
-     * every writer of a record bumps its `created_at`, so a stale grade on a fresh record is not a grade.
-     */
-    private fun labelsStillHold(
-        event: Event,
-        source: RelaySource,
-        floor: Long?,
-    ): Boolean {
-        if (event.kind != RelayDiscoveryEvent.KIND || !selectsOnVerdictLabels(source)) return true
-        val wanted =
-            source.filter.tags!!
-                .getValue(RelayVerdictRecord.LABEL_TAG)
-                .toSet()
-        return event.tags.any { tag ->
-            tag.size > RelayVerdictRecord.LABEL_EPOCH_INDEX &&
-                tag[0] == RelayVerdictRecord.LABEL_TAG &&
-                tag[1] in wanted &&
-                tag[RelayVerdictRecord.LABEL_EPOCH_INDEX] == RelayVerdictRecord.FITNESS_EPOCH &&
-                (tag[RelayVerdictRecord.LABEL_MEASURED_AT_INDEX].toLongOrNull() ?: Long.MIN_VALUE) >= (floor ?: Long.MIN_VALUE)
-        }
-    }
 
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
@@ -144,7 +113,6 @@ object RelayDiscovery {
             }
             if (stillPaged.isNotEmpty()) {
                 scan(store, bounded, pageSize) { event ->
-                    if (!labelsStillHold(event, source, floor)) return@scan
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
                         oversizedLists++
                         return@scan
