@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 /**
  * Reconcile the trust projection, waiting out a cold engine. A failure and a zero-provider answer
@@ -31,49 +33,74 @@ import java.util.concurrent.atomic.AtomicLong
  * serves the projection as it is.
  */
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
-    var waited = 0L
-    var attempt = 0
     // One reporter for the whole retry sequence, or every attempt restarts the throttle window.
     val progress = reconcileProgress()
-    val reportFailure = reconcileFailures()
+    reconcileWithRetry {
+        store.reconcileTrust(onProgress = progress).let { ReconcileOutcome(it.services, it.rebuilt.size, it.isClean()) }
+    }
+}
+
+/** What one reconcile pass found: services checked, how many were re-derived, and whether any had to be. */
+internal data class ReconcileOutcome(
+    val services: Int,
+    val rebuilt: Int,
+    val clean: Boolean,
+)
+
+/**
+ * [reconcileTrustWithRetry]'s loop over any [attempt]. The budget is a deadline on [time], so the
+ * attempts' own duration counts against it, not only the sleeps between them.
+ */
+internal suspend fun reconcileWithRetry(
+    time: TimeSource = TimeSource.Monotonic,
+    retryMs: Long = TRUST_RECONCILE_RETRY_MS,
+    maxWaitMs: Long = TRUST_RECONCILE_MAX_WAIT_MS,
+    log: (String) -> Unit = ::println,
+    attempt: suspend () -> ReconcileOutcome,
+) {
+    val started = time.markNow()
+    val deadline = started + maxWaitMs.milliseconds
+    var attempts = 0
+    val reportFailure = reconcileFailures(emit = log)
     var errorShown = false
     while (true) {
-        attempt++
-        val result = retryable { store.reconcileTrust(onProgress = progress) }
-        result.onSuccess { r ->
-            when {
-                r.services == 0 -> {
-                    if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
-                        println(
-                            "trust: still no provider lists after ${waited / 1000}s — nothing to project. " +
-                                "A fresh relay: ranking stays empty until a kind 10040 arrives and this runs again.",
-                        )
-                        return
-                    }
-                    if (attempt == 1) {
-                        println("trust: no provider lists yet; waiting for the engine to serve its corpus before ranking is usable")
-                    }
-                    delay(TRUST_RECONCILE_RETRY_MS)
-                    waited += TRUST_RECONCILE_RETRY_MS
-                    return@onSuccess
-                }
+        attempts++
+        val result = retryable { attempt() }
+        val r = result.getOrNull()
+        when {
+            r == null -> {
+                Unit
+            }
 
-                r.isClean() -> {
-                    println("trust: ${r.services} service(s) checked, projection consistent")
+            r.services == 0 -> {
+                if (deadline.hasPassedNow()) {
+                    log(
+                        "trust: still no provider lists after ${started.elapsedNow().inWholeSeconds}s — nothing to project. " +
+                            "A fresh relay: ranking stays empty until a kind 10040 arrives and this runs again.",
+                    )
                     return
                 }
-
-                else -> {
-                    println("trust: re-derived ${r.rebuilt.size} of ${r.services} service(s) whose scores were unprojected")
-                    return
+                if (attempts == 1) {
+                    log("trust: no provider lists yet; waiting for the engine to serve its corpus before ranking is usable")
                 }
+                delay(retryMs)
+                continue
+            }
+
+            r.clean -> {
+                log("trust: ${r.services} service(s) checked, projection consistent")
+                return
+            }
+
+            else -> {
+                log("trust: re-derived ${r.rebuilt} of ${r.services} service(s) whose scores were unprojected")
+                return
             }
         }
-        if (result.isSuccess) continue
         val cause = result.exceptionOrNull()
-        if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
+        if (deadline.hasPassedNow()) {
             System.err.println(
-                "trust: reconcile still failing after ${waited / 1000}s; " +
+                "trust: reconcile still failing after ${started.elapsedNow().inWholeSeconds}s; " +
                     "serving with the projection as-is — ranked searches may return nothing until it runs clean",
             )
             cause?.printStackTrace()
@@ -82,14 +109,13 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
         // The first failure gets its stack; every retry after it is still said aloud. A JVM error is
         // not a cold engine, so it is said on every attempt.
         if (cause is Error) {
-            System.err.println("trust: reconcile attempt $attempt threw $cause, a JVM error rather than a cold engine; retrying")
+            System.err.println("trust: reconcile attempt $attempts threw $cause, a JVM error rather than a cold engine; retrying")
             if (!errorShown) cause.printStackTrace()
             errorShown = true
-        } else if (reportFailure(attempt, cause)) {
+        } else if (reportFailure(attempts, cause)) {
             cause?.printStackTrace()
         }
-        delay(TRUST_RECONCILE_RETRY_MS)
-        waited += TRUST_RECONCILE_RETRY_MS
+        delay(retryMs)
     }
 }
 

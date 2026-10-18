@@ -21,12 +21,15 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TestTimeSource
 
 /** The reconcile's progress line, what it retries, and its refusal to quote a percentage that cannot move. */
 class TrustReconcileProgressTest {
@@ -108,4 +111,46 @@ class TrustReconcileProgressTest {
         assertFailsWith<InternalError> { retryable<Unit> { throw InternalError() } }
         assertEquals(3, retryable { 3 }.getOrNull())
     }
+
+    /** An attempt that hangs for minutes before failing must spend the budget, not only the sleeps between. */
+    @Test
+    fun `the wait budget counts the time each attempt takes`(): Unit =
+        runBlocking {
+            val clock = TestTimeSource()
+            var attempts = 0
+            reconcileWithRetry(time = clock, retryMs = 1, maxWaitMs = 10 * 60_000L, log = {}) {
+                attempts++
+                clock += 4.minutes
+                throw IllegalStateException("engine timed out")
+            }
+            assertEquals(3, attempts, "four minutes per attempt spends a ten-minute budget on the third")
+        }
+
+    @Test
+    fun `zero providers is retried within the same deadline, then accepted`(): Unit =
+        runBlocking {
+            val clock = TestTimeSource()
+            val out = mutableListOf<String>()
+            var attempts = 0
+            reconcileWithRetry(time = clock, retryMs = 1, maxWaitMs = 10 * 60_000L, log = { out += it }) {
+                attempts++
+                clock += 3.minutes
+                ReconcileOutcome(services = 0, rebuilt = 0, clean = true)
+            }
+            assertEquals(4, attempts)
+            assertContains(out.last(), "still no provider lists after 720s")
+        }
+
+    @Test
+    fun `an answer with providers ends the loop on the attempt that found them`(): Unit =
+        runBlocking {
+            var attempts = 0
+            val out = mutableListOf<String>()
+            reconcileWithRetry(time = TestTimeSource(), retryMs = 1, log = { out += it }) {
+                attempts++
+                if (attempts < 3) ReconcileOutcome(0, 0, true) else ReconcileOutcome(5, 2, false)
+            }
+            assertEquals(3, attempts)
+            assertContains(out.last(), "re-derived 2 of 5")
+        }
 }
