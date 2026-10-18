@@ -177,6 +177,13 @@ Reach for it first.
   has not taken; they are replayed every five minutes (`retrying writes` on the
   row), so a number that stays up means the store is refusing this monitor's
   writes, and the signed records lag the roster until it drains.
+- **The ingest benchmark** ([ingest-benchmark.md](ingest-benchmark.md)) — how fast a real
+  corpus gets in, through the relay's wire (`amy publish --file` against a booted relay) and
+  through the mirror's pipeline (`CorpusIngestBench`), on one slice, one empty Vespa per arm,
+  one table: ev/s, MB/s, the OKs by kind, OK latency, and CPU per event on each side.
+  `relay/tools/ingest-bench/bench.sh NAME [VAR=value …]`. Reach for it before changing a
+  batch size, a worker count or anything on the write path; `IngestCostBench` below prices one
+  event by its verdict, this prices a workload.
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said

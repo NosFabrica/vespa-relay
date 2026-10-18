@@ -245,6 +245,20 @@ services:
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
+      # Read by whichever process deploys the schema, never by Vespa: `disabled`
+      # stops the container logging one line per fed document (.env.example).
+      VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
+      # The writer behind published EVENTs: `pipeline` (the mirror's
+      # IngestPipeline, the default) or `queue` (quartz's IngestQueue), and its
+      # shape. Empty keeps the code defaults (docs/configuration.md).
+      RELAY_INGEST: ${RELAY_INGEST:-}
+      RELAY_INGEST_CONCURRENCY: ${RELAY_INGEST_CONCURRENCY:-}
+      RELAY_INGEST_BATCH: ${RELAY_INGEST_BATCH:-}
+      RELAY_INGEST_QUEUE_MB: ${RELAY_INGEST_QUEUE_MB:-}
+      # The store's feed transport: none here, where Vespa is a container on
+      # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
+      # when VESPA_URL is across a WAN.
+      VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
@@ -474,6 +488,11 @@ services:
       # the relay's summaries, so this is worth sweeping on a deployment whose
       # ingest is dedup-bound.
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
+      VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
+      # The store's feed transport: none here, where Vespa is a container on
+      # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
+      # when VESPA_URL is across a WAN.
+      VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Same key as the relay: upstream NIP-42 AUTH and the NIP-66 monitor
       # sign as the relay this process feeds.
