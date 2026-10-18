@@ -143,9 +143,7 @@ fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.s
 
 /**
  * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset keeps quartz's
- * 64, sized for SQLite. Measured on staging 2026-10-13 under a 5.3M-event kind-3 publish: the
- * write lock held 93-98% of each 5-minute window, batches at the 64 cap, 170-320 ms per batch,
- * so publishing topped out near 200-380 events/s. Set but unparseable stops the boot.
+ * default, sized for SQLite; see docs/decisions/relay-server.md for why a Vespa store wants more.
  */
 fun ingestBatchFromEnv(env: Map<String, String>): Int = env.strictInt("RELAY_INGEST_BATCH", 1..MAX_INGEST_BATCH) ?: IngestQueue.DEFAULT_MAX_BATCH
 

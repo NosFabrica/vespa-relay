@@ -321,10 +321,10 @@ internal class StatsRollup(
             note =
                 "How many stored NIP-65 lists name each relay. NOT split by read/write: that marker is an `r` tag's " +
                     "THIRD element and tag_index holds only `<letter>:<value>`, so it is not queryable — it needs a " +
-                    "walk over kind 10002.",
+                    "walk over kind $KIND_RELAY_LIST.",
         ) { attempts ->
             val pairs =
-                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
+                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = $KIND_RELAY_LIST") }
                     ?: return@section buildJsonObject { }
             // Summed per canonical url: the grouping returns one row per distinct string, and a
             // trailing slash makes two strings for one relay.
@@ -361,15 +361,15 @@ internal class StatsRollup(
             note =
                 "Receipt counts only. Sats are unreachable by any grouping — the amount is in the `bolt11` and " +
                     "`description` tags, whose multi-character names are absent from tag_index — and senders/recipients " +
-                    "would drag every `e:` tag along with them. Both need a walk over kind 9735.",
+                    "would drag every `e:` tag along with them. Both need a walk over kind $KIND_ZAP_RECEIPT.",
         ) { attempts ->
             val now = nowSeconds()
             val window = StatsYql.window(now - windowDays * DAY_SECONDS, now)
-            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = 9735")) }
-            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = 9735")) }
+            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_ZAP_RECEIPT")) }
+            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_ZAP_RECEIPT")) }
             val days =
                 attempt(attempts, "days") {
-                    bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = 9735 and $window", StatsYql::isoDay, distinct = false)
+                    bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = $KIND_ZAP_RECEIPT and $window", StatsYql::isoDay, distinct = false)
                 }
             buildJsonObject {
                 receipts?.let { put("receipts", it) }
@@ -666,6 +666,12 @@ internal class StatsRollup(
 
         /** NIP-85: one published trust score. */
         private const val KIND_SCORE = 30382
+
+        /** NIP-65: a user's relay list, one `r` tag per relay. */
+        private const val KIND_RELAY_LIST = 10002
+
+        /** NIP-57: a zap receipt, signed by the recipient's LNURL service. */
+        private const val KIND_ZAP_RECEIPT = 9735
     }
 }
 

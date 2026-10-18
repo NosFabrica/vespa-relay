@@ -426,3 +426,18 @@ before the schema deploy, and `main()` is a list of named boot steps.
 (which adds a trailing slash), because a NIP-98 `u` is compared as text and
 admin tools sign the url they were given. A blank value is unset everywhere,
 since compose delivers `""` for an unset `${X:-}`.
+
+**`RELAY_INGEST_BATCH` exists because quartz's batch is sized for SQLite.**
+Measured on staging on 2026-10-13 under a 5.3M-event kind-3 publish: the store's
+write lock was held 93-98% of each 5-minute window, every batch sat at quartz's
+64-event cap at 170-320 ms each, and publishing topped out near 200-380 events/s.
+Unset keeps quartz's default; the cap is the largest batch `ingest.md` measured
+through the store, and the queue holds four batches before a submit suspends.
+
+**What a reader's own data can make a sign-in cost is bounded.** A 10040 is
+the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
+service it named went into one store filter and one NOTICE. `TrustNotice`
+checks the first `MAX_RANK_SERVICES` and says how many it skipped. Likewise
+`MultiAddressAuthPolicy` remembered every identity a connection signed in as,
+and a client can mint keys without end, so it tells at most `MAX_TOLD` per
+connection and then stops telling rather than growing the set.

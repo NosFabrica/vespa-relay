@@ -178,7 +178,8 @@ relay/…/relay/
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
-                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
+                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS; StatsRollupTest's
+                              SELECTIVE_KINDS is the guard on which kinds the counters tier may ask)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
   resources/index.html        the search UI; its behaviour is resources/web/ (app.js, searchfield.js, paging.js, feed.js,
