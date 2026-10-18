@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.maintenance
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.util.fmtDuration
+import com.nosfabrica.vespa.relay.util.writeDurably
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
 import kotlinx.coroutines.CancellationException
@@ -29,8 +30,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
  * Re-put every event so its fed search fields are re-derived, in the background
@@ -53,6 +52,7 @@ fun launchFtsReindex(
         println("fts: reindexing $what in the background — search results may be incomplete until it finishes")
         var total = 0L
         var lastLineMs = startedMs
+        val saver = FtsCursorSaver(File(cursorFile))
         val saved =
             runCatching {
                 File(cursorFile)
@@ -94,14 +94,7 @@ fun launchFtsReindex(
                     if (progress == null) delay(attempt * 5_000L)
                 }
                 cursor = progress.cursor
-                // Temp file and move: a cursor truncated mid-kill fails every resume.
-                runCatching {
-                    val f = File(cursorFile)
-                    f.absoluteFile.parentFile?.mkdirs()
-                    val tmp = File(f.absoluteFile.parentFile, f.name + ".tmp")
-                    tmp.writeText(encodeFtsCursor(kinds, cursor))
-                    Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
+                saver.save(kinds, cursor)
                 total += progress.processedThisBatch
                 // On wall time, not pages: a scoped walk is a few dozen sparse pages, each of which
                 // may take seconds, so a page count would leave it nearly silent.
@@ -143,6 +136,39 @@ fun launchFtsReindex(
 
 private const val FTS_PAGE_RETRIES = 5
 private const val FTS_PROGRESS_EVERY_MS = 60_000L
+
+/**
+ * Persists the walk's position after each page. A failed save is said on its first occurrence and
+ * then once per [everyMillis], since the walk goes on and only a restart would lose the position.
+ */
+internal class FtsCursorSaver(
+    private val file: File,
+    private val everyMillis: Long = FTS_PROGRESS_EVERY_MS,
+    private val now: () -> Long = System::currentTimeMillis,
+    private val log: (String) -> Unit = System.err::println,
+) {
+    private var failures = 0L
+    private var lastSaidAt: Long? = null
+
+    fun save(
+        kinds: List<Int>?,
+        cursor: String?,
+    ) {
+        try {
+            writeDurably(file, encodeFtsCursor(kinds, cursor))
+            if (failures > 0) log("fts: the cursor saves to $file again after $failures failed save(s)")
+            failures = 0
+            lastSaidAt = null
+        } catch (e: Exception) {
+            failures++
+            val t = now()
+            if (lastSaidAt.let { it == null || t - it >= everyMillis }) {
+                lastSaidAt = t
+                log("fts: could not save the cursor to $file ($failures failed save(s); ${e::class.simpleName}: ${e.message?.take(80)}) — a restart would start this walk over")
+            }
+        }
+    }
+}
 
 /** A saved reindex position: the scope it was taken under (null = whole corpus) and the store's cursor. */
 internal data class FtsCursor(

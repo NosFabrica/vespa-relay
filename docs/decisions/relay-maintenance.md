@@ -231,11 +231,17 @@ Such a column needs a Vespa REINDEX on the config server (a POST alone leaves
 the job `pending` forever; a redeploy dispatches it) or a full re-feed. See
 docs/migrations.md.
 
-**The cursor is persisted per page, by temp file and move.** An in-memory
+**The cursor is persisted per page, through `writeDurably`.** An in-memory
 cursor once threw away 12M events on a failed page. A bare `writeText`
 truncated mid-kill leaves a corrupt token that fails every resume until someone
 deletes it by hand. On a resumed run no denominator is printed: `total` counts
 only the remainder, and total/corpus would report 3% at completion.
+
+**A failed cursor save is said, once a minute.** The save was a `runCatching`
+with no failure branch and no fsync: a full disk let an hours-long walk run
+with no saved position, and the restart that started it over was the first
+sign. The walk still goes on, since the next page may save, and the first
+save that succeeds after a failure says so.
 
 **`runCatching` around a page must rethrow cancellation.** A shutdown mid-page
 arrived in the failure branch and printed a page failure and a retry for a page
