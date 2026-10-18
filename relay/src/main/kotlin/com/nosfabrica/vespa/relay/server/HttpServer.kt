@@ -72,9 +72,8 @@ data class Nip11Info(
 )
 
 /**
- * The whole relay on [port]: the websocket and the NIP-11 doc on `/`, the landing page and its
- * modules, the stats pages, `/pressure`, the ORE-05 search backend when [openRanking] is set, the HTTP commands
- * when [httpRelay] is set, and the NIP-86 RPC on `POST /` when [admin] is set.
+ * The whole relay on [port]: the websocket and NIP-11 on `/`, the pages, `/pressure`, and when set the
+ * ORE-05 backend [openRanking], the HTTP commands [httpRelay] and the NIP-86 rpc [admin] on `POST /`.
  * With [wait] (the default) this blocks until the server stops.
  */
 fun serveRelay(

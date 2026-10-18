@@ -32,13 +32,9 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Re-put every event so its fed search fields are re-derived, in the background
- * (`REINDEX_FTS_ON_START`). Repairs fed fields only: a column Vespa derives at index time needs a
- * Vespa reindex instead, see docs/migrations.md. The cursor is persisted to [cursorFile] per page.
- *
- * [kinds] (`REINDEX_FTS_KINDS`) scopes the walk to those kinds, evaluated server-side, so the
- * rest of the corpus is never shipped or parsed; null walks everything. The store's cursor is only
- * valid for the scope that produced it, so the file records the scope and a mismatch starts over.
+ * Re-puts every event of [kinds] (null: all) in the background so its fed search fields are re-derived;
+ * a column Vespa derives at index time needs a Vespa reindex instead (docs/migrations.md). The cursor
+ * saved to [cursorFile] per page records its scope, and a mismatched scope starts over.
  */
 fun launchFtsReindex(
     scope: CoroutineScope,

@@ -441,3 +441,13 @@ checks the first `MAX_RANK_SERVICES` and says how many it skipped. Likewise
 `MultiAddressAuthPolicy` remembered every identity a connection signed in as,
 and a client can mint keys without end, so it tells at most `MAX_TOLD` per
 connection and then stops telling rather than growing the set.
+
+**An ORE answer names whose view ranked it.** Beside ORE-05's `results` and
+`ttl`, the body carries the `algorithm` served, the `observer` whose trust
+weighted the text match (the pov for `relevance-pov`, the proxy's House
+Observer for `relevance`) and the `rank_service` that observer's 10040 names.
+ORE-05 defines none of them and forbids none: a separate lookup of the House
+Observer (`/.well-known/nostr.json`) can never be bound to one answer, and a
+consumer keeping the answer as evidence needs to say whose view it was. They
+are unsigned, like the rest of an HTTPS answer, and Brainstorm's server
+forwards the body as is, so they reach its clients.
