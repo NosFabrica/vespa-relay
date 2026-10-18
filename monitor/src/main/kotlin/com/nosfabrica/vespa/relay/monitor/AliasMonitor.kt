@@ -81,8 +81,8 @@ class AliasMonitor(
         val progress: Processors.Handle? get() = null
 
         /**
-         * Only the urls named by relay-list events ingested at or after [since]; the default makes
-         * the lane a no-op.
+         * Only the urls named by relay-list events whose `created_at` is at or after [since], so a list
+         * arriving backdated is left to the sweep. Throws when the lists could not be read; the default is a no-op.
          */
         suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
 
@@ -121,7 +121,8 @@ class AliasMonitor(
             while (scope.isActive) {
                 // Unset while a pass runs, so a running pass does not read as a late one.
                 dueAtMs = null
-                passGate.withLock { runPass() }
+                // One unexpected throw must not end sweeping for the life of the process.
+                guarded("sweep") { passGate.withLock { runPass() } }
                 val wait = if (lastPassHadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait
                 delay(wait)
@@ -136,15 +137,10 @@ class AliasMonitor(
                 var lastLookSec = System.currentTimeMillis() / 1000
                 while (scope.isActive) {
                     delay(everyMs)
-                    val lookFrom = lastLookSec
-                    lastLookSec = System.currentTimeMillis() / 1000
-                    try {
-                        passGate.withLock { runFastLane(lookFrom) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        System.err.println("router: fast lane failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
-                    }
+                    // Taken before the gate, so lists created while a sweep holds it fall in the next window.
+                    val lookingAt = System.currentTimeMillis() / 1000
+                    // Advanced only past a tick that ran, so a failed one's window is looked at again.
+                    if (guarded("fast lane") { passGate.withLock { runFastLane(lastLookSec) } }) lastLookSec = lookingAt
                 }
             }
         }
@@ -166,6 +162,21 @@ class AliasMonitor(
         }
         return this
     }
+
+    /** Runs [work], logging anything it throws but a cancellation; true when it returned. */
+    private suspend fun guarded(
+        what: String,
+        work: suspend () -> Unit,
+    ): Boolean =
+        try {
+            work()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            false
+        }
 
     /** Every pass's pending writes, one pass at a time and each guarded. The caller holds [passGate]. */
     suspend fun flushPending(): Int {

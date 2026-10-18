@@ -230,4 +230,74 @@ class AliasMonitorTest {
 
             assertEquals(listOf(a, b), pass.passes.single().second)
         }
+
+    @Test
+    fun `a sweep that throws unexpectedly does not end sweeping`() =
+        runBlocking {
+            val pass = Recording()
+            val reads = AtomicInteger()
+            val source =
+                object : AliasMonitor.CandidateSource {
+                    // The second read is the first sweep's, and outside every guard a pass has of its own.
+                    override val progress: Processors.Handle?
+                        get() = if (reads.incrementAndGet() == 2) throw IllegalStateException("the row broke") else null
+
+                    override suspend fun candidates() = listOf(a, b)
+
+                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
+
+                    override suspend fun onEvent(event: Event) = Unit
+
+                    override val sockets = Sockets.NONE
+                }
+            val scope = CoroutineScope(Dispatchers.Default)
+            try {
+                AliasMonitor(listOf(pass), scope, intervalMs = 20, startupDelayMs = 0, emptyRetryMs = 20, source = source).start()
+
+                withTimeout(5_000) { while (pass.calls.get() == 0) delay(10) }
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a fast-lane window whose lists could not be read is looked at again`() =
+        runBlocking {
+            val asked = java.util.concurrent.CopyOnWriteArrayList<Long>()
+            val source =
+                object : AliasMonitor.CandidateSource {
+                    override suspend fun candidates() = emptyList<NormalizedRelayUrl>()
+
+                    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
+                        asked += since
+                        if (asked.size == 1) throw IllegalStateException("the store cannot answer")
+                        return emptyList()
+                    }
+
+                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
+
+                    override suspend fun onEvent(event: Event) = Unit
+
+                    override val sockets = Sockets.NONE
+                }
+            val scope = CoroutineScope(Dispatchers.Default)
+            try {
+                // Over a second apart, so a window that moved on would start at a later second.
+                AliasMonitor(
+                    emptyList(),
+                    scope,
+                    startupDelayMs = 0,
+                    emptyRetryMs = 60_000,
+                    source = source,
+                    fastLaneEveryMs = 1_100,
+                    fastLanePasses = listOf(Recording()),
+                ).start()
+
+                withTimeout(10_000) { while (asked.size < 2) delay(20) }
+            } finally {
+                scope.cancel()
+            }
+
+            assertEquals(asked[0], asked[1], "the failed tick's window was skipped")
+        }
 }

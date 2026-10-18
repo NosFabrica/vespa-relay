@@ -362,3 +362,13 @@ same hubs while holding the pass gate. A url carrying our fitness grade taken
 within `sweepSeconds` is left to the sweep, which re-grades it on that period
 anyway; one whose grade is older than that is the sweep's miss and the lane
 may take it.
+
+**The monitor's loops outlive one bad iteration.** The sweep loop had no
+guard of its own, so a throw from outside every pass's guard ended sweeping
+for the life of the process; it now logs and waits for the next one. The fast
+lane advanced its window before the tick ran and `StreamWorld.derive` turned
+a failed store read into an empty answer, so a tick that could not read the
+relay lists silently skipped its minutes. `candidatesSince` now throws on a
+failed read and the window moves only past a tick that ran. The window is
+on `created_at`, which is all a filter's `since` can bound: a list that
+arrives backdated is the sweep's.
