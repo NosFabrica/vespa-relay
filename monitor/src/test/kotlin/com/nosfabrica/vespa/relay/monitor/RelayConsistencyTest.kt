@@ -85,8 +85,18 @@ class RelayConsistencyTest {
     }
 
     @Test
+    fun `a decision carries the two windows it was decided on, and silence carries none`() {
+        val c = RelayConsistency()
+        val decided = c.judge(ids(0, 500), ids(0, 499))
+        assertEquals(RelayConsistency.Verdict.CONSISTENT, decided?.verdict)
+        assertEquals(500 to 499, decided?.let { it.first.size to it.second.size })
+        assertEquals(null, c.judge(null, ids(0, 500)))
+        assertEquals(null, c.judge(ids(0, 19), ids(0, 19)))
+    }
+
+    @Test
     fun `silence decides nothing`() {
-        // A relay that could not be asked is HostStrikes' business.
+        // A relay that could not be asked proves nothing about how it answers.
         val c = RelayConsistency()
         assertEquals(RelayConsistency.Verdict.UNMEASURABLE, c.decide(null, ids(0, 500)))
         assertEquals(RelayConsistency.Verdict.UNMEASURABLE, c.decide(ids(0, 500), null))
@@ -96,9 +106,9 @@ class RelayConsistencyTest {
     @Test
     fun `an unmeasured url is dialled, because a fan-out is never narrowed by silence`() {
         val c = RelayConsistency()
-        assertTrue(c.usable(steady), "a url nothing has measured must still be dialled")
+        assertFalse(c.isInconsistent(steady), "a url nothing has measured must still be dialled")
         assertFalse(c.measured(steady))
-        assertEquals(emptyList(), c.unusable(listOf(steady, shuffler)))
+        assertEquals(emptyList(), listOf(steady, shuffler).filter(c::isInconsistent))
     }
 
     @Test
@@ -106,20 +116,21 @@ class RelayConsistencyTest {
         val c = RelayConsistency()
         c.learn(steady, RelayConsistency.Verdict.CONSISTENT)
         c.learn(shuffler, RelayConsistency.Verdict.UNMEASURABLE)
-        assertEquals(emptyList(), c.unusable(listOf(steady, shuffler)))
+        assertEquals(emptyList(), listOf(steady, shuffler).filter(c::isInconsistent))
 
         c.learn(shuffler, RelayConsistency.Verdict.INCONSISTENT)
-        assertEquals(listOf(shuffler), c.unusable(listOf(steady, shuffler)))
+        assertEquals(listOf(shuffler), listOf(steady, shuffler).filter(c::isInconsistent))
     }
 
     @Test
     fun `a verdict that lapses puts the relay back in the fan-out`() {
         val c = RelayConsistency()
         c.learn(shuffler, RelayConsistency.Verdict.INCONSISTENT)
-        assertFalse(c.usable(shuffler))
+        assertTrue(c.isInconsistent(shuffler))
 
-        c.forget(listOf(shuffler))
-        assertTrue(c.usable(shuffler), "a forgotten verdict still refused the relay")
+        // The store holding no verdict for it any more, expired or never taken.
+        c.replace(listOf(shuffler), stable = emptySet(), unstable = emptySet())
+        assertFalse(c.isInconsistent(shuffler), "a lapsed verdict still refused the relay")
         assertFalse(c.measured(shuffler))
     }
 
@@ -128,7 +139,7 @@ class RelayConsistencyTest {
         val c = RelayConsistency()
         c.learn(shuffler, RelayConsistency.Verdict.INCONSISTENT)
         c.learn(shuffler, RelayConsistency.Verdict.CONSISTENT)
-        assertTrue(c.usable(shuffler))
+        assertFalse(c.isInconsistent(shuffler))
         assertEquals(0, c.refusedCount())
     }
 
@@ -204,7 +215,7 @@ class RelayConsistencyTest {
             val decided = pass.measure("t", listOf(steady, shuffler), canDial = { true })
 
             assertEquals(2, decided, "both urls should have reached a verdict")
-            assertEquals(listOf(shuffler), pass.applyVerdicts(listOf(steady, shuffler)))
+            assertEquals(setOf(shuffler), RelayVerdictRecord(store, signer).load(listOf(steady, shuffler)).inconsistent)
 
             val afterFirst = dials.get()
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
@@ -252,24 +263,24 @@ class RelayConsistencyTest {
         }
 
     @Test
-    fun `apply never dials`() =
+    fun `a url that leaves the candidate set leaves memory at the next sweep, not at a fast-lane batch`() =
         runBlocking {
-            val dials = AtomicInteger()
+            val corpus: List<Event> = (0 until 60).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val consistency = RelayConsistency()
             val pass =
                 ConsistencyPass(
-                    consistency = RelayConsistency(),
+                    consistency = consistency,
                     record = RelayVerdictRecord(newStore(), signer),
-                    probe =
-                        AliasProbe(
-                            fetch = { _, _, _, _ ->
-                                dials.incrementAndGet()
-                                AliasProbe.Page(emptyList())
-                            },
-                        ),
+                    probe = AliasProbe(fetch = { _, want, _, _ -> AliasProbe.Page(corpus.take(want)) }, target = 40, page = 40, fallbackPage = 40),
                 )
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady, shuffler), canDial = { true })
+            assertTrue(consistency.measured(shuffler))
 
-            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
-            assertEquals(0, dials.get(), "apply() opened ${dials.get()} socket(s)")
+            pass.measure(AliasMonitor.FAST_LANE, listOf(steady), canDial = { true })
+            assertTrue(consistency.measured(shuffler), "a fast-lane batch is not the candidate set")
+
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady), canDial = { true })
+            assertFalse(consistency.measured(shuffler), "a url no sweep names any more is still held in memory")
         }
 
     @Test
@@ -284,7 +295,7 @@ class RelayConsistencyTest {
                 )
 
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
-            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
+            assertEquals(emptySet(), RelayVerdictRecord(store, signer).load(listOf(steady, shuffler)).inconsistent)
         }
 
     @Test

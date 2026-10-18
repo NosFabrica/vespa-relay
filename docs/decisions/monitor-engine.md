@@ -166,6 +166,15 @@ from a store holding no relay lists.
 `ConsistencyPass`, the state `RelayConsistency`, the tag `self-consistent`; a
 fourth word would be one nobody could grep from the document to the code.
 
+**A pass that cannot read the standing verdicts publishes nothing.** The
+three passes disagreed: fitness aborted, the fold fell back to a narrower
+read and went on, and the stability gate walked every path with no record at
+all, so it signed consistency verdicts onto urls the fold had already folded
+and left its folded set from the last read. `readStanding` is the one rule:
+the failure is logged and the pass skips its batch, because a verdict signed
+without the record it is written against can contradict that record. The
+read-only `applyVerdicts` still keeps what it holds, since it signs nothing.
+
 ## Stream world
 
 **The candidate set is derived from the store per pass, not pushed by the
@@ -230,6 +239,11 @@ the store.
 but for `software`, `supported_nips` and the limitation flags there is no
 instrument at all, and publishing nothing left our records the least
 informative on the network. The measured half overwrites where they disagree.
+
+**The document fetch is cancellable.** It ran a blocking `execute()` on the
+shared IO pool, so the per-url deadline cancelling the fitness job did not
+end the read: the thread and the socket stayed held for the full call
+timeout. The call is enqueued and awaited, and a cancelled caller cancels it.
 
 ## Monitor status
 
@@ -348,3 +362,13 @@ same hubs while holding the pass gate. A url carrying our fitness grade taken
 within `sweepSeconds` is left to the sweep, which re-grades it on that period
 anyway; one whose grade is older than that is the sweep's miss and the lane
 may take it.
+
+**The monitor's loops outlive one bad iteration.** The sweep loop had no
+guard of its own, so a throw from outside every pass's guard ended sweeping
+for the life of the process; it now logs and waits for the next one. The fast
+lane advanced its window before the tick ran and `StreamWorld.derive` turned
+a failed store read into an empty answer, so a tick that could not read the
+relay lists silently skipped its minutes. `candidatesSince` now throws on a
+failed read and the window moves only past a tick that ran. The window is
+on `created_at`, which is all a filter's `since` can bound: a list that
+arrives backdated is the sweep's.

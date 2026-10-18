@@ -21,6 +21,14 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.Verdict
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
+import java.net.ServerSocket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -28,6 +36,54 @@ import kotlin.test.assertTrue
 
 /** A NIP-11 document is a stranger's JSON: every field optional, every type a suggestion. */
 class RelayDocumentTest {
+    /** A loopback server that reads one request and answers with [reply], or never answers when it is null. */
+    private fun serve(
+        reply: String?,
+        closed: CompletableFuture<Unit> = CompletableFuture(),
+    ): ServerSocket {
+        val server = ServerSocket(0)
+        thread(isDaemon = true) {
+            server.accept().use { socket ->
+                val input = socket.getInputStream().bufferedReader()
+                while (input.readLine().orEmpty().isNotEmpty()) Unit
+                if (reply != null) {
+                    socket.getOutputStream().write(reply.toByteArray())
+                    socket.getOutputStream().flush()
+                }
+                // The client hanging up is the only way out of a read that is never answered.
+                runCatching { while (socket.getInputStream().read() >= 0) Unit }
+                closed.complete(Unit)
+            }
+        }
+        return server
+    }
+
+    @Test
+    fun `a document fetched over the wire is read`() =
+        runBlocking {
+            val json = """{ "software": "strfry", "supported_nips": [1, 11] }"""
+            serve("HTTP/1.1 200 OK\r\nContent-Type: application/nostr+json\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { server ->
+                val reading = RelayDocument({ OkHttpClient() }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}"))
+
+                assertEquals("strfry", reading.doc?.software)
+            }
+        }
+
+    @Test
+    fun `a cancelled read lets go of its connection at once rather than at its own timeout`() =
+        runBlocking {
+            val closed = CompletableFuture<Unit>()
+            serve(reply = null, closed = closed).use { server ->
+                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 60)
+                val startedMs = System.currentTimeMillis()
+
+                assertNull(withTimeoutOrNull(300) { document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}")) })
+
+                assertTrue(System.currentTimeMillis() - startedMs < 10_000, "the read outlived the caller's deadline")
+                closed.get(10, TimeUnit.SECONDS)
+            }
+        }
+
     @Test
     fun `the four fields with somewhere to go are read, in NIP-66's spelling`() {
         val doc =

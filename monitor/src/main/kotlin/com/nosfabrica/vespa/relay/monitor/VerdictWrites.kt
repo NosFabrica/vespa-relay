@@ -27,6 +27,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 /** What one batch of verdict writes came to. [resumeAt] is, when a limit stopped it, the earliest url not stored. */
 internal class VerdictWrites(
@@ -37,7 +38,156 @@ internal class VerdictWrites(
     val resumeAt: NormalizedRelayUrl?,
     /** The urls whose write the store took. */
     val stored: Set<NormalizedRelayUrl> = emptySet(),
-)
+) {
+    /** The limits every pass's verdict writes run under. */
+    companion object {
+        /** Sized against the store's worst honest case; the fault it bounds is not slowness but forever. */
+        const val PUBLISH_DEADLINE_MS = 60_000L
+
+        /** Verdict writes in flight at once; each is its own record, so they never race. */
+        const val WRITE_CONCURRENCY = 16
+
+        /** Consecutive deadline hits before the batch stops; reset by every write the store answers. */
+        const val PUBLISH_WEDGE_LIMIT = 3
+
+        /** Wall time a batch may lose to unanswered writes; the run limit alone misses an alternating store. */
+        const val PUBLISH_WEDGE_BUDGET_MS = 20L * 60 * 1000
+
+        /** The one stage that is not a dial: the record edit that puts a verdict down. */
+        const val STAGE_PUBLISH = "verdict write"
+    }
+}
+
+/**
+ * Verdict writes under one set of limits across every [write] call a pass makes: each url is its own
+ * record under [deadlineMs], so writes never race, and once the store stops answering every later write is refused.
+ */
+internal class VerdictWriter(
+    private val concurrency: Int,
+    private val deadlineMs: Long,
+    /** Unanswered writes in a row, by start order, before the writer stops. */
+    private val wedgeLimit: Int,
+    /** Write time the writer may lose to unanswered writes; the run limit alone misses an alternating store. */
+    private val wedgeBudgetMs: Long,
+    private val progress: Processors.Handle?,
+    private val stage: String,
+    /** Whether each write moves [progress]'s position; false where the position counts something else. */
+    private val tick: Boolean = true,
+) {
+    private val lock = Any()
+    private val permits = Semaphore(concurrency)
+
+    var published = 0
+        private set
+    var declined = 0
+        private set
+    var wedged = 0
+        private set
+
+    /** Writes offered after a limit stopped the writer, and never started. */
+    var refused = 0
+        private set
+
+    /** Which limit stopped the writer, in words, or null while it runs. */
+    @Volatile
+    var stoppedBy: String? = null
+        private set
+
+    private var lostMs = 0L
+    private var started = 0L
+
+    // "In a row" by start order, so a slow write finishing after quick answers to later ones does not
+    // read as a run: a wedge counts only while no write started after it has been answered.
+    private var lastAnswered = -1L
+    private val runOf = ArrayList<Long>()
+
+    /** Every write that did not land: wedged, declined, or refused after a stop. */
+    val unwritten: Int get() = synchronized(lock) { declined + wedged + refused }
+
+    /** One write per url, [concurrency] at a time in [urls]' order. Returns the urls the store took. */
+    suspend fun write(
+        urls: List<NormalizedRelayUrl>,
+        /** True stored, false the store answering and the write still failing. */
+        write: suspend (NormalizedRelayUrl) -> Boolean,
+    ): Set<NormalizedRelayUrl> {
+        val stored = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+        coroutineScope {
+            for ((i, url) in urls.withIndex()) {
+                permits.acquire()
+                val seq =
+                    synchronized(lock) {
+                        if (stoppedBy != null) {
+                            refused += urls.size - i
+                            null
+                        } else {
+                            started++
+                        }
+                    }
+                if (seq == null) {
+                    permits.release()
+                    break
+                }
+                launch {
+                    try {
+                        if (attempt(url, seq, write)) stored += url
+                    } finally {
+                        permits.release()
+                    }
+                }
+            }
+        }
+        return stored
+    }
+
+    /** One write under the deadline, its outcome folded into the limits. True when the store took it. */
+    private suspend fun attempt(
+        url: NormalizedRelayUrl,
+        seq: Long,
+        write: suspend (NormalizedRelayUrl) -> Boolean,
+    ): Boolean {
+        progress?.holding(url.url, stage)
+        val startedMs = System.currentTimeMillis()
+        val wrote =
+            try {
+                withTimeoutOrNull(deadlineMs) {
+                    try {
+                        write(url)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+            } finally {
+                progress?.released(url.url)
+            }
+        synchronized(lock) {
+            when (wrote) {
+                true -> published++
+                false -> declined++
+                null -> wedged++
+            }
+            if (wrote != null) {
+                lastAnswered = maxOf(lastAnswered, seq)
+                runOf.removeAll { it < lastAnswered }
+            } else {
+                if (seq > lastAnswered) runOf += seq
+                // A wedged slot costs the batch its share of the throughput, not the whole wall clock.
+                lostMs += (System.currentTimeMillis() - startedMs) / concurrency
+                if (stoppedBy == null) {
+                    stoppedBy =
+                        when {
+                            runOf.size >= wedgeLimit -> "${runOf.size} write(s) in a row went unanswered"
+                            lostMs >= wedgeBudgetMs -> "${lostMs / 1000}s of this batch was spent waiting on writes that never came back"
+                            else -> null
+                        }
+                }
+            }
+        }
+        if (tick) progress?.attempted()
+        return wrote == true
+    }
+}
 
 /**
  * One verdict write per url, [concurrency] at a time in [urls]' order, each under [deadlineMs].
@@ -56,83 +206,9 @@ internal suspend fun writeEach(
     /** True stored, false the store answering and the write still failing. */
     write: suspend (NormalizedRelayUrl) -> Boolean,
 ): VerdictWrites {
-    val lock = Any()
-    var published = 0
-    var declined = 0
-    var wedged = 0
-    var lostMs = 0L
-    var stoppedBy: String? = null
-    val stored = BooleanArray(urls.size)
-    // "In a row" by start order, so a slow write finishing after quick answers to later ones does not
-    // read as a run: a wedge counts only while no write started after it has been answered.
-    var lastAnswered = -1
-    val runOf = ArrayList<Int>()
-    val permits = Semaphore(concurrency)
-    coroutineScope {
-        for ((i, url) in urls.withIndex()) {
-            permits.acquire()
-            if (synchronized(lock) { stoppedBy != null }) {
-                permits.release()
-                break
-            }
-            launch {
-                try {
-                    progress?.holding(url.url, stage)
-                    val startedMs = System.currentTimeMillis()
-                    val wrote =
-                        try {
-                            withTimeoutOrNull(deadlineMs) {
-                                try {
-                                    write(url)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    false
-                                }
-                            }
-                        } finally {
-                            progress?.released(url.url)
-                        }
-                    synchronized(lock) {
-                        when (wrote) {
-                            true -> {
-                                published++
-                                stored[i] = true
-                            }
-
-                            false -> {
-                                declined++
-                            }
-
-                            null -> {
-                                wedged++
-                            }
-                        }
-                        if (wrote != null) {
-                            lastAnswered = maxOf(lastAnswered, i)
-                            runOf.removeAll { it < lastAnswered }
-                        } else {
-                            if (i > lastAnswered) runOf += i
-                            // A wedged slot costs the batch its share of the throughput, not the whole wall clock.
-                            lostMs += (System.currentTimeMillis() - startedMs) / concurrency
-                            if (stoppedBy == null) {
-                                stoppedBy =
-                                    when {
-                                        runOf.size >= wedgeLimit -> "${runOf.size} write(s) in a row went unanswered"
-                                        lostMs >= wedgeBudgetMs -> "${lostMs / 1000}s of this batch was spent waiting on writes that never came back"
-                                        else -> null
-                                    }
-                            }
-                        }
-                    }
-                    progress?.attempted()
-                } finally {
-                    permits.release()
-                }
-            }
-        }
-    }
+    val writer = VerdictWriter(concurrency, deadlineMs, wedgeLimit, wedgeBudgetMs, progress, stage)
+    val stored = writer.write(urls, write)
     // Completion order is not write order: writes started before the one that tripped the limit may not have landed.
-    val resumeAt = if (stoppedBy == null) null else urls.indices.firstOrNull { !stored[it] }?.let(urls::get)
-    return VerdictWrites(published, declined, wedged, stoppedBy, resumeAt, urls.filterIndexedTo(HashSet()) { i, _ -> stored[i] })
+    val resumeAt = if (writer.stoppedBy == null) null else urls.firstOrNull { it !in stored }
+    return VerdictWrites(writer.published, writer.declined, writer.wedged, writer.stoppedBy, resumeAt, stored)
 }

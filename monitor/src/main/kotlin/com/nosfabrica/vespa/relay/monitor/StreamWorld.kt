@@ -172,16 +172,16 @@ internal class StreamWorld(
     private var lastSourced: Int? = null
 
     /**
-     * One walk over every derivation, [bound] applied to each config first. Discovery is asked
-     * for the unfiltered set; `kept` applies the exclude list and the self check here.
+     * One walk over every derivation, [bound] applied to each config first; false when the store
+     * could not be read, which is logged. `kept` applies the exclude list and the self check here.
      */
     private suspend fun derive(
         what: String,
         bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
         onSource: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
-    ) {
-        val discovery = sources ?: return
+    ): Boolean {
+        val discovery = sources ?: return true
         // Topped up after a throw: a source we could not read is still behind us.
         var ticked = 0
         val found =
@@ -200,21 +200,24 @@ internal class StreamWorld(
                 throw e
             } catch (e: Exception) {
                 System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
-                emptyList()
+                null
             }
         repeat(discovery.sources.size - ticked) { onSource() }
-        found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+        found?.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+        return found != null
     }
 
     /**
-     * The fast lane's derivation: the same sources, bounded to relay-list events ingested at or
-     * after [since].
+     * The fast lane's derivation: the same sources, bounded to relay-list events created at or after
+     * [since]. Throws when the lists could not be read, so the lane looks at the window again.
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
-        derive("fast lane", { discovery ->
-            discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
-        }) { url, kept -> if (kept) fresh += url }
+        val read =
+            derive("fast lane", { discovery ->
+                discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
+            }) { url, kept -> if (kept) fresh += url }
+        check(read) { "the relay lists could not be read" }
         // Derive first, then ask the hold-out about what was found; most ticks find nothing.
         if (fresh.isEmpty()) return emptyList()
         val dead = ownDead(among = fresh)

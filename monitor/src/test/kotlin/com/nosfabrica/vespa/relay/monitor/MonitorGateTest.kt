@@ -182,9 +182,8 @@ class MonitorGateTest {
 
     @Test
     fun `a block that tunes the clocks and names no sources is not a declaration`() {
-        // The hole the guard was written for, wearing a monitor block: `sources` is what says
-        // what to measure, and one that only sets a clock never said. It would have run the
-        // plane over nothing, with every row `off` and not a word on the way past.
+        // `sources` is what says what to measure; a block that only sets a clock never said, and
+        // would run the plane over nothing with every row `off` and not a word on the way past.
         val cfg = withMonitorFile(streamDiscovers, "fastLaneSeconds = 60")
         assertNotNull(cfg.monitor, "the block parses — it is the declaration that is missing")
         assertNull(cfg.monitorSources())

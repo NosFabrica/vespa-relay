@@ -344,11 +344,7 @@ class AliasProbe(
 
         /**
          * How far behind the clock an anchor sits, so every walk of a group sees the same events
-         * however staggered the dials are. A minute was not enough: below one, the newest 500 ids
-         * held for a minute or three and then went (yabu.me 500/500 -> 1/500 and relay.primal.net
-         * 479 -> 118 seven minutes on), and a full sweep's guard walk comes that late. At ten
-         * minutes and deeper the same hosts held 96-100% over fifteen; relay.damus.io errored at an
-         * hour. docs/decisions/aliases.md has the table.
+         * however staggered the dials are, a full sweep's guard walk included.
          */
         const val ANCHOR_LAG_SECONDS = 30L * 60
 
