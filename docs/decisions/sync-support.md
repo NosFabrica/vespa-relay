@@ -158,6 +158,14 @@ three places (the engine gate, the status walk, the retraction plane) and the
 copies disagreed, so the panel built to certify that audits run only when due
 read permanently in arrears while the audits ran perfectly well.
 
+**The re-fetch row reads the key the pool writes.** The schedule row windowed
+the filter before looking its coverage up, while `catchUpBand` records under
+the stream's own filter once the band moved off the sliding window, so every
+lookup missed and every re-fetch row on three streams reported `neverRun`,
+asks whose coverage was sitting right there included. A status page that asks
+a different question than the writer answered reports a catastrophe it
+invented; `AuditScheduleTest` pins the join.
+
 **The manifest scopes the mirror comparison to the kinds actually asked for.**
 A client comparing a filtered mirror against an unfiltered total drew 35% on a
 relay that was not behind by one event (31,118 here of 89,485 there for one

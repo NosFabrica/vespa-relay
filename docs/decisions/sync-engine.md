@@ -93,6 +93,23 @@ band aged past `negentropySyncThePastSeconds` every visit's audit was due
 again, and one relay took 13 full history sweeps in 40 minutes. `verifiedAt`
 advances on every `reconciledThrough` record and is persisted beside the band.
 
+**A band's audit clock is its own, keyed by the band and never by its window.**
+A band's window slides with `now`, so a clock keyed by it orphaned the record
+of having walked the band and read as never verified on the next visit. The
+bands share one coverage over the stream's whole filter (a coverage per window
+per day would grow without bound), so only an unbanded stream may fall back to
+that coverage's `fullAt`: the first band audited would otherwise hand its clock
+to every other band, each of which then sat out a whole period before its first
+walk, the oldest for a year. With no per-band object to carry a `verifiedAt`,
+the clocks get their own section in the file, or every restart re-walked the
+oldest, most expensive band.
+
+**A band reads as impossible only after three refused first windows.** quartz
+raises the same `UNAVAILABLE` for a relay without NIP-77, a failed dial and a
+silence mid-reconcile, and a relay without NIP-77 usually just ignores the
+NEG-OPEN and goes quiet. One strike would condemn a band for a week over a
+dropped socket; a first-window failure costs no window work, so three are cheap.
+
 **`claimAudit` goes through `auditDueAt`.** The clock chain was spelled twice,
 once per audit path, so the gate an audit ran on and the number the status
 page certified it by were two expressions that could disagree; the panel

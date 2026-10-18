@@ -180,11 +180,8 @@ class SyncEngine(
             peers = peers,
             signer = signer,
             sockets = sockets,
-            // Submitted once, not once per wanting stream. ALWAYS VERIFIED, whatever a matching
-            // stream's `trusted` says: that flag vouches for one declared upstream, and this event
-            // came off whichever relay a probe pass happened to dial. Asked of the streams that
-            // PULL — an `up` stream's filter describes what this router publishes, and nothing
-            // there ever asked to mirror what a probe saw.
+            // Once, always verified (`trusted` vouches for a declared upstream, not a probed relay),
+            // and only if a pulling stream wants it: an `up` filter says what we publish.
             onProbeEvent = { event ->
                 if (visitStreams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
             },

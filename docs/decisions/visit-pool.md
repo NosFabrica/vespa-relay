@@ -150,3 +150,16 @@ yields and the eviction marks; `PoolStatus` owns the in-flight and live rows,
 the per-relay table, each stream's limits, schedule and phase, and the
 progress counters, reading the pool's state and writing none of it. The pool
 keeps the visit, the roster and the workers.
+
+**The band bounds the legs, never the key.** Coverage is quartz's, keyed by
+`(relay, filter)`, so a filter carrying the band's window took a new key every
+time the window moved with `now`: every band was re-keyed daily, its coverage
+orphaned and its whole span re-paged from scratch, for every relay, three
+bands over, against a `refetchThePastSeconds` meant to re-page that ground
+monthly. The key is the band-qualified stream and the stream's own filter,
+both of which stand still, and the window is intersected into the legs after
+they come back, so a day costs the day the window gained at the top.
+
+**Retraction audits are counted apart from sweeps.** They ride the sweeps'
+clock and pool, but summed into `negentropyRuns` they made seven finished
+sweeps read as thirty-seven; `retractionRuns` carries them.

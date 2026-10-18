@@ -158,9 +158,7 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    // STORE_WRITERS: the relay's inserts are checked against tombstones this process stores.
-    // The pulse detail flag is read before the store opens: the slow-read ring is a
-    // constructor setting.
+    // Read before the store opens: the slow-read ring is a constructor setting.
     val pulseClientDetail = env.strictFlag("SYNC_PULSE_CLIENT_DETAIL") ?: false
     // Off by default, unlike the two status pages: with SYNC_PULSE_CLIENT_DETAIL on this
     // document quotes slow queries and is not public.
@@ -186,6 +184,7 @@ fun main() {
             relay = relayUrl,
             autoDeploy = false,
             configUrl = configUrl,
+            // The relay's inserts are checked against tombstones this process stores.
             writers = STORE_WRITERS,
             providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),

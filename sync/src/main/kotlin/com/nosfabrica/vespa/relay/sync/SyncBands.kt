@@ -73,21 +73,15 @@ class SyncBands(
         val stream: String,
         val filter: String,
         val relay: String,
-        /**
-         * The age band this clock is for, empty for a stream that audits its past as one. A
-         * band's window slides with `now`, so the window can never be its identity: a key that
-         * moved with it would orphan the record of having walked the band, and the band would
-         * read as never verified on the very next visit.
-         */
+        /** The age band this clock is for, empty for an unbanded stream. Never the window, which slides with `now`. */
         val band: String = "",
     )
 
     private val verified = ConcurrentHashMap<VerifiedKey, Long>()
 
     /**
-     * A band negentropy CANNOT verify, whatever the clock says: the relay would not open a
-     * NEG-OPEN for this ask. Neither complete nor incomplete — those both describe a walk that
-     * happened, and this one cannot. The re-fetch plane covers the band meanwhile.
+     * A band negentropy cannot verify whatever the clock says, because the relay would not open a
+     * NEG-OPEN for this ask: neither complete nor incomplete. The re-fetch plane covers it meanwhile.
      */
     data class CannotReconcile(
         /** First windows refused in a row. `UNAVAILABLE` is also a failed dial, so one is not a verdict. */
@@ -178,10 +172,8 @@ class SyncBands(
         negentropySyncThePastSeconds: Long,
         band: String = "",
     ): Long? {
-        // Only an unbanded stream falls back to the coverage's `fullAt`. A band's coverage is
-        // the stream's whole filter, so the first band audited sets a `fullAt` every other band
-        // would then inherit — and each would sit out its whole period before its FIRST walk,
-        // the tail for a year. A band with no clock of its own has never been verified.
+        // Only an unbanded stream falls back to the coverage's `fullAt`: bands share one coverage,
+        // so its `fullAt` would hand every band the first one's clock.
         val own = verified[VerifiedKey(stream, filter.toJson(), url.url, band)]
         val clock = own ?: (if (band.isEmpty()) band(stream, url, filter)?.fullAt else null) ?: 0L
         return if (clock <= 0L) null else clock + negentropySyncThePastSeconds
@@ -658,11 +650,8 @@ class SyncBands(
         }
 
     /**
-     * The tiered audits' clocks, in a section of their own. A band records its coverage against
-     * the stream's whole filter — the window slides, and a coverage band per window per day
-     * would grow without bound — so there is no per-band band object to hang a `verifiedAt` on
-     * the way an untiered stream does. Without this, a band's schedule would be memory-only and
-     * every restart would re-walk the oldest, most expensive band.
+     * The banded audits' clocks, in a section of their own: a band's coverage is the stream's
+     * whole filter, so no per-band object exists to carry a `verifiedAt` across a restart.
      */
     private fun JsonObjectBuilder.putBandClocks() {
         val banded = verified.entries.filter { it.key.band.isNotEmpty() }
@@ -797,10 +786,8 @@ class SyncBands(
         private const val UNOWNED_SINCE = "#unownedSince"
 
         /**
-         * First windows a band must lose in a row before it reads as impossible. More than one
-         * because quartz raises the same `UNAVAILABLE` for no NIP-77, a failed dial and a
-         * mid-reconcile silence, and cannot tell them apart — a relay without NIP-77 usually
-         * just ignores the NEG-OPEN and goes quiet. A first-window failure costs no window work.
+         * First windows a band must lose in a row before it reads as impossible. More than one,
+         * because quartz's `UNAVAILABLE` is also a failed dial or a mid-reconcile silence.
          */
         const val STRIKES_BEFORE_IMPOSSIBLE = 3
 

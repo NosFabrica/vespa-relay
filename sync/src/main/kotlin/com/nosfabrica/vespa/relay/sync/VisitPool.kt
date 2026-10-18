@@ -466,19 +466,8 @@ internal class VisitPool(
     }
 
     /**
-     * One band's outstanding legs, under the coverage filed at [key].
-     *
-     * THE BAND BOUNDS THE LEGS, NEVER THE KEY. Coverage is quartz's, keyed by
-     * `(relay, filter)`, so a filter carrying the band's window would take a new
-     * key every time that window moved — and the window moves with `now`. It
-     * did: every band was re-keyed daily, its coverage orphaned, and its whole
-     * span re-paged from scratch, for every relay, three bands over. Against a
-     * `refetchThePastSeconds` that used to re-page the same ground MONTHLY.
-     *
-     * So the key is the band-qualified stream and the stream's own filter, both
-     * of which stand still, and the window is intersected into the legs after
-     * they come back. What that costs per day is the day the window gained at
-     * the top, which is what a re-fetch was always supposed to cost.
+     * One band's outstanding legs, under the coverage filed at [key]. The band bounds the legs,
+     * never the key: a filter carrying the window would be re-keyed every time `now` moved it.
      */
     private suspend fun catchUpBand(
         ask: RosterBuilder.Ask,
@@ -624,11 +613,8 @@ internal class VisitPool(
             return
         }
         val now = nowSeconds()
-        // Dueness first (read-only), then the cap, then the claim, which stamps the attempt clock.
-        // Any other order spends a permit or an attempt on work that never runs.
-        //
-        // Youngest band first, one band per visit: the cheap re-check of recent history always
-        // gets its turn, and the long walk of the tail takes one only when nothing newer is due.
+        // Dueness (read-only), then the cap, then the claim: any other order spends a permit or an
+        // attempt on work that never runs. Youngest band first, one band per visit.
         val due =
             SyncTier.tile(tiers).firstOrNull { (tier, _, _) ->
                 schedule.isDue(ask, url, tier.everySeconds, now, SyncTier.bandIdOf(tiers, tier))
@@ -695,9 +681,8 @@ internal class VisitPool(
             }
         counters.auditsRun.incrementAndGet()
         counters.auditsRefusedWindows.addAndGet(outcome.refusedWindows.toLong())
-        // The band's third state. `complete` and the ordinary incomplete both describe a walk
-        // that happened; this one could not start, so the band is neither — and saying so is
-        // what keeps it out of the backlog it can never leave.
+        // The band's third state: no walk could start, so it is neither complete nor incomplete,
+        // and recording that keeps it out of a backlog it could never leave.
         if (!outcome.negentropyUsable) {
             val why = outcome.failure?.detail ?: "the relay would not open negentropy"
             val strikes = bands.noteCannotReconcile(stream.name, url, ask.filter, band, why, auditStarted)
