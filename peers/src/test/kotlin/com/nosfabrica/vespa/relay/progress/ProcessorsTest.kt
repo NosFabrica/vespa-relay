@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.progress
 
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -276,5 +278,44 @@ class ProcessorsTest {
         ingest.phase(Processors.RUNNING)
 
         assertTrue(p.snapshot().single().phaseForSec >= first)
+    }
+
+    @Test
+    fun `a slow supplier does not hold up a processor registering meanwhile`() {
+        val p = Processors()
+        var registeredMeanwhile = false
+        p.of("ingest").counts {
+            // A supplier is caller code: it may wait on a thread that is registering a processor.
+            val other = thread { p.of("late") }
+            other.join(5_000)
+            registeredMeanwhile = !other.isAlive
+            emptyList()
+        }
+        p.snapshot()
+        assertTrue(registeredMeanwhile, "the snapshot held the registry lock while it ran a supplier")
+    }
+
+    @Test
+    fun `a reader never sees half a finished pass`() {
+        val p = Processors()
+        val handles = (0 until 2_000).map { p.of("p$it") }
+        val torn = AtomicLong()
+        val done = AtomicBoolean(false)
+        val reader =
+            thread {
+                while (!done.get()) {
+                    for (row in p.snapshot()) {
+                        // A stamped end with no counted pass, or the reverse, is a finish read halfway.
+                        if ((row.lastPassAt != null) != (row.passes != null && row.lastPassSec != null)) torn.incrementAndGet()
+                    }
+                }
+            }
+        for (h in handles) {
+            h.begin()
+            h.finish()
+        }
+        done.set(true)
+        reader.join()
+        assertEquals(0L, torn.get())
     }
 }

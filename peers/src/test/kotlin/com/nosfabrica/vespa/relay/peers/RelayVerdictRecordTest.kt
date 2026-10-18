@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.peers
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayFacts
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -31,9 +32,13 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.EventTemplate
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -498,5 +503,41 @@ class RelayVerdictRecordTest {
 
             assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
             assertEquals(setOf(canonical), record.load(listOf(canonical)).consistent)
+        }
+
+    /** A store that cannot answer a query; writes never get that far. */
+    private class UnreadableStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = throw IllegalStateException("query refused")
+    }
+
+    @Test
+    fun `a failed edit names its url and the stage it failed at`() =
+        runBlocking {
+            val record = RelayVerdictRecord(UnreadableStore(newStore()), signer)
+            val captured = ByteArrayOutputStream()
+            val realErr = System.err
+            System.setErr(PrintStream(captured, true))
+            val written =
+                try {
+                    record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = null)
+                } finally {
+                    System.setErr(realErr)
+                }
+            assertNull(written)
+            val err = captured.toString()
+            assertTrue(alias.url in err && "FAILED at read" in err, "a failed edit was silent: $err")
+        }
+
+    @Test
+    fun `every store call an edit makes is booked, the record read included`() =
+        runBlocking {
+            val calls = StoreCalls()
+            withContext(calls) {
+                RelayVerdictRecord(newStore(), signer).publishFitness(alias, "prime", "answered", pageable = null, nip77 = null)
+            }
+            val publish = calls.snapshot().callers.single { it.caller == StoreCalls.CALLER_MONITOR_PUBLISH }
+            assertEquals(2L, publish.issued, "a read the store hangs on must show under `store` like the insert does")
         }
 }

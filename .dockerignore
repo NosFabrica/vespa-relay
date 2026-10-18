@@ -11,3 +11,5 @@
 .env.*
 .audit
 router.conf
+sync.conf
+monitor.conf

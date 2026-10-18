@@ -171,6 +171,54 @@ class ParseAuditTest {
         }
     }
 
+    /** An event whose parse reports [message], so each instance can mint its own finding. */
+    private class Chatty(
+        n: Int,
+        private val message: String,
+    ) : Event("%064x".format(n), "a1".repeat(32), 1_700_000_000L, 1, emptyArray(), "", ""),
+        SearchableEvent {
+        override fun indexableContent(): String {
+            Log.w("MetadataEvent", message)
+            return ""
+        }
+    }
+
+    @Test
+    fun `distinct findings stop growing at the cap and the rest are still counted`() {
+        val dir = createTempDir()
+        val a = ParseAudit(File(dir, "report.json"), maxSamplesPerFinding = 5, maxFindings = 3)
+        Log.sink = a
+        Log.minLevel = LogLevel.DEBUG
+        a.use {
+            // Each message quotes a different value, as quartz's templates quote content.
+            repeat(10) { n -> a.inspect(Chatty(n, "bad name value-$n")) }
+            val findings = a.snapshot()
+            assertEquals(4, findings.size, "three kept and one overflow bucket: ${findings.map { it.normalizedMessage }}")
+            assertEquals(7L, findings.single { it.tag == ParseAudit.OVERFLOW_TAG }.count.get())
+            assertEquals(10L, findings.sumOf { it.count.get() }, "a report past the cap is still counted")
+        }
+    }
+
+    @Test
+    fun `a finding's message is bounded however much content quartz quotes`() {
+        val dir = createTempDir()
+        audit(dir).use { a ->
+            a.inspect(Chatty(1, "bad name " + "x".repeat(100_000)))
+            val finding = a.snapshot().single()
+            assertTrue(finding.normalizedMessage.length <= ParseAudit.MAX_MESSAGE_CHARS, "${finding.normalizedMessage.length} chars")
+        }
+    }
+
+    @Test
+    fun `closing the audit hands quartz's log back to the sink it wrapped`() {
+        val dir = createTempDir()
+        val before = Log.sink
+        val a = audit(dir)
+        assertTrue(Log.sink === a)
+        a.close()
+        assertTrue(Log.sink === before, "a closed audit must not keep swallowing quartz's log")
+    }
+
     @Test
     fun `report carries the raw event so a quartz test can replay it`() {
         val dir = createTempDir()

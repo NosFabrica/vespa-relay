@@ -235,3 +235,17 @@ applies per tag.
 **`RelayFacts` writes no `g` and no `T`.** Both need something this process
 does not have: a GeoIP database for the geohash and a classifier for the
 relay type. A tag left out is honest; a guessed one is a signed claim.
+
+**One predicate decides whether a fitness label is current.**
+`RelayDiscovery.undialable` read the `dead` label by hand and aged it only by
+the record's `created_at`, which every writer bumps, so a grade under older
+rules or measured long ago held a url out for as long as anything kept
+re-signing its record. It now asks `RelayVerdictRecord.currentFitnessLabel`,
+the test `load` applies: `FITNESS_EPOCH` and the label's own measured-at stamp.
+
+**A failed verdict edit is said, and its read is booked.** `edit` returned
+null on a failed read, signature or insert without a word, and its record read
+called the store directly, so a read the store hung on showed nowhere under
+`store` on `/stats.json`. Failures are now logged with the url and the stage,
+at most once a minute, and the read goes through `storeCall` as
+`monitor.publish`.
