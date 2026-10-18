@@ -879,6 +879,36 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `what the fold holds about a url lasts only while a sweep names it`() =
+        runBlocking {
+            val store = newStore()
+            val aliases = RelayAliases()
+            val fold = folding(store, upstreams(), aliases)
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(canonical, alias), canDial = { true })
+            assertEquals(mapOf(alias to canonical), aliases.verdicts())
+
+            // The fold's own record still names the canonical, so it stays in the world; the alias does not.
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere), canDial = { true })
+
+            assertEquals(emptyMap(), aliases.verdicts())
+        }
+
+    @Test
+    fun `a cooldown is dropped with its host when no sweep names it any more`() =
+        runBlocking {
+            val up = silentUpstreams()
+            val fold = folding(newStore(), up)
+            val urls = listOf(canonical, alias)
+            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere, RelayUrlNormalizer.normalize("wss://nostr.mom/beta")), canDial = { true })
+            val before = up.dials.get()
+
+            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
+
+            assertTrue(up.dials.get() > before, "a cooldown outlived every sweep that could have used it")
+        }
+
+    @Test
     fun `the cooldown lapses, so a host that recovers comes back`() =
         runBlocking {
             val store = newStore()

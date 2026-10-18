@@ -132,6 +132,8 @@ class AliasFolding(
 
         val grouped = adoptWorld(label, candidates) ?: return 0
         val world = grouped.urls
+        // A sweep's world is everything the fold can be asked about; a fast-lane batch is a handful of urls.
+        if (label != AliasMonitor.FAST_LANE) forgetAllBut(world)
         if (world.size < 2) return 0
         // Read after the adopt and before the first dial; with `unmeasured` after the pass it makes
         // the card's fraction.
@@ -523,6 +525,14 @@ class AliasFolding(
             return false
         }
         return true
+    }
+
+    /** Drop what is held about urls outside [world], and cooldowns that have lapsed or whose host left it. */
+    private fun forgetAllBut(world: List<NormalizedRelayUrl>) {
+        aliases.retainOnly(world)
+        val hosts = world.mapTo(HashSet()) { RelayAliases.hostOf(it.url) }
+        val nowMs = System.currentTimeMillis()
+        undecidable.entries.removeIf { (host, until) -> host !in hosts || nowMs >= until }
     }
 
     /** This host was dialled and proved nothing. Leave it alone for a while. */

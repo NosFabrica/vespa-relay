@@ -164,6 +164,13 @@ class RelayConsistency(
         }
     }
 
+    /** Drop every verdict held about a url outside [urls], so the sets are bounded by the candidate set. */
+    fun retainOnly(urls: Collection<NormalizedRelayUrl>) {
+        val keep = urls.toHashSet()
+        consistent.retainAll(keep)
+        inconsistent.retainAll(keep)
+    }
+
     companion object {
         /**
          * How far back the pair of asks is anchored: deep enough to take a sharded backend's

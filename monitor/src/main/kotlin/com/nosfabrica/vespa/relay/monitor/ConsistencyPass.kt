@@ -122,6 +122,8 @@ class ConsistencyPass(
         // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
         val mates = world().matesOf(candidates)
         val held = adopt(label, candidates, mates) ?: return 0
+        // A sweep's candidates are the whole set; a fast-lane batch is a handful of urls.
+        if (label != AliasMonitor.FAST_LANE) consistency.retainOnly(candidates)
         // A folded url is never walked; the monitor hands every pass the raw pre-fold list.
         val folded = held.aliases.keys
 

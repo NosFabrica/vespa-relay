@@ -263,6 +263,27 @@ class RelayConsistencyTest {
         }
 
     @Test
+    fun `a url that leaves the candidate set leaves memory at the next sweep, not at a fast-lane batch`() =
+        runBlocking {
+            val corpus: List<Event> = (0 until 60).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val consistency = RelayConsistency()
+            val pass =
+                ConsistencyPass(
+                    consistency = consistency,
+                    record = RelayVerdictRecord(newStore(), signer),
+                    probe = AliasProbe(fetch = { _, want, _, _ -> AliasProbe.Page(corpus.take(want)) }, target = 40, page = 40, fallbackPage = 40),
+                )
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady, shuffler), canDial = { true })
+            assertTrue(consistency.measured(shuffler))
+
+            pass.measure(AliasMonitor.FAST_LANE, listOf(steady), canDial = { true })
+            assertTrue(consistency.measured(shuffler), "a fast-lane batch is not the candidate set")
+
+            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady), canDial = { true })
+            assertFalse(consistency.measured(shuffler), "a url no sweep names any more is still held in memory")
+        }
+
+    @Test
     fun `a relay that says nothing is not refused`() =
         runBlocking {
             val store = newStore()

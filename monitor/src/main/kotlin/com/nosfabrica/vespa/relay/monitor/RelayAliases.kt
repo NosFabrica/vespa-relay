@@ -124,6 +124,14 @@ class RelayAliases(
         }
     }
 
+    /** Drop every verdict held about a url outside [urls], so the maps are bounded by the world a pass groups. */
+    fun retainOnly(urls: Collection<NormalizedRelayUrl>) {
+        val keep = urls.toHashSet()
+        folded.keys.retainAll(keep)
+        distinct.retainAll(keep)
+        canonicals.retainAll(keep)
+    }
+
     /** What a fold has to clear. */
     private data class Bar(
         /** The smallest window either side may bring. */
