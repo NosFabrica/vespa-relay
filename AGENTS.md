@@ -201,7 +201,7 @@ tor/                          both torrcs, publish-onion.sh, onion.extra.conf.ex
 `docs/configuration.md` documents every environment variable (`.env.example`
 is the copyable start), `docs/router.md` the two config files' format,
 `docs/migrations.md` the schema changes a store bump can need on a cluster that
-already holds data, and `docs/search-latency.md` what a search costs.
+already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, and `docs/search-latency.md` what a search costs.
 
 ## How the router works
 
