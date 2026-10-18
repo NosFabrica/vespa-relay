@@ -394,3 +394,13 @@ subscription; past it the event is dropped, as the gate already drops one whose
 read failed, and both are counted and said once a minute. Concurrent reads for
 one author are coalesced in the store's `TrustCells`, so the bound counts
 events waiting, not distinct reads. A subscription closing is not a failure.
+
+**The trust pages are public, and `explain` is bounded and cached.** The pulse
+is gated because it quotes what people searched for; every field on
+`/trust.html` and `/trust.json` is a count, a phase or a query shape, and
+keeping those behind the same gate once let an incomplete projection stay
+invisible for days while every other signal read clean. `explain` names one
+pubkey, which reveals nothing NIP-01 does not, and is about the projection,
+not the person. It is one store read per anonymous request, so `ExplainGate`
+caches each well-formed key's answer for 30s (a junk key is never cached, so
+it cannot evict a real one) and runs four at once, answering a `503` past that.

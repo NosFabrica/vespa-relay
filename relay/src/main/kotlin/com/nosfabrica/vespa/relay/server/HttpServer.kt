@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.web.webModules
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
@@ -49,6 +50,8 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The NIP-11 relay identity served on `GET /` (Accept: application/nostr+json).
@@ -178,7 +181,7 @@ fun serveRelay(
                 get("/observer_stats.html") { call.respondPage(page.page) }
             }
             corpusStats(stats, statsJson)
-            trustHealth(trust, trustJson, trustExplain)
+            trustHealth(trust, trustJson, trustExplain?.let(::ExplainGate))
             openRanking?.let { openRanking(it) }
             relayPosts(commands = httpRelay?.let { httpRelayAnswer(relay, it) }, rpc = admin?.let { nip86Answer(it, info) })
         }
@@ -213,34 +216,74 @@ internal fun Route.corpusStats(
 }
 
 /**
- * `GET /trust.html`, `/trust.json` and `/trust/explain/{pubkey}`: whether ranked
- * search is working on this deployment, and if not which part of the trust
- * projection is incomplete.
- *
- * PUBLIC, unlike `/pulse.html`. The pulse is gated because it quotes what
- * people searched for; every field here is a count, a phase or a query SHAPE.
- * Keeping these numbers behind that gate is what let an incomplete projection
- * stay invisible for days while every other signal read clean.
- *
- * `explain` answers for one pubkey. A pubkey is public and this relay already
- * serves what it holds about one over NIP-01, so naming it here reveals
- * nothing the protocol does not — the answer is about the PROJECTION, not
- * about the person.
+ * `GET /trust.html`, `/trust.json` and `/trust/explain/{pubkey}`: whether ranked search works here,
+ * and if not which part of the trust projection is incomplete. Public: every field is a count, a
+ * phase or a query shape, and `explain` is about the projection, not the person (docs/decisions).
  */
 internal fun Route.trustHealth(
     page: IconedPage?,
-    document: (() -> kotlinx.serialization.json.JsonObject)?,
-    explain: (suspend (String) -> kotlinx.serialization.json.JsonObject)?,
+    document: (() -> JsonObject)?,
+    explain: ExplainGate?,
 ) {
     page?.let { get("/trust.html") { call.respondPage(it.page) } }
     document?.let { doc ->
         get("/trust.json") { call.respondText(doc().toString(), ContentType.Application.Json) }
     }
-    explain?.let { ask ->
+    explain?.let { gate ->
         get("/trust/explain/{pubkey}") {
-            val key = call.parameters["pubkey"].orEmpty()
-            call.respondText(ask(key).toString(), ContentType.Application.Json)
+            val answer = gate.answer(call.parameters["pubkey"].orEmpty())
+            if (answer == null) {
+                call.response.header(HttpHeaders.RetryAfter, "1")
+                call.respondText("""{"ok":false,"error":"busy; retry"}""", ContentType.Application.Json, HttpStatusCode.ServiceUnavailable)
+            } else {
+                call.respondText(answer.toString(), ContentType.Application.Json)
+            }
         }
+    }
+}
+
+/**
+ * `explain` for anonymous callers: one store read per pubkey per [ttlMillis], at most [maxInFlight]
+ * at once; [answer] is null when every slot is taken. Only a well-formed key is cached.
+ */
+internal class ExplainGate(
+    private val ask: suspend (String) -> JsonObject,
+    private val maxInFlight: Int = 4,
+    private val ttlMillis: Long = 30_000,
+    private val maxEntries: Int = 1_024,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private class Cached(
+        val answer: JsonObject,
+        val at: Long,
+    )
+
+    private val slots = Semaphore(maxInFlight)
+
+    // Access-ordered, so the bound evicts the least recently asked.
+    private val cache = LinkedHashMap<String, Cached>(16, 0.75f, true)
+
+    suspend fun answer(pubkey: String): JsonObject? {
+        val key = pubkey.lowercase().takeIf { HEX64.matches(it) }
+        key?.let { k -> synchronized(cache) { cache[k]?.takeIf { now() - it.at < ttlMillis } }?.let { return it.answer } }
+        if (!slots.tryAcquire()) return null
+        val answer =
+            try {
+                ask(key ?: pubkey)
+            } finally {
+                slots.release()
+            }
+        key?.let { k ->
+            synchronized(cache) {
+                cache[k] = Cached(answer, now())
+                while (cache.size > maxEntries) cache.remove(cache.keys.first())
+            }
+        }
+        return answer
+    }
+
+    private companion object {
+        val HEX64 = Regex("^[0-9a-f]{64}$")
     }
 }
 
