@@ -763,10 +763,8 @@ class FitnessPass(
             },
         )
 
-        // The second page, through the rung that answered, under its own clock: a cut publishes
-        // no `pageable` claim and no refusal.
-        // A group host's metadata is its whole current list of groups, served whatever the cursor:
-        // there is no second page of it to prove, so no `pageable` claim is made from it.
+        // The second page, through the rung that answered and under its own clock; a cut claims nothing.
+        // A group host's metadata is its whole list of groups, whatever the cursor: there is no page two.
         val floor = answered.oldestAt.takeIf { shape != RelayAliases.GROUP_METADATA_KINDS }
         val asked =
             if (floor == null) {

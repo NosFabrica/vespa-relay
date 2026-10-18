@@ -141,9 +141,8 @@ class MonitorEngine(
             store,
             sources,
             probe,
-            // Our signer plus every monitor our own sources name: a peer we read verdicts from is
-            // a peer whose `dead` we honour. A source with no `authors` contributes nothing —
-            // an unscoped `dead` would starve a relay out for good.
+            // Our signer plus every monitor our sources name, whose `dead` we honour; a source with no
+            // `authors` adds nothing, since an unscoped `dead` would starve a relay out for good.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +

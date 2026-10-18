@@ -52,7 +52,7 @@ import kotlin.test.assertTrue
 
 /**
  * A store too busy to take the monitor's writes delays the signed records, not by a whole sweep:
- * what a batch earned is replayed from memory once the store answers, and nothing is dialled again (#260).
+ * what a batch earned is replayed from memory once the store answers, and nothing is dialled again.
  */
 class PendingWritesTest {
     private val signer = NostrSignerInternal(KeyPair())

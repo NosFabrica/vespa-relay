@@ -128,7 +128,7 @@ class VerdictCadenceTest {
             )
             assertTrue(
                 "ran past the per-url deadline AFTER earning a verdict" in err,
-                "the pass must still say the budget was spent — that is the warning #172 had none of; got: $err",
+                "the pass must still say the budget was spent; got: $err",
             )
         }
 

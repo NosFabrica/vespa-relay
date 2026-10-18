@@ -235,9 +235,8 @@ class PublishDeadlineTest {
     @Test
     fun `a pass writing its verdicts says so, and its position moves`() =
         runBlocking {
-            // The state that reads as a hang: every dial is behind the pass, and it is writing more
-            // verdicts than it dialled. Left on the dial position that shows `n of n` with
-            // `quietForSec` climbing for as long as the writes take.
+            // Every dial is behind the pass and it writes more verdicts than it dialled: left on the
+            // dial position, that reads `n of n` with `quietForSec` climbing, which looks like a hang.
             val store = PausesOnWrite(NostrSemanticsStore(InMemoryEventIndex(), relay = self), nth = 3)
             val processors = Processors()
             val handle = processors.of("fitness")

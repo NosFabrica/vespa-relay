@@ -382,11 +382,9 @@ class RelayAliases(
     fun preferred(urls: Collection<NormalizedRelayUrl>): NormalizedRelayUrl? = urls.minWithOrNull(PREFERENCE)
 
     /**
-     * Of [candidates], each url nothing is decided about that another url of [world] stands in
-     * for, onto that url: a decided twin naming the same endpoint, else the server's preferred
-     * canonical, else its preferred undecided url. A url measured `distinct`, canonical or not, never
-     * stands in for another path: it is proven its own relay, not anyone else's. Until the fold
-     * decides, a server is graded once.
+     * Each undecided url of [candidates] onto the url of [world] standing in for its server until the
+     * fold decides: a decided twin of the same endpoint, else the preferred canonical, else the preferred
+     * undecided url. A url measured `distinct` is its own relay and never stands in for another path.
      */
     fun heldForFold(
         candidates: Collection<NormalizedRelayUrl>,
