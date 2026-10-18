@@ -51,11 +51,15 @@ import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -161,6 +165,8 @@ internal class ObserverBackend(
      * by quartz and would otherwise stream a below-floor author the replay just dropped.
      */
     private val liveGates: (suspend (List<Filter>) -> LiveGate?)? = null,
+    /** Shared by every subscription, so a burst of cold authors costs a bounded number of store reads. */
+    private val coldChecks: ColdAuthorChecks = ColdAuthorChecks(),
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
@@ -223,14 +229,9 @@ internal class ObserverBackend(
     }
 
     /**
-     * Runs a subscription with its live deliveries held to [LiveGate] — built inside [ranked], so the
-     * connection's observer is the one the gate reads. [block] receives `admit(event) { send }`.
-     *
-     * Quartz calls a live delivery on the ingest drain, which must not wait: a known author is a map
-     * lookup, and a cold one is read in a child of this subscription and delivered only once it
-     * clears the floor — never delivered first and judged after. A read that fails drops the event
-     * (the gate fails closed) and leaves the subscription alone. An ungated subscription has no gate
-     * and pays nothing.
+     * Runs a subscription with its live deliveries held to [LiveGate], built inside [ranked] so the
+     * gate reads the connection's observer. A cold author is judged in a child of this subscription
+     * (see [ColdAuthorChecks]) before delivery, never after: quartz's ingest drain must not wait.
      */
     private suspend fun gatedLive(
         filters: List<Filter>,
@@ -242,7 +243,7 @@ internal class ObserverBackend(
                 when (live.admitsNow(event)) {
                     true -> send()
                     false -> Unit
-                    null -> launch { if (runCatching { live.admits(event) }.getOrDefault(false)) send() }
+                    null -> coldChecks.start(this, { live.admits(event) }, send)
                 }
             }
         }
@@ -272,6 +273,70 @@ internal class ObserverBackend(
         } finally {
             read.finish()
         }
+    }
+}
+
+/**
+ * The store reads that judge a live event from an author the gate has not cached, bounded across
+ * the relay. Fail closed: a read that fails, or one past [max] in flight, drops its event, counted.
+ */
+internal class ColdAuthorChecks(
+    val max: Int = MAX_IN_FLIGHT,
+    private val everyMillis: Long = SAY_EVERY_MS,
+    private val now: () -> Long = System::currentTimeMillis,
+    private val log: (String) -> Unit = System.err::println,
+) {
+    private val slots = Semaphore(max)
+    private val failed = AtomicLong()
+    private val shed = AtomicLong()
+    private val lastSaidAt = AtomicLong(Long.MIN_VALUE)
+
+    /** Events dropped because their check failed, and because [max] checks were already running. */
+    val failures: Long get() = failed.get()
+    val shedding: Long get() = shed.get()
+
+    /** Judges one event in [scope] and calls [send] if [admits] says so; returns at once. */
+    fun start(
+        scope: CoroutineScope,
+        admits: suspend () -> Boolean,
+        send: () -> Unit,
+    ) {
+        if (!slots.tryAcquire()) {
+            shed.incrementAndGet()
+            say(null)
+            return
+        }
+        // Released on completion, not in the body: a launch into a cancelled scope never runs its body.
+        scope
+            .launch {
+                val admitted =
+                    try {
+                        admits()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failed.incrementAndGet()
+                        say(e)
+                        false
+                    }
+                if (admitted) send()
+            }.invokeOnCompletion { slots.release() }
+    }
+
+    private fun say(cause: Exception?) {
+        val t = now()
+        val last = lastSaidAt.get()
+        if (last != Long.MIN_VALUE && t - last < everyMillis) return
+        if (!lastSaidAt.compareAndSet(last, t)) return
+        val why = cause?.let { " (last: ${it::class.simpleName}: ${it.message?.take(80)})" } ?: ""
+        log("live gate: ${failed.get()} cold-author check(s) failed$why, ${shed.get()} shed past $max in flight — those live events were not delivered")
+    }
+
+    companion object {
+        /** Store reads in flight for cold authors across every subscription. */
+        const val MAX_IN_FLIGHT = 256
+
+        private const val SAY_EVERY_MS = 60_000L
     }
 }
 

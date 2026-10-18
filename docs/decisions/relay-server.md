@@ -373,3 +373,12 @@ reached the gate after its connection's `onDisconnect` created a lane nothing
 would remove, and `lanesOpen` drifted upward. Each lane now counts its readers
 under the map's own lock and is dropped by the last one to leave, at its EOSE
 or when it is cancelled waiting, so the gate needs no disconnect hook at all.
+
+**A live event from a cold author is judged under a relay-wide bound.** Each
+such event on each gated subscription launched its own store read, unbounded,
+and a failed read was swallowed by `runCatching` along with cancellation. The
+reads now run under `ColdAuthorChecks.MAX_IN_FLIGHT` across every
+subscription; past it the event is dropped, as the gate already drops one whose
+read failed, and both are counted and said once a minute. Concurrent reads for
+one author are coalesced in the store's `TrustCells`, so the bound counts
+events waiting, not distinct reads. A subscription closing is not a failure.
