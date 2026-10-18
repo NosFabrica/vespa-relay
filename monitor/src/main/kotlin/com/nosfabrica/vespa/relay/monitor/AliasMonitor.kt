@@ -31,7 +31,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The monitor's clock: a sweep of every [passes] entry over the candidate set on its own
@@ -104,14 +103,6 @@ class AliasMonitor(
         val onEvent: suspend (Event) -> Unit,
         val sockets: Sockets,
     )
-
-    private val learnedTotal = AtomicLong()
-
-    /**
-     * How many verdicts the sweep has learned since boot: a version for a cached relay list, not a
-     * statistic.
-     */
-    fun generation(): Long = learnedTotal.get()
 
     /** Start the sweep loop and, when configured, the fast lane. Calling it twice launches two loops. */
     fun start(): AliasMonitor {
@@ -214,7 +205,6 @@ class AliasMonitor(
                 pass.progress?.finish()
             }
         }
-        // Not added to learnedTotal: the lane does not move generation.
         return learned
     }
 
@@ -262,11 +252,7 @@ class AliasMonitor(
                 for ((label, w) in work) {
                     // Each label guarded on its own, so one failing does not cost the others.
                     try {
-                        val n = pass.measure(label, w.candidates, w.reach, w.onEvent, w.sockets)
-                        learned += n
-                        // Per label, not once at the end, so a fan-out starting mid-pass sees the
-                        // verdicts already published.
-                        if (n > 0) learnedTotal.addAndGet(n.toLong())
+                        learned += pass.measure(label, w.candidates, w.reach, w.onEvent, w.sockets)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

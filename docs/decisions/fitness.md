@@ -492,3 +492,10 @@ the cursor, so a relay graded through kinds 39000 carries no `pageable` claim.
 No epoch bump: each grade is re-taken on the next sweep. `RelayShapesProbe`
 prints the per-shape answers and the grade for any list of urls.
 
+**Unused monitor code is deleted, not kept for later.** `HostStrikes` lost its
+last caller when the visit pool replaced the dynamic cycle, and its test kept
+it compiling; `ConsistencyPass.applyVerdicts`, `RelayConsistency.adopt` and
+`forget`, `ReachabilityProbe.canDial`, `FitnessPass.pendingWrites` and
+`AliasMonitor.generation` were the same: reachable from tests alone. A test
+that asserted a real property through one of them now asserts it through the
+record or the path production takes (`replace` for a lapsed verdict).

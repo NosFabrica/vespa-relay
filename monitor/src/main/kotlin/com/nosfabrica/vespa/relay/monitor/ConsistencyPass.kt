@@ -111,16 +111,6 @@ class ConsistencyPass(
     }
 
     /**
-     * Read back what is already known about these urls without dialling, and return the urls to
-     * refuse. A failed read leaves the previous answer standing.
-     */
-    suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
-        if (candidates.isEmpty()) return emptyList()
-        adopt(candidates)
-        return consistency.unusable(candidates)
-    }
-
-    /**
      * Measure the urls nothing is known about yet and publish what that proves. Returns how many
      * new verdicts were reached. Run in the monitor's sequence so two writers never share a record.
      */
@@ -382,7 +372,7 @@ class ConsistencyPass(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // A relay failing mid-walk is [HostStrikes]' business, not a verdict.
+                // A walk that threw is our instrument failing, never a verdict about the relay.
                 null
             } finally {
                 sockets.release(url)

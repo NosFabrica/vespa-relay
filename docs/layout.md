@@ -370,7 +370,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
     Silence.kt            classifying what a quiet socket actually said
     Unreachability.kt     which failures may be published as NIP-66 records
-    HostStrikes.kt        per-authority strikes and eviction
     RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
                           rtts, `R`, `s` (+version), `N`. Absent writes no tag
                           rather than a zero, and everything it writes it also

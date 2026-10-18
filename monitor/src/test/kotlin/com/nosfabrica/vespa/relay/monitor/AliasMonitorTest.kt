@@ -230,36 +230,4 @@ class AliasMonitorTest {
 
             assertEquals(listOf(a, b), pass.passes.single().second)
         }
-
-    @Test
-    fun `the generation moves only when a pass learns something`() =
-        runBlocking {
-            // Bumping it on a pass that learned nothing would force a full rediscovery.
-            var learn = 0
-            val pass =
-                AliasMonitor.Pass { _, _, _, _, _ -> learn }
-            val m = monitor(pass, a, b, c)
-
-            m.runPass()
-            assertEquals(0L, m.generation(), "a pass that folded nothing changed the version")
-
-            learn = 2
-            m.runPass()
-            assertEquals(2L, m.generation())
-
-            learn = 1
-            m.runPass()
-            assertEquals(3L, m.generation(), "the version is not monotonic across passes")
-        }
-
-    @Test
-    fun `the union's verdicts move one generation for every stream`() =
-        runBlocking {
-            val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == AliasMonitor.ALL_STREAMS) 4 else 0 }
-            val m = monitor(pass, a, b, c)
-
-            m.runPass()
-
-            assertEquals(4L, m.generation())
-        }
 }

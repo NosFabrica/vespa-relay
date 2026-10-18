@@ -105,9 +105,6 @@ class FitnessPass(
      */
     private val pending = ConcurrentHashMap<NormalizedRelayUrl, suspend () -> Boolean>()
 
-    /** How many earned writes are waiting for the store. */
-    fun pendingWrites(): Int = pending.size
-
     /**
      * Replay the writes the store did not take, under the same limits as a batch's own. Returns how
      * many landed; what still does not stays pending. The caller serialises this with [measure].

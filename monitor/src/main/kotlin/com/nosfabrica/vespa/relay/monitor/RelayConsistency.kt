@@ -51,12 +51,6 @@ class RelayConsistency(
     /** False is "no verdict", not "bad". */
     fun measured(url: NormalizedRelayUrl): Boolean = url in consistent || url in inconsistent
 
-    /** True for everything but a url positively measured inconsistent; a fan-out is not narrowed by silence. */
-    fun usable(url: NormalizedRelayUrl): Boolean = url !in inconsistent
-
-    /** The urls of [candidates] this component refuses, in the order given. */
-    fun unusable(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !usable(it) }
-
     fun refusedCount(): Int = inconsistent.size
 
     /**
@@ -65,6 +59,7 @@ class RelayConsistency(
      */
     fun isConsistent(url: NormalizedRelayUrl): Boolean = url in consistent
 
+    /** Only a positive failure refuses a url; a fan-out is never narrowed by silence. */
     fun isInconsistent(url: NormalizedRelayUrl): Boolean = url in inconsistent
 
     /** Everything with no verdict yet. */
@@ -123,21 +118,6 @@ class RelayConsistency(
         }
     }
 
-    /** Adopt verdicts a previous run published. [RelayVerdictRecord] drops the stale ones first. */
-    fun adopt(
-        stable: Set<NormalizedRelayUrl>,
-        unstable: Set<NormalizedRelayUrl>,
-    ) {
-        for (url in stable) {
-            inconsistent -= url
-            consistent += url
-        }
-        for (url in unstable) {
-            consistent -= url
-            inconsistent += url
-        }
-    }
-
     /**
      * Set the verdicts for [candidates] to exactly what the store holds, one url at a time,
      * because every stream reads this object while it changes.
@@ -165,14 +145,6 @@ class RelayConsistency(
                     inconsistent -= url
                 }
             }
-        }
-    }
-
-    /** Drop every verdict held about these urls. */
-    fun forget(urls: Collection<NormalizedRelayUrl>) {
-        for (url in urls) {
-            consistent -= url
-            inconsistent -= url
         }
     }
 

@@ -312,7 +312,7 @@ class ProbeDeadlineTest {
                 ConsistencyPass.Unmeasured.ABANDONED.reason in reasons,
                 "the abandoned url must be named as abandoned, not as a probe failure: $reasons",
             )
-            assertEquals(emptySet<NormalizedRelayUrl>(), consistency.unusable(listOf(wedged)).toSet())
+            assertEquals(emptySet<NormalizedRelayUrl>(), listOf(wedged).filterTo(HashSet(), consistency::isInconsistent))
         }
 
     @Test

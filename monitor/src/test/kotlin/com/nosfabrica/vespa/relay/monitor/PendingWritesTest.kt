@@ -117,14 +117,12 @@ class PendingWritesTest {
             val pass = fitness(store)
 
             pass.sweep(servers)
-            assertEquals(servers.size, pass.pendingWrites())
             assertTrue(servers.all { gradeOf(store, it) == null })
 
             val dialled = dials.get()
             store.wedged = false
             assertEquals(servers.size, pass.flushPending())
 
-            assertEquals(0, pass.pendingWrites())
             assertTrue(servers.all { gradeOf(store, it)?.get(1) == Verdict.PRIME.value })
             assertEquals(dialled, dials.get(), "a retry is a write, never a measurement")
         }
@@ -176,7 +174,6 @@ class PendingWritesTest {
 
             pass.sweep(servers)
 
-            assertEquals(0, pass.pendingWrites())
             assertEquals(0, pass.flushPending())
         }
 
