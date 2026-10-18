@@ -166,6 +166,15 @@ from a store holding no relay lists.
 `ConsistencyPass`, the state `RelayConsistency`, the tag `self-consistent`; a
 fourth word would be one nobody could grep from the document to the code.
 
+**A pass that cannot read the standing verdicts publishes nothing.** The
+three passes disagreed: fitness aborted, the fold fell back to a narrower
+read and went on, and the stability gate walked every path with no record at
+all, so it signed consistency verdicts onto urls the fold had already folded
+and left its folded set from the last read. `readStanding` is the one rule:
+the failure is logged and the pass skips its batch, because a verdict signed
+without the record it is written against can contradict that record. The
+read-only `applyVerdicts` still keeps what it holds, since it signs nothing.
+
 ## Stream world
 
 **The candidate set is derived from the store per pass, not pushed by the

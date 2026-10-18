@@ -128,7 +128,7 @@ class AliasFolding(
         if (candidates.isEmpty()) return 0
         val startedMs = System.currentTimeMillis()
 
-        val grouped = adoptWorld(candidates)
+        val grouped = adoptWorld(label, candidates) ?: return 0
         val world = grouped.urls
         if (world.size < 2) return 0
         // Read after the adopt and before the first dial; with `unmeasured` after the pass it makes
@@ -329,11 +329,8 @@ class AliasFolding(
                                     }
                                 if (again == null || !aliases.reproducible(leaderPrint, again)) {
                                     val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
-                                    // Back to what the store says; `forget` would also drop the
-                                    // verdicts adopted moments ago.
-                                    grouped.held
-                                        ?.let { aliases.replace(group, it.aliases, it.distinct) }
-                                        ?: aliases.forget(group)
+                                    // Back to what the store says.
+                                    aliases.replace(group, grouped.held.aliases, grouped.held.distinct)
                                     markUndecidable(leader, startedAtMs)
                                     undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
                                     System.err.println(
@@ -556,37 +553,15 @@ class AliasFolding(
     )
 
     /**
-     * Pull the stored verdicts into memory. A store that cannot answer is not "no verdict", so a
-     * failed query keeps what we hold.
+     * Adopt every verdict the store holds and hand back the set to group: the candidates plus every
+     * survivor a verdict names, never the urls that folded away. Null when the store cannot answer.
      */
-    private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
-        val held =
-            try {
-                record.load(candidates)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return
-            }
+    private suspend fun adoptWorld(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
+    ): World? {
         // The store is authoritative on every pass, which is what gives its TTL its teeth.
-        aliases.replace(candidates, held.aliases, held.distinct)
-    }
-
-    /**
-     * Adopt every verdict the store holds and hand back the set to group: the candidates plus
-     * every survivor a verdict names, never the urls that folded away. Falls back to [adopt]
-     * when the store cannot answer.
-     */
-    private suspend fun adoptWorld(candidates: List<NormalizedRelayUrl>): World {
-        val held =
-            try {
-                record.loadAll()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                adopt(candidates)
-                return World(candidates, null)
-            }
+        val held = readStanding("fold", label) { record.loadAll() } ?: return null
         // Candidates first, so the world keeps the caller's order.
         val world = LinkedHashSet(candidates)
         world += held.aliases.values
@@ -595,13 +570,10 @@ class AliasFolding(
         return World(world.toList(), held)
     }
 
-    /**
-     * What a pass grouped, and the store's own answer about it, which the reproducibility guard
-     * restores. [held] is null when the store could not answer.
-     */
+    /** What a pass grouped, and the store's own answer about it, which the reproducibility guard restores. */
     private class World(
         val urls: List<NormalizedRelayUrl>,
-        val held: RelayVerdictRecord.Verdicts?,
+        val held: RelayVerdictRecord.Verdicts,
     )
 
     /**

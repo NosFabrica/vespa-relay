@@ -227,20 +227,8 @@ class FitnessPass(
         try {
             // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
             val mates = world().matesOf(candidates)
-            // One read of what this monitor stands behind, after the passes before this one wrote.
-            val held =
-                try {
-                    record.load(candidates + mates)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // Without the standing folds an alias would be dialled and signed as its own relay.
-                    System.err.println(
-                        "router: fitness [$label] — could not read the standing verdicts (${e.javaClass.simpleName}); " +
-                            "nothing measured, every url is measured again next pass",
-                    )
-                    return 0
-                }
+            // After the passes before this one wrote; without the standing folds an alias would be graded as its own relay.
+            val held = readStanding("fitness", label) { record.load(candidates + mates) } ?: return 0
             // This batch measures these again, and its outcome is the one to write.
             pending.keys.removeAll(candidates.toSet())
             // The free refusals first: standing verdicts other passes paid dials for.

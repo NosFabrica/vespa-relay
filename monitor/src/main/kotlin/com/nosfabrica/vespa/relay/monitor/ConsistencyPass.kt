@@ -60,10 +60,6 @@ class ConsistencyPass(
     /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
 
-    /** Urls the last [adopt] saw a fold verdict for; never worth measuring. */
-    @Volatile
-    private var folded: Set<NormalizedRelayUrl> = emptySet()
-
     /**
      * Every way a url survives a pass with nothing written down. Exactly one is assigned to every
      * url attempted and not decided, so the counts sum to `unmeasured`.
@@ -125,17 +121,19 @@ class ConsistencyPass(
         val startedMs = System.currentTimeMillis()
         // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
         val mates = world().matesOf(candidates)
-        val held = adopt(candidates, mates)
+        val held = adopt(label, candidates, mates) ?: return 0
+        // A folded url is never walked; the monitor hands every pass the raw pre-fold list.
+        val folded = held.aliases.keys
 
         val open = consistency.toProbe(candidates).filter { it !in folded }
         // A path the fold has not decided waits behind its server's stand-in, the rule fitness keeps:
         // otherwise every path of one server is paired-walked, over Tor a socket for minutes each.
-        val waiting = held?.let { AliasFolding.heldAmong(it, open, mates) }.orEmpty()
+        val waiting = AliasFolding.heldAmong(held, open, mates)
         val wanted = open.filter { it !in waiting }
         val waitingFindings = waiting.keys.associateWith { Finding(Unmeasured.WAITING) }
         if (wanted.isEmpty()) {
             // Reported, not skipped: "nothing left to measure" is the state the gate works towards.
-            report(label, candidates, dialled = 0, decided = 0, unmeasurable = waitingFindings)
+            report(label, candidates, folded, dialled = 0, decided = 0, unmeasurable = waitingFindings)
             return 0
         }
 
@@ -207,7 +205,7 @@ class ConsistencyPass(
         if (unplaced.isNotEmpty()) {
             System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
-        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent + waitingFindings)
+        report(label, candidates, folded, dialled = walked.get(), decided = decided.get(), unmeasurable = silent + waitingFindings)
         return decided.get()
     }
 
@@ -231,6 +229,7 @@ class ConsistencyPass(
     private fun report(
         label: String,
         candidates: List<NormalizedRelayUrl>,
+        folded: Set<NormalizedRelayUrl>,
         dialled: Int,
         decided: Int,
         unmeasurable: Map<NormalizedRelayUrl, Finding>,
@@ -460,26 +459,16 @@ class ConsistencyPass(
         }
 
     /**
-     * Pull the stored verdicts into memory. A url whose verdict has aged out comes back with
-     * none, which is "dial it". Returns what the record holds for [candidates] and their
-     * [mates], or null when the read failed.
+     * Pull the stored verdicts into memory; a url whose verdict has aged out comes back with none,
+     * which is "dial it". Null when the read failed, which leaves what [consistency] holds alone.
      */
     private suspend fun adopt(
+        label: String,
         candidates: List<NormalizedRelayUrl>,
-        mates: List<NormalizedRelayUrl> = emptyList(),
+        mates: List<NormalizedRelayUrl>,
     ): RelayVerdictRecord.Verdicts? {
-        val held =
-            try {
-                record.load(candidates + mates)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Keep what we hold; emptying on a failed read would readmit every refused relay at once.
-                return null
-            }
+        val held = readStanding("stability", label) { record.load(candidates + mates) } ?: return null
         consistency.replace(candidates, held.consistent, held.inconsistent)
-        // A folded url is never dialled; the monitor hands both passes the raw pre-fold list.
-        folded = held.aliases.keys
         return held
     }
 
