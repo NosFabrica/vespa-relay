@@ -41,6 +41,9 @@ val NIP50_FEATURES =
         "ext include:spam",
         "ext sort",
         "ext filter:rank",
+        // `language:pt` / `language:es` widen a search to each word's other forms (the store's
+        // stemmed body columns); any other language is accepted and ignored.
+        "ext language",
         "query negate",
         "query exact-phrase-match",
     )

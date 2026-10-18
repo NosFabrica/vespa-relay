@@ -300,6 +300,46 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+d37c1fb2eea3 = vespa-eventstore main @ 2026-10-18, the merge of PR #168: five commits over store
+main 0aed31fda8 (below), and no change over its head 7d635159d7fe (git diff is empty):
+  - the feed body written into a char array (JsonChars): the relay's CPU per published kind 3
+    fell from 550/523 us to 513/490 (docs/ingest-benchmark.md's harness);
+  - event.sd pins the document language ("en") instead of having Vespa detect it: Vespa's CPU
+    per event 1,701-1,767 us -> 1,310-1,533 on a 404k-event slice of the live relay. Deploys
+    with no validation override and no reindex;
+  - 3-character CJK words and voiced kana reach a note body (exact recall of 3-character
+    Japanese and Chinese words 3.6% / 8.3% -> 100%);
+  - language:pt / language:es: the store stems Portuguese and Spanish bodies into
+    search_text_pt / search_text_es (Lucene 9.12.2 light stemmers, Apache-2.0, now on this
+    relay's runtime classpath via the store's engine), so a search with the hint reaches a
+    word's other forms, ranked below the typed form. Two new index fields: the schema deploy is
+    additive;
+  - the review fixes on top: the language guess no longer lets URL pieces, bech32 strings or
+    words shared with French/German/Italian vote, stemFields costs 4 us per kind 1 instead of
+    26 (the relay's feed writer runs it), and language:pt-BR names Portuguese.
+
+DEPLOY STEP: the stems of notes stored before the deploy come from the FTS reindex, which now
+  re-puts every body that reads as Portuguese or Spanish (about 1% of kind 1s; on every walk,
+  since the columns cannot be read back). After the schema deploy:
+    REINDEX_FTS_ON_START=true REINDEX_FTS_KINDS=1   # or unset KINDS for every body kind
+  git merge-base --is-ancestor 0aed31fda8e8 d37c1fb2eea3   # verified
+
+GATED, the store with quartz 99d05ee122: its CI on the merged head 7d635159d7fe, lint, build
+and integration against a real Vespa, all green; locally, the full integration suite on
+04495876a406 and, on 7d635159d7fe, the unit build plus SearchBodyGramIT, RankRegressionIT and
+VespaParityIT, green. This relay's own gate is in the commit that set this line.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine
+at d37c1fb2eea3, and the store's pom names engine at it and quartz-jvm at 99d05ee122. The branch
+pins before it were spelled with 40, because the 12- and 10-digit spellings of 04495876a406 hit
+the transient maven-publish resolution failure on their first builds (com.vanniktech.maven.publish
+0.37.0 not found), which JitPack keeps per version string.
+
+NO ARROW expected: nothing else in the graph names the store.
+
+Prev 7d635159d7fed1aaab82b6979f7ba59b6a003c45 and 04495876a406f0a5f88268f7445a80b2c47113f6 (this
+branch only: PR #168's head, and its first four commits without the review fixes). Prev 0aed31fda8e8:
+
 Prev 437712208b = vespa-eventstore branch claude/awesome-edison-x5mb5y, one commit over 94aad0feea7e:
 the feed body written in one pass instead of through a JsonObject tree (EventDoc.feedJson,
 byte-identical to the tree, checked over all 65,536 UTF-16 units). Engine code only; the relay's
