@@ -2,8 +2,7 @@ import com.diffplug.gradle.spotless.SpotlessExtensionPredeclare
 import java.io.File
 
 plugins {
-    // Loaded once here; per-module loading gives each subproject its own classloader copy.
-    alias(libs.plugins.kotlin.jvm) apply false
+    // The Kotlin plugin arrives through build-logic's classpath, shared by every module.
     alias(libs.plugins.diffplug.spotless)
 }
 

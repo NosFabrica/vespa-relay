@@ -342,7 +342,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.
-- Gradle resolves hash conflicts lexicographically and silently: `resolutionStrategy { force(libs.quartz) }` in every module, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
+- Gradle resolves hash conflicts lexicographically and silently: `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention (`build-logic/`), which every module applies, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
 - JitPack's build-status API lies; only the artifact file proves a build.
 - JitPack caches builds per group-spelling (`com.github.NosFabrica` vs `com.github.nosfabrica`).
 - An integration run that skips still prints `BUILD SUCCESSFUL`: start `DOCKER_MIN_API_VERSION=1.24 dockerd`, and read `skipped="…"` in `build/test-results/test/*.xml`.

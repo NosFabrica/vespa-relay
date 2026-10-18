@@ -41,9 +41,13 @@ class ProbeSwitchesAreForwardedTest {
                     .flatMap { PROPERTY.findAll(it.readText()).map { m -> m.groupValues[1] } }
                     .toSortedSet()
             if (read.isEmpty()) continue
-            val build = Repo.buildFile(module)
-            // Matched on the `systemProperty("name"` half only, so the read half may be spelled any way.
-            read.filterNot { build.contains("""systemProperty("$it"""") }.forEach {
+            val forwarded =
+                FORWARDED
+                    .findAll(Repo.buildFile(module))
+                    .flatMap { NAME.findAll(it.groupValues[1]) }
+                    .map { it.groupValues[1] }
+                    .toSet()
+            read.filterNot { it in forwarded }.forEach {
                 missing += ":$module reads -D$it in a test and never forwards it"
             }
         }
@@ -58,5 +62,9 @@ class ProbeSwitchesAreForwardedTest {
     private companion object {
         /** `System.getProperty("name")`, how every probe reads its switch. */
         val PROPERTY = Regex("""System\.getProperty\("([A-Za-z0-9_]+)"\)""")
+
+        /** The argument list of `forwardProbeSwitches(...)` in a build file, build-logic's one forwarding call. */
+        val FORWARDED = Regex("""forwardProbeSwitches\(([^)]*)\)""")
+        val NAME = Regex(""""([A-Za-z0-9_]+)"""")
     }
 }

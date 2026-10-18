@@ -1,4 +1,6 @@
 pluginManagement {
+    // The shared module conventions (vespa-relay.kotlin-module) and the probe-switch helpers.
+    includeBuild("build-logic")
     repositories {
         gradlePluginPortal()
         google()
