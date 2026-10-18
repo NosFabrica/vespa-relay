@@ -304,3 +304,11 @@ read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
 `ExceptionInInitializerError` on the first batch rather than a boot refusal,
 and a test could not set it. It now rides `IngestTuning` from
 `RouterConfigLoader.fromEnv`.
+
+**`ParseAudit` keeps at most 256 distinct findings.** Its key is quartz's
+message normalized, and quartz's templates quote the offending field's value,
+so a stream of profiles each with a different malformed value minted one
+finding per event and the map grew for the life of the process. Past the cap
+a report is counted in one `overflow` finding without samples, and every
+message is cut at 200 characters. `close()` hands `Log.sink` back to the sink
+it wrapped, so a closed audit stops swallowing quartz's log.
