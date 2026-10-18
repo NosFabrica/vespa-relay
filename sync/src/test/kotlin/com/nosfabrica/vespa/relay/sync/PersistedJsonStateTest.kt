@@ -20,10 +20,17 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -31,7 +38,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Only a file whose content is bad is moved aside; a file the process cannot read is left for the operator. */
+/** Only a file whose content is bad is moved aside, and a shutdown never cuts a write short. */
 class PersistedJsonStateTest {
     private fun stateFile(text: String): File {
         val dir =
@@ -76,6 +83,52 @@ class PersistedJsonStateTest {
         try {
             assertFailsWith<OutOfMemoryError> { state(f).read(restore = { throw OutOfMemoryError("test") }, discard = {}) }
             assertTrue(f.isFile, "running out of memory says nothing about the file")
+        } finally {
+            f.parentFile.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `close waits out the flusher's write and never interrupts it`() {
+        val f = stateFile("{}")
+        try {
+            val writing = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val interrupted = AtomicBoolean(false)
+            val flusher = AtomicReference<Thread>()
+            val n = AtomicInteger()
+            val state =
+                PersistedJsonState(f, "test state", "test-flush", {
+                    if (Thread.currentThread().name == "test-flush" && flusher.compareAndSet(null, Thread.currentThread())) {
+                        writing.countDown()
+                        while (true) {
+                            try {
+                                release.await()
+                                break
+                            } catch (_: InterruptedException) {
+                                interrupted.set(true)
+                            }
+                        }
+                        if (Thread.currentThread().isInterrupted) interrupted.set(true)
+                    }
+                    JsonObject(mapOf("n" to JsonPrimitive(n.get())))
+                })
+            n.set(1)
+            state.changed()
+            state.startPeriodicFlush(1)
+            assertTrue(writing.await(10, TimeUnit.SECONDS), "the premise: the flusher is mid-write")
+            n.set(2)
+            state.changed()
+
+            val closing = thread { state.close() }
+            closing.join(300)
+            assertTrue(closing.isAlive, "close waits for the write in progress")
+            release.countDown()
+            closing.join(10_000)
+
+            assertFalse(interrupted.get(), "an interrupt landing in the write would close its channel before the fsync")
+            assertFalse(flusher.get().isAlive, "the flusher has stopped by the time close returns")
+            assertEquals("2", (Json.parseToJsonElement(f.readText()) as JsonObject).getValue("n").toString(), "and the last change is on disk")
         } finally {
             f.parentFile.deleteRecursively()
         }

@@ -27,6 +27,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -62,6 +64,9 @@ internal class PersistedJsonState(
     private val writeLock = Any()
 
     @Volatile private var flusher: Thread? = null
+
+    /** Ends the flusher's wait. Never an interrupt: one landing in the write would close the channel mid-fsync. */
+    private val stop = CountDownLatch(1)
 
     /** Every mutation of persisted state ends here, after the mutation itself. */
     fun changed() {
@@ -130,13 +135,10 @@ internal class PersistedJsonState(
         if (file == null) return
         flusher =
             Thread {
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        Thread.sleep(intervalSec * 1000)
-                    } catch (_: InterruptedException) {
-                        return@Thread
-                    }
-                    flush()
+                try {
+                    while (!stop.await(intervalSec, TimeUnit.SECONDS)) flush()
+                } catch (_: InterruptedException) {
+                    // Nothing here interrupts it; leave the final write to close().
                 }
             }.apply {
                 isDaemon = true
@@ -155,9 +157,14 @@ internal class PersistedJsonState(
         }
     }
 
-    /** Stops the periodic flush and writes anything outstanding. */
+    /** Stops the periodic flush, waits out a write it has in progress, then writes anything outstanding. */
     override fun close() {
-        flusher?.interrupt()
+        stop.countDown()
+        try {
+            flusher?.join()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         flush()
     }
 

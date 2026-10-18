@@ -431,3 +431,11 @@ path and the `chown` that fixes it, leaves the file in place, and quarantines
 only on what restoring the parsed document throws short of an `Error`:
 `getValue` and friends throw beyond `SerializationException`, and every one of
 them is about the document's shape.
+
+**The flusher is stopped, never interrupted.** `close()` interrupted it and
+went straight to its own flush. An interrupt landing in `writeDurably`'s
+directory `force` closes the channel, `:common` swallows that as a filesystem
+that cannot sync a directory, the write still counted as saved, and `close`'s
+flush then saw nothing owed: the rename was never made durable. The flusher
+now waits on a latch `close` counts down, `close` joins it, and only then
+writes what is outstanding.
