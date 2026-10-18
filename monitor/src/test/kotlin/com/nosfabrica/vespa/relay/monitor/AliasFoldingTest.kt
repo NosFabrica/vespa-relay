@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -126,6 +127,55 @@ class AliasFoldingTest {
             val learned = withTimeout(30_000) { stuckFold(hang = true).measure("t", sixHosts, canDial = { true }) }
 
             assertEquals(0, learned, "a fold the store never took was counted as learned")
+        }
+
+    @Test
+    fun `once the store stops taking writes, the groups still to measure are not dialled`() =
+        runBlocking {
+            val inserts = AtomicInteger()
+            val released = CompletableDeferred<Unit>()
+            val store =
+                object : IEventStore by newStore() {
+                    override suspend fun insert(event: Event) {
+                        inserts.incrementAndGet()
+                        CompletableDeferred<Unit>().await()
+                    }
+                }
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val hosts = (0 until 10).map { listOf(RelayUrlNormalizer.normalize("wss://host$it.example"), RelayUrlNormalizer.normalize("wss://host$it.example/alpha")) }
+            // These hosts' first answers arrive only after the first three groups' writes have stopped the writer.
+            val late = hosts.drop(3).flatten().toSet()
+            val contacted: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { at, want, until, _ ->
+                                if (at in late) released.await()
+                                contacted += at
+                                AliasProbe.Page(corpus.filter { until == null || it.createdAt <= until }.take(want))
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                        ),
+                    concurrency = 16,
+                    publishDeadlineMs = 100L,
+                )
+
+            val pass = async { withTimeout(30_000) { fold.measure("t", hosts.flatten(), canDial = { true }) } }
+            withTimeout(30_000) { while (inserts.get() < VerdictWrites.PUBLISH_WEDGE_LIMIT) delay(10) }
+            // Past the write deadline of every write started so far, so the writer has stopped.
+            delay(1_000)
+            released.complete(Unit)
+
+            assertEquals(0, pass.await())
+            assertTrue(
+                hosts.drop(3).all { group -> group.count { it in contacted } <= 1 },
+                "groups were compared after the store stopped taking the writes that would record them",
+            )
         }
 
     @Test

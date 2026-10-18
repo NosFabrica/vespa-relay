@@ -395,3 +395,18 @@ the process. A full sweep now drops everything outside its world (the fold's
 candidates plus every survivor the record names) and every lapsed cooldown.
 A fast-lane batch is a handful of urls, never the set, so it prunes nothing.
 The store stays the authority; a url that comes back is re-read from it.
+
+**A stopped writer stops the dialling too.** Once the pass's `VerdictWriter`
+stopped, every later fold write was refused, but each group still searched
+for a yardstick, fingerprinted its members and walked the reproducibility
+check, dialling a whole sweep's hosts to prove things nothing would record. A
+group now checks the writer before each step and, once it has stopped, ends
+as `WRITES_STOPPED`: unresolved, with no cooldown, since the store failed and
+not the host. The shared-name fold logs only the folds that landed.
+
+**A failed walk over every verdict falls back to a narrower read.** Folding
+under `readStanding` skipped the pass whenever `loadAll`'s paged walk threw,
+where the code before it read the candidates' own records and went on. The
+fallback is back: the candidates plus the other urls on their servers, read
+by `#d` like `load`, so the pass still acts on what the store says and never
+signs blind. Only when that read fails too is the pass skipped.

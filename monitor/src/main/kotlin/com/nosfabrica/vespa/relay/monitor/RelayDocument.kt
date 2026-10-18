@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -34,6 +35,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -50,7 +52,16 @@ import kotlin.coroutines.resumeWithException
 class RelayDocument(
     private val clientFor: (NormalizedRelayUrl) -> OkHttpClient,
     private val timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+    /** Documents in flight at once: the passes' dials, each of which asks for one. */
+    concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
+    /** Its own, so a fetch neither waits behind the mirror's live tails on the shared client nor holds a slot they need. */
+    private val dispatcher =
+        Dispatcher().apply {
+            maxRequests = concurrency
+            maxRequestsPerHost = minOf(concurrency, DOCUMENTS_PER_HOST)
+        }
+
     /** What one document says, restricted to the fields NIP-66 has a tag for. */
     data class Doc(
         val software: String? = null,
@@ -75,7 +86,8 @@ class RelayDocument(
         val timer = ConnectTimer()
         val body =
             try {
-                fetch(url, address, timer)
+                // Over the queue as well as the call: OkHttp's own clock starts only once a call leaves it.
+                withTimeoutOrNull(timeoutSeconds * 1000) { fetch(url, address, timer) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -94,6 +106,7 @@ class RelayDocument(
         val client =
             clientFor(url)
                 .newBuilder()
+                .dispatcher(dispatcher)
                 .callTimeout(timeoutSeconds, TimeUnit.SECONDS)
                 .eventListener(timer)
                 .build()
@@ -161,6 +174,9 @@ class RelayDocument(
         const val NIP11_CONTENT_TYPE = "application/nostr+json"
 
         const val DEFAULT_TIMEOUT_SECONDS = 10L
+
+        /** Documents asked of one host at once; a host serving many paths is still one server. */
+        const val DOCUMENTS_PER_HOST = 4
 
         /** Anything larger is a url that answered with something other than a document. */
         const val MAX_DOCUMENT_BYTES = 64L * 1024

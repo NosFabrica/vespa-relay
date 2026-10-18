@@ -89,6 +89,8 @@ class FitnessPass(
     private val reconcile: suspend (NormalizedRelayUrl, Filter) -> Unit = { url, sliver ->
         client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
     },
+    /** One sweep's period: how long a deferred url backs off, and the unit a deferring `prime` ages in. */
+    private val sweepMs: Long = AliasMonitor.DEFAULT_INTERVAL_MS,
 ) {
     /** One gate for every pass this component runs. */
     private val gate = DialGate.over(concurrency, tor)
@@ -113,6 +115,21 @@ class FitnessPass(
     private val pending = ConcurrentHashMap<NormalizedRelayUrl, Pending>()
 
     /**
+     * When each url a deferral set aside may be dialled again. In memory, not signed: a 429 is a fact
+     * about our dialling, and the sweep and the fast lane both wait it out.
+     */
+    private val backoffUntil = ConcurrentHashMap<NormalizedRelayUrl, Long>()
+
+    /** Full sweeps in a row that deferred each url, a wait included; any outcome clears it. */
+    private val deferredSweeps = ConcurrentHashMap<NormalizedRelayUrl, Int>()
+
+    /** Of [urls], those still backing off from a deferral; the fast lane leaves them out before any pass dials. */
+    fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> {
+        val nowMs = System.currentTimeMillis()
+        return urls.filterTo(HashSet()) { url -> backoffUntil[url]?.let { it > nowMs } == true }
+    }
+
+    /**
      * Replay the writes the store did not take, under the same limits as a batch's own, dropping any
      * the record has since overtaken. Returns how many landed. The caller serialises this with [measure].
      */
@@ -121,7 +138,7 @@ class FitnessPass(
         val queued = HashMap(pending)
         progress.phase(RETRYING_WRITES)
         try {
-            val held = readStanding("fitness", RETRYING_WRITES) { record.load(queued.keys) } ?: return 0
+            val held = readBeforeReplay(queued.keys) ?: return 0
             val overtaken = queued.filter { (url, write) -> overtaken(url, write, held) }
             for ((url, write) in overtaken) pending.remove(url, write)
             val urls = (queued.keys - overtaken.keys).sortedBy { it.url }
@@ -142,6 +159,24 @@ class FitnessPass(
             progress.clearMeasuring()
             progress.phase(Processors.IDLE)
         }
+    }
+
+    /**
+     * The record over the queued urls, under the write deadline: the caller holds the pass gate, so a
+     * read that never answers would stop every sweep and lane behind it. Null leaves the queue as it is.
+     */
+    private suspend fun readBeforeReplay(urls: Set<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts? {
+        val why =
+            try {
+                withTimeoutOrNull(publishDeadlineMs) { record.load(urls) }?.let { return it }
+                "the read outlived the ${fmtDuration(publishDeadlineMs)} write deadline"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "the read failed (${e.javaClass.simpleName})"
+            }
+        System.err.println("router: fitness [$RETRYING_WRITES] — could not read the record before replaying ${urls.size} pending write(s): $why; they stay queued for the next retry")
+        return null
     }
 
     /**
@@ -171,20 +206,24 @@ class FitnessPass(
             RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
         }
 
-    /** Why a url was set aside with no verdict. Only [LOOKUP_UNEXPLAINED] counts as blind, once per host. */
+    /** Why a url was set aside with no verdict. */
     private enum class Deferral(
         val why: String,
         /** A server answered, which is evidence our own network works. */
         val serverAnswered: Boolean,
+        /** As readily our own side failing as the relay's, so it counts as a blind dial, once per host. */
+        val blind: Boolean = false,
+        /** The relay's side of the socket ended it, so dialling again at once only adds to its load. */
+        val backsOff: Boolean = false,
     ) {
-        SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true),
+        SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true, backsOff = true),
         TOR_DOWN("our Tor proxy is not answering", serverAnswered = false),
-        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false),
+        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false, blind = true),
         OUR_TLS("the dial failed TLS where our direct handshake succeeded, so our transport did", serverAnswered = false),
         TLS_UNCHECKED("the dial failed TLS and no direct handshake could check it", serverAnswered = false),
-        RATE_LIMITED("the relay rate limited us", serverAnswered = true),
-        UNRECOGNISED("the dial gave up in words we do not recognise", serverAnswered = false),
-        PARTLY_REFUSED("it refused some shapes and went quiet on the rest", serverAnswered = true),
+        RATE_LIMITED("the relay rate limited us", serverAnswered = true, backsOff = true),
+        UNRECOGNISED("the dial gave up in words we do not recognise", serverAnswered = false, blind = true, backsOff = true),
+        PARTLY_REFUSED("it refused some shapes and went quiet on the rest", serverAnswered = true, backsOff = true),
     }
 
     /** What the second page came back with, boxed for [Reconciled]'s reason. */
@@ -251,16 +290,28 @@ class FitnessPass(
         /** Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published. */
         val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
 
-        /** Urls whose lookup failed with no reason in it. */
-        fun lookups(): Set<NormalizedRelayUrl> = deferred.filterValues { it == Deferral.LOOKUP_UNEXPLAINED }.keys
+        /** The wait a deferring relay named, where its words carried one. */
+        val retryAfterMs = ConcurrentHashMap<NormalizedRelayUrl, Long>()
 
-        /** Their hosts: one host's cached failure repeats across all of its paths, so it counts once. */
-        fun lookupHosts(): Int = lookups().mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+        /** Urls not dialled because an earlier deferral's backoff has not lapsed. */
+        val backingOff: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
 
-        /** Every other deferral, by why. */
+        /** The backing-off deferrals, and the urls still waiting one out. */
+        fun deferring(): Set<NormalizedRelayUrl> = backingOff + deferred.filterValues { it.backsOff }.keys
+
+        /** Urls set aside for [why]. */
+        fun deferredFor(why: Deferral): Set<NormalizedRelayUrl> = deferred.filterValues { it == why }.keys
+
+        /** The hosts of [urls]: one host's failure repeats across all of its paths, so it counts once. */
+        fun hostsOf(urls: Collection<NormalizedRelayUrl>): Int = urls.mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+
+        /** The hosts of every blind deferral, the share of the batch guard they count for. */
+        fun blindHosts(): Int = hostsOf(deferred.filterValues { it.blind }.keys)
+
+        /** Every deferral that is not blind, by why. */
         fun deferredCounts(): Map<String, Int> =
             deferred.values
-                .filter { it != Deferral.LOOKUP_UNEXPLAINED }
+                .filter { !it.blind }
                 .groupingBy { it.why }
                 .eachCount()
 
@@ -283,6 +334,8 @@ class FitnessPass(
         /** Inherited verdicts left standing because the record already carries them. */
         val skipped: Int,
         val waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        /** Standing `prime`s on urls that kept deferring, owed a withdrawal. */
+        val stale: Set<NormalizedRelayUrl>,
         val withdrawn: Set<NormalizedRelayUrl>,
         val withdrawalsPending: Int,
     )
@@ -299,6 +352,14 @@ class FitnessPass(
         sockets: Sockets,
     ): Int {
         if (candidates.isEmpty()) return 0
+        val sweep = label != AliasMonitor.FAST_LANE
+        if (sweep) {
+            // A url the sweep no longer names is not ours to grade; its queued write would land as a claim about it.
+            val named = candidates.toHashSet()
+            pending.keys.retainAll(named)
+            backoffUntil.keys.retainAll(named)
+            deferredSweeps.keys.retainAll(named)
+        }
         progress.begin("measuring fitness")
         val startedMs = System.currentTimeMillis()
         val batch = Batch()
@@ -311,7 +372,8 @@ class FitnessPass(
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
             val waiting = AliasFolding.heldAmong(held, graded, mates)
-            val toDial = graded.filter { it !in waiting }
+            batch.backingOff += backingOff(graded.filter { it !in waiting })
+            val toDial = graded.filter { it !in waiting && it !in batch.backingOff }
             // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
@@ -319,15 +381,18 @@ class FitnessPass(
             dialEach(toDial, gate, probe::deadlineMs, progress, cut = batch::cut) { url ->
                 measureOne(url, anchor, reach, sockets, batch, onEvent)
             }
+            // Before the guard: a refused batch still heard each relay ask us to come back later.
+            backOff(batch)
 
             if (refusesToPublish(label, toDial, batch)) {
                 report(label, candidates.size, startedMs, batch, written = null)
                 return batch.downloaded.get()
             }
+            val stale = if (sweep) staleWhileDeferring(held, batch.deferring()) else emptySet()
             withholdTlsDead(label, toDial, batch)
             withholdUnspoken(label, toDial, batch)
-            val written = write(label, held, waiting, batch)
-            if (label != AliasMonitor.FAST_LANE) {
+            val written = write(label, held, waiting, stale, batch)
+            if (sweep) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
                 val prime =
                     candidates.filterTo(HashSet()) { url ->
@@ -340,6 +405,38 @@ class FitnessPass(
             progress.finish()
         }
         return batch.downloaded.get()
+    }
+
+    /** Start each backing-off deferral's wait: one sweep, or as long as the relay asked, up to [MAX_RETRY_AFTER_MS]. */
+    private fun backOff(batch: Batch) {
+        val nowMs = System.currentTimeMillis()
+        for ((url, why) in batch.deferred) {
+            if (!why.backsOff) continue
+            val asked = batch.retryAfterMs[url]?.coerceAtMost(MAX_RETRY_AFTER_MS) ?: 0L
+            backoffUntil[url] = nowMs + maxOf(sweepMs, asked)
+        }
+        // A url with an outcome is not deferring, whatever it did before.
+        for (url in batch.outcomes.keys) {
+            backoffUntil.remove(url)
+            deferredSweeps.remove(url)
+        }
+    }
+
+    /**
+     * The standing `prime`s among [deferring] that a sweep withdraws: deferred [DEFERRED_SWEEPS] sweeps
+     * in a row, or graded longer ago than that many periods. Counts this sweep first.
+     */
+    private fun staleWhileDeferring(
+        held: RelayVerdictRecord.Verdicts,
+        deferring: Set<NormalizedRelayUrl>,
+    ): Set<NormalizedRelayUrl> {
+        for (url in deferring) deferredSweeps.merge(url, 1, Int::plus)
+        val floor = nowSeconds() - DEFERRED_SWEEPS * sweepMs / 1000
+        return deferring.filterTo(HashSet()) { url ->
+            val standing = held.fitness[url]
+            standing?.value == Verdict.PRIME.value &&
+                ((deferredSweeps[url] ?: 0) >= DEFERRED_SWEEPS || (standing.measuredAt?.let { it < floor } == true))
+        }
     }
 
     /** Grades, at no dial, the urls other passes' standing verdicts already refuse, and returns the rest. */
@@ -370,9 +467,9 @@ class FitnessPass(
         batch: Batch,
     ): Boolean {
         // The share is over the dials that went out: a url set aside before any server could answer is outside it.
-        val lookupHosts = batch.lookupHosts()
-        val wentOut = toDial.size - batch.deferred.values.count { !it.serverAnswered } + lookupHosts
-        val blind = batch.unmeasured.size + batch.abandonedCount.get() + lookupHosts
+        val blindHosts = batch.blindHosts()
+        val wentOut = toDial.size - batch.deferred.values.count { !it.serverAnswered } + blindHosts
+        val blind = batch.unmeasured.size + batch.abandonedCount.get() + blindHosts
         if (wentOut < GUARD_FLOOR || blind <= wentOut * GUARD_SHARE) return false
         System.err.println(
             "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
@@ -433,6 +530,7 @@ class FitnessPass(
         label: String,
         held: RelayVerdictRecord.Verdicts,
         waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        stale: Set<NormalizedRelayUrl>,
         batch: Batch,
     ): Written {
         val outcomes = batch.outcomes
@@ -453,7 +551,8 @@ class FitnessPass(
             }
         tally.resumeAt?.let { writeCursors[label] = it.url }
         // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
-        val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
+        // A deferring one's likewise: a relay that will not let us measure it has earned no claim either way.
+        val unprimed = (waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value } + stale).distinct().sortedBy { it.url }
         val withdrawals = unprimed.associateWith { url -> suspend { record.retireFitness(url) != null } }
         // A stopped batch means the store is not answering; the withdrawals wait with the unwritten grades.
         val withdrawn =
@@ -466,10 +565,10 @@ class FitnessPass(
                 }.stored
             }
         // This batch's decision replaces whatever waited for these urls; a url it decided nothing about keeps its write.
-        for (url in outcomes.keys + waiting.keys) pending.remove(url)
+        for (url in outcomes.keys + waiting.keys + stale) pending.remove(url)
         for ((url, write) in writes) if (url !in tally.stored) pending[url] = Pending(measuredAt, outcomes.getValue(url).verdict.value, write)
         for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = Pending(measuredAt, null, withdraw)
-        return Written(tally, order.size - toWrite.size, waiting, withdrawn, unprimed.size - withdrawn.size)
+        return Written(tally, order.size - toWrite.size, waiting, stale, withdrawn, unprimed.size - withdrawn.size)
     }
 
     /** [urls] by url, resumed where [label]'s last batch stopped, so the wedge limits do not drop the same tail every pass. */
@@ -729,7 +828,9 @@ class FitnessPass(
                 defer(Deferral.PARTLY_REFUSED)
                 return null
             }
-            return silenced(url, lastReason, unmeasured, defer)
+            return silenced(url, lastReason, unmeasured, defer).also { graded ->
+                if (graded == null) Silence.retryAfterSeconds(lastReason)?.let { batch.retryAfterMs[url] = it * 1000 }
+            }
         }
 
         val walked = answered.compliance
@@ -973,12 +1074,20 @@ class FitnessPass(
                     "no EOSE, no CLOSED and no transport reason on any rung, or our own resolver, route or socket layer failing",
             )
         }
-        val lookups = batch.lookups().size
-        if (lookups > 0) {
+        val lookups = batch.deferredFor(Deferral.LOOKUP_UNEXPLAINED)
+        if (lookups.isNotEmpty()) {
             System.err.println(
-                "router: fitness [$label] — $lookups url(s) on ${batch.lookupHosts()} host(s) failed the lookup with no reason left " +
+                "router: fitness [$label] — ${lookups.size} url(s) on ${batch.hostsOf(lookups)} host(s) failed the lookup with no reason left " +
                     "to read, no verdict written; counted once per host as this router failing to dial, since our resolver " +
                     "fails that way as readily as the name",
+            )
+        }
+        val unrecognised = batch.deferredFor(Deferral.UNRECOGNISED)
+        if (unrecognised.isNotEmpty()) {
+            System.err.println(
+                "router: fitness [$label] — ${unrecognised.size} url(s) on ${batch.hostsOf(unrecognised)} host(s) gave up in words " +
+                    "we do not recognise, no verdict written; counted once per host as this router failing to dial, since a reset, " +
+                    "an EOF or a cancellation is our own socket layer as readily as the relay",
             )
         }
         val deferredCounts = batch.deferredCounts()
@@ -987,6 +1096,12 @@ class FitnessPass(
             System.err.println(
                 "router: fitness [$label] — ${deferredCounts.values.sum()} url(s) set aside, no verdict written and NOT " +
                     "counted as this router failing to dial: $why",
+            )
+        }
+        if (batch.backingOff.isNotEmpty()) {
+            System.err.println(
+                "router: fitness [$label] — ${batch.backingOff.size} url(s) still backing off from an earlier deferral, not dialled; " +
+                    "the first sweep after the wait lapses dials them again",
             )
         }
         val abandonedCount = batch.abandonedCount.get()
@@ -1038,8 +1153,15 @@ class FitnessPass(
         if (written.waiting.isNotEmpty()) {
             System.err.println(
                 "router: fitness [$label] — ${written.waiting.size} url(s) on ${written.waiting.values.toSet().size} server(s) wait on " +
-                    "the fold behind another url of the same server, not dialled; ${written.withdrawn.size} standing `prime` grade(s) " +
+                    "the fold behind another url of the same server, not dialled; ${written.withdrawn.count { it in written.waiting }} standing `prime` grade(s) " +
                     "taken back. The fold has not said whether those paths are their own relays, so only the server's stand-in is graded",
+            )
+        }
+        if (written.stale.isNotEmpty()) {
+            System.err.println(
+                "router: fitness [$label] — ${written.stale.size} standing `prime` grade(s) on urls that kept deferring " +
+                    "($DEFERRED_SWEEPS sweeps in a row, or a grade older than $DEFERRED_SWEEPS sweeps), " +
+                    "${written.withdrawn.count { it in written.stale }} taken back; nothing negative is said, they read as ungraded until a dial answers",
             )
         }
         if (written.withdrawalsPending > 0) {
@@ -1244,6 +1366,12 @@ class FitnessPass(
         const val RETRYING_WRITES = "retrying writes"
 
         const val MAX_ABANDONED_NAMED = 32
+
+        /** Sweeps a url may defer in a row, or periods its `prime` may age while deferring, before it is withdrawn. */
+        const val DEFERRED_SWEEPS = 2
+
+        /** The longest wait a relay's own `Retry-After` may buy it, past the sweep's own backoff. */
+        const val MAX_RETRY_AFTER_MS = 24L * 60 * 60 * 1000
 
         /** The share of a batch's dials that may come back with nothing before the whole pass is refused. */
         const val GUARD_SHARE = 0.25

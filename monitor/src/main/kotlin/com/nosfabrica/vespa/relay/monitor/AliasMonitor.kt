@@ -86,6 +86,9 @@ class AliasMonitor(
          */
         suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
 
+        /** When the last [candidates] that read every relay list began, in epoch seconds; null before one has. */
+        val listsReadFromSec: Long? get() = null
+
         /** Whether this process can reach that url at all, and whose side a refusal is on: transport, not policy. */
         suspend fun reach(url: NormalizedRelayUrl): Reach
 
@@ -199,7 +202,8 @@ class AliasMonitor(
      */
     suspend fun runFastLane(sinceSec: Long): Int {
         val src = source ?: return 0
-        val fresh = src.candidatesSince(sinceSec)
+        // Never behind the last sweep's read: what it saw is graded, and a read outage must not grow the window without bound.
+        val fresh = src.candidatesSince(maxOf(sinceSec, src.listsReadFromSec ?: sinceSec))
         if (fresh.isEmpty()) return 0
         System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
         var learned = 0

@@ -22,9 +22,18 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.net.ServerSocket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -81,6 +90,59 @@ class RelayDocumentTest {
 
                 assertTrue(System.currentTimeMillis() - startedMs < 10_000, "the read outlived the caller's deadline")
                 closed.get(10, TimeUnit.SECONDS)
+            }
+        }
+
+    @Test
+    fun `a document is not queued behind the shared client's other calls`() =
+        runBlocking {
+            // The mirror's live tails share this client; here one call that never answers fills it.
+            val shared = OkHttpClient.Builder().dispatcher(Dispatcher().apply { maxRequests = 1 }).build()
+            val json = """{ "software": "strfry" }"""
+            serve(reply = null).use { tail ->
+                val stuck = shared.newCall(Request.Builder().url("http://127.0.0.1:${tail.localPort}/").build())
+                stuck.enqueue(
+                    object : Callback {
+                        override fun onFailure(
+                            call: Call,
+                            e: IOException,
+                        ) = Unit
+
+                        override fun onResponse(
+                            call: Call,
+                            response: Response,
+                        ) = response.close()
+                    },
+                )
+                try {
+                    serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { server ->
+                        val reading = withTimeout(10_000) { RelayDocument({ shared }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}")) }
+
+                        assertEquals("strfry", reading.doc?.software, "the document waited on a call that was not its own")
+                    }
+                } finally {
+                    stuck.cancel()
+                }
+            }
+        }
+
+    @Test
+    fun `a document still waiting for a slot ends on its own clock`() =
+        runBlocking {
+            val servers = (0 until 3).map { serve(reply = null) }
+            try {
+                // One slot, three relays that never answer: each read's clock covers its wait for the slot.
+                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 2, concurrency = 1)
+                val startedMs = System.currentTimeMillis()
+                val readings =
+                    servers
+                        .map { server -> async { document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}")) } }
+                        .awaitAll()
+
+                assertTrue(readings.all { it.doc == null })
+                assertTrue(System.currentTimeMillis() - startedMs < 4_500, "a queued read waited out the reads ahead of it and then its own clock")
+            } finally {
+                servers.forEach { it.close() }
             }
         }
 

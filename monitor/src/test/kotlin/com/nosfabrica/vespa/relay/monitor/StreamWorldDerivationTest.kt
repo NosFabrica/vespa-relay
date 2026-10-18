@@ -246,6 +246,18 @@ class StreamWorldDerivationTest {
         }
 
     @Test
+    fun `a sweep that read the lists says from when, so the lane need not look behind it`() =
+        runBlocking {
+            val world = world(storeWithPerNpubUrls(), exclude = emptyList())
+            assertNull(world.listsReadFromSec, "nothing has read the lists yet")
+            val before = nowSeconds()
+
+            world.candidates()
+
+            assertTrue((world.listsReadFromSec ?: Long.MIN_VALUE) >= before)
+        }
+
+    @Test
     fun `the fast lane still holds out a url we call dead, asking only about what it found`() =
         runBlocking {
             // The lane asks about its own handful of urls; the answer over that subset must be identical.

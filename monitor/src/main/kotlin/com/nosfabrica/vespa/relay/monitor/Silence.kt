@@ -98,6 +98,18 @@ enum class Silence(
 
         private val UPGRADE_STATUS = Regex("""but was '(\d{3})""")
 
+        /** The wait a refusal's words name as a `Retry-After` in seconds, or null; an HTTP date is not read. */
+        fun retryAfterSeconds(raw: String?): Long? =
+            raw?.let {
+                RETRY_AFTER
+                    .find(it)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toLongOrNull()
+            }
+
+        private val RETRY_AFTER = Regex("""retry-after\W{0,3}(\d{1,9})""", RegexOption.IGNORE_CASE)
+
         /** Null is [UNKNOWN], not a cause of its own. An HTTP status outranks the words beside it. */
         fun of(raw: String?): Silence {
             val text = raw?.lowercase() ?: return UNKNOWN
