@@ -48,8 +48,8 @@ internal data class ReconcileOutcome(
 )
 
 /**
- * [reconcileTrustWithRetry]'s loop over any [attempt]. The budget is a deadline on [time], so the
- * attempts' own duration counts against it, not only the sleeps between them.
+ * [reconcileTrustWithRetry]'s loop over any [attempt]. The budget is a deadline on [time], so slow
+ * failures spend it too; an attempt that outlasted the whole budget was walking, and its failure starts a fresh one.
  */
 internal suspend fun reconcileWithRetry(
     time: TimeSource = TimeSource.Monotonic,
@@ -58,18 +58,24 @@ internal suspend fun reconcileWithRetry(
     log: (String) -> Unit = ::println,
     attempt: suspend () -> ReconcileOutcome,
 ) {
+    val budget = maxWaitMs.milliseconds
     val started = time.markNow()
-    val deadline = started + maxWaitMs.milliseconds
+    var deadline = started + budget
     var attempts = 0
     val reportFailure = reconcileFailures(emit = log)
     var errorShown = false
     while (true) {
         attempts++
+        val attemptStarted = time.markNow()
         val result = retryable { attempt() }
         val r = result.getOrNull()
         when {
             r == null -> {
-                Unit
+                val ran = attemptStarted.elapsedNow()
+                if (ran > budget) {
+                    deadline = time.markNow() + budget
+                    log("trust: reconcile failed ${ran.inWholeSeconds}s into its walk; waiting up to ${budget.inWholeSeconds}s again for the engine")
+                }
             }
 
             r.services == 0 -> {
