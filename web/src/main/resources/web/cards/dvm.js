@@ -10,13 +10,11 @@
 // Only the request half is here: the results (6050…) and the status events are the machine's
 // side of the conversation and nothing mirrors them into this store.
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, shell, bodyHtml, chipRow, relayRows, faceStrip, noteHref, addrHref,
   tagOf, tagsOf, oneLine, plural, satsOf,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** What each kind asks for, in the words its own NIP-90 section uses. */
 const ASKS = {

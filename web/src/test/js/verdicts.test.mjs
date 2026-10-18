@@ -1,9 +1,10 @@
 // What a signed kind-30166 record claims: the tag semantics behind the monitor-verdicts panel.
 import assert from "node:assert/strict";
 import {
-  MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
+  MONITOR_KIND, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
   FOLD_EPOCH, CONSISTENCY_EPOCH, FITNESS_EPOCH, FITNESS_NAMESPACE, PRIME, NETWORK_TOR,
 } from "../../main/resources/web/shared/verdicts.js";
+import { hostnameOf, relayAddress } from "../../main/resources/web/shared/relayurl.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
@@ -24,14 +25,24 @@ const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNE
 
 // ---- the host, which decides a group ---------------------------------------
 {
-  assert.equal(hostOf("wss://nos.lol/"), "nos.lol");
-  assert.equal(hostOf("wss://nos.lol/cipher-zulu"), "nos.lol");
-  assert.equal(hostOf("wss://NOS.LOL:443/beacon"), "nos.lol", "port and case are not part of the host");
-  assert.equal(hostOf("ws://nos.lol"), "nos.lol", "the scheme is not either — a host serving both is one host");
+  assert.equal(hostnameOf("wss://nos.lol/"), "nos.lol");
+  assert.equal(hostnameOf("wss://nos.lol/cipher-zulu"), "nos.lol");
+  assert.equal(hostnameOf("wss://NOS.LOL:443/beacon"), "nos.lol", "port and case are not part of the host");
+  assert.equal(hostnameOf("ws://nos.lol"), "nos.lol", "the scheme is not either — a host serving both is one host");
   // The colons inside an IPv6 literal are not the port separator.
-  assert.equal(hostOf("wss://[2001:db8::1]:443/alpha"), "[2001:db8::1]");
-  assert.equal(hostOf("wss://[2001:db8::1]/alpha"), "[2001:db8::1]");
+  assert.equal(hostnameOf("wss://[2001:db8::1]:443/alpha"), "[2001:db8::1]");
+  assert.equal(hostnameOf("wss://[2001:db8::1]/alpha"), "[2001:db8::1]");
   ok("the host is the hostname alone — no port, no path, no scheme");
+}
+
+// ---- the address a card or a sentence names --------------------------------
+{
+  assert.equal(relayAddress("wss://nos.lol/"), "nos.lol");
+  assert.equal(relayAddress("WSS://relay.example:7777/alpha/"), "relay.example:7777/alpha", "port and path stay; the scheme goes in either case");
+  assert.equal(relayAddress("ws://x.onion"), "x.onion");
+  assert.equal(relayAddress(null), "");
+  assert.equal(relayAddress("https://nos.lol"), "https://nos.lol", "only a relay scheme is dropped");
+  ok("a relay's address reads without its scheme or a trailing slash, and keeps what tells two relays apart");
 }
 
 // ---- fold vs cleared, told apart after normalising -------------------------

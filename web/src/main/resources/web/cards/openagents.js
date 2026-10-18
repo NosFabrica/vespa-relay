@@ -6,13 +6,11 @@
 // What a record describes is a claim of its publisher's: nothing here says a capability works
 // or that a release is safe to install, and the cards do not phrase it as if it did.
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, bodyHtml, titleHtml, chipRow, relayRows, personLink, eventHref,
   extLink, tagsOf, tagOf, jsonContent, oneLine, satsOf, fmtBytes,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** `<root>:<slug>` → the slug, the part a person reads. */
 const slugOf = (pkg) => {

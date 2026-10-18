@@ -3,8 +3,8 @@
 // or one lookup by id cached for the page.
 
 import { refConn } from "./conn.js";
+import { HEX64 } from "./format.js";
 
-const HEX64 = /^[0-9a-f]{64}$/;
 const hex64 = (v) => {
   const s = String(v || "").toLowerCase();
   return HEX64.test(s) ? s : null;

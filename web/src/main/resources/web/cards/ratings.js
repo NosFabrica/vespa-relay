@@ -3,14 +3,13 @@
 // they share the star row, and both are addressable — `(pubkey, d)` is the identity, which means
 // one rating per author per subject and a newer one replaces it.
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import { shortAddr, shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow, personLink,
-  noteHref, addrHref, hostOf, tagOf, tagsOf, oneLine, plural,
+  noteHref, addrHref, relayAddress, tagOf, tagsOf, oneLine, plural,
 } from "./base.js";
 
-const HEX64 = /^[0-9a-f]{64}$/;
 /** Every scale here is out of five; the published 0..1 fraction is `stars / 5`. */
 const MAX_STARS = 5;
 
@@ -52,7 +51,7 @@ function relayReviewCard(ev, opts) {
   const url = relayOf(ev);
   const aspects = scoresOf(ev).filter((s) => s.category);
   const inner =
-    titleHtml(opts, hostOf(url), 140) +
+    titleHtml(opts, relayAddress(url), 140) +
     `<div class="result-body">${starsHtml(overallOf(ev))}</div>` +
     bodyHtml(opts, ev.content, 400) +
     chipRow(aspects.map((s) => `${s.category} ${starsText(s.value * MAX_STARS)}`), opts);
@@ -142,7 +141,7 @@ registerNamedPeople([34259], (ev) => [ratedAuthor(ev)].filter(Boolean));
 registerRow([31987], (ev) => {
   const aspects = scoresOf(ev).filter((s) => s.category);
   return {
-    name: hostOf(relayOf(ev)) || "a relay",
+    name: relayAddress(relayOf(ev)) || "a relay",
     sub: [starsText(overallOf(ev)), ev.content, aspects.length ? plural(aspects.length, "aspect") : ""]
       .filter(Boolean).join(" · "),
   };

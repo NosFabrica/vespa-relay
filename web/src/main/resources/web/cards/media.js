@@ -5,7 +5,7 @@
 // and a promise, never the thing itself. A NIP-17 file (15) is the same promise, encrypted.
 // The cyberspace shapes (11333, 33331) are small 3D meshes in JSON, described, not drawn.
 
-import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref,
   extLink, relayRows, refRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, noteHref,
@@ -42,15 +42,15 @@ function pictureCard(ev, opts) {
  * One picture. `whenBroken` is what a dead url removes: the frame around a lone picture,
  * the cell inside a grid.
  */
-const pictureImg = (m, whenBroken = "this.parentElement.remove()") =>
-  `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="${whenBroken}" />`;
+const pictureImg = (m, whenBroken = "frame") =>
+  `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" data-broken="${whenBroken}" />`;
 
 /** The album: four in the list, all of them on the permalink. */
 function pictureGrid(pics, opts) {
   if (!pics.length) return "";
   const shown = opts && opts.full ? pics : pics.slice(0, 4);
   const more = pics.length - shown.length;
-  return `<div class="media-grid">${shown.map((m) => pictureImg(m, "this.remove()")).join("")}</div>` +
+  return `<div class="media-grid">${shown.map((m) => pictureImg(m, "self")).join("")}</div>` +
     (more > 0 ? `<div class="muted-note">…and ${more} more</div>` : "");
 }
 
@@ -77,7 +77,7 @@ function videoFrame(m, ev, url, opts) {
   const src = (p || url.includes("#")) ? url : `${url}#t=0.1`;
   // `data-src`, not `src`: app.js promotes it when the card nears the viewport.
   return mediaFrame(frameStyle(fieldOf(m, ev, "dim"), opts),
-    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} data-src="${esc(src)}" onerror="this.parentElement.remove()"></video>` +
+    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} data-src="${esc(src)}" data-broken="frame"></video>` +
     (dur ? `<span class="media-chip">${esc(dur)}</span>` : ""));
 }
 
@@ -168,7 +168,7 @@ function stickerGrid(stickers, opts) {
   if (!shown.length) return "";
   return `<div class="emoji-grid stickers">${shown.map((t) => {
     const label = t[6] ? `:${t[1]}: ${t[6]}` : `:${t[1]}:`;
-    return `<img src="${esc(t[2])}" alt="${esc(label)}" title="${esc(label)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`;
+    return `<img src="${esc(t[2])}" alt="${esc(label)}" title="${esc(label)}" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`;
   }).join("")}</div>`;
 }
 
@@ -221,7 +221,7 @@ function themeCard(ev, opts) {
       `<span class="theme-hexes">${THEME_ROLES.filter((r) => c[r]).map((r) => esc(c[r])).join(" · ")}</span></div>`
     : "";
   const from = tagsOf(ev, "a").map((t) => t[1]).find((v) => /^36767:[0-9a-f]{64}:./.test(v || ""));
-  const creator = tagsOf(ev, "p").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || "") && v !== ev.pubkey);
+  const creator = tagsOf(ev, "p").map((t) => t[1]).find((v) => HEX64.test(v || "") && v !== ev.pubkey);
   const fonts = [["title", themeFont(ev, "title")], ["body", themeFont(ev, "body")]].filter(([, f]) => f);
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
@@ -283,7 +283,7 @@ const fileFacts = (ev) => [
  */
 function fileStorageCard(ev, opts) {
   const preview = tagOf(ev, "image", "thumb");
-  const data = tagsOf(ev, "e").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const data = tagsOf(ev, "e").map((t) => t[1]).filter((v) => HEX64.test(v || ""));
   const full = opts && opts.full;
   const inner =
     (full && preview ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url: preview })) : "") +
@@ -299,7 +299,7 @@ function fileStorageCard(ev, opts) {
 /** 1163 — a gallery entry: a picture the author pinned to their profile, and where it came from. */
 function galleryCard(ev, opts) {
   const url = tagOf(ev, "url") || tagOf(ev, "image");
-  const from = tagsOf(ev, "e").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const from = tagsOf(ev, "e").map((t) => t[1]).find((v) => HEX64.test(v || ""));
   const inner =
     (url ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url, alt: tagOf(ev, "alt") })) : "") +
     bodyHtml(opts, summaryOf(ev) || ev.content, 200) +
@@ -367,7 +367,7 @@ function torrentCommentCard(ev, opts) {
  */
 function encryptedFileCard(ev, opts) {
   const url = String(ev.content || "").trim();
-  const to = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk || ""));
+  const to = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk || ""));
   const algo = tagOf(ev, "encryption-algorithm");
   const inner =
     `<div class="result-body">an encrypted ${esc(clip(tagOf(ev, "file-type") || "file", 40))}` +
@@ -414,7 +414,7 @@ register([30005], videoSetCard);
 register([30030], emojiPackCard);
 register([30031], stickerPackCard);
 register([36767], themeCard);
-registerNamedPeople([36767], (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "") && v !== ev.pubkey).slice(0, 1));
+registerNamedPeople([36767], (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((v) => HEX64.test(v || "") && v !== ev.pubkey).slice(0, 1));
 register([32176], pieceIndexCard);
 register([1065], fileStorageCard);
 register([1163], galleryCard);

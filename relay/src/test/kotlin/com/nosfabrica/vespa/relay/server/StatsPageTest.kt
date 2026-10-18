@@ -93,17 +93,46 @@ class StatsPageTest {
             val res = client.get("/stats.html")
             assertEquals(HttpStatusCode.OK, res.status)
             val body = res.bodyAsText()
-            assertTrue(body.contains("/stats.json"), "the page fetches the document rather than carrying its own numbers")
-
             // Without the scope line a reader compares a mirror's total against a network-wide dashboard's.
             assertTrue(body.contains("id=\"scope\""), "the page has somewhere to print the document's scope")
 
-            // Imports are document-relative so the page survives a path-prefix mount, and matched as
+            // Scripts are document-relative so the page survives a path-prefix mount, and matched as
             // that literal: an absolute `/web/` is answered by whatever sits at the host root.
-            for (spec in Regex("""from "(\./web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
-                assertNotNull(WebAssets.get(spec.removePrefix("./web/")), "$spec is imported but not servable")
+            val entries = Regex("""<script type="module" src="\./web/([^"]+)"""").findAll(body).map { it.groupValues[1] }.toList()
+            assertTrue(entries.isNotEmpty(), "the page loads its logic from a module, never inline")
+            val modules = importGraph(entries)
+            assertTrue(
+                modules.any {
+                    WebAssets
+                        .get(it)!!
+                        .bytes
+                        .decodeToString()
+                        .contains("\"stats.json\"")
+                },
+                "the page fetches the document rather than carrying its own numbers",
+            )
+        }
+
+    /** Every module reachable from [entries] by relative import, each asserted servable on the way. */
+    private fun importGraph(entries: List<String>): Set<String> {
+        val seen = linkedSetOf<String>()
+        val queue = ArrayDeque(entries)
+        while (queue.isNotEmpty()) {
+            val rel = queue.removeFirst()
+            if (!seen.add(rel)) continue
+            val asset = assertNotNull(WebAssets.get(rel), "./web/$rel is imported but not servable")
+            val dir = rel.substringBeforeLast('/', "")
+            for (spec in Regex("""from "(\.{1,2}/[^"]+)"""").findAll(asset.bytes.decodeToString()).map { it.groupValues[1] }) {
+                queue +=
+                    java.io
+                        .File("/$dir/$spec")
+                        .normalize()
+                        .path
+                        .removePrefix("/")
             }
         }
+        return seen
+    }
 
     /** A 301, not a 404: the url is bookmarked and this repo's history points at it. */
     @Test

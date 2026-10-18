@@ -1,7 +1,7 @@
 // The text family: notes, threads and chat messages, highlights, channel metadata (40/41,
 // a profile-shaped JSON content) and the NIP-29 group record (39000).
 
-import { esc } from "../shared/format.js";
+import { esc, HEX64 } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
 import { avatarHtml } from "../shared/avatar.js";
 import { register, registerRow, shell, bodyHtml, replyLine, extLink, noteHref, tagOf, tagsOf, jsonContent, clipIf, titleHtml, groupHref } from "./base.js";
@@ -19,7 +19,7 @@ function highlightCard(ev, opts) {
   const sourceEvent = tagOf(ev, "e");
   const props = [];
   if (sourceUrl) props.push(["source", extLink(sourceUrl)]);
-  else if (sourceEvent && /^[0-9a-f]{64}$/.test(sourceEvent)) props.push(["source", `<a class="mono" href="${noteHref(sourceEvent)}">${esc(shortNote(sourceEvent))}</a>`]);
+  else if (sourceEvent && HEX64.test(sourceEvent)) props.push(["source", `<a class="mono" href="${noteHref(sourceEvent)}">${esc(shortNote(sourceEvent))}</a>`]);
   const inner =
     (quote ? `<blockquote class="quote">${esc(quote)}</blockquote>` : "") +
     (comment ? bodyHtml(opts, comment, 300) : "");

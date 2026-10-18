@@ -15,15 +15,13 @@
 // The audio itself plays on the permalink only: a results list of ten episodes must not open
 // ten connections to ten media hosts.
 
-import { esc, clip, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, mdExcerpt, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, refRows, chipRow,
   coverBanner, coverThumb,
   topicsOf, hashtagHref, personLink, faceStrip, extLink, audioEmbed, tagOf, tagsOf, oneLine,
   fmtBytes, fmtDuration, plural,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
  * The files a card can play, in the spelling its kind uses: an episode lists `audio` tags

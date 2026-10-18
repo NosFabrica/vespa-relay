@@ -9,7 +9,7 @@ const {
 } = await import(new URL("../../main/resources/web/paging.js", import.meta.url));
 
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
-const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");
 
 const id = (n) => String(n).padStart(64, "0");
 const ev = (n) => ({ id: id(n), pubkey: "a".repeat(64), kind: 1, created_at: 1_800_000_000 - n, tags: [] });
@@ -90,10 +90,19 @@ assert.ok(
 );
 
 // The page is written by currentUrl() and read back by applyUrl(), like the three filters.
-assert.ok(/p\.set\("page"/.test(app), "currentUrl() never writes ?page= — a page four does not survive a share");
-assert.ok(/p\.get\("page"\)/.test(app), "…and applyUrl() never reads it back, so it does not survive a reload");
+{
+  const { searchUrl, readSearch } = await import(new URL("../../main/resources/web/urlstate.js", import.meta.url));
+  const tabs = [{ slug: "all", kinds: null }];
+  const url = searchUrl({ text: "bitcoin", page: 3, tab: tabs[0], tabs });
+  assert.strictEqual(new URL(url, "http://x").searchParams.get("page"), "4", "a page four is written one-based, as the pager reads");
+  assert.strictEqual(readSearch(url.slice(1), tabs).page, 3, "…and comes back as the same page on a reload");
+  assert.strictEqual(readSearch("?q=x&page=1", tabs).page, 0, "page one is no page");
+  assert.strictEqual(readSearch("?q=x&page=junk", tabs).page, 0);
+  assert.strictEqual(readSearch("?q=x&page=99999", tabs).page, MAX_PAGES - 1, "a page past the ceiling is the last one asked for");
+  assert.ok(!new URL(searchUrl({ text: "", page: 3, tab: tabs[0], tabs }), "http://x").searchParams.has("page"), "no query, no page");
+}
 assert.ok(
-  /runFull\(text, pageParam\(p\)\)/.test(app),
+  /runFull\(want\.text, want\.page\)/.test(app),
   "the restore must hand the page to runFull(), or a deep link opens at page one",
 );
 
@@ -113,7 +122,7 @@ assert.ok(
 
 // The pager is redrawn with the cards, so a listener bound to a button dies with the page it turned.
 assert.ok(/closest\("\.pg"\)/.test(app), "the pager's clicks must be delegated off the list");
-assert.ok(/\.pg \{/.test(html), "…and index.html must style what it draws");
+assert.ok(/\.pg \{/.test(css), "…and app.css must style what it draws");
 
 console.log(
   `paging: ${PAGE_SIZE} to a page, ${PRELOAD_PAGES} fetched ahead, ceiling ${MAX_ASK} (${MAX_PAGES} pages) — the cut, the fold and the two ends hold`,

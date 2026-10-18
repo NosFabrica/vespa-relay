@@ -25,7 +25,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -46,8 +45,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** The cookie one signature opens. Not `__Host-` prefixed: the page must work over plain http. */
-const val PULSE_COOKIE = "pulse_session"
+/**
+ * The session cookie's name for the site at [publicUrl]. Cookies ignore ports, so each site needs
+ * its own name or signing in to one evicts the other. Not `__Host-` prefixed: the page must work
+ * over plain http.
+ */
+fun pulseCookieName(publicUrl: String): String = "pulse_session_" + publicUrl.substringAfter("://").trimEnd('/').replace(Regex("[^A-Za-z0-9]+"), "_")
 
 /** Where a signature is exchanged for a session, and what a 401 points at. */
 const val PULSE_SESSION_PATH = "/pulse/session"
@@ -64,6 +67,7 @@ const val PULSE_DOC_PATH = "/pulse.json"
 class PulseGuard(
     val gate: Nip98AdminGate,
     val sessions: AdminSessions = AdminSessions(),
+    val cookie: String = pulseCookieName(gate.publicUrl),
 )
 
 /**
@@ -77,19 +81,9 @@ fun Application.installPulseDefaults() {
         deflate { priority = 0.9 }
         minimumSize(1024)
     }
-    install(
-        createApplicationPlugin("PulseHeaders") {
-            onCall { call ->
-                call.response.header("X-Frame-Options", "DENY")
-                call.response.header("X-Content-Type-Options", "nosniff")
-                call.response.header("Referrer-Policy", "no-referrer")
-                call.response.header(
-                    "Content-Security-Policy",
-                    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-                        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-                )
-            }
-        },
+    installSecurityHeaders(
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     )
 }
 
@@ -102,7 +96,7 @@ private suspend fun ApplicationCall.admin(
     path: String,
     method: String,
 ): Admitted {
-    guard.sessions.holder(request.cookies[PULSE_COOKIE])?.let { return Admitted.Admin(it) }
+    guard.sessions.holder(request.cookies[guard.cookie])?.let { return Admitted.Admin(it) }
     // Judged against the route's path, not the request target, so the expected `u` is the one the
     // refusal tells a client to sign, and a query string never enters it.
     return guard.gate.admit(request.headers[HttpHeaders.Authorization], method, guard.gate.urlFor(path))
@@ -215,7 +209,7 @@ fun Route.pulseSession(guard: PulseGuard) {
         val token = guard.sessions.open(who.pubkey)
         // The token is base64url, so Ktor's default URI encoding changes nothing.
         call.response.cookies.append(
-            name = PULSE_COOKIE,
+            name = guard.cookie,
             value = token,
             maxAge = guard.sessions.ttlMillis / 1000,
             path = "/",
@@ -231,9 +225,9 @@ fun Route.pulseSession(guard: PulseGuard) {
     }
 
     post(PULSE_LOGOUT_PATH) {
-        guard.sessions.close(call.request.cookies[PULSE_COOKIE])
+        guard.sessions.close(call.request.cookies[guard.cookie])
         call.response.cookies.append(
-            name = PULSE_COOKIE,
+            name = guard.cookie,
             value = "",
             maxAge = 0,
             path = "/",

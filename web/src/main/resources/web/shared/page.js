@@ -2,7 +2,7 @@
 // and a card's header. Imported as `/web/shared/page.js`, which the asset route resolves
 // off the classpath, so which jar a module ships in is not something a page has to know.
 
-const fmt = (n) => Number(n).toLocaleString();
+import { fmt } from "./format.js";
 
 /** "1.2M" for an axis label; the exact value is always on the hover tooltip too. */
 const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });

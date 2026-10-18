@@ -8,7 +8,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
-const ROOT = "/home/user/vespa-relay/web/src/main/resources";
+const ROOT = new URL("../../main/resources/", import.meta.url).pathname;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");

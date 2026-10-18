@@ -17,8 +17,9 @@ string, which is why the third link is spelled as an endpoint rather than `h2.8`
 **Relative asset paths do not make the search page prefix-mountable.** The page
 is a SPA whose history writes are anchored at the root (`currentUrl` returns
 `"/" + qs`), so a prefix would survive the first load and be lost by the first
-navigation. stats.html is safe under a prefix because its imports are in an
-inline module and it never rewrites its own url.
+navigation. stats.html is safe under a prefix because it loads its entry module
+document-relative, the module resolves its imports against its own url, and it
+never rewrites its own url.
 
 **Module preload hints live in the head, ahead of the stylesheet.** Without
 them the browser discovers the import graph a wave at a time (index.html, then
@@ -243,13 +244,19 @@ visiting read the response. Either lock alone has been enough to lose this argum
 the pulse site has its own `installPulseDefaults` and the test pins that the permissive one is
 not installed.
 
-**The CSP admits no inline script or style, so the page keeps its code in files.** Alone among
-the pages here, pulse keeps its logic in `/web/pulse/page.js` and its styling in
-`/web/pulse/pulse.css`: an inline `<script>` cannot satisfy `script-src 'self'`, and that is
-the point. Every value the page renders already goes through `textContent`, so the policy is
+**The CSP admits no inline script or style, so the page keeps its code in files.** Pulse
+keeps its logic in `/web/pulse/page.js` and its styling in `/web/pulse/pulse.css`: an inline
+`<script>` cannot satisfy `script-src 'self'`, and that is the point. Every value the page renders already goes through `textContent`, so the policy is
 the second lock, worth the extra file on the one page that is not public. `img-src https:` is
 the one relaxation: a NIP-86 rpc can point the deployment's icon at another origin, a favicon
 loads under `img-src`, and an image cannot execute.
+
+**Each pulse site names its own session cookie.** The relay's pulse site and the mirror's
+both set `pulse_session` with `Path=/`, and cookies ignore ports, so on one host signing in to
+one replaced the other's session and each site was sent the other's token. `PulseGuard` now
+names its cookie from the gate's public url (`pulse_session_localhost_7780`), which differs
+wherever the two sites could share a jar. `Path=/` stays: the session must reach both
+`/pulse.json` and `/pulse/logout`, and no narrower path covers both.
 
 **The shell is not gated; the port is a second boundary, not the first.** The page shell holds
 no numbers, only markup and a script that asks for a signature and then fetches `/pulse.json`;
@@ -293,3 +300,29 @@ only when a read is slow or the order changes, are not rebuilt twice a second, w
 the reader's text selection and scroll with them; the sign-out control lives outside the
 footer for the same reason. The ring arrives newest-first from `CostLedger.snapshot` and
 was once reversed on the page, drawing the oldest read at the top during an incident.
+
+## The public pages' policy
+
+**Every public page runs under `script-src 'self'`.** The search page renders strangers'
+events and holds a NIP-07 signer that signs and decrypts on request, so an injected script
+would act as the reader; until then only the pulse site sent a CSP, and none of the public
+pages sent `X-Frame-Options` either. `installPageDefaults` now sets
+`PAGE_CONTENT_SECURITY_POLICY`, `X-Frame-Options: DENY`, `nosniff` and `no-referrer` on every
+response of every service that serves a page, the relay's own server included, since it calls
+the same installer. Getting there moved every inline `<script>` into `web/` (stats.html's into
+`relay/cards.js` and `stats/page.js`, trust.html's and observer_stats.html's into their own
+`page.js`), the search page's 1,243 lines of CSS into `web/app.css`, and sixteen inline
+`onerror` handlers onto `data-broken` and one capture-phase listener (`shared/broken.js`).
+`PageSecurityTest` fails the build on an inline script, handler or stylesheet in a page;
+`broken.test.mjs` on a handler in a module's markup; `csp.probe.mjs` loads every page under
+the policy in Chromium and fails on a violation.
+
+**What the policy still admits, and why.** `img-src` and `media-src` take any https origin,
+`data:` and `blob:`: pictures and video come from wherever an event points. `connect-src` takes
+`https:`, `http:`, `wss:` and `ws:`: the search page dials the relays an event or a reader's
+list names (an onion relay is `ws:`), checks NIP-05 at the name's own domain, and the monitor's
+panel reads a relay's NIP-11 over plain http when the relay is `ws://`. `style-src` keeps
+`'unsafe-inline'` because the renderers emit a per-event `style` attribute (an avatar's hue, a
+picture's aspect ratio, a progress bar's width); `style-src-elem 'self'` still refuses an
+injected `<style>` element in every browser that knows the directive, and an older one falls
+back to the attribute rule without breaking anything.

@@ -7,8 +7,7 @@ import { refConn } from "./conn.js";
 import { addrOf } from "./nip19.js";
 import { providersFor, publishersOf } from "./providers.js";
 import { DECLARATION_KINDS } from "../provenance.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
+import { HEX64 } from "./format.js";
 
 /**
  * Which tag a declaration names its subject with, and which target set it is drawn from. Must

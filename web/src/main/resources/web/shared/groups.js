@@ -3,8 +3,7 @@
 // reader's own kind 10009. A 10009 names the host as a url and a 39000 as a signing key, and
 // nothing here joins the two, so rows sharing an id stay separate and [rank] marks them `ambiguous`.
 
-/** A relay url as a row shows it: no scheme, no trailing slash, still exact. */
-export const relayLabel = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
+import { relayAddress } from "./relayurl.js";
 
 /** A tag's value at [i], trimmed to nothing when it is absent or blank. */
 const at = (tag, i) => (tag.length > i ? String(tag[i] || "").trim() : "");
@@ -134,7 +133,7 @@ export function rank(partial, { own = [], meta = [] } = {}) {
  * `group` tag. [hostName] is passed in because this module holds no caches.
  */
 export function where(cand, hostName = "") {
-  if (cand.relayUrl) return { text: relayLabel(cand.relayUrl), exact: true };
+  if (cand.relayUrl) return { text: relayAddress(cand.relayUrl), exact: true };
   const named = String(hostName || "").trim();
   if (named) return { text: named, exact: false };
   return { text: cand.host ? `relay ${cand.host.slice(0, 8)}…` : "unknown relay", exact: false };

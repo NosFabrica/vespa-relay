@@ -31,7 +31,6 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -196,14 +195,5 @@ class StatsSnapshot(
 
         /** Not pretty-printed: the document is machine-read first, and polled. */
         val JSON = Json
-
-        /** The same content-derived strong ETag the pages and modules use. */
-        fun etagOf(bytes: ByteArray): String =
-            MessageDigest
-                .getInstance("SHA-256")
-                .digest(bytes)
-                .take(8)
-                .joinToString("") { "%02x".format(it) }
-                .let { "\"$it\"" }
     }
 }

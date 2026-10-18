@@ -2,7 +2,7 @@
 // reports, labels, edits and deletions. Their content is a fragment, so every card leads with
 // the relation and links the target.
 
-import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
+import { esc, clip, summaryOf, titleOf, imageOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
@@ -10,11 +10,9 @@ import {
   jsonContent, oneLine, fmtTs, extLink, plural, satsOf,
 } from "./base.js";
 
-const HEX64 = /^[0-9a-f]{64}$/;
-
 /** The event a reactive kind points at: `e` by id, `a` by address, in that order. */
 function targetLink(ev) {
-  const e = tagsOf(ev, "e").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v)).pop();
+  const e = tagsOf(ev, "e").map((t) => t[1]).filter((v) => HEX64.test(v)).pop();
   if (e) return `<a class="mono" href="${noteHref(e)}">${esc(shortNote(e))}</a>`;
   const a = tagOf(ev, "a");
   if (!a) return null;
@@ -24,7 +22,7 @@ function targetLink(ev) {
 
 /** The target as a noun for a row, in targetLink's precedence. An `a` is "an entry", never "a note". */
 const targetNoun = (ev) => {
-  if (tagsOf(ev, "e").some((t) => /^[0-9a-f]{64}$/.test(t[1]))) return " a note";
+  if (tagsOf(ev, "e").some((t) => HEX64.test(t[1]))) return " a note";
   return tagOf(ev, "a") ? " an entry" : "";
 };
 
@@ -42,7 +40,7 @@ function reactionCard(ev, opts) {
   const shortcode = /^:([^:]+):$/.exec(c);
   const custom = shortcode && tagsOf(ev, "emoji").find((t) => t[1] === shortcode[1]);
   const glyph = custom
-    ? `<img class="react-emoji" src="${esc(custom[2])}" alt=":${esc(shortcode[1])}:" title=":${esc(shortcode[1])}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
+    ? `<img class="react-emoji" src="${esc(custom[2])}" alt=":${esc(shortcode[1])}:" title=":${esc(shortcode[1])}:" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`
     : `<span class="react-glyph">${esc(clip(c || "+", 16))}</span>`;
   const verb = reactionVerb(c);
   const target = targetLink(ev);
@@ -165,7 +163,7 @@ function paymentCard(ev, opts) {
 /** 1111 — a NIP-22 comment. The parent leads as a person; the root is a row only when it differs. */
 function commentCard(ev, opts) {
   const ref = (id, addr) => {
-    if (id && /^[0-9a-f]{64}$/.test(id)) return `<a class="mono" href="${noteHref(id)}">${esc(shortNote(id))}</a>`;
+    if (id && HEX64.test(id)) return `<a class="mono" href="${noteHref(id)}">${esc(shortNote(id))}</a>`;
     if (!addr) return null;
     const href = addrHref(addr);
     return href ? `<a href="${href}">${esc(shortAddr(addr))}</a>` : esc(shortAddr(addr));
@@ -214,7 +212,7 @@ const reportCategory = (ev) => (flaggedTag(ev) || [])[2] || tagOf(ev, "report");
 function reportCard(ev, opts) {
   const flagged = flaggedTag(ev);
   const category = reportCategory(ev);
-  const subject = flagged && flagged[0] === "p" && /^[0-9a-f]{64}$/.test(flagged[1])
+  const subject = flagged && flagged[0] === "p" && HEX64.test(flagged[1])
     ? personLink(flagged[1])
     : targetLink(ev);
   const inner =
@@ -250,7 +248,7 @@ function deletionCard(ev, opts) {
 }
 
 /** The `p` tags that are keys. */
-const winnersOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
+const winnersOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk));
 
 /** 8 — a badge award. */
 function badgeAwardCard(ev, opts) {
@@ -278,10 +276,10 @@ function approvalCard(ev, opts) {
 function communityCard(ev, opts) {
   const img = imageOf(ev);
   // Every `p` on a 34550 is a moderator.
-  const mods = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
+  const mods = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk));
   const full = opts && opts.full;
   const inner =
-    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
+    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>` : "") +
     titleHtml(opts, titleOf(ev), 140) +
     bodyHtml(opts, summaryOf(ev) || ev.content, 400) +
     (mods.length ? `<div class="result-body">${mods.length} moderator${mods.length === 1 ? "" : "s"}</div>` + faceStrip(mods, full ? 24 : 12) : "");

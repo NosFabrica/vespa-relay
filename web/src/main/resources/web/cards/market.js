@@ -8,7 +8,7 @@
 // them apart by tags (EventFactory), and so does [kind38000], in the same order, so a market is
 // never drawn as "recommends 0 mints".
 
-import { esc, clip, titleOf, summaryOf, imageOf, OPAQUE_D } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, OPAQUE_D, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
@@ -16,8 +16,6 @@ import {
   notOursCard,
 } from "./base.js";
 import { shortNote, shortAddr, naddr } from "../shared/nip19.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
 const priceText = (amount, currency, period) => {
@@ -32,7 +30,7 @@ const priceLine = (amount, currency, period) => {
 };
 
 const imgEmbed = (url) =>
-  url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "";
+  url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>` : "";
 
 /** A listing's images in the order its `image` tags' sort values give, unsorted ones last. */
 const imagesOf = (ev) => tagsOf(ev, "image")
@@ -43,7 +41,7 @@ const imagesOf = (ev) => tagsOf(ev, "image")
 
 /** The first image as a banner, the rest as a grid beneath it. */
 const gallery = (urls) => imgEmbed(urls[0]) + (urls.length > 1
-  ? `<div class="media-grid">${urls.slice(1).map((u) => `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`
+  ? `<div class="media-grid">${urls.slice(1).map((u) => `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`).join("")}</div>`
   : "");
 
 /** The NIP-99 and Open Markets words a listing is flagged with; an absent or unknown one is no pill. */
@@ -294,7 +292,7 @@ function mintRecommendationCard(ev, opts) {
 function marketplaceCard(ev, opts) {
   const c = jsonContent(ev);
   const ui = c && typeof c.ui === "object" && c.ui ? c.ui : {};
-  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => /^[0-9a-f]{64}$/.test(pk || "")) : [];
+  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => HEX64.test(pk || "")) : [];
   const banner = oneLine(ui.banner) || oneLine(ui.picture);
   const full = opts && opts.full;
   const inner =

@@ -468,9 +468,16 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
 
 
 relay/src/main/resources/
-  index.html            the search UI's markup + styles; its behavior lives in web/
+  index.html            the search UI's markup; its styles are web/app.css and its
+                        behavior lives in web/. No page carries an inline script,
+                        handler or stylesheet: every page runs under
+                        `script-src 'self'` (PageSecurityTest)
   web/                  the page's native ES modules, served at /web — no build
                         step, zero dependencies. app.js is state + wiring;
+                        signin.js (NIP-07 / NIP-42), owngroups.js (the reader's
+                        groups and their unlock) and urlstate.js (the url and
+                        the back stack) each own their state; shared/broken.js
+                        is the one listener that undoes a failed picture;
                         shared/ is the client + codec + caches; searchfield.js
                         is the search box itself — a contenteditable, because
                         `from:npub1…`/`to:npub1…` draw as a face and a name and
@@ -818,11 +825,12 @@ relay/src/main/resources/
                         means "the operator set one", and redirecting to it
                         blindly points /favicon.ico at itself — `iconOverride`
                         is the comparison that keeps that loop shut
-  observer_stats.html   an operator diagnostic carrying its own tiny relay
-                        client on purpose: it must work when the app does not,
+  observer_stats.html   an operator diagnostic (logic and styles in
+                        web/observers/) carrying its own tiny relay client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  stats.html            the corpus dashboard: it charts GET /stats.json, and
+  stats.html            the corpus dashboard, entered at web/stats/page.js (the
+                        relay's rolled-up charts are web/relay/charts.js): it charts GET /stats.json, and
                         THE JSON IS THE ARTIFACT — the page is one reader of it
                         (see maintenance/StatsRollup). No aggregation on it is a
                         protocol feature to test, and thirty days of

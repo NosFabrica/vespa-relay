@@ -18,7 +18,7 @@
 // authors call loose: every field read here goes through [text] or [list], so a name that
 // arrives as an object contributes nothing rather than "[object Object]".
 
-import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow, relayRows,
   personLink, extLink, jsonContent, tagOf, tagsOf, oneLine, plural, noteHref, coverThumb, safeUrl,
@@ -26,8 +26,6 @@ import {
 } from "./base.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import { codeBlock } from "./code.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** A field off a stranger's JSON as one line of text, or "". */
 const text = (v) => oneLine(v);

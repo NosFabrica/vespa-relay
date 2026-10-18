@@ -101,7 +101,8 @@ class MonitorStatusTest {
                 }
             }
 
-            assertTrue(client.get("/").bodyAsText().contains("mountStatsPage"))
+            assertTrue(client.get("/").bodyAsText().contains("""src="./web/stats/page.js""""), "the page loads its entry module")
+            assertTrue(client.get("/web/stats/page.js").bodyAsText().contains("mountStatsPage"), "the entry module mounts the page")
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the monitor page")
             }
