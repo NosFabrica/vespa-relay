@@ -429,9 +429,9 @@ assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
   "the kinds we name and the kinds we render must be the same set");
 
 // The operator page names kinds from this registry; the list it counts comes from the store.
-const statsPage = readFileSync(new URL("../../main/resources/stats.html", import.meta.url), "utf8");
-assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\.\/web\/shared\/kinds\.js"/.test(statsPage),
-  "stats.html must take kind names from shared/kinds.js, not carry a second copy");
+const relayCards = readFileSync(new URL("../../main/resources/web/relay/charts.js", import.meta.url), "utf8");
+assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\.\.\/shared\/kinds\.js"/.test(relayCards),
+  "the stats page's relay cards must take kind names from shared/kinds.js, not carry a second copy");
 
 for (const [kind, fixture, expect] of FIXTURES) {
   for (const opts of [undefined, { full: true }]) {

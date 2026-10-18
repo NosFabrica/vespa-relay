@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
@@ -98,7 +99,7 @@ class SyncStatus(
             }
 
         // Only the vocabulary this document's members use.
-        val withTerms = data?.let { JsonObject(it + ("terms" to StatusVocabulary.termsFor(it))) }
+        val withTerms = data?.let { JsonObject(it + ("terms" to StatusVocabulary.termsFor(it, StatusPlane.MIRROR))) }
 
         snapshot.publish(
             buildJsonObject {

@@ -135,3 +135,15 @@ like the picker had reset the page.
 card, two for an mp4 whose moov atom is at the end, so a search returning
 sixty short videos opened sixty of them before the reader had scrolled past
 the second.
+
+**Sign-in, the reader's own group list and the url each own their state.** app.js had grown to
+1,939 lines and 21 top-level `let`s, and the three concerns that mutated module state from
+anywhere were the ones whose bugs were hardest to place. `signin.js` holds who is proved, who the
+extension merely named, the settled flight and the remembered face, and tells the page through
+three hooks (`changed`, `face`, `unproved`/`settled`) rather than calling into it; `face` is its
+own hook because the extension's answer may land after a failed AUTH has written its error under
+the box, and redrawing that line would erase the reason. `owngroups.js` is a class over an
+injected reader, socket and extension, so its one-prompt and refusal rules are tested in node.
+`urlstate.js` holds both directions of the url as pure functions over the view's values, plus
+the one flag that stops a restore pushing what it restores; the tests that grepped app.js for
+`p.set("sort"` now write a url and read it back.

@@ -33,10 +33,12 @@ import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayInfo
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.TimeSource
 
 /**
  * The relay's own kind 0 and kind 10002, signed with `RELAY_NSEC` and inserted into the store.
@@ -49,7 +51,7 @@ class RelayProfile(
     val relayUrl: NormalizedRelayUrl,
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
-    /** The boot publish and a NIP-86 republish may overlap. */
+    /** Each publish is a read-modify-write; two callers must not interleave them. */
     private val writing = Mutex()
 
     val pubKey: String get() = signer.pubKey
@@ -149,49 +151,97 @@ class RelayProfile(
 }
 
 /**
- * Publish the relay's own kind 0 and kind 10002 in the background, waiting out a cold engine. A
- * failed read is retried rather than read as an empty store, within a bounded wait. Called at
- * boot and again when a NIP-86 RPC rewrites the document.
+ * Publishes [profile] from [info] on one job, so a newer document is never overtaken by an older
+ * one: [request]s while a publish runs or retries fold into one more, which reads [info] afresh.
  */
-fun launchRelayProfile(
+class RelayProfilePublisher(
     scope: CoroutineScope,
-    profile: RelayProfile,
-    info: Nip11Info,
+    private val profile: RelayProfile,
+    private val info: () -> Nip11Info,
+    private val retryMs: Long = PROFILE_RETRY_MS,
+    private val maxWaitMs: Long = PROFILE_MAX_WAIT_MS,
+    private val time: TimeSource = TimeSource.Monotonic,
+    private val log: (String) -> Unit = ::println,
+    private val alarm: (String) -> Unit = System.err::println,
 ) {
-    scope.launch {
-        var waited = 0L
+    private val wanted = Channel<Unit>(Channel.CONFLATED)
+
+    @Volatile private var stoppedBy: Throwable? = null
+
+    init {
+        scope.launch {
+            try {
+                for (ignored in wanted) publishOnce()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                stoppedBy = e
+                alarm("profile: the publisher stopped on $e — no later rename republishes the relay's kind 0 / 10002 until a restart")
+                throw e
+            }
+        }
+    }
+
+    /** Asks for a publish of whatever [info] says when it runs; returns at once. */
+    fun request() {
+        stoppedBy?.let { return alarm("profile: not republished — the publisher stopped earlier on $it; restart the relay to publish") }
+        wanted.trySend(Unit)
+    }
+
+    /** One request's publish; its failure is said and the next request tries again. */
+    private suspend fun publishOnce() {
+        try {
+            publishWaitingOutTheEngine()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            alarm("profile: publish failed (${e::class.simpleName}: ${e.message?.take(120)}); the next request tries again")
+        }
+    }
+
+    /** A failed read is retried rather than read as an empty store, up to a deadline from the first try. */
+    private suspend fun publishWaitingOutTheEngine() {
+        val started = time.markNow()
         var printedFirstFailure = false
         while (true) {
-            val result = runCatching { profile.publish(info) }
-            result.onSuccess { report ->
-                val published = report.published()
-                if (published.isEmpty()) {
-                    println("profile: kind 0 and kind 10002 already say this — nothing published")
-                } else {
-                    println(
-                        "profile: published ${published.joinToString { "kind $it" }} as ${profile.pubKey.take(12)}… " +
-                            "(\"${info.name}\", ${profile.relayUrl.url} read+write)",
-                    )
+            val doc = info()
+            val cause =
+                try {
+                    say(profile.publish(doc), doc)
+                    return
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    e
                 }
-                return@launch
-            }
-            val cause = result.exceptionOrNull()
-            // Shutdown is not a failed publish.
-            if (cause is CancellationException) throw cause
-            if (waited >= PROFILE_MAX_WAIT_MS) {
-                System.err.println(
-                    "profile: could not publish the relay's own kind 0 / 10002 after ${waited / 1000}s " +
-                        "(${cause?.message?.take(120)}) — serving without them; clients meeting this key elsewhere " +
+            if (started.elapsedNow().inWholeMilliseconds >= maxWaitMs) {
+                alarm(
+                    "profile: could not publish the relay's own kind 0 / 10002 after ${started.elapsedNow().inWholeSeconds}s " +
+                        "(${cause.message?.take(120)}) — serving without them; clients meeting this key elsewhere " +
                         "will see no name and no relay list",
                 )
-                return@launch
+                return
             }
             if (!printedFirstFailure) {
                 printedFirstFailure = true
-                println("profile: engine not answering yet (${cause?.message?.take(80)}); waiting before publishing the relay's own kind 0 / 10002")
+                log("profile: engine not answering yet (${cause.message?.take(80)}); waiting before publishing the relay's own kind 0 / 10002")
             }
-            delay(PROFILE_RETRY_MS)
-            waited += PROFILE_RETRY_MS
+            delay(retryMs)
+        }
+    }
+
+    private fun say(
+        report: RelayProfile.Report,
+        doc: Nip11Info,
+    ) {
+        val published = report.published()
+        if (published.isEmpty()) {
+            log("profile: kind 0 and kind 10002 already say this — nothing published")
+        } else {
+            log(
+                "profile: published ${published.joinToString { "kind $it" }} as ${profile.pubKey.take(12)}… " +
+                    "(\"${doc.name}\", ${profile.relayUrl.url} read+write)",
+            )
         }
     }
 }

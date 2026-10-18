@@ -291,6 +291,42 @@ of the newer version landing inside that window drops an event the store
 would have taken, until the next full resync re-offers it. Accepted, because
 the window is one batch wide and the loss is recoverable.
 
+**A probe that throws teaches its gate nothing.** The dedup and version
+probes used to catch `Throwable`, answer "nothing held", and record that
+answer to their `ProbeGate`, so a store briefly refusing queries read as a 0%
+hit rate and dropped the probe to one batch in 32 long after the store
+recovered. A failure now skips the gate, is counted beside it on the
+`ingest probes` stats line (`id N failed`), and is logged at most once a
+minute. An `Error` is no longer the probe's to swallow. A probe that keeps
+failing pauses (`ProbeTrouble`: 5s, doubling to 5 minutes, reset by an answer)
+rather than costing every batch a round trip to a store that is already
+struggling, which is exactly when probes fail.
+
+**`VESPA_DEDUP_CHUNK` is read with the rest of the ingest sizing.** It was
+read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
+`ExceptionInInitializerError` on the first batch rather than a boot refusal,
+and a test could not set it. It now rides `IngestTuning` from
+`RouterConfigLoader.fromEnv`.
+
+**`ParseAudit` keeps at most 256 distinct findings.** Its key is quartz's
+message normalized, and quartz's templates quote the offending field's value,
+so a stream of profiles each with a different malformed value minted one
+finding per event and the map grew for the life of the process. Past the cap
+a report is counted in one `overflow` finding without samples, and every
+message is cut at 200 characters. `close()` hands `Log.sink` back to the sink
+it wrapped, so a closed audit stops swallowing quartz's log.
+
+**`RefusedIds.record` decides on what the add reports.** It checked the
+candidate table and then added to one table or the other with nothing held
+between, so two relays refusing one id at once both found no candidate, both
+added it, and the id stayed a candidate with `candidatesAdded` counted twice.
+The cuckoo `add` is already atomic per table and says `PRESENT` when it lost
+such a race; that answer now promotes the refusal to a suppression.
+`retireBelow` is private, since only the boot calls it, and
+`CuckooFilter.close` says it only flushes: a `MappedByteBuffer` cannot be
+unmapped, and the filters are mmap'd in place, so `writeDurably` has no part
+in them.
+
 **The relay's publishes take the mirror's pipeline.** The relay wrote through
 quartz's `IngestQueue`, one writer committing one batch of up to 64 at a time
 with every signature checked, while the mirror's `IngestPipeline` had grown the

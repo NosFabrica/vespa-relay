@@ -20,7 +20,7 @@ function sceneCard(ev, opts) {
   const img = imageOf(ev);
   const full = opts && opts.full;
   const inner =
-    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
+    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>` : "") +
     `<div class="result-main">
       <div class="text">
         ${titleHtml(opts, titleOf(ev), 140)}
@@ -28,7 +28,7 @@ function sceneCard(ev, opts) {
         ${bodyHtml(opts, ev.content, full ? 0 : 400)}
         ${options.length ? `<div class="result-body">${esc(plural(options.length, "way on", "ways on"))}</div>` : ""}
       </div>
-      ${!full && img ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+      ${!full && img ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />` : ""}
     </div>` +
     refRows(options, opts);
   return shell(ev, opts, inner);

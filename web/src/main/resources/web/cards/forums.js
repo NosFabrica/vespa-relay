@@ -21,15 +21,13 @@
 // The room itself needs nothing here: every one of these scopes with NIP-29's `h`, which the
 // byline already draws as the group pill.
 
-import { esc, clip, titleOf } from "../shared/format.js";
+import { esc, clip, titleOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortNpub } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, replyLine, faceStrip,
   noteHref, personLink, jsonContent, oneLine, fmtTs, tagOf, tagsOf, plural,
 } from "./base.js";
 import { codeBlock } from "./code.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** The people a message names, as faces: a DM's recipients, a post's mentions. */
 const mentionsOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk || ""));

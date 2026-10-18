@@ -4,7 +4,7 @@
 // Two Buzz kinds belong here for what they carry: a 40008 diff posted into a channel, and a
 // 30621 project, which is a named set of NIP-34 repositories.
 
-import { esc, clip, titleOf, summaryOf, mdExcerpt } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, mdExcerpt, HEX64 } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
@@ -21,7 +21,7 @@ export function repoAddr(ev) {
   const named = tagsOf(ev, "a").map((t) => t[1]).find((v) => /^30617:[0-9a-f]{64}:./.test(String(v || "")));
   if (named) return named;
   const d = tagOf(ev, "d");
-  if (!d || !/^[0-9a-f]{64}$/.test(ev.pubkey || "")) return null;
+  if (!d || !HEX64.test(ev.pubkey || "")) return null;
   if (ev.kind === 30618) return `30617:${ev.pubkey}:${d}`;
   if (ev.kind === 30063 && d.includes("@")) return `30617:${ev.pubkey}:${d.slice(0, d.lastIndexOf("@"))}`;
   return null;
@@ -241,7 +241,7 @@ const COVERED = { 1617: "a patch", 1618: "a pull request", 1621: "an issue" };
 
 /** The covered item: the `root`-marked `e`, else the first well-formed one (quartz's `coverNoteRoot`). */
 function coverRoot(ev) {
-  const es = tagsOf(ev, "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  const es = tagsOf(ev, "e").filter((t) => HEX64.test(t[1] || ""));
   return es.find((t) => t[3] === "root") || es[0] || null;
 }
 
@@ -254,7 +254,7 @@ const coveredNoun = (ev) => COVERED[tagOf(ev, "k")] || "an item";
  */
 function coverNoteCard(ev, opts) {
   const root = coverRoot(ev);
-  const author = tagsOf(ev, "p").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const author = tagsOf(ev, "p").map((t) => t[1]).find((v) => HEX64.test(v || ""));
   const inner =
     repoLine(ev, opts) +
     `<div class="result-body">covers ${esc(coveredNoun(ev))}` +
@@ -276,7 +276,7 @@ const GIT_STATUS = {
 function gitStatusCard(ev, opts) {
   const s = GIT_STATUS[ev.kind];
   // The root `e` is what the status is about; the others are revisions and superseded statuses.
-  const es = tagsOf(ev, "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  const es = tagsOf(ev, "e").filter((t) => HEX64.test(t[1] || ""));
   const t = es.find((x) => x[3] === "root") || es[0];
   const inner =
     repoLine(ev, opts) +

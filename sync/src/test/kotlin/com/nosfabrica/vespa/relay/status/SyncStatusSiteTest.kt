@@ -71,7 +71,8 @@ class SyncStatusSiteTest {
             val html = client.get("/")
             assertEquals(HttpStatusCode.OK, html.status)
             // One page serves three services and draws from the document, so only mounting is asserted.
-            assertTrue(html.bodyAsText().contains("mountStatsPage"))
+            assertTrue(html.bodyAsText().contains("""src="./web/stats/page.js""""), "the page loads its entry module")
+            assertTrue(client.get("/web/stats/page.js").bodyAsText().contains("mountStatsPage"), "the entry module mounts the page")
 
             for (asset in IMPORTS) {
                 val res = client.get(asset)

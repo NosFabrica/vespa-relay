@@ -286,6 +286,32 @@ class SweepStateTest {
         val state = SweepState(f)
         assertEquals(0, state.size())
         assertEquals(7, state.target(relay, 7))
+        f.absoluteFile.parentFile
+            .listFiles { it -> it.name.startsWith("${f.name}.corrupt-") }
+            ?.forEach { it.delete() }
+    }
+
+    @Test
+    fun `a file that fails part way is kept aside and nothing of it is believed`() {
+        val f = tempFile()
+        // A peer that parses, then a `sweeps` that is not an object, read after the peer was restored.
+        val text = """{"peers":{"${relay.url}":{"target":5}},"sweeps":7}"""
+        f.writeText(text)
+
+        val state = SweepState(f)
+        assertEquals(7, state.target(relay, 7), "the peer read before the damage is dropped too")
+        val aside =
+            f.absoluteFile.parentFile
+                .listFiles { it -> it.name.startsWith("${f.name}.corrupt-") }
+                .orEmpty()
+        assertEquals(1, aside.size, "the unreadable file is moved aside")
+
+        state.setTarget(relay, 9)
+        state.flush()
+        assertEquals(text, aside.single().readText(), "and the next flush does not overwrite the evidence")
+        assertEquals(9, SweepState(f).target(relay, 7), "while the state file itself carries on")
+        aside.single().delete()
+        f.delete()
     }
 
     @Test

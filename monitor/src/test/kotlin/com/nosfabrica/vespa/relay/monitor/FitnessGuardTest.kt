@@ -168,6 +168,25 @@ class FitnessGuardTest {
         assertTrue(graded.values.all { it == null }, "a dark resolver published verdicts beside it")
     }
 
+    @Test
+    fun `dials giving up in unrecognised words across many hosts refuse the batch`() {
+        // Resets, EOFs and cancellations across the batch are our socket layer, not forty relays.
+        val reset = urls("reset", 40)
+        val fine = urls("fine", 20)
+        val graded = grades(reset + fine) { if (it in reset) "cannot: java.io.EOFException: Canceled" else null }
+        assertTrue(Silence.of("cannot: java.io.EOFException: Canceled") == Silence.UNKNOWN, "the fixture needs words the table does not know")
+        assertTrue(graded.values.all { it == null }, "a socket layer failing everywhere published verdicts beside it")
+    }
+
+    @Test
+    fun `one host's unrecognised failure counts once, however many paths it serves`() {
+        val oneHost = (0 until 40).map { RelayUrlNormalizer.normalize("wss://resets.example/p$it") }
+        val fine = urls("fine", 20)
+        val graded = grades(oneHost + fine) { if (it in oneHost) "cannot: java.io.EOFException: Canceled" else null }
+        assertTrue(oneHost.all { graded[it] == null })
+        assertTrue(fine.all { graded[it] == Verdict.PRIME.value })
+    }
+
     private val pkix = "cannot:WebSocket Failure: PKIX path building failed (SSLHandshakeException)"
 
     @Test

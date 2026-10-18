@@ -2,7 +2,7 @@
 // rowOf() dispatch on kind, then fall to the generic floor. The render test holds the
 // two registries to the same key set and every kind to a fixture.
 
-import { esc, clip } from "./shared/format.js";
+import { esc, clip, HEX64 } from "./shared/format.js";
 import { authorOf } from "./shared/profiles.js";
 import { replyPerson } from "./shared/parents.js";
 import { avatarHtml } from "./shared/avatar.js";
@@ -48,7 +48,7 @@ export const card = (ev, opts) => (renderers.get(ev.kind) || genericCard)(ev, op
  */
 export function namedPubkeys(ev, opts) {
   const out = new Set();
-  const add = (v) => { if (/^[0-9a-f]{64}$/.test(v || "")) out.add(v); };
+  const add = (v) => { if (HEX64.test(v || "")) out.add(v); };
   for (const t of tagsWhere(ev, (name) => name === "d" || name === "p" || /^\d+:/.test(name))) {
     // A 30382's `d` is its subject; a 30383's is an event id and a 30384's an address.
     if (t[0] === "d") { if (ev.kind === 30382) add(t[1]); }

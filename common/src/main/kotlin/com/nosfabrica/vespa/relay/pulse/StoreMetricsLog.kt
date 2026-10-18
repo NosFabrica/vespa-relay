@@ -67,8 +67,8 @@ object StoreMetricsLog {
     }
 
     /**
-     * Log [line] for [store] every [everySeconds]; zero logs nothing. A daemon thread, because
-     * only one of the two mains has an ambient scope and this must never keep a process alive.
+     * Log [line] for [store] to stderr every [everySeconds]; zero logs nothing. A daemon thread, because
+     * only one of the two mains has an ambient scope and this must never keep a process alive. Interrupt it to stop.
      */
     fun startLogging(
         role: String,
@@ -76,19 +76,31 @@ object StoreMetricsLog {
         everySeconds: Int,
     ): Thread? {
         if (everySeconds <= 0) return null
+        return every(role, everySeconds * 1000L) {
+            println(line(role, store.metrics()))
+            store.backgroundStatus().takeIf { it.isNotBlank() }?.let { println("store-background[$role] $it") }
+        }
+    }
+
+    /**
+     * Run [tick] every [periodMs] on a daemon thread until it is interrupted. A failed tick is logged
+     * and the next one runs; an `Error` ends the thread, since a JVM out of memory has no line worth retrying.
+     */
+    internal fun every(
+        role: String,
+        periodMs: Long,
+        tick: () -> Unit,
+    ): Thread {
         val t =
             Thread({
                 while (true) {
                     try {
-                        Thread.sleep(everySeconds * 1000L)
-                        println(line(role, store.metrics()))
-                        store.backgroundStatus().takeIf { it.isNotBlank() }?.let { println("store-background[$role] $it") }
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
+                        Thread.sleep(periodMs)
+                        tick()
+                    } catch (_: InterruptedException) {
                         return@Thread
-                    } catch (t: Throwable) {
-                        // A metrics line is never worth taking the process down.
-                        System.err.println("store-metrics[$role]: could not read metrics (${t.message?.take(200)})")
+                    } catch (e: Exception) {
+                        System.err.println("store-metrics[$role]: could not read metrics (${e.javaClass.simpleName}: ${e.message?.take(200)})")
                     }
                 }
             }, "store-metrics-$role")

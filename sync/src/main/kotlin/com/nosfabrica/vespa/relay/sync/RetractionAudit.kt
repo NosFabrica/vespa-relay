@@ -30,15 +30,59 @@ import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DONE_REASON_EOSE
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyIdDiff
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllWithHooks
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import java.util.concurrent.atomic.AtomicLong
+
+/** The two reads the retraction audit makes of a relay, and the seam its tests stand in for. */
+internal interface RetractionReads {
+    /** The id diff of [filter] against [local]; throws [NegentropySyncException] when no reconcile completed. */
+    suspend fun reconcileIds(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        local: List<IdAndTime>,
+    ): NegentropyIdDiff
+
+    /** Delivers what [url] serves of [ids]. True only when the relay ended the answer with an EOSE. */
+    suspend fun fetchIds(
+        url: NormalizedRelayUrl,
+        ids: List<String>,
+        onEvent: suspend (Event) -> Unit,
+    ): Boolean
+}
+
+/** Quartz, unchanged: a by-id answer reports how it ended, so a stall never reads as an empty answer. */
+internal class ClientRetractionReads(
+    private val client: NostrClient,
+) : RetractionReads {
+    override suspend fun reconcileIds(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        local: List<IdAndTime>,
+    ): NegentropyIdDiff = client.negentropyReconcileIds(url, filter, local, idleTimeoutMs = NEG_IDLE_MS)
+
+    override suspend fun fetchIds(
+        url: NormalizedRelayUrl,
+        ids: List<String>,
+        onEvent: suspend (Event) -> Unit,
+    ): Boolean {
+        val result =
+            client.fetchAllWithHooks(filters = mapOf(url to listOf(Filter(ids = ids))), idleTimeoutMs = NEG_IDLE_MS) { relay, event ->
+                if (relay == url) onEvent(event)
+                // Handed on above; true would have quartz keep every event in a result list no one reads.
+                false
+            }
+        return result.doneReasons[url] == DONE_REASON_EOSE && url !in result.stalled && url !in result.dead
+    }
+}
 
 /**
  * The `deleteMissing` comparison, run in a retracting ask's audit slot: download what the
@@ -46,7 +90,7 @@ import java.util.concurrent.atomic.AtomicLong
  * already paged the ask, so a failed reconcile decides nothing.
  */
 internal class RetractionAudit(
-    private val client: NostrClient,
+    private val reads: RetractionReads,
     private val store: IEventStore,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
@@ -131,7 +175,7 @@ internal class RetractionAudit(
         // A completed reconcile is the whole licence to delete.
         val diff =
             try {
-                client.negentropyReconcileIds(url, ownedAsk, mine, idleTimeoutMs = NEG_IDLE_MS)
+                reads.reconcileIds(url, ownedAsk, mine)
             } catch (e: NegentropySyncException) {
                 System.err.println(
                     "router: ${stream.name} ${url.url} could not reconcile (${e.reason}) — deleting nothing; the catch-up already mirrors this ask",
@@ -145,8 +189,9 @@ internal class RetractionAudit(
 
         val observed = mirrorNeeded(stream, url, ownedAsk, diff.needIds, onEvent)
 
-        // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records.
-        if (compared) {
+        // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records;
+        // a by-id answer that stalled or was refused leaves ids unfetched, so it claims nothing.
+        if (compared && observed.drained) {
             bands.record(
                 stream.name,
                 url,
@@ -156,6 +201,14 @@ internal class RetractionAudit(
                 paged = false,
                 reconciledThrough = startedAt,
                 observedByKind = observed.byKind,
+            )
+        }
+        if (compared && !observed.drained) {
+            // The clock stays put, so without a backoff the whole audit would re-run at every attempt spacing.
+            val inARow = bands.noteIncompleteAudit(stream.name, url, ownedAsk)
+            System.err.println(
+                "router: ${stream.name} ${url.url} did not answer every by-id ask in full — the band stays unverified" +
+                    " ($inARow audit(s) in a row; the next waits longer)",
             )
         }
         if (diff.haveIds.isEmpty()) return
@@ -168,16 +221,17 @@ internal class RetractionAudit(
         deleteRetracted(stream, url, ask, ownedAsk, mine.size, diff)
     }
 
-    /** What the download half saw, for the band record. */
+    /** What the download half saw, for the band record, and whether every chunk was answered in full. */
     private class Observed {
         var min: Long? = null
         var max: Long? = null
         val byKind = mutableMapOf<Int, SyncCoverage.Span>()
+        var drained = true
     }
 
     /**
-     * The download half. fetchAll, not fetchAllPages: an id set is not a time range. Twice
-     * refused ids are dropped before any REQ is sent.
+     * The download half, by id rather than paged: an id set is not a time range. Twice refused
+     * ids are dropped before any REQ is sent.
      */
     private suspend fun mirrorNeeded(
         stream: SyncStream,
@@ -194,18 +248,20 @@ internal class RetractionAudit(
             System.err.println("router: ${stream.name} ${url.url} skipped $skipped id(s) already twice refused")
         }
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
-            for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
-                onEvent(event)
-                // Matched against the owned ask, so extras in a by-id answer cannot widen a trusted ingest.
-                if (ownedAsk.match(event)) {
-                    if (SyncCoverage.isPlausible(event.createdAt)) {
-                        observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
-                        observed.max = maxOf(observed.max ?: event.createdAt, event.createdAt)
+            val answered =
+                reads.fetchIds(url, chunk) { event ->
+                    onEvent(event)
+                    // Matched against the owned ask, so extras in a by-id answer cannot widen a trusted ingest.
+                    if (ownedAsk.match(event)) {
+                        if (SyncCoverage.isPlausible(event.createdAt)) {
+                            observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
+                            observed.max = maxOf(observed.max ?: event.createdAt, event.createdAt)
+                        }
+                        SyncCoverage.observe(observed.byKind, event.kind, event.createdAt)
+                        ingest.submit(event, stream.trusted, origin)
                     }
-                    SyncCoverage.observe(observed.byKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, origin)
                 }
-            }
+            if (!answered) observed.drained = false
         }
         return observed
     }

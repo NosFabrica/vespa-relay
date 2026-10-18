@@ -31,7 +31,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The monitor's clock: a sweep of every [passes] entry over the candidate set on its own
@@ -82,10 +81,13 @@ class AliasMonitor(
         val progress: Processors.Handle? get() = null
 
         /**
-         * Only the urls named by relay-list events ingested at or after [since]; the default makes
-         * the lane a no-op.
+         * Only the urls named by relay-list events whose `created_at` is at or after [since], so a list
+         * arriving backdated is left to the sweep. Throws when the lists could not be read; the default is a no-op.
          */
         suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
+
+        /** When the last [candidates] that read every relay list began, in epoch seconds; null before one has. */
+        val listsReadFromSec: Long? get() = null
 
         /** Whether this process can reach that url at all, and whose side a refusal is on: transport, not policy. */
         suspend fun reach(url: NormalizedRelayUrl): Reach
@@ -105,14 +107,6 @@ class AliasMonitor(
         val sockets: Sockets,
     )
 
-    private val learnedTotal = AtomicLong()
-
-    /**
-     * How many verdicts the sweep has learned since boot: a version for a cached relay list, not a
-     * statistic.
-     */
-    fun generation(): Long = learnedTotal.get()
-
     /** Start the sweep loop and, when configured, the fast lane. Calling it twice launches two loops. */
     fun start(): AliasMonitor {
         // Registered before the first sleep, so silence never reads as "not configured".
@@ -130,7 +124,8 @@ class AliasMonitor(
             while (scope.isActive) {
                 // Unset while a pass runs, so a running pass does not read as a late one.
                 dueAtMs = null
-                passGate.withLock { runPass() }
+                // One unexpected throw must not end sweeping for the life of the process.
+                guarded("sweep") { passGate.withLock { runPass() } }
                 val wait = if (lastPassHadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait
                 delay(wait)
@@ -145,15 +140,10 @@ class AliasMonitor(
                 var lastLookSec = System.currentTimeMillis() / 1000
                 while (scope.isActive) {
                     delay(everyMs)
-                    val lookFrom = lastLookSec
-                    lastLookSec = System.currentTimeMillis() / 1000
-                    try {
-                        passGate.withLock { runFastLane(lookFrom) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        System.err.println("router: fast lane failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
-                    }
+                    // Taken before the gate, so lists created while a sweep holds it fall in the next window.
+                    val lookingAt = System.currentTimeMillis() / 1000
+                    // Advanced only past a tick that ran, so a failed one's window is looked at again.
+                    if (guarded("fast lane") { passGate.withLock { runFastLane(lastLookSec) } }) lastLookSec = lookingAt
                 }
             }
         }
@@ -176,6 +166,21 @@ class AliasMonitor(
         return this
     }
 
+    /** Runs [work], logging anything it throws but a cancellation; true when it returned. */
+    private suspend fun guarded(
+        what: String,
+        work: suspend () -> Unit,
+    ): Boolean =
+        try {
+            work()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            false
+        }
+
     /** Every pass's pending writes, one pass at a time and each guarded. The caller holds [passGate]. */
     suspend fun flushPending(): Int {
         var landed = 0
@@ -197,7 +202,8 @@ class AliasMonitor(
      */
     suspend fun runFastLane(sinceSec: Long): Int {
         val src = source ?: return 0
-        val fresh = src.candidatesSince(sinceSec)
+        // Never behind the last sweep's read: what it saw is graded, and a read outage must not grow the window without bound.
+        val fresh = src.candidatesSince(maxOf(sinceSec, src.listsReadFromSec ?: sinceSec))
         if (fresh.isEmpty()) return 0
         System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
         var learned = 0
@@ -214,7 +220,6 @@ class AliasMonitor(
                 pass.progress?.finish()
             }
         }
-        // Not added to learnedTotal: the lane does not move generation.
         return learned
     }
 
@@ -262,11 +267,7 @@ class AliasMonitor(
                 for ((label, w) in work) {
                     // Each label guarded on its own, so one failing does not cost the others.
                     try {
-                        val n = pass.measure(label, w.candidates, w.reach, w.onEvent, w.sockets)
-                        learned += n
-                        // Per label, not once at the end, so a fan-out starting mid-pass sees the
-                        // verdicts already published.
-                        if (n > 0) learnedTotal.addAndGet(n.toLong())
+                        learned += pass.measure(label, w.candidates, w.reach, w.onEvent, w.sockets)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

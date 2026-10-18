@@ -223,6 +223,43 @@ class FastLaneTest {
             )
         }
 
+    @Test
+    fun `the lane's window never reaches behind the last sweep's read of the lists`() =
+        runBlocking {
+            val asked = mutableListOf<Long>()
+            val source =
+                object : AliasMonitor.CandidateSource {
+                    override suspend fun candidates() = listOf(steady)
+
+                    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
+                        asked += since
+                        return emptyList()
+                    }
+
+                    override val listsReadFromSec: Long = 5_000L
+
+                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
+
+                    override suspend fun onEvent(event: Event) = Unit
+
+                    override val sockets = Sockets.NONE
+                }
+            val monitor =
+                AliasMonitor(
+                    passes = emptyList(),
+                    scope = CoroutineScope(Dispatchers.Unconfined),
+                    source = source,
+                    fastLaneEveryMs = 1_000L,
+                    fastLanePasses = listOf(AliasMonitor.Pass { _, _, _, _, _ -> 0 }),
+                )
+
+            // A lane whose ticks failed through a long read outage still asks only past the sweep.
+            monitor.runFastLane(0)
+            monitor.runFastLane(6_000L)
+
+            assertEquals(listOf(5_000L, 6_000L), asked)
+        }
+
     private suspend fun gradeOf(
         store: NostrSemanticsStore,
         url: NormalizedRelayUrl,

@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -98,6 +99,90 @@ class AliasFoldingTest {
     ) : IEventStore by inner {
         override suspend fun <T : Event> query(filter: Filter): List<T> = throw IllegalStateException("the store cannot answer")
     }
+
+    /** Reads answer; every write hangs, or is refused outright. */
+    private class StuckWrites(
+        private val inner: IEventStore,
+        private val hang: Boolean,
+    ) : IEventStore by inner {
+        override suspend fun insert(event: Event) {
+            if (hang) CompletableDeferred<Unit>().await() else throw IllegalStateException("the store refused the write")
+        }
+    }
+
+    /** Six hosts of two urls, each a fold once measured. */
+    private val sixHosts = (0 until 6).flatMap { listOf(RelayUrlNormalizer.normalize("wss://host$it.example"), RelayUrlNormalizer.normalize("wss://host$it.example/alpha")) }
+
+    private fun stuckFold(hang: Boolean) =
+        AliasFolding(
+            aliases = RelayAliases(),
+            record = RelayVerdictRecord(StuckWrites(newStore(), hang), signer),
+            probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+            publishDeadlineMs = 300L,
+        )
+
+    @Test
+    fun `a store that stops taking writes stops the fold's writes and not the pass`() =
+        runBlocking {
+            val learned = withTimeout(30_000) { stuckFold(hang = true).measure("t", sixHosts, canDial = { true }) }
+
+            assertEquals(0, learned, "a fold the store never took was counted as learned")
+        }
+
+    @Test
+    fun `once the store stops taking writes, the groups still to measure are not dialled`() =
+        runBlocking {
+            val inserts = AtomicInteger()
+            val released = CompletableDeferred<Unit>()
+            val store =
+                object : IEventStore by newStore() {
+                    override suspend fun insert(event: Event) {
+                        inserts.incrementAndGet()
+                        CompletableDeferred<Unit>().await()
+                    }
+                }
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val hosts = (0 until 10).map { listOf(RelayUrlNormalizer.normalize("wss://host$it.example"), RelayUrlNormalizer.normalize("wss://host$it.example/alpha")) }
+            // These hosts' first answers arrive only after the first three groups' writes have stopped the writer.
+            val late = hosts.drop(3).flatten().toSet()
+            val contacted: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { at, want, until, _ ->
+                                if (at in late) released.await()
+                                contacted += at
+                                AliasProbe.Page(corpus.filter { until == null || it.createdAt <= until }.take(want))
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                        ),
+                    concurrency = 16,
+                    publishDeadlineMs = 100L,
+                )
+
+            val pass = async { withTimeout(30_000) { fold.measure("t", hosts.flatten(), canDial = { true }) } }
+            withTimeout(30_000) { while (inserts.get() < VerdictWrites.PUBLISH_WEDGE_LIMIT) delay(10) }
+            // Past the write deadline of every write started so far, so the writer has stopped.
+            delay(1_000)
+            released.complete(Unit)
+
+            assertEquals(0, pass.await())
+            assertTrue(
+                hosts.drop(3).all { group -> group.count { it in contacted } <= 1 },
+                "groups were compared after the store stopped taking the writes that would record them",
+            )
+        }
+
+    @Test
+    fun `a fold the store refused is not counted as learned`() =
+        runBlocking {
+            assertEquals(0, stuckFold(hang = false).measure("t", sixHosts, canDial = { true }))
+        }
 
     private fun folding(
         store: NostrSemanticsStore,
@@ -841,6 +926,36 @@ class AliasFoldingTest {
 
             assertEquals(0, fold.measure("t", urls, canDial = { true }))
             assertEquals(firstPass, up.dials.get(), "the second pass re-dialled a host the first one already proved silent")
+        }
+
+    @Test
+    fun `what the fold holds about a url lasts only while a sweep names it`() =
+        runBlocking {
+            val store = newStore()
+            val aliases = RelayAliases()
+            val fold = folding(store, upstreams(), aliases)
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(canonical, alias), canDial = { true })
+            assertEquals(mapOf(alias to canonical), aliases.verdicts())
+
+            // The fold's own record still names the canonical, so it stays in the world; the alias does not.
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere), canDial = { true })
+
+            assertEquals(emptyMap(), aliases.verdicts())
+        }
+
+    @Test
+    fun `a cooldown is dropped with its host when no sweep names it any more`() =
+        runBlocking {
+            val up = silentUpstreams()
+            val fold = folding(newStore(), up)
+            val urls = listOf(canonical, alias)
+            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
+            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere, RelayUrlNormalizer.normalize("wss://nostr.mom/beta")), canDial = { true })
+            val before = up.dials.get()
+
+            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
+
+            assertTrue(up.dials.get() > before, "a cooldown outlived every sweep that could have used it")
         }
 
     @Test

@@ -3,7 +3,7 @@
 // Markdown renders as escaped pre-wrap text, never as HTML; the summary line goes through
 // format.js's mdExcerpt.
 
-import { esc, clip, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, mdExcerpt, HEX64 } from "../shared/format.js";
 import { shortAddr, shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, refRows, chipRow,
@@ -11,8 +11,6 @@ import {
   hashtagHref, personLink, extLink, noteHref, addrHref, tagOf, tagsOf, tagsWhere, topicsOf, oneLine,
   clipIf, fmtTs, fmtBytes, plural,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
  * An article: cover, title, summary in preview, the whole body on the permalink.

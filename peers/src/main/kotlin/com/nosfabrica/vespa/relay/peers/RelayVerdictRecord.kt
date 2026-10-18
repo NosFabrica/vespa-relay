@@ -32,6 +32,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The monitor's verdicts, written to kind 30166 records whose `d` tag is the relay url. Each
@@ -81,7 +82,7 @@ class RelayVerdictRecord(
 
     /**
      * Read back every verdict covering [candidates]. Throws when the store cannot answer, and
-     * must: [AliasFolding.adopt] forgets every verdict it holds before adopting what comes back.
+     * must: a pass that reads nothing back skips its batch rather than acting on an empty set.
      */
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         val self = signer?.pubKey ?: return Verdicts()
@@ -195,9 +196,7 @@ class RelayVerdictRecord(
             }
         // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
         // and it carries neither a fold answer nor a NIP-77 one.
-        event.tags
-            .firstOrNull(::isFitnessLabel)
-            ?.takeIf { currentLabel(it, floor) }
+        currentFitnessLabel(event, floor)
             ?.let { label ->
                 measured += from
                 if (event.createdAt >= (fitnessFrom[from] ?: Long.MIN_VALUE)) {
@@ -387,7 +386,8 @@ class RelayVerdictRecord(
     /**
      * Edit a replaceable record: read what is there, keep every tag this writer does not [owns],
      * apply [add], and store it at `max(now, existing + 1)` so the replace is accepted. Bounded
-     * whole by [EDIT_DEADLINE_MS], the floor under every writer.
+     * whole by [EDIT_DEADLINE_MS], the floor under every writer. Callers serialize edits per url
+     * (the passes never overlap), or two writers each keep the other's old tags.
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
@@ -402,7 +402,8 @@ class RelayVerdictRecord(
                     currentRecord(url)
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    editFailed(url, "read", e)
                     return@withTimeoutOrNull null
                 }
             val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
@@ -413,36 +414,52 @@ class RelayVerdictRecord(
                     for (tag in add) add(tag)
                 }
             // The deadlines work by cancellation, which must propagate.
+            val event =
+                try {
+                    signer.sign(template)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    editFailed(url, "sign", e)
+                    return@withTimeoutOrNull null
+                }
             try {
-                val event = signer.sign(template)
                 storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_INSERT, "kind ${template.kind}, 1 event") {
                     store.insert(event)
                 }
                 event
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                editFailed(url, "insert", e)
                 null
             }
         }
     }
 
+    /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. */
+    private fun editFailed(
+        url: NormalizedRelayUrl,
+        stage: String,
+        e: Exception,
+    ) {
+        val failed = editFailures.incrementAndGet()
+        val now = System.currentTimeMillis()
+        val last = editFailureLoggedAt.get()
+        if (now - last < EDIT_FAILURE_LOG_MS || !editFailureLoggedAt.compareAndSet(last, now)) return
+        System.err.println(
+            "router: verdict edit for ${url.url} FAILED at $stage — ${e.javaClass.simpleName}: ${e.message?.take(200)} " +
+                "($failed failed edit(s) so far)",
+        )
+    }
+
+    /** Every [edit] that failed at a read, a signature or an insert since boot. */
+    private val editFailures = AtomicLong()
+
+    private val editFailureLoggedAt = AtomicLong()
+
     /** [edit]'s ordinary ownership: these tag names, whole. Wrong for the shared `l`/`L`. */
     private fun owning(vararg names: String): (Array<String>) -> Boolean = { it.firstOrNull() in names }
-
-    /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
-    private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
-
-    /**
-     * [current] for the fitness label, whose epoch and stamp sit at their own offsets. One
-     * definition, because a bumped [FITNESS_EPOCH] read in two places is a stale grade kept alive.
-     */
-    private fun currentLabel(
-        tag: Array<String>,
-        floor: Long,
-    ): Boolean =
-        tag.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH &&
-            (tag.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor
 
     /**
      * Is this verdict one we would still act on: under the current rules and within its TTL?
@@ -461,13 +478,29 @@ class RelayVerdictRecord(
     /** This url's current record, null when nothing holds one, and a throw when the store cannot answer. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
-        return store
-            .query<Event>(
-                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url))),
-            ).maxByOrNull { it.createdAt }
+        val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url)))
+        return storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+            store.query<Event>(filter)
+        }.maxByOrNull { it.createdAt }
     }
 
     companion object {
+        /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
+        private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+
+        /**
+         * [event]'s fitness label if it is one we would still act on: under [FITNESS_EPOCH] and measured
+         * since [floor] by its own stamp, never the record's `createdAt`, which every writer bumps.
+         */
+        fun currentFitnessLabel(
+            event: Event,
+            floor: Long,
+        ): Array<String>? =
+            event.tags.firstOrNull(::isFitnessLabel)?.takeIf {
+                it.getOrNull(LABEL_EPOCH_INDEX) == FITNESS_EPOCH &&
+                    (it.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull() ?: Long.MIN_VALUE) >= floor
+            }
+
         /** The fold's tag: `["same-as", <url>, <evidence>, <measured-at>, <epoch>]`, pointing at itself for a distinct url. */
         const val SAME_AS_TAG = "same-as"
 
@@ -547,8 +580,10 @@ class RelayVerdictRecord(
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 
-        /** The wall clock on one whole [edit]. Wider than `FitnessPass.PUBLISH_DEADLINE_MS`, which must fire first. */
+        /** The wall clock on one whole [edit]. Wider than `VerdictWrites.PUBLISH_DEADLINE_MS`, which must fire first. */
         const val EDIT_DEADLINE_MS = 120_000L
+
+        private const val EDIT_FAILURE_LOG_MS = 60_000L
 
         /** Urls per `#d` query, shared with [RelayDiscovery.undialable]. */
         internal const val QUERY_CHUNK = 500

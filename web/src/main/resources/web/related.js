@@ -3,7 +3,7 @@
 // are pure functions; the cards are a search's own, at preview depth.
 
 import { card, namedPubkeys } from "./cards.js";
-import { esc } from "./shared/format.js";
+import { esc, HEX64 } from "./shared/format.js";
 import { when } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { keyHref, noteHref } from "./cards/base.js";
@@ -36,7 +36,7 @@ export const RELATED_TIMEOUT_MS = 6000;
  * nothing. A repository takes two: its state is addressed by `d` and carries no `a`.
  */
 export function relatedAsk(ev) {
-  if (!ev || !/^[0-9a-f]{64}$/.test(ev.pubkey || "")) return null;
+  if (!ev || !HEX64.test(ev.pubkey || "")) return null;
   if (ev.kind === 30617) {
     const d = (ev.tags || []).find((t) => Array.isArray(t) && t[0] === "d" && t[1]);
     if (!d) return null;
@@ -45,7 +45,7 @@ export function relatedAsk(ev) {
       { kinds: [30618], authors: [ev.pubkey], "#d": [d[1]], limit: 1 },
     ];
   }
-  if (THREAD_KINDS.includes(ev.kind) && /^[0-9a-f]{64}$/.test(ev.id || "")) {
+  if (THREAD_KINDS.includes(ev.kind) && HEX64.test(ev.id || "")) {
     return [{ "#e": [ev.id], kinds: [...STATUS_KINDS, ...ANSWER_KINDS], limit: ASK_LIMIT }];
   }
   return null;
@@ -120,7 +120,7 @@ function selfAddr(ev) {
 /** The pubkeys the related cards will name: their authors, and whoever they mention. */
 export const relatedPeople = (shape) =>
   [...new Set(shape.events.flatMap((e) => [e.pubkey, ...namedPubkeys(e, undefined)]))]
-    .filter((pk) => /^[0-9a-f]{64}$/.test(pk || ""));
+    .filter((pk) => HEX64.test(pk || ""));
 
 /** The verdict line under an issue's card: the state, who set it and when. */
 const VERDICT = { 1630: ["open", "open"], 1631: ["merged", "applied or merged"], 1632: ["closed", "closed"], 1633: ["draft", "draft"] };

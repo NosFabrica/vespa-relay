@@ -37,12 +37,35 @@ default on their own, and drifted: the warning went on quoting 600 per uncapped
 stream after the gate had stopped applying it, so a deployment was told it
 would hold 600 tails while the pool held one per relay on the roster.
 
-**Workload caps floor at 1 rather than refusing 0.** Zero is an off switch
-wearing a tuning knob's name; a stream silently doing no catch-up because
-someone typed 0 is the worst reading of the feature. An operator who wants a
-job off says so by not configuring the work. The monitor's `dialConcurrency`
-and `fastLaneSeconds` follow the same rule, except that `fastLaneSeconds = 0`
-is the documented off switch for the lane.
+**Workload caps refuse 0, and every bounded number refuses what is out of
+range.** Zero is an off switch wearing a tuning knob's name; a stream silently
+doing no catch-up because someone typed 0 is the worst reading of the feature.
+The caps first floored it at 1, as did every bounded HOCON number at its own
+floor, while `StrictEnv` refused the same mistake in an env var. A config read
+as something other than what it says is the failure the rest of the loader
+refuses, so the HOCON numbers now refuse too, naming the key and the bound.
+`fastLaneSeconds = 0` stays the documented off switch for the lane, and
+`connectionTimeout = 0` is refused because OkHttp reads it as no timeout.
+
+**A scalar period is at least an hour; a tier's cadence is honoured as written.**
+The scalar used to be raised quietly to an hour and is now refused below it,
+0 included: 0 had meant an hour, and reading it as "always due" would have
+re-reconciled four times as often with no word at boot. A tier's `every` keeps
+taking any value from 0, as it always did, so a working half-hourly band still
+boots — except a `refetch` tier at 0, which re-pages its whole band on every
+visit (`SyncBands.isStale` is always true at 0) and never accumulates coverage.
+
+**An invalid `urls` or `exclude` entry is refused, not skipped.** Both used to
+print a warning and drop the entry. A dropped `urls` entry is a relay the
+operator named and nobody mirrors; a dropped `exclude` entry fails open and
+dials the relay the operator meant to forbid.
+
+**Retired keys live in one table per config level.** The refusals were
+`require` blocks spread across five functions, and they had drifted:
+`sync` was refused twice, once on every stream and once on a discovered one
+with a message saying it still chose the transport for static streams. Each
+level (`RETIRED_ROOT_KEYS`, `_STREAM_`, `_MONITOR_`, `_SOURCE_`) now names
+each key once with one sentence, refused before the unknown-key check.
 
 **The monitor's config is its own file, and holds no reference to the sync
 one.** `monitor.conf` (`MONITOR_CONFIG_FILE`) declares the relay lists the

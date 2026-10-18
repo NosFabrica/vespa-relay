@@ -17,7 +17,7 @@ const frames = [];
 const asked = [];
 const answers = [];
 const env = {
-  viewingAs: null, me: pk("f"), scores: new Map(), scoring: new Set(), scoreLensKey: null,
+  viewingAs: null, me: () => pk("f"), scores: new Map(), scoring: new Set(), scoreLensKey: null,
   rankServicesOf: async () => [pk("s")],
   refConn: async () => ({
     req: (filter) => {

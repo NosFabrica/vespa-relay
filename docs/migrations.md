@@ -147,7 +147,7 @@ Note the column: `text`, the body tier, not `primary`. Upstream gave the family
 no `SearchFieldExtractor` branch, so the title rides the generic fallback into
 the TERTIARY tier — reached by trigram substring, not by the prefix/typo
 attributes other titled kinds get. That is Quartz's call to change, not ours;
-see the `vespaEventStore` comment in `gradle/libs.versions.toml`.
+see the `vespaEventStore` notes in `docs/decisions/dependency-pins.md`.
 
 ### The procedure
 
@@ -346,7 +346,7 @@ field the kind never joins into `indexableContent()` — a citation's `author` a
 `doi`, a relay review's `relay` url, a learning resource's schema.org facets —
 is still not indexed at all, so it cannot be searched for after this walk
 either. Both halves are upstream's to close, one branch per kind; the
-`vespaEventStore` note in `gradle/libs.versions.toml` carries the detail.
+`vespaEventStore` notes in `docs/decisions/dependency-pins.md` carry the detail.
 
 ## Migration: three kinds re-derived (quartz `ec16988e3a`, store `748dc5b8c6`)
 
@@ -388,7 +388,7 @@ takes from a known set of kinds:
   deletion reasons (5) and vanish reasons (62) among them — and **19 extract
   differently**, e.g. 14's subject becomes primary, 30030 emoji packs stop
   indexing their NIP-44 ciphertext. The full list is in the store's
-  `libs.versions.toml` note at that pin. Mostly **recall**.
+  `vespaEventStore` notes in `docs/decisions/dependency-pins.md`. Mostly **recall**.
 
 **The schema does not move**: `event.sd` and `services.xml` are untouched, so
 `configChangeActions` should come back empty. Read it anyway, per the top of

@@ -24,8 +24,10 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.HeavyHitters
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -80,5 +82,34 @@ class StoreMetricsLogTest {
         assertContains(line, "lock.gate.hold")
         assertTrue(line.contains("derive 500 subject(s)"), "the hold's DETAIL is the useful half — it names the work, not just the mutex: $line")
         assertTrue(line.startsWith("store-metrics[relay]"), "the role is what attributes load between the relay and the mirror")
+    }
+
+    @Test
+    fun `a failed tick is logged and the next one still runs`() {
+        val ticks = AtomicInteger()
+        val t =
+            StoreMetricsLog.every("test", 1) {
+                if (ticks.incrementAndGet() == 1) throw IllegalStateException("store unreachable")
+            }
+        try {
+            val deadline = System.currentTimeMillis() + 5_000
+            while (ticks.get() < 3 && System.currentTimeMillis() < deadline) Thread.sleep(1)
+            assertTrue(ticks.get() >= 3, "the loop stopped after one failed read")
+        } finally {
+            t.interrupt()
+            t.join(5_000)
+        }
+        assertFalse(t.isAlive, "an interrupt is the way to stop it")
+    }
+
+    @Test
+    fun `an Error ends the loop instead of being logged every period`() {
+        val ticks = AtomicInteger()
+        val t = StoreMetricsLog.every("test", 1) { if (ticks.incrementAndGet() == 1) throw OutOfMemoryError("simulated") }
+        // The default handler prints the Error once; keep it off the test output.
+        t.uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> }
+        t.join(5_000)
+        assertFalse(t.isAlive)
+        assertEquals(1, ticks.get())
     }
 }

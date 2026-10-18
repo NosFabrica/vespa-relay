@@ -36,12 +36,15 @@ which is why it depends on quartz: verifying an `Authorization` header belongs
 beside the routes it protects, and the dependency can only run one way — Ktor
 must never reach `:common`.
 
-`pulse.html` is the one page here whose logic and styling are NOT inline
-(`web/pulse/page.js`, `web/pulse/pulse.css`). It is the one page serving a
-non-public document, so its policy is `default-src 'none'` with no
-`unsafe-inline` on script or style — which an inline `<script>` cannot satisfy.
-Putting one back would not fail loudly; the page would just stop working, in a
-browser only, so `PulseSiteTest` fails the build instead. One `stats.html`
+No page here carries inline code: every script is a file under `web/`
+(`app.js`, `stats/page.js`, `trust/page.js`, `observers/page.js`,
+`pulse/page.js`), and no markup carries an `on…=` handler (a failed picture is
+`data-broken`, `shared/broken.js`). Every page is served under
+`script-src 'self'` (`PAGE_CONTENT_SECURITY_POLICY` in `installPageDefaults`;
+pulse's own stricter one also refuses inline style). Putting inline code back
+would not fail loudly; the page would just stop working, in a browser only, so
+`PageSecurityTest`, `PulseSiteTest` and `broken.test.mjs` fail the build
+instead, and `csp.probe.mjs` shows it in Chromium. One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.
@@ -65,6 +68,7 @@ node web/src/test/js/run.mjs       # the same suite, run directly
 node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
 node web/src/test/browser/syncstatus.probe.mjs   # the per-relay table off a fixture; SHOT=/tmp/sync.png keeps the picture
 node web/src/test/browser/pager.probe.mjs        # the pager against a fake WebSocket
+node web/src/test/browser/csp.probe.mjs          # every public page under the served CSP; fails on a violation
 
 # Live probes: off by default, selected by a -D switch, most assert nothing. `--rerun` is load-bearing:
 # a second identical run is up-to-date-checked, skipped, and prints nothing.
@@ -97,7 +101,7 @@ ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCen
 WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i   # the whole #185 fix running; ~20 minutes
 BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test --tests '*RelayListReadCostBench*' --rerun -i    # what a relay-list read costs; BENCH_LIST_VISIT=0 BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
 BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i   # what one arriving event costs ingest
-docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa                                    # a bare engine is enough for the next one
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa:8.763.13                           # a bare engine is enough for the next one
 ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i                        # real 10040s off a live relay through a real Vespa; -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
 
 docker compose up -d --build relay            # the usual dev loop (serving only)
@@ -121,7 +125,7 @@ TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-d
 ```
 
 Git hooks are installed by the build: pre-commit runs `spotlessCheck`, pre-push
-runs the tests. Run `spotlessApply` before committing.
+runs `check` (the tests, `archTest` and `jsTest`). Run `spotlessApply` before committing.
 
 ## Layout
 
@@ -154,38 +158,44 @@ peers/…/relay/
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline (the write path of both processes: the mirror's downloads and, as
                               quartz's EventIngest, the relay's publishes), StoreProbes, BisectingInsert, ProbeGate,
-                              ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
+                              ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
+                              (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
-  ReachabilityProbe, Silence, Unreachability, HostStrikes, RelayDocument   what a quiet socket said, what may be published, NIP-11
+  ReachabilityProbe, Silence, Unreachability, RelayDocument   what a quiet socket said, what may be published, NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
-  sync/                       SyncEngine (wiring, the health and stats lines; starts both planes), VisitPool (the
-                              mirror), VisitQueue, VisitAborts, RelayComplaints, RelayPages, FilterWidths,
-                              RosterBuilder, RetractionAudit, NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState,
-                              SyncBands (SYNC_STATE_FILE), SyncManifest (SYNC_MANIFEST_FILE), UpstreamPush,
-                              PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
+  sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool
+                              (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
+                              VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
+                              NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              SyncManifest (SYNC_MANIFEST_FILE), PersistedJsonState (the three files' durable write),
+                              UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
                               StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/
-  RelayMain.kt                entrypoint; refuses to boot if SYNC_CONFIG* is set
-  server/config/              EnvSettings (`env.intOr(...)`, grep for it; ALLOW_PUBKEYS and the rest of the
-                              serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
+  RelayMain.kt                entrypoint: readSettings parses everything before the network, then named boot steps;
+                              refuses to boot if SYNC_CONFIG* is set
+  server/config/              EnvSettings (`env.intOr(...)`, grep for it; the engine's limits, ALLOW_PUBKEYS and the rest
+                              of the serving policy), RelaySettings (RELAY_URL + RELAY_HTTP_URL read once, NIP-11, stats
+                              intervals, state files), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
-                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
+                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS; StatsRollupTest's
+                              SELECTIVE_KINDS is the guard on which kinds the counters tier may ask)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
-  resources/index.html        the search UI; its behaviour is resources/web/ (app.js, searchfield.js, paging.js, feed.js,
-                              entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
-  resources/stats.html        the one status page; web/relay/, web/sync/ and web/monitor/ hold each plane's cards
-  resources/observer_stats.html   an operator diagnostic with its own relay client
+  resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, signin.js,
+                              owngroups.js, urlstate.js, searchfield.js, paging.js, feed.js, entity.js, related.js,
+                              readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
+  resources/stats.html        the one status page (web/stats/page.js); web/relay/, web/sync/ and web/monitor/ hold each plane's cards
+  resources/observer_stats.html   an operator diagnostic with its own relay client (web/observers/)
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket
@@ -195,7 +205,7 @@ tor/                          both torrcs, publish-onion.sh, onion.extra.conf.ex
 `docs/configuration.md` documents every environment variable (`.env.example`
 is the copyable start), `docs/router.md` the two config files' format,
 `docs/migrations.md` the schema changes a store bump can need on a cluster that
-already holds data, and `docs/search-latency.md` what a search costs.
+already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, and `docs/search-latency.md` what a search costs.
 
 ## How the router works
 
@@ -345,7 +355,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.
-- Gradle resolves hash conflicts lexicographically and silently: `resolutionStrategy { force(libs.quartz) }` in every module, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
+- Gradle resolves hash conflicts lexicographically and silently: `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention (`build-logic/`), which every module applies, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
 - JitPack's build-status API lies; only the artifact file proves a build.
 - JitPack caches builds per group-spelling (`com.github.NosFabrica` vs `com.github.nosfabrica`).
 - An integration run that skips still prints `BUILD SUCCESSFUL`: start `DOCKER_MIN_API_VERSION=1.24 dockerd`, and read `skipped="…"` in `build/test-results/test/*.xml`.

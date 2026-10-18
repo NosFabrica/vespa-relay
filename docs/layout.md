@@ -302,6 +302,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           admit), rotating visits (catch-up, the reconcile of
                           the past, heal drain), earned live tails,
                           yield-paced revisits
+    TailBook.kt           the earned live tails: yields, eviction, and the
+                          permit handed from a visit to its tail
+    PoolStatus.kt         the pool's rows on /stats.json: in-flight, live,
+                          prime units, limits, schedule, phase flush
+    HealthLine.kt         the once-a-minute health line, worded from one
+                          reading by functions a test can call
+    Guards.kt             repeatEvery and shutdownStep: a loop that logs a bad
+                          tick and carries on, a shutdown step that cannot
+                          skip the next
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
     VisitAborts.kt        WHY a visit ended early: `abortedVisits` split eight
                           ways and said once per (stream, relay, reason), with
@@ -331,6 +340,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     NegentropyPager.kt    the windowed history sweep every reconcile runs
     SweepState.kt         per-peer window sizes and the in-progress cursor
     SyncBands.kt          covered created_at bands per (relay, filter)
+    PersistedJsonState.kt the state files' shared flusher, written through
+                          writeDurably; an unreadable file is quarantined
     IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
                           batchInsert, poison isolation. Dropping FIRST is the
                           point: a schnorr check is ~48us isolated and ~70-95us
@@ -374,7 +385,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
     Silence.kt            classifying what a quiet socket actually said
     Unreachability.kt     which failures may be published as NIP-66 records
-    HostStrikes.kt        per-authority strikes and eviction
     RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
                           rtts, `R`, `s` (+version), `N`. Absent writes no tag
                           rather than a zero, and everything it writes it also
@@ -462,9 +472,16 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
 
 
 relay/src/main/resources/
-  index.html            the search UI's markup + styles; its behavior lives in web/
+  index.html            the search UI's markup; its styles are web/app.css and its
+                        behavior lives in web/. No page carries an inline script,
+                        handler or stylesheet: every page runs under
+                        `script-src 'self'` (PageSecurityTest)
   web/                  the page's native ES modules, served at /web — no build
                         step, zero dependencies. app.js is state + wiring;
+                        signin.js (NIP-07 / NIP-42), owngroups.js (the reader's
+                        groups and their unlock) and urlstate.js (the url and
+                        the back stack) each own their state; shared/broken.js
+                        is the one listener that undoes a failed picture;
                         shared/ is the client + codec + caches; searchfield.js
                         is the search box itself — a contenteditable, because
                         `from:npub1…`/`to:npub1…` draw as a face and a name and
@@ -812,11 +829,12 @@ relay/src/main/resources/
                         means "the operator set one", and redirecting to it
                         blindly points /favicon.ico at itself — `iconOverride`
                         is the comparison that keeps that loop shut
-  observer_stats.html   an operator diagnostic carrying its own tiny relay
-                        client on purpose: it must work when the app does not,
+  observer_stats.html   an operator diagnostic (logic and styles in
+                        web/observers/) carrying its own tiny relay client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  stats.html            the corpus dashboard: it charts GET /stats.json, and
+  stats.html            the corpus dashboard, entered at web/stats/page.js (the
+                        relay's rolled-up charts are web/relay/charts.js): it charts GET /stats.json, and
                         THE JSON IS THE ARTIFACT — the page is one reader of it
                         (see maintenance/StatsRollup). No aggregation on it is a
                         protocol feature to test, and thirty days of

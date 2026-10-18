@@ -168,10 +168,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
 - **Gradle resolves those hash conflicts lexicographically, and silently.**
   Pinning quartz to `6d518adddb` while the store carried `79f198c729` resolved
   to the latter — `'7' > '6'` — and nothing said so. Hence
-  `resolutionStrategy { force(libs.quartz) }` in EVERY module's build file —
-  each of `:common`, `:relay` and `:sync` resolves quartz independently, and a
-  new module must add its own force. Never remove one, and check that a pin
-  actually took effect.
+  `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention
+  (`build-logic/`): every module resolves quartz independently, and a module
+  applies the convention rather than carrying its own copy of the force. Never
+  remove it, and check that a pin actually took effect.
 
   Two habits follow from "hashes have no order", and the second is the one that
   gets skipped:

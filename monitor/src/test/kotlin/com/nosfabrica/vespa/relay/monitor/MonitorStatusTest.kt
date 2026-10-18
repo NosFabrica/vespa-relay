@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.web.CachedPage
 import com.nosfabrica.vespa.relay.web.favicon
 import com.nosfabrica.vespa.relay.web.installPageDefaults
@@ -33,6 +34,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -72,7 +74,21 @@ class MonitorStatusTest {
         val terms = data["terms"]!!.jsonObject
         assertTrue("foldedAway" in terms, "a member this document carries is defined in it")
         assertTrue("queued" !in terms, "and the mirror's ingest queue is not")
+        // Every member the vocabulary knows reaches this document in the monitor's or the shared words.
+        val unexplained = members(data) - "terms" - terms.keys
+        assertTrue((unexplained intersect StatusVocabulary.TERMS.keys).isEmpty(), "filed under the mirror only: $unexplained")
     }
+
+    private fun members(o: JsonObject): Set<String> =
+        o
+            .flatMap { (member, value) ->
+                listOf(member) +
+                    when (value) {
+                        is JsonObject -> members(value)
+                        is JsonArray -> value.filterIsInstance<JsonObject>().flatMap(::members)
+                        else -> emptyList()
+                    }
+            }.toSet()
 
     @Test
     fun `a deployment with no monitor publishes no section at all`() {
@@ -101,7 +117,8 @@ class MonitorStatusTest {
                 }
             }
 
-            assertTrue(client.get("/").bodyAsText().contains("mountStatsPage"))
+            assertTrue(client.get("/").bodyAsText().contains("""src="./web/stats/page.js""""), "the page loads its entry module")
+            assertTrue(client.get("/web/stats/page.js").bodyAsText().contains("mountStatsPage"), "the entry module mounts the page")
             for (asset in IMPORTS) {
                 assertEquals(HttpStatusCode.OK, client.get(asset).status, "$asset — imported by the monitor page")
             }

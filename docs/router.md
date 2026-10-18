@@ -33,7 +33,16 @@ A key the loader does not read, at any level (the top, a stream, a filter, a
 the key: misspelt, it would otherwise leave its setting at the default while
 the file reads as if it were set. The same goes for a `relaySource`-only key
 (`refreshSeconds`, `exclude`, `gatedBy`, `maxRelaysPerList`) on a stream of
-static `urls`.
+static `urls`, a retired key (each refusal says what replaced it), a number
+outside its bound (the message names the key and the bound; nothing is quietly
+raised to it), and a `urls` or `exclude` entry that is not a relay url or a
+regex. The bounds: `connectionTimeout`, every `*Concurrency`,
+`maxRelaysPerList` and a tier's `maxAge` at least 1; a stream's
+`refreshSeconds` at least 60; a `relaySource` entry's `maxAgeSeconds` at least
+60 and its `refreshSeconds` at least 10; a scalar re-check period,
+`negentropySyncThePastSeconds` or `refetchThePastSeconds`, at least 3600; a
+tier's `every` 0 or more, except that a `refetch` tier may not be 0; the monitor's `sweepSeconds` at least 300 and
+its `fastLaneSeconds` 0 (off) or at least 30.
 
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
@@ -173,7 +182,9 @@ youngest-first, or that omits `maxAge` anywhere but the last entry — either
 would leave a hole in the middle of the past, and a hole is invisible, because
 every band still reports itself verified.
 
-`every = 0` is always due, floored by `attemptSpacingSeconds` at 15 minutes.
+`every = 0` is always due, floored by `attemptSpacingSeconds` at 15 minutes —
+for a `negentropy` band only: a `refetch` band due on every visit would re-page
+the whole band each time, so it is refused.
 That is what a stream wants when its upstream is the source of truth for the
 records in the ask and its past must be re-read as of today rather than taken
 on trust.
@@ -506,7 +517,7 @@ that can serve one stream and not another is still a useful visit.
 
 Unset means **uncapped**, not zero — a deployment that has never heard of these
 behaves exactly as it did, bounded by `visitConcurrency` alone. A configured `0`
-is floored to 1, for the same reason the pool's socket numbers are: zero is an
+is refused at boot, for the same reason the pool's socket numbers are: zero is an
 off switch wearing a tuning knob's name.
 
 **`maxLiveConcurrency` is the exception, and has to be.** The other three
@@ -556,7 +567,7 @@ An ask leaves `waiting` by its clock running out and by nothing else, so a
 steady while the audit counters climb is a rule being broken.
 
 **`neverRun` is the honest exception.** An ask with no completed pass is always
-due — `SyncBands.auditDue` short-circuits on a zero clock, so a relay's first
+due — `SyncBands.auditDueAt` reads a zero clock as never audited, so a relay's first
 audit happens on its first visit rather than a period later. That is deliberate,
 and it is also why a fresh deployment audits everything at once. It is counted
 apart from `due` so that storm reads as what it is: scheduled work whose

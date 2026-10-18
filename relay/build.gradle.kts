@@ -1,13 +1,6 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    id("vespa-relay.kotlin-module")
     application
-}
-
-// JitPack pins are commit hashes and Gradle picks the lexicographically higher one, so force ours.
-configurations.all {
-    resolutionStrategy {
-        force(libs.quartz)
-    }
 }
 
 dependencies {
@@ -25,13 +18,8 @@ dependencies {
     implementation(libs.ktor.server.cors)
     implementation(libs.ktor.server.compression)
     implementation(libs.ktor.server.netty)
-    testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.serialization.json)
     testImplementation(libs.ktor.server.test.host)
-}
-
-kotlin {
-    jvmToolchain(21)
 }
 
 application {
@@ -64,7 +52,6 @@ tasks.named("processResources") {
 }
 
 tasks.test {
-    useJUnitPlatform()
     // ComposePassesEnvTest reads these two files, which live outside every
     // source set. Undeclared, Gradle calls this task up to date after either
     // changes and the check silently stops running — which is the same class of
@@ -73,12 +60,13 @@ tasks.test {
         .files(rootProject.file(".env.example"), rootProject.file("docker-compose.yml"))
         .withPropertyName("deploymentDescriptors")
         .withPathSensitivity(PathSensitivity.RELATIVE)
-    // Every property a probe reads must be forwarded here: the forked test JVM does not
-    // inherit them, and a probe missing its switch skips itself silently.
-    System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
-    System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
-    System.getProperty("searchExpansionBench")?.let { systemProperty("searchExpansionBench", it) }
-    System.getProperty("itVespa")?.let { systemProperty("itVespa", it) }
-    System.getProperty("itCorpus")?.let { systemProperty("itCorpus", it) }
-    System.getProperty("itRelay")?.let { systemProperty("itRelay", it) }
+    // ProbeSwitchesAreForwardedTest checks this list; it runs under `:common:archTest`.
+    forwardProbeSwitches(
+        "itCorpus",
+        "itRelay",
+        "itVespa",
+        "prodScaleDir",
+        "prodScaleProbe",
+        "searchExpansionBench",
+    )
 }

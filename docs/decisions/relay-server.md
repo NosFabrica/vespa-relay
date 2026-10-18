@@ -173,17 +173,39 @@ silently denying nothing is the same failure for kinds. An nsec is refused
 outright because quartz would decode it to its public key and leave a private
 key in a public setting.
 
-**The ban file's read and decode are guarded together.** The outer catch once
-covered only `parseToJsonElement`, and every field accessor throws in its own
-right, so a state file that was valid JSON but wrong in shape (a truncated
-write, a hand edit) threw out of `RelayMain` and the relay did not start. The
-documented behaviour is to say so loudly and come up with empty lists.
+**An unreadable ban file refuses the boot.** It once came up with empty lists
+and a stderr line: one hand-edited kind (`"seven"`) discarded every ban, the
+relay served unmoderated, and the next NIP-86 mutation overwrote the file and
+the bans with it. A configured moderation list that enforces nothing is the
+silently-inert case, so the boot stops with the file and the bad entry named
+(`allowedKinds[1] is not a kind number`) and the file left as it was; moving
+it aside is the explicit way to start empty. Every entry is checked, not only
+the JSON parse, because each field accessor throws in its own right. Writes
+go through `writeDurably`, so a crash leaves the old file or the new one.
 `openBanStore` treats blank as unset because compose's `${RELAY_STATE_FILE:-}`
 delivers `""`.
 
 **The NIP-86 body is bounded before buffering.** NIP-98 binds the token to the
 sha256 of the whole body, so the handler can only check size after reading;
 an unbounded receive was a pre-auth OOM vector for anyone who found the port.
+
+**The NIP-86 token's signer is checked before the body is read.** The size cap
+alone left a slowloris: anyone could reach the rpc by sending its
+`Content-Type`, and quartz checks NIP-98 only after the whole body arrives, so
+each connection could trickle up to a megabyte with no deadline. The route now
+decodes the token from the header and refuses a missing, malformed, stale,
+wrongly addressed or forged one, or one signed by a non-admin, without reading a
+byte; the payload hash and replay check still run in quartz after the body.
+An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
+`Connection: close`, as NIP-FE does) and at most `Nip86Admin.concurrency` run
+at once, refused with a `503` rather than queued, since a queue is what a
+stolen admin token would fill.
+
+**The admin slot covers the upload, not the handling.** It was held through
+quartz's dispatch, which awaits the purge behind a ban (`store.delete`), so a
+purge that took minutes turned every other admin call, reads included, into a
+`503`. The trickling body is the only exposure the slot exists for; once the
+body is in, the call runs without one.
 
 **A slow websocket consumer is disconnected, not throttled.** Dropping EVENT or
 EOSE frames would corrupt NIP-01 semantics. The polite close frame queues
@@ -220,6 +242,12 @@ said rather than thrown.** Without the sync a power loss could leave the rename
 pointing at an empty file, which loads as no bans at all. A disk that refuses
 the write keeps the previous file and logs; the ban already applies in memory,
 and throwing turned an enforced ban into an RPC 500.
+
+**A ban list the relay cannot read is refused as unreadable, not as bad JSON.**
+The read and the parse shared one catch, so a bind mount the image's uid 10001
+could not read stopped the boot with "it is not JSON (AccessDeniedException)",
+which sends an operator to inspect a file that is fine. An I/O failure now
+names its cause and the `chown`; a failed save carries the same hint.
 
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went
@@ -362,3 +390,95 @@ still being mirrored, and a global search whose House Observer has none is a `50
 never an empty `200`. Nothing asks whether the scores are ready: an earlier version
 sampled the service's newest cards before each search to answer a `202`, a second
 engine query that eight cards could not settle anyway.
+
+**A search lane lives only while a ranked read holds or waits on it.** The
+lanes were created on demand and removed on disconnect, so a ranked read that
+reached the gate after its connection's `onDisconnect` created a lane nothing
+would remove, and `lanesOpen` drifted upward. Each lane now counts its readers
+under the map's own lock and is dropped by the last one to leave, at its EOSE
+or when it is cancelled waiting, so the gate needs no disconnect hook at all.
+
+**A live event from a cold author is judged under a relay-wide bound.** Each
+such event on each gated subscription launched its own store read, unbounded,
+and a failed read was swallowed by `runCatching` along with cancellation. The
+reads now run under `ColdAuthorChecks.MAX_IN_FLIGHT` across every
+subscription; a check that gets no slot in time is dropped, as the gate
+already drops one whose read failed, and both are counted and said once a
+minute. A subscription closing is not a failure.
+
+**Cold-author checks coalesce per author before taking a slot.** The bound was
+first taken per subscription that saw the event, while the store's
+`TrustCells` already merged their reads, so a hundred gated feeds meeting one
+burst of cold authors (most of a global feed, on a 60s cell TTL) used the bound
+up on waiters and silently dropped live events. One read per author is now in
+flight; every other check on that author waits on it without a slot and then
+asks its own gate's cache, and only one whose rule reads a cell that read did
+not warm (another rank service) reads for itself. Keyed by author alone because
+the gate's rules are the store's; the cost of a miss is one extra wait, never a
+wrong answer. Waiting checks are bounded separately and far higher, a check
+queues up to `QUEUE_MS` for a slot instead of dropping at once, and the
+waiters on a failed read fail closed with it. The dropped counts are on
+`GET /pressure` as `liveGate`.
+
+**The trust pages are public, and `explain` is bounded and cached.** The pulse
+is gated because it quotes what people searched for; every field on
+`/trust.html` and `/trust.json` is a count, a phase or a query shape, and
+keeping those behind the same gate once let an incomplete projection stay
+invisible for days while every other signal read clean. `explain` names one
+pubkey, which reveals nothing NIP-01 does not, and is about the projection,
+not the person. It is one store read per anonymous request, so `ExplainGate`
+caches each well-formed key's answer for 30s (a junk key is never cached, so
+it cannot evict a real one) and runs four at once, answering a `503` past that.
+An `ok:false` answer is not cached: it describes the engine at that moment,
+and cached it kept telling callers the store was failing for 30s after it
+recovered; the four-at-once bound is what holds the store's load meanwhile.
+
+**The engine's limits have ranges.** They were parsed as any whole number, so
+`MAX_LIMIT=0` or `MAX_MESSAGE_LENGTH=-1` booted cleanly and then refused or
+truncated every frame. Each is now positive, `MAX_MESSAGE_LENGTH` at least 512
+(the smallest EVENT frame is about 350 characters), `MIN_POW_DIFFICULTY` at most
+256, and a `DEFAULT_LIMIT` set above `MAX_LIMIT` stops the boot. An unset
+`DEFAULT_LIMIT` follows a lowered `MAX_LIMIT` instead, because a deployment that
+only lowered the ceiling meant the default to come with it.
+
+**`RelayMain` reads its environment in one place, before the network.**
+`main()` had grown to some 320 lines with about thirty raw `env[...]` reads
+between the side effects, a stats interval parsed by hand that accepted
+negatives, and `RELAY_HTTP_URL` read twice with different fallbacks: the raw
+`RELAY_URL` for NIP-98's `u`, the normalized one for the icon. The reads now
+live in tested `…FromEnv` functions (`RelaySettings.kt`, `EnvSettings.kt`),
+`readSettings` runs them all, and the ban file and the pulse guard among them,
+before the schema deploy, and `main()` is a list of named boot steps.
+`relayEndpointFromEnv` reads `RELAY_HTTP_URL` once; unset, the origin is
+`RELAY_URL` as the operator wrote it rather than the normalizer's spelling
+(which adds a trailing slash), because a NIP-98 `u` is compared as text and
+admin tools sign the url they were given. A blank value is unset everywhere,
+since compose delivers `""` for an unset `${X:-}`.
+
+**`RELAY_INGEST_BATCH` exists because quartz's batch is sized for SQLite.**
+Measured on staging on 2026-10-13 under a 5.3M-event kind-3 publish: the store's
+write lock was held 93-98% of each 5-minute window, every batch sat at quartz's
+64-event cap at 170-320 ms each, and publishing topped out near 200-380 events/s.
+Unset keeps quartz's default; the cap is the largest batch `ingest.md` measured
+through the store, and the queue holds four batches before a submit suspends.
+
+**What a reader's own data can make a sign-in cost is bounded.** A 10040 is
+the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
+service it named went into one store filter and one NOTICE. `TrustNotice`
+checks the first `MAX_RANK_SERVICES`, and when the list names more it says
+nothing about scores at all: the cards may be under a service it skipped, and
+a `restricted:` NOTICE telling a reader their ranking is broken when it works
+is a claim the check cannot support. Likewise
+`MultiAddressAuthPolicy` remembered every identity a connection signed in as,
+and a client can mint keys without end, so it tells at most `MAX_TOLD` per
+connection and then stops telling rather than growing the set.
+
+**An ORE answer names whose view ranked it.** Beside ORE-05's `results` and
+`ttl`, the body carries the `algorithm` served, the `observer` whose trust
+weighted the text match (the pov for `relevance-pov`, the proxy's House
+Observer for `relevance`) and the `rank_service` that observer's 10040 names.
+ORE-05 defines none of them and forbids none: a separate lookup of the House
+Observer (`/.well-known/nostr.json`) can never be bound to one answer, and a
+consumer keeping the answer as evidence needs to say whose view it was. They
+are unsigned, like the rest of an HTTPS answer, and Brainstorm's server
+forwards the body as is, so they reach its clients.

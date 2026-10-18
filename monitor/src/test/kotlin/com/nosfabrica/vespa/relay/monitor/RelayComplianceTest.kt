@@ -374,8 +374,7 @@ class RelayComplianceTest {
             assertNull(facts[RelayVerdictRecord.COMPLIANT_TAG], "no events came back, so there is no claim to make")
             assertNull(
                 facts[RelayVerdictRecord.PAGEABLE_TAG],
-                "#187's second half: `pageable: true` on an empty anchored page was 26% of the 137, and an honest " +
-                    "EOSE proves the relay ANSWERS — there was never anything here to page from",
+                "an empty anchored page proves the relay answers; there was never anything here to page from",
             )
         }
 

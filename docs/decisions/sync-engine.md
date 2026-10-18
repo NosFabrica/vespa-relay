@@ -17,6 +17,17 @@ none sent and the only grade still reachable was `dead` off the raw TCP
 pre-probe; and the progress document was never published, so the rows moved
 in memory and reached no page.
 
+**One boot sequence, with the mirror's steps conditional.** The fix above was
+a second copy of `start` behind the early return, and the two copies were
+bound to drift the next time a step was added to one. `start` now runs one
+sequence; the pool and the push loops are inert with no streams, and only the
+closing announcement differs.
+
+**Every shutdown step is guarded.** `close` and the shutdown hook ran their
+steps bare, so a throw from `peers.close()` or `ingest.closeIntake()` skipped
+everything after it, the state files' last write included. Each step now runs
+under `shutdownStep`, which logs the failure and lets the next one run.
+
 **The progress document is published on its own loop.** It used to ride the
 per-stream phase report, which is skipped for a push-only router, so a
 perfectly healthy mirror with no down stream rendered as a stopped one. The
@@ -81,6 +92,23 @@ the last from-nothing pass finished). Read as "last verified" it froze: once a
 band aged past `negentropySyncThePastSeconds` every visit's audit was due
 again, and one relay took 13 full history sweeps in 40 minutes. `verifiedAt`
 advances on every `reconciledThrough` record and is persisted beside the band.
+
+**A band's audit clock is its own, keyed by the band and never by its window.**
+A band's window slides with `now`, so a clock keyed by it orphaned the record
+of having walked the band and read as never verified on the next visit. The
+bands share one coverage over the stream's whole filter (a coverage per window
+per day would grow without bound), so only an unbanded stream may fall back to
+that coverage's `fullAt`: the first band audited would otherwise hand its clock
+to every other band, each of which then sat out a whole period before its first
+walk, the oldest for a year. With no per-band object to carry a `verifiedAt`,
+the clocks get their own section in the file, or every restart re-walked the
+oldest, most expensive band.
+
+**A band reads as impossible only after three refused first windows.** quartz
+raises the same `UNAVAILABLE` for a relay without NIP-77, a failed dial and a
+silence mid-reconcile, and a relay without NIP-77 usually just ignores the
+NEG-OPEN and goes quiet. One strike would condemn a band for a week over a
+dropped socket; a first-window failure costs no window work, so three are cheap.
 
 **`claimAudit` goes through `auditDueAt`.** The clock chain was spelled twice,
 once per audit path, so the gate an audit ran on and the number the status
@@ -318,6 +346,28 @@ arrears while the audits ran perfectly well. `AuditClock` distinguishes
 never-compared (due) from no-owned-kind (not scheduled), because counted as
 due the latter is a backlog that can never drain.
 
+**The download half must finish before the band is verified.** The missing
+ids were fetched with `fetchAll`, which returns a bare list, so an idle
+timeout, a `CLOSED` or a refusal read exactly like a complete answer, and the
+band recorded `reconciledThrough` over ids that never arrived. The by-id ask
+now goes through `fetchAllWithHooks` (`RetractionReads.fetchIds`) and counts
+only an EOSE as answered; one unanswered chunk leaves the band unverified, so
+the next audit compares again. The delete half is unaffected: its licence is
+the completed reconcile, not the download.
+
+**An audit that ends short backs off.** Leaving the band unverified also left
+its clock where it was, so a relay that never answered one by-id chunk in full
+had the whole audit (store snapshot, reconcile, delete pass) re-run at every
+attempt spacing instead of once per period, and at once after every restart,
+since the attempt stamps live in memory. `SyncBands.noteIncompleteAudit`
+counts the short audits in a row and doubles the spacing per one, capped at
+the audit's own period; the count is persisted (`#incompleteAudits`) and ends
+on the next verified record. It claims no coverage: the band stays unverified.
+
+**The by-id hook keeps nothing.** `fetchAllWithHooks` retains every event
+whose hook returns true in a result list; `fetchIds` hands each event on as it
+arrives and reads only `doneReasons`, so it returns false.
+
 **No size guard on the delete.** A provider that retracts a subject usually
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer
@@ -360,3 +410,32 @@ until another came, and was lost if it was the last before `close`. The
 counter now moves after the mutation, and a flush writes whenever it is ahead
 of the generation the last successful write held; a failed write simply
 leaves it behind.
+
+**A state file is synced to the device, and an unreadable one is kept aside.**
+The bands, the sweep cursors and the manifest were written to a temp file and
+renamed without an fsync, so a crash shortly after a flush could leave an
+empty or torn file. A load that failed part way kept the maps it had already
+filled, said "starting fresh", and the next flush overwrote the only copy of
+the damage. All three now go through `:common`'s `writeDurably` (the temp
+file synced before the rename, the directory after it), and a parse failure
+in `PersistedJsonState.read` quarantines the file as `<name>.corrupt-<ms>` and
+empties every map, so the process starts from a clean state rather than from
+half a file.
+
+**Only a bad document is quarantined; an unreadable file stops the boot.** The
+quarantine wrapped the read as well as the parse, so an `IOException` (EACCES
+after the image moved to uid 10001, EIO) or an `OutOfMemoryError` moved a good
+file aside and started the mirror empty, a full re-walk for a permission fix.
+`read` now lets an `IOException` from reading fail the boot with the file's
+path and the `chown` that fixes it, leaves the file in place, and quarantines
+only on what restoring the parsed document throws short of an `Error`:
+`getValue` and friends throw beyond `SerializationException`, and every one of
+them is about the document's shape.
+
+**The flusher is stopped, never interrupted.** `close()` interrupted it and
+went straight to its own flush. An interrupt landing in `writeDurably`'s
+directory `force` closes the channel, `:common` swallows that as a filesystem
+that cannot sync a directory, the write still counted as saved, and `close`'s
+flush then saw nothing owed: the rename was never made durable. The flusher
+now waits on a latch `close` counts down, `close` joins it, and only then
+writes what is outstanding.

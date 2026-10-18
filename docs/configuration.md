@@ -149,8 +149,8 @@ moved. The page follows the fastest cadence the document states.
 
 | var | meaning | default |
 |---|---|---|
-| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs. `0` or negative turns it off; the document then carries only the chart sections | `60` |
-| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — every engine query, the corpus totals and trust chain included, and the setting that has always meant the corpus-wide groupings. `0` or negative disables it — a legitimate choice on a busy box, since the walks compete with client reads, at the cost of every corpus number on the page; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it: the state file serves the last document meanwhile, and a relay with none shows the page's waiting card until that pass lands | `900` |
+| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs, up to a week. `0` turns it off (a negative stops the boot); the document then carries only the chart sections | `60` |
+| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — every engine query, the corpus totals and trust chain included, and the setting that has always meant the corpus-wide groupings, up to a week. `0` disables it — a legitimate choice on a busy box, since the walks compete with client reads, at the cost of every corpus number on the page; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it: the state file serves the last document meanwhile, and a relay with none shows the page's waiting card until that pass lands | `900` |
 | `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
 
 `GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
@@ -159,7 +159,10 @@ without scraping the page's markup. It carries an `ETag` and answers `304` to a
 conditional request, which is what makes polling it cheap. The one rule to hold
 when adding fields: everything in the document is a fact about **stored events**,
 never about clients. `/pressure` caps its `samples` field for exactly that
-reason.
+reason. Beside it, `/pressure`'s `liveGate` counts the live events dropped
+since boot because their author's trust check failed (`failed`) or got no
+store read in time (`shed`); either growing means gated live feeds are missing
+events.
 
 ## Relay identity (NIP-11)
 
@@ -530,13 +533,18 @@ catch-up are untouched.
 | var | meaning | default |
 |---|---|---|
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
-| `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
+| `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart). A file that exists but cannot be read as a ban list stops the boot, naming the bad entry; move it aside to start empty | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-nip-fe) | derived from `RELAY_URL` |
 
 A call is a `POST /` with `Content-Type: application/nostr+json+rpc`, as NIP-86
 has it. The [HTTP commands](#commands-over-http-nip-fe) answer every other POST
 to `/`, so with them on (the default) an admin tool that leaves the type off gets
 a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
+The token is checked before the body is read: a call not signed by an admin, for
+another url, or more than 60s off the relay's clock is a `401`/`403` from its
+headers alone. Four admin calls may upload their bodies at once (a fifth is a
+`503`; a long purge behind a ban holds none of them), and a body still arriving
+after 10s is a `408`.
 
 ## Serving over Tor (a `.onion` endpoint)
 
@@ -724,8 +732,14 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `HTTP_RELAY_PER_CLIENT` / `HTTP_RELAY_TOTAL` | relay | `0` or more |
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
-| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | any |
-| `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` / `NEG_FRAME_SIZE_LIMIT` / `EXPIRATION_SWEEP_SECONDS` / `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | any |
+| `MAX_MESSAGE_LENGTH` | relay | `512` or more |
+| `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` | relay | `1` or more |
+| `DEFAULT_LIMIT` | relay | `1`–`MAX_LIMIT`; unset, it is lowered to a smaller `MAX_LIMIT` |
+| `MIN_POW_DIFFICULTY` | relay | `0`–`256` |
+| `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | relay | `0` or more, lower at most upper |
+| `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | `0` or more |
+| `STATS_INTERVAL_SECONDS` / `STATS_COUNTERS_INTERVAL_SECONDS` | relay | `0`–`604800` (`0` turns that tier off) |
+| `EXPIRATION_SWEEP_SECONDS` | relay | any |
 | `STORE_METRICS_LOG_SECONDS` | both | any |
 | `SYNC_UP_INTERVAL_SECONDS` | sync | `10` or more |
 | `SYNC_DYNAMIC_REFRESH_SECONDS` | sync | `60` or more |
@@ -743,7 +757,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `SYNC_TOR_MAX_SOCKETS` | sync | `1`–`512` |
 | `SYNC_REFUSED_EPOCH_SECONDS` / `SYNC_REFUSED_EPOCH_CAPACITY` / `SYNC_SWEEP_CURSOR_STALE_AFTER_SECONDS` / `SYNC_STATUS_INTERVAL_SECONDS` | sync | `1` or more |
 | `SERVING_PRESSURE_THRESHOLD_MS` | sync | `100` or more |
-| `VESPA_DEDUP_CHUNK` | sync | `1` or more |
+| `VESPA_DEDUP_CHUNK` | both | `1` or more |
 | `PARSE_AUDIT_SAMPLES` | sync | `1`–`100` |
 | `PARSE_AUDIT_INTERVAL_SECONDS` | sync | `5` or more |
 | `SYNC_WIRE_LOG` | sync | `sent` or `full`, in any case |

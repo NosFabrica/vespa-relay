@@ -27,10 +27,8 @@ import com.nosfabrica.vespa.relay.status.StreamPhases
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
- * When an ask's audit comes due, as one value: not scheduled, never run, a time, or one that
- * CANNOT run. The last is neither complete nor incomplete — the relay will not open negentropy
- * for this ask, so no walk can happen at all and counting it as a backlog says work is pending
- * that nothing will ever do.
+ * When an ask's audit comes due, as one value: not scheduled, never run, a time, or cannot run,
+ * the last meaning the relay will not open negentropy for it, so it is never counted as a backlog.
  */
 @JvmInline
 internal value class AuditClock private constructor(
@@ -143,13 +141,7 @@ internal class AuditSchedule(
                         val key = SyncTier.keyFor(name, refetchTiers, tier)
                         // Per band, not per stream: the knob and the tally are the band's.
                         if (bands.refetchThePastSecondsFor(key) == SyncBands.NEVER) continue
-                        // THE STREAM'S OWN FILTER, which is what the pool RECORDS under. This
-                        // read used to window the filter first, and coverage stopped being keyed
-                        // that way when the band moved off the sliding window — so every lookup
-                        // missed and every re-fetch row reported `neverRun`, on three streams,
-                        // including asks whose coverage was sitting right there. A status page
-                        // that asks a different question than the writer answered reports a
-                        // catastrophe it invented.
+                        // The stream's own filter, the key the pool records under; a windowed one finds nothing.
                         refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(key, url, ask.filter)))
                     }
                 }
@@ -198,9 +190,8 @@ internal class AuditSchedule(
         fun add(clock: AuditClock) {
             val dueAt = clock.dueAt
             when {
-                // Before the null check below, which this shares: an impossible band has no due
-                // time either, and counting it as never-run is the reading this column exists
-                // to stop. It is not waiting for a visit; no visit of it can succeed.
+                // Before the null check, which an impossible band would also pass: it is not
+                // never-run, because no visit of it can succeed.
                 clock.cannotRun -> {
                     cannotRun++
                 }

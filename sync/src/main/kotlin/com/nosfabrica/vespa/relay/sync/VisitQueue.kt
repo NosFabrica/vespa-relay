@@ -24,9 +24,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The pool's rotation bookkeeping, generic in its unit of work. [offer] dedups against the
@@ -65,41 +68,64 @@ internal class VisitQueue<K : Any>(
         return true
     }
 
+    /** Workers inside [visitLoop] right now; one that has left it draws no more units. */
+    val workersAlive: Int get() = alive.get()
+
+    private val alive = AtomicInteger()
+
     /**
      * One worker's loop: draws units and runs [visit] on each. [revisitDelayMs] is read as the
-     * visit finishes, [stillWanted] gates both the visit and every requeue, and a throw
-     * escaping [visit] ends the worker.
+     * visit finishes and [stillWanted] gates the visit and every requeue. A throw escaping
+     * [visit] goes to [onEscape] and the worker carries on; only cancellation or a VM error ends it.
      */
     suspend fun visitLoop(
         stillWanted: (K) -> Boolean,
         revisitDelayMs: (K) -> Long,
+        onEscape: (K, Throwable) -> Unit = { key, e -> System.err.println("router: visit of $key threw ${e.javaClass.simpleName}: ${e.message?.take(80)}") },
         visit: suspend (K) -> Unit,
     ) {
-        for (url in channel) {
-            queued.remove(url)
-            // One step with the finishing visit's removal below: between a failed add and the
-            // park, the running visit could finish, see nothing parked, and arm a timer.
-            val parkedInstead =
-                synchronized(handoff) {
-                    if (inFlight.add(url)) false else parked.add(url).let { true }
-                }
-            if (parkedInstead) continue
-            var requeue = false
-            try {
-                if (stillWanted(url)) visit(url)
-            } finally {
-                requeue =
+        alive.incrementAndGet()
+        try {
+            for (url in channel) {
+                queued.remove(url)
+                // One step with the finishing visit's removal below: between a failed add and the
+                // park, the running visit could finish, see nothing parked, and arm a timer.
+                val parkedInstead =
                     synchronized(handoff) {
-                        inFlight.remove(url)
-                        parked.remove(url)
+                        if (inFlight.add(url)) false else parked.add(url).let { true }
                     }
+                if (parkedInstead) continue
+                var requeue = false
+                var fatal: VirtualMachineError? = null
+                try {
+                    if (stillWanted(url)) visit(url)
+                } catch (e: VirtualMachineError) {
+                    fatal = e
+                } catch (e: Throwable) {
+                    // A stray CancellationException while this worker is still active is a failed visit, not shutdown.
+                    currentCoroutineContext().ensureActive()
+                    onEscape(url, e)
+                } finally {
+                    requeue =
+                        synchronized(handoff) {
+                            inFlight.remove(url)
+                            parked.remove(url)
+                        }
+                }
+                // The worker still dies of a VM error, but its unit stays in the rotation, on a timer rather than at once.
+                try {
+                    if (requeue && fatal == null) {
+                        // A requeue arrived mid-visit: back on the queue now, and the prompt visit arms its own timer.
+                        offer(url)
+                    } else {
+                        armRevisit(url, revisitDelayMs, stillWanted)
+                    }
+                } finally {
+                    fatal?.let { throw it }
+                }
             }
-            if (requeue) {
-                // A requeue arrived mid-visit: back on the queue now, and the prompt visit arms its own timer.
-                offer(url)
-            } else {
-                armRevisit(url, revisitDelayMs, stillWanted)
-            }
+        } finally {
+            alive.decrementAndGet()
         }
     }
 

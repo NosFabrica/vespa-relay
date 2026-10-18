@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -333,6 +334,70 @@ class VisitQueueTest {
                 assertEquals(null, q.waitingBy { it.stream }["idle"])
             } finally {
                 release.trySend(Unit)
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a visit that throws does not end its worker`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue<String>(scope)
+            val escaped = Channel<String>(Channel.UNLIMITED)
+            val visited = Channel<String>(Channel.UNLIMITED)
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }, onEscape = { key, _ -> escaped.trySend(key) }) { key ->
+                    when (key) {
+                        "error" -> throw AssertionError("an Error, which a catch of Exception lets through")
+                        "stray" -> throw kotlinx.coroutines.CancellationException("not a shutdown")
+                        else -> visited.send(key)
+                    }
+                }
+            }
+            try {
+                withTimeout(5_000) {
+                    while (q.workersAlive < 1) delay(5)
+                    q.offer("error")
+                    assertEquals("error", escaped.receive())
+                    q.offer("stray")
+                    assertEquals("stray", escaped.receive())
+                    q.offer("fine")
+                    assertEquals("fine", visited.receive(), "the same worker draws the next unit")
+                }
+                assertEquals(1, q.workersAlive, "and is still counted as drawing units")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a visit that dies of a VM error ends its worker but keeps its unit in the rotation`() =
+        runBlocking {
+            val died = Channel<Throwable>(Channel.UNLIMITED)
+            val scope = CoroutineScope(SupervisorJob() + CoroutineExceptionHandler { _, e -> died.trySend(e) })
+            val q = VisitQueue<String>(scope)
+            val visits = AtomicInteger()
+            val visited = Channel<Int>(Channel.UNLIMITED)
+
+            fun worker() =
+                scope.launch {
+                    q.visitLoop(stillWanted = { true }, revisitDelayMs = { 100L }) {
+                        val n = visits.incrementAndGet()
+                        visited.send(n)
+                        if (n == 1) throw OutOfMemoryError("staged")
+                    }
+                }
+            worker()
+            try {
+                withTimeout(5_000) {
+                    q.offer("unit")
+                    assertEquals(1, visited.receive())
+                    assertTrue(died.receive() is OutOfMemoryError, "the VM error still ends the worker")
+                    // The pool's replacement; the unit must come back to it without anyone offering it again.
+                    worker()
+                    assertEquals(2, visited.receive(), "the unit is revisited on its timer")
+                }
+            } finally {
                 scope.cancel()
             }
         }

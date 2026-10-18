@@ -1,6 +1,6 @@
 // A person's picture everywhere the page draws one: the picture, a generated face keyed off
 // the pubkey when there is none, and the score chip the active lens fills in. The pixel
-// sizes live in the stylesheet's `--av` table (index.html).
+// sizes live in the stylesheet's `--av` table (web/app.css).
 
 import { esc } from "./format.js";
 
@@ -29,7 +29,7 @@ export function avatarHtml(pic, pubkey, size = "lg") {
     // decoding="async" as well as loading="lazy": lazy decides when the bytes are fetched,
     // not who decodes them.
     ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
-         onerror="this.classList.add('gen');this.src='${BLANK}'" />`
+         data-broken="face" />`
     : `<div class="avatar gen" ${style}></div>`;
   return `<span class="av-wrap av-${size}">${face}<span class="score-chip" data-pk="${esc(pubkey || "")}"></span></span>`;
 }

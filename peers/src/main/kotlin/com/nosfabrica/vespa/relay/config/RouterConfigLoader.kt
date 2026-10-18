@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
 import com.typesafe.config.Config
@@ -121,6 +122,7 @@ object RouterConfigLoader {
         val upInterval = env.strictLong("SYNC_UP_INTERVAL_SECONDS", 10L..Long.MAX_VALUE) ?: 300L
         val ingestConcurrency = env.strictInt("SYNC_INGEST_CONCURRENCY", 1..64) ?: 2
         val ingestBatch = env.strictInt("SYNC_INGEST_BATCH", 1..20_000) ?: 1000
+        val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
         // Removed settings are refused, never ignored.
         require(env["SYNC_NEG_MIN_EVENTS"].isNullOrBlank()) {
             "router: SYNC_NEG_MIN_EVENTS is set — it sized the `auto` transport choice, and there is no transport " +
@@ -134,7 +136,7 @@ object RouterConfigLoader {
             )
         val pageTarget = env.strictInt("SYNC_NEG_PAGE_TARGET", 0..Int.MAX_VALUE) ?: 100_000
         val pageMin = env.strictInt("SYNC_NEG_PAGE_MIN", 1..Int.MAX_VALUE) ?: 1_000
-        val pageMax = env.strictInt("SYNC_NEG_PAGE_MAX", pageMin..Int.MAX_VALUE) ?: 1_000_000
+        val pageMax = env.strictInt("SYNC_NEG_PAGE_MAX", pageMin..Int.MAX_VALUE) ?: maxOf(DEFAULT_NEG_PAGE_MAX, pageMin)
         val pageSlack = env.strictLong("SYNC_NEG_PAGE_SLACK_SECONDS", 0L..Long.MAX_VALUE) ?: 60L
         return parse(
             inline,
@@ -146,9 +148,10 @@ object RouterConfigLoader {
             syncOrigin = syncOrigin,
             monitorOrigin = monitorOrigin,
         ).copy(
+            ingestDedupChunk = dedupChunk,
             negPageTarget = pageTarget,
             negPageMin = pageMin,
-            negPageMax = pageMax.coerceAtLeast(pageMin),
+            negPageMax = pageMax,
             negPageSlackSec = pageSlack,
         ).let {
             if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
@@ -218,116 +221,136 @@ object RouterConfigLoader {
         monitorOrigin: File? = null,
     ): RouterConfig {
         val cfg = document(hocon, syncOrigin)
-        val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
+        refuseRetired(cfg, SYNC_CONFIG, RETIRED_ROOT_KEYS)
+        // Zero is no timeout at all to OkHttp, never a short one.
+        val connTimeout = cfg.longAtLeast(SYNC_CONFIG, "connectionTimeout", 1L) ?: 20L
         require(cfg.hasPath("streams")) { "router: config has no `streams { }` block" }
         val streamsCfg = cfg.getConfig("streams")
-        val streams =
-            streamsCfg.root().keys.map { name ->
-                val s = streamsCfg.getConfig(quote(name))
-                val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
-                val dir = SyncDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
-                val discovery = parseDiscovery(name, s, relaySourceDefaults)
+        val streams = streamsCfg.root().keys.map { name -> parseStream(name, streamsCfg.getConfig(quote(name)), relaySourceDefaults) }
+        warnRetractionOverlaps(streams)
+        refuseUnknownKeys(cfg, SYNC_CONFIG, ROOT_KEYS)
+        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
+        return RouterConfig(
+            connTimeout,
+            streams,
+            upIntervalSec,
+            ingestConcurrency,
+            ingestBatch,
+            monitor = monitor,
+        )
+    }
 
-                require(discovery != null || s.hasPath("urls")) {
-                    "router: stream '$name' has neither `urls` nor a `relaySource` list"
-                }
-                require(discovery == null || urls.isEmpty()) {
-                    "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
-                }
-                require(discovery == null || dir == SyncDirection.DOWN) {
-                    "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
-                }
+    /** One `streams { }` entry. Retired keys are refused first, since their message says more than "unknown". */
+    private fun parseStream(
+        name: String,
+        s: Config,
+        relaySourceDefaults: RelaySourceDefaults,
+    ): SyncStream {
+        val where = "stream '$name'"
+        refuseRetired(s, where, RETIRED_STREAM_KEYS)
+        val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
+        val dir = SyncDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
+        val discovery = parseDiscovery(name, s, relaySourceDefaults)
+        requireOneRelayList(name, s, discovery, urls, dir)
 
-                val filter = parseFilter(s.getConfig("filter"))
-                val deleteMissing = parseDeleteMissing(name, s)
-                require(!s.hasPath("sync")) {
-                    "router: stream '$name' sets `sync` — gone with the legacy backfill. Every stream is visited " +
-                        "the same way now: page forward from the band's edge, live-tail, and re-check the past on " +
-                        "`negentropySyncThePastSeconds` (reconcile) and `refetchThePastSeconds` (re-fetch)"
-                }
-                // The knob's two older names. Refused rather than read: a rename that is quietly
-                // ignored turns the reconcile of the past OFF, and the symptom is a past that
-                // stopped being checked — which nothing on any page reports as an error.
-                for (old in listOf("auditSeconds", "verifySeconds")) {
-                    require(!s.hasPath(old)) {
-                        "router: stream '$name' sets $old — renamed to negentropySyncThePastSeconds (it clocks the " +
-                            "reconcile of the whole past, against relays that answer a NEG-OPEN). Rename the key"
-                    }
-                }
-                val negentropySyncThePastSeconds =
-                    if (s.hasPath("negentropySyncThePastSeconds")) {
-                        s.getLong("negentropySyncThePastSeconds").coerceAtLeast(3600L)
-                    } else {
-                        null
-                    }
-                // Warned about at or below the audit, where it re-downloads what the audit would reconcile.
-                val refetchThePastSeconds =
-                    if (s.hasPath("refetchThePastSeconds")) {
-                        s.getLong("refetchThePastSeconds").coerceAtLeast(3600L).also {
-                            if (negentropySyncThePastSeconds != null && it <= negentropySyncThePastSeconds) {
-                                System.err.println(
-                                    "router: stream '$name' re-fetches the past every ${it}s but negentropy-syncs it " +
-                                        "every ${negentropySyncThePastSeconds}s — the re-fetch pages the whole history the " +
-                                        "reconcile was about to compare for the difference alone, so the reconcile can " +
-                                        "never be the cheaper path",
-                                )
-                            }
-                        }
-                    } else {
-                        null
-                    }
-                val negentropyTiers = parseTiers(name, s, "negentropy", "negentropySyncThePastSeconds", negentropySyncThePastSeconds)
-                val refetchTiers = parseTiers(name, s, "refetch", "refetchThePastSeconds", refetchThePastSeconds)
-                if (discovery == null) {
-                    val discoveryOnly = DISCOVERY_KEYS.filter { s.hasPath(it) }
-                    require(discoveryOnly.isEmpty()) {
-                        "router: stream '$name' sets ${discoveryOnly.joinToString { "`$it`" }}, which only a `relaySource` " +
-                            "stream reads — on a stream of static `urls` it would do nothing"
-                    }
-                }
-                refuseUnknownKeys(s, "stream '$name'", STREAM_KEYS + DISCOVERY_KEYS)
-                if (deleteMissing != DeleteMissing.OFF) {
-                    // The comparison runs as the pool's audit, so it needs a relay list and the audit clock.
-                    require(discovery != null) {
-                        "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
-                            "comparison runs as the pool's audit, over asks a scan paired with their owners"
-                    }
-                    require(negentropySyncThePastSeconds != null) {
-                        "router: stream '$name' sets deleteMissing without `negentropySyncThePastSeconds` — " +
-                            "the retraction comparison IS that reconcile, and that knob is its clock"
-                    }
-                    // The delete's licence is per (relay, provider), so every source must bind `authors`.
-                    discovery.sources.forEach { source ->
-                        require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
-                            "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
-                                "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
-                                "`authors` binding produces an unbound ask that would judge every provider at once. " +
-                                "Add `authors = <tag slot>` to every select on this stream"
-                        }
-                    }
-                }
-                SyncStream(
-                    name = name,
-                    dir = dir,
-                    filter = filter,
-                    urls = urls,
-                    trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
-                    discovery = discovery,
-                    deleteMissing = deleteMissing,
-                    ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
-                    refetchThePastSeconds = refetchThePastSeconds,
-                    negentropyTiers = negentropyTiers,
-                    refetchTiers = refetchTiers,
-                    healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
-                    healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
-                    negentropySyncThePastSeconds = negentropySyncThePastSeconds,
-                    refetchConcurrency = cap(s, "refetchConcurrency"),
-                    negentropyConcurrency = cap(s, "negentropyConcurrency"),
-                    maxLiveConcurrency = cap(s, "maxLiveConcurrency"),
-                    visitConcurrency = cap(s, "visitConcurrency"),
-                )
+        val filter = parseFilter(s.getConfig("filter"))
+        val deleteMissing = parseDeleteMissing(name, s)
+        val negentropySyncThePastSeconds = s.period(where, "negentropySyncThePastSeconds")
+        val refetchThePastSeconds = s.period(where, "refetchThePastSeconds")
+        warnRefetchInsideAudit(name, negentropySyncThePastSeconds, refetchThePastSeconds)
+        val negentropyTiers = parseTiers(name, s, "negentropy", "negentropySyncThePastSeconds", negentropySyncThePastSeconds)
+        val refetchTiers = parseTiers(name, s, "refetch", "refetchThePastSeconds", refetchThePastSeconds)
+        if (discovery == null) {
+            val discoveryOnly = DISCOVERY_KEYS.filter { s.hasPath(it) }
+            require(discoveryOnly.isEmpty()) {
+                "router: stream '$name' sets ${discoveryOnly.joinToString { "`$it`" }}, which only a `relaySource` " +
+                    "stream reads — on a stream of static `urls` it would do nothing"
             }
-        // Advisory: a kind deleted here and mirrored there is re-mirrored and re-deleted every audit.
+        }
+        refuseUnknownKeys(s, where, STREAM_KEYS + DISCOVERY_KEYS)
+        if (deleteMissing != DeleteMissing.OFF) requireRetractionLicence(name, discovery, negentropySyncThePastSeconds)
+        return SyncStream(
+            name = name,
+            dir = dir,
+            filter = filter,
+            urls = urls,
+            trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
+            discovery = discovery,
+            deleteMissing = deleteMissing,
+            ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
+            refetchThePastSeconds = refetchThePastSeconds,
+            negentropyTiers = negentropyTiers,
+            refetchTiers = refetchTiers,
+            healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
+            healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
+            negentropySyncThePastSeconds = negentropySyncThePastSeconds,
+            refetchConcurrency = s.intAtLeast(where, "refetchConcurrency", 1),
+            negentropyConcurrency = s.intAtLeast(where, "negentropyConcurrency", 1),
+            maxLiveConcurrency = s.intAtLeast(where, "maxLiveConcurrency", 1),
+            visitConcurrency = s.intAtLeast(where, "visitConcurrency", 1),
+        )
+    }
+
+    /** A stream's relays come from `urls` or from a `relaySource`, exactly one, and a discovered list only pulls down. */
+    private fun requireOneRelayList(
+        name: String,
+        s: Config,
+        discovery: RelayDiscoveryConfig?,
+        urls: List<NormalizedRelayUrl>,
+        dir: SyncDirection,
+    ) {
+        require(discovery != null || s.hasPath("urls")) {
+            "router: stream '$name' has neither `urls` nor a `relaySource` list"
+        }
+        require(discovery == null || urls.isEmpty()) {
+            "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
+        }
+        require(discovery == null || dir == SyncDirection.DOWN) {
+            "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
+        }
+    }
+
+    /** Said, not refused: a re-fetch at or inside the audit re-downloads what the reconcile would compare for the difference. */
+    private fun warnRefetchInsideAudit(
+        name: String,
+        negentropy: Long?,
+        refetch: Long?,
+    ) {
+        if (negentropy == null || refetch == null || refetch > negentropy) return
+        System.err.println(
+            "router: stream '$name' re-fetches the past every ${refetch}s but negentropy-syncs it every ${negentropy}s — " +
+                "the re-fetch pages the whole history the reconcile was about to compare for the difference alone, so " +
+                "the reconcile can never be the cheaper path",
+        )
+    }
+
+    /** The comparison runs as the pool's audit, so it needs a relay list, the audit clock, and an owner per ask. */
+    private fun requireRetractionLicence(
+        name: String,
+        discovery: RelayDiscoveryConfig?,
+        negentropySyncThePastSeconds: Long?,
+    ) {
+        requireNotNull(discovery) {
+            "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
+                "comparison runs as the pool's audit, over asks a scan paired with their owners"
+        }
+        require(negentropySyncThePastSeconds != null) {
+            "router: stream '$name' sets deleteMissing without `negentropySyncThePastSeconds` — " +
+                "the retraction comparison IS that reconcile, and that knob is its clock"
+        }
+        // The delete's licence is per (relay, provider), so every source must bind `authors`.
+        discovery.sources.forEach { source ->
+            require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
+                "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
+                    "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
+                    "`authors` binding produces an unbound ask that would judge every provider at once. " +
+                    "Add `authors = <tag slot>` to every select on this stream"
+            }
+        }
+    }
+
+    /** Advisory: a kind deleted here and mirrored there is re-mirrored and re-deleted every audit. */
+    private fun warnRetractionOverlaps(streams: List<SyncStream>) {
         for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF }) {
             for (other in streams) {
                 if (other.name == retracting.name) continue
@@ -344,38 +367,67 @@ object RouterConfigLoader {
                 }
             }
         }
-        refuseRouterWidePoolWidths(cfg)
-        refuseUnknownKeys(cfg, "the sync config", ROOT_KEYS)
-        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
-        return RouterConfig(
-            connTimeout,
-            streams,
-            upIntervalSec,
-            ingestConcurrency,
-            ingestBatch,
-            monitor = monitor,
-        )
     }
 
-    /** The pool's socket widths live inside the streams; the old top-level spelling is refused, not dropped. */
-    private fun refuseRouterWidePoolWidths(cfg: Config) {
-        require(!cfg.hasPath("visitConcurrency")) {
-            "router: top-level `visitConcurrency` — moved inside each stream, because the four jobs a visit does " +
-                "are budgeted per stream and its dial width belongs beside them. The pool's worker count is now " +
-                "the sum of the streams' own `visitConcurrency`"
-        }
-        require(!cfg.hasPath("tailBudget")) {
-            "router: top-level `tailBudget` — moved inside each stream and renamed `maxLiveConcurrency`. Every " +
-                "stream says how many live subscriptions it may keep open, and their sum bounds what this process " +
-                "holds"
-        }
-    }
-
-    /** One of a stream's workload caps: absent, or at least one. Zero is floored, not honored. */
-    private fun cap(
+    /** Refuses every [retired] key present at this level, each with its one message. */
+    private fun refuseRetired(
         cfg: Config,
+        where: String,
+        retired: Map<String, String>,
+    ) {
+        for ((key, why) in retired) {
+            require(!cfg.hasPath(key)) { "router: $where sets `$key` — $why" }
+        }
+    }
+
+    /** [path] if set, refused below [min]: an out-of-range value stops the boot rather than reading as the bound. */
+    private fun Config.longAtLeast(
+        where: String,
         path: String,
-    ): Int? = if (cfg.hasPath(path)) cfg.getInt(path).coerceAtLeast(1) else null
+        min: Long,
+    ): Long? {
+        if (!hasPath(path)) return null
+        val value = getLong(path)
+        require(value >= min) { "router: $where has `$path = $value` — it must be at least $min" }
+        return value
+    }
+
+    private fun Config.intAtLeast(
+        where: String,
+        path: String,
+        min: Int,
+    ): Int? = longAtLeast(where, path, min.toLong())?.let { getInt(path) }
+
+    /** A scalar re-check period, at least [MIN_PERIOD_SECONDS]: shorter is a re-walk loop, not a schedule. */
+    private fun Config.period(
+        where: String,
+        path: String,
+    ): Long? {
+        if (!hasPath(path)) return null
+        val value = getLong(path)
+        require(value >= MIN_PERIOD_SECONDS) {
+            "router: $where has `$path = $value` — it must be at least $MIN_PERIOD_SECONDS; a shorter period is a " +
+                "re-walk loop, not a schedule (a band that should be audited on every visit is a tier list's `every = 0`)"
+        }
+        return value
+    }
+
+    /**
+     * A tier's cadence. Any length is honoured, and 0 means every visit; a re-fetch at 0 re-pages the whole
+     * band on every visit and never accumulates coverage, so only the audit may ask for it.
+     */
+    private fun Config.tierEvery(
+        where: String,
+        key: String,
+    ): Long {
+        val value = getLong("every")
+        require(value >= 0) { "router: $where has `every = $value` — a cadence cannot be negative" }
+        require(value > 0 || key != "refetch") {
+            "router: $where has `every = 0` — a re-fetch due on every visit re-pages the whole band each time and " +
+                "never finishes; give it a period"
+        }
+        return value
+    }
 
     /**
      * The monitor's declaration, from its own file when there is one and from the sync config's
@@ -408,42 +460,29 @@ object RouterConfigLoader {
                     return null
                 }
             }
+        refuseRetired(m, MONITOR_CONFIG, RETIRED_MONITOR_KEYS)
         // Absent and empty are different answers: one never said what to measure, the other said
         // "nothing". Only the first is refused at boot.
         val sources = if (m.hasPath("sources")) m.getConfigList("sources").map { parseRelaySource("monitor", it) } else null
-        // Both renamed knobs are refused for the same reason the stream's are: read as nothing,
-        // `newUrlSeconds` silently retires the fast lane and `concurrency` silently re-floors the dials.
-        require(!m.hasPath("newUrlSeconds")) {
-            "router: monitor sets newUrlSeconds — renamed to fastLaneSeconds. Rename the key"
-        }
-        require(!m.hasPath("concurrency")) {
-            "router: monitor sets concurrency — renamed to dialConcurrency (it bounds the probe passes' dials). " +
-                "Rename the key"
-        }
-        refuseUnknownKeys(m, "the monitor config", MONITOR_KEYS)
+        refuseUnknownKeys(m, MONITOR_CONFIG, MONITOR_KEYS)
         return MonitorConfig(
             sources = sources,
-            exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
-            sweepSeconds =
-                (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
-                    .coerceAtLeast(300L),
-            fastLaneSeconds =
-                when {
-                    !m.hasPath("fastLaneSeconds") -> MonitorConfig.DEFAULT_FAST_LANE_SECONDS
-
-                    // 0 is the documented off switch.
-                    m.getLong("fastLaneSeconds") <= 0L -> null
-
-                    else -> m.getLong("fastLaneSeconds").coerceAtLeast(30L)
-                },
-            // Floored at 1: zero dials is an off switch no operator asked this knob to be.
-            dialConcurrency =
-                if (m.hasPath("dialConcurrency")) {
-                    m.getInt("dialConcurrency").coerceAtLeast(1)
-                } else {
-                    MonitorConfig.DEFAULT_DIAL_CONCURRENCY
-                },
+            exclude = if (m.hasPath("exclude")) parseExcludes(MONITOR_CONFIG, m.getStringList("exclude")) else RelayExcludes.NONE,
+            sweepSeconds = m.longAtLeast(MONITOR_CONFIG, "sweepSeconds", 300L) ?: MonitorConfig.DEFAULT_SWEEP_SECONDS,
+            fastLaneSeconds = parseFastLane(m),
+            dialConcurrency = m.intAtLeast(MONITOR_CONFIG, "dialConcurrency", 1) ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY,
         )
+    }
+
+    /** `fastLaneSeconds`: absent is the default, 0 the documented off switch, anything else at least 30. */
+    private fun parseFastLane(m: Config): Long? {
+        if (!m.hasPath("fastLaneSeconds")) return MonitorConfig.DEFAULT_FAST_LANE_SECONDS
+        val value = m.getLong("fastLaneSeconds")
+        if (value == 0L) return null
+        require(value >= 30L) {
+            "router: $MONITOR_CONFIG has `fastLaneSeconds = $value` — it must be at least 30, or 0 to turn the fast lane off"
+        }
+        return value
     }
 
     /**
@@ -484,15 +523,17 @@ object RouterConfigLoader {
         }
     }
 
+    /** A stream's `urls`; one that does not parse refuses the config, since skipping it drops a relay the operator named. */
     private fun normalizeUrls(
         stream: String,
         raw: List<String>,
-    ): List<NormalizedRelayUrl> =
-        raw.mapNotNull { url ->
-            RelayUrlNormalizer.normalizeOrNull(url).also {
-                if (it == null) System.err.println("router: stream '$stream' skips invalid url '$url'")
-            }
+    ): List<NormalizedRelayUrl> {
+        val invalid = raw.filter { RelayUrlNormalizer.normalizeOrNull(it) == null }
+        require(invalid.isEmpty()) {
+            "router: stream '$stream' has `urls` entries that are not relay urls: ${invalid.joinToString { "'$it'" }}"
         }
+        return raw.map { RelayUrlNormalizer.normalizeOrNull(it)!! }
+    }
 
     /**
      * One stream's age bands under [key], youngest-first. Each entry is `{ maxAge, every }`:
@@ -517,13 +558,12 @@ object RouterConfigLoader {
         }
         val tiers =
             s.getConfigList(key).mapIndexed { i, t ->
-                require(t.hasPath("every")) { "router: stream '$stream' `$key`[$i] has no `every` — a band with no cadence is never due" }
-                refuseUnknownKeys(t, "stream '$stream' `$key`[$i]", setOf("every", "maxAge"))
-                val every = t.getLong("every")
-                require(every >= 0L) { "router: stream '$stream' `$key`[$i] has a negative `every`" }
+                val where = "stream '$stream' `$key`[$i]"
+                require(t.hasPath("every")) { "router: $where has no `every` — a band with no cadence is never due" }
+                refuseUnknownKeys(t, where, setOf("every", "maxAge"))
                 SyncTier(
-                    maxAgeSeconds = if (t.hasPath("maxAge")) t.getLong("maxAge") else null,
-                    everySeconds = every,
+                    maxAgeSeconds = t.longAtLeast(where, "maxAge", 1L),
+                    everySeconds = t.tierEvery(where, key),
                 )
             }
         require(tiers.isNotEmpty()) { "router: stream '$stream' has an empty `$key` — remove the key to schedule nothing" }
@@ -620,31 +660,7 @@ object RouterConfigLoader {
         defaults: RelaySourceDefaults,
     ): RelayDiscoveryConfig? {
         if (!s.hasPath("relaySource")) return null
-        require(!s.hasPath("authorsPerLeg")) {
-            "router: stream '$stream' sets authorsPerLeg — gone with the cycle engine. The pool makes one ask " +
-                "per bound author, which is what authorsPerLeg = 1 configured; other values invalidated bands"
-        }
-        require(!s.hasPath("catchUpConcurrency")) {
-            "router: stream '$stream' sets catchUpConcurrency — removed, because `visitConcurrency` already " +
-                "bounds it. A catch-up runs INSIDE a visit and one visit walks its legs one at a time, so a " +
-                "separate cap could only bite below the dial width, and then only by making an already-dialled " +
-                "visit do less work. Lower `visitConcurrency` instead"
-        }
-        require(!s.hasPath("concurrency")) {
-            "router: stream '$stream' sets a per-stream concurrency — gone with the cycle engine. The dial " +
-                "width is this stream's own `visitConcurrency`, and the pool runs the SUM of them"
-        }
-        require(!s.hasPath("recycleSeconds")) {
-            "router: stream '$stream' sets recycleSeconds — gone with the cycle engine. The pool has no laps: " +
-                "revisits are paced per relay by recent yield, and `refreshSeconds` paces rediscovery"
-        }
-        require(!s.hasPath("sync")) {
-            "router: stream '$stream' sets `sync` beside a relaySource — the pool has one shape for every " +
-                "stream: page forward from the band's edge, reconcile the whole past on the " +
-                "negentropySyncThePastSeconds " +
-                "audit. `sync` chooses transport for static `urls` streams only; writing it here would claim " +
-                "a choice nothing reads"
-        }
+        val where = "stream '$stream'"
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
         val gatedBy =
@@ -669,26 +685,29 @@ object RouterConfigLoader {
         return RelayDiscoveryConfig(
             sources = sources,
             gatedBy = gatedBy,
-            refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
-            exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
-            maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
+            refreshSeconds = s.longAtLeast(where, "refreshSeconds", 60L) ?: defaults.refreshSeconds,
+            exclude = if (s.hasPath("exclude")) parseExcludes(where, s.getStringList("exclude")) else RelayExcludes.NONE,
+            maxRelaysPerList = s.intAtLeast(where, "maxRelaysPerList", 1),
         )
     }
 
-    /** Compiled here so a broken regex refuses the config naming the stream, not mid-cycle. */
+    /** Compiled here so a broken entry refuses the config naming its owner, not mid-cycle; an exclude that failed open would dial what it forbids. */
     private fun parseExcludes(
-        stream: String,
+        where: String,
         raw: List<String>,
-    ): RelayExcludes =
-        try {
-            RelayExcludes.parse(raw) { url ->
-                System.err.println("router: stream '$stream' skips invalid exclude url '$url'")
+    ): RelayExcludes {
+        val invalid = ArrayList<String>()
+        val parsed =
+            try {
+                RelayExcludes.parse(raw) { invalid += it }
+            } catch (e: PatternSyntaxException) {
+                throw IllegalArgumentException("router: $where has an exclude entry that does not compile as a regex — ${e.message}")
             }
-        } catch (e: PatternSyntaxException) {
-            throw IllegalArgumentException(
-                "router: stream '$stream' has an exclude entry that does not compile as a regex — ${e.message}",
-            )
+        require(invalid.isEmpty()) {
+            "router: $where has exclude entries that are neither a relay url nor a regex: ${invalid.joinToString { "'$it'" }}"
         }
+        return parsed
+    }
 
     /** One `{ select = [ ], filter = { } }` entry, for a stream's `relaySource` and its `gatedBy` alike. */
     private fun parseRelaySource(
@@ -696,13 +715,14 @@ object RouterConfigLoader {
         s: Config,
         what: String = "relaySource",
     ): RelaySource {
+        val where = "stream '$stream' $what entry"
+        refuseRetired(s, where, RETIRED_SOURCE_KEYS)
         require(s.hasPath("filter")) { "router: stream '$stream' has a $what entry with no `filter { }`" }
-        val written = parseFilter(s.getConfig("filter"))
-        val kinds = written.kinds
+        val filter = parseFilter(s.getConfig("filter"))
+        val kinds = filter.kinds
         require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
         // NIP-66 fixes the url in a 30166's `d` tag; nothing else about its tags is ours to read.
         val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
-        val filter = written
         require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
             "router: stream '$stream' bounds a $what entry with BOTH `maxAgeSeconds` and since/until — they are " +
                 "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
@@ -730,23 +750,12 @@ object RouterConfigLoader {
                 }
                 listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
             }
-        require(!s.hasPath("certified")) {
-            "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh " +
-                "prime from our own monitor`, and both halves of that are now expressible. Write the gate as " +
-                "a stream-level `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
-                "\"#l\": [\"prime\"] } } ]` — naming whatever tag and value the monitor you trust writes"
-        }
-        require(!s.hasPath("resultsFilteredBy")) {
-            "router: stream '$stream' puts `resultsFilteredBy` on a $what entry — it was renamed to `gatedBy` and " +
-                "moved beside `exclude` on the stream, because which urls may be dialled is not a property of " +
-                "how one was discovered"
-        }
-        refuseUnknownKeys(s, "stream '$stream' $what entry", setOf("filter", "select", "maxAgeSeconds", "refreshSeconds"))
+        refuseUnknownKeys(s, where, setOf("filter", "select", "maxAgeSeconds", "refreshSeconds"))
         return RelaySource(
             selects = selects,
             filter = filter,
-            maxAgeSeconds = if (s.hasPath("maxAgeSeconds")) s.getLong("maxAgeSeconds").coerceAtLeast(60L) else null,
-            refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
+            maxAgeSeconds = s.longAtLeast(where, "maxAgeSeconds", 60L),
+            refreshSeconds = s.longAtLeast(where, "refreshSeconds", 10L),
         )
     }
 
@@ -983,6 +992,74 @@ object RouterConfigLoader {
             }
             key
         }
+
+    private const val SYNC_CONFIG = "the sync config"
+
+    private const val MONITOR_CONFIG = "the monitor config"
+
+    /** The shortest re-check period a scalar accepts; a tier list carries anything shorter. */
+    private const val MIN_PERIOD_SECONDS = 3_600L
+
+    /** The widest negentropy page by default; raised to `SYNC_NEG_PAGE_MIN` when that is set higher. */
+    private const val DEFAULT_NEG_PAGE_MAX = 1_000_000
+
+    private const val RENAMED_TO_NEGENTROPY_SYNC =
+        "renamed to negentropySyncThePastSeconds (it clocks the reconcile of the whole past, against relays that " +
+            "answer a NEG-OPEN). Rename the key"
+
+    /*
+     * Keys a config level once read, each against the one sentence that says what replaced it.
+     * Refused rather than ignored: a dropped key leaves its setting at a default nobody chose.
+     */
+
+    private val RETIRED_ROOT_KEYS =
+        mapOf(
+            "visitConcurrency" to
+                "moved inside each stream, beside the jobs a visit is budgeted for; the pool's worker count is the " +
+                "sum of the streams' own `visitConcurrency`",
+            "tailBudget" to
+                "moved inside each stream and renamed `maxLiveConcurrency`; their sum bounds the live subscriptions " +
+                "this process holds",
+        )
+
+    private val RETIRED_STREAM_KEYS =
+        mapOf(
+            "sync" to
+                "gone with the transport choice. Every stream is visited the same way: page forward from the band's " +
+                "edge, live-tail, and re-check the past on `negentropySyncThePastSeconds` (reconcile) and " +
+                "`refetchThePastSeconds` (re-fetch)",
+            "auditSeconds" to RENAMED_TO_NEGENTROPY_SYNC,
+            "verifySeconds" to RENAMED_TO_NEGENTROPY_SYNC,
+            "authorsPerLeg" to
+                "gone with the cycle engine. The pool makes one ask per bound author, which is what authorsPerLeg = 1 " +
+                "configured; other values invalidated bands",
+            "catchUpConcurrency" to
+                "removed: a catch-up runs inside a visit, which walks its legs one at a time, so `visitConcurrency` " +
+                "already bounds it. Lower `visitConcurrency` instead",
+            "concurrency" to
+                "gone with the cycle engine. The dial width is this stream's own `visitConcurrency`, and the pool " +
+                "runs the sum of them",
+            "recycleSeconds" to
+                "gone with the cycle engine. The pool has no laps: revisits are paced per relay by recent yield, and " +
+                "`refreshSeconds` paces rediscovery",
+        )
+
+    private val RETIRED_MONITOR_KEYS =
+        mapOf(
+            "newUrlSeconds" to "renamed to fastLaneSeconds. Rename the key",
+            "concurrency" to "renamed to dialConcurrency (it bounds the probe passes' dials). Rename the key",
+        )
+
+    private val RETIRED_SOURCE_KEYS =
+        mapOf(
+            "certified" to
+                "gone: it could only ever mean a fresh prime from our own monitor. Write the gate as a stream-level " +
+                "`gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], \"#l\": [\"prime\"] } } ]`, " +
+                "naming whatever tag and value the monitor you trust writes",
+            "resultsFilteredBy" to
+                "renamed to `gatedBy` and moved beside `exclude` on the stream, because which urls may be dialled is " +
+                "not a property of how one was discovered",
+        )
 
     private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor")
 

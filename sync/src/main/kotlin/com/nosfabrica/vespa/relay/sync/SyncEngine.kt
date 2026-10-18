@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
-import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
@@ -66,8 +65,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.atomic.AtomicLong
@@ -140,7 +137,7 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, IngestTuning(config.ingestConcurrency, config.ingestBatch), audit, servingPressure, scope, knownIds, newestVersions, refusals)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure, scope, knownIds, newestVersions, refusals)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */
@@ -182,11 +179,8 @@ class SyncEngine(
             peers = peers,
             signer = signer,
             sockets = sockets,
-            // Submitted once, not once per wanting stream. ALWAYS VERIFIED, whatever a matching
-            // stream's `trusted` says: that flag vouches for one declared upstream, and this event
-            // came off whichever relay a probe pass happened to dial. Asked of the streams that
-            // PULL — an `up` stream's filter describes what this router publishes, and nothing
-            // there ever asked to mirror what a probe saw.
+            // Once, always verified (`trusted` vouches for a declared upstream, not a probed relay),
+            // and only if a pulling stream wants it: an `up` filter says what we publish.
             onProbeEvent = { event ->
                 if (visitStreams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
             },
@@ -195,7 +189,7 @@ class SyncEngine(
         )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
-    private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
+    private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds)
 
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
@@ -236,38 +230,21 @@ class SyncEngine(
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
+    /** One boot for every node; a monitor-only one still needs ingest, a connected client and the progress document. */
     fun start(): SyncEngine {
-        if (visitStreams.isEmpty() && upUpstreams.isEmpty()) {
-            System.err.println("router: no upstreams configured; nothing to mirror")
-            // A monitor-only node still needs ingest draining, a connected client and the
-            // progress document; each of those fails silently when skipped.
-            ingest.start()
-            registerProcessors()
-            peers.announceTor()
-            watchForFatals()
-            scope.launch { healthLoop() }
-            peers.connect()
-            monitor.start()
-            publishProgressLoop()
-            scope.launch { statsLoop() }
-            return this
-        }
+        val mirrors = visitStreams.isNotEmpty() || upUpstreams.isNotEmpty()
+        if (!mirrors) System.err.println("router: no upstreams configured; nothing to mirror")
 
         ingest.start()
         registerProcessors()
-
         peers.announceTor()
-
         watchForFatals()
         scope.launch { healthLoop() }
-
         peers.connect()
 
         // Registered before anything is launched, so silence never reads as unconfigured.
         visitStreams.forEach { phases.register(it.name) }
-
-        upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
-
+        upUpstreams.groupBy { it.streamName }.values.forEach { urls -> scope.launch { upPush.loop(urls) } }
         visitPool.start()
 
         monitor.start()
@@ -275,16 +252,11 @@ class SyncEngine(
         // Its own loop: the phase report below is skipped for a push-only router.
         publishProgressLoop()
         if (visitStreams.isNotEmpty()) {
-            scope.launch {
-                while (scope.isActive) {
-                    delay(PROGRESS_INTERVAL_MS)
-                    phases.report().forEach { System.err.println(it) }
-                }
-            }
+            scope.launch { repeatEvery(PROGRESS_INTERVAL_MS, "phase report") { phases.report().forEach { System.err.println(it) } } }
         }
-
         scope.launch { statsLoop() }
 
+        if (!mirrors) return this
         System.err.println(
             "router: ${visitStreams.size} down stream(s) on the pool (${downUpstreams.size} declared relay(s))" +
                 " + ${upUpstreams.size} up relay(s)" +
@@ -347,22 +319,6 @@ class SyncEngine(
     }
 
     /**
-     * Where the constraint is, read once for both the health line and the document. A full
-     * queue is `ingest` only while it drains; a worker held inside one batch for minutes is `wedged`.
-     */
-    private fun bottleneckOf(
-        depth: Int,
-        rate: Int,
-    ): String =
-        when {
-            ingest.wedged() -> "wedged"
-            depth >= ingest.capacity -> "ingest"
-            depth == 0 && rate == 0 -> "upstream"
-            depth == 0 -> "downloads"
-            else -> "mixed"
-        }
-
-    /**
      * Every ingest stage the store has booked, busiest first, with the shape of each one's
      * time beside its total. One `snapshot()` read, so a row's members describe one instant.
      */
@@ -398,8 +354,7 @@ class SyncEngine(
     /** The status document on its own clock. It describes the process, so it runs with no streams at all. */
     private fun publishProgressLoop() {
         scope.launch {
-            while (scope.isActive) {
-                delay(PROGRESS_INTERVAL_MS)
+            repeatEvery(PROGRESS_INTERVAL_MS, "progress publish") {
                 progress.publish(
                     phases.snapshot(),
                     processors.snapshot(),
@@ -415,116 +370,11 @@ class SyncEngine(
 
     /** Why the machine is idle, once a minute: heap, queue depth and both queue rates name the bottleneck. */
     private suspend fun healthLoop() {
-        var lastEvents = 0L
-        var lastSubmitted = 0L
-        var lastAt = System.currentTimeMillis()
-        while (scope.isActive) {
-            delay(60_000)
-            val rt = Runtime.getRuntime()
-            val usedMb = (rt.totalMemory() - rt.freeMemory()) / 1_048_576
-            val maxMb = rt.maxMemory() / 1_048_576
-            val heapPct = if (maxMb > 0) usedMb * 100 / maxMb else 0
-            val events = ingest.accepted.get() + ingest.rejected.get()
-            // `rate` is what left a batch and `arriving` what went in; only the pair tells a
-            // full queue at 0 ev/s from a fan-out gone quiet.
-            val submitted = ingest.submitted.get()
-            val now = System.currentTimeMillis()
-            val windowMs = (now - lastAt).coerceAtLeast(1)
-            val rate = ((events - lastEvents) * 1000.0 / windowMs).toInt()
-            val arriving = ((submitted - lastSubmitted) * 1000.0 / windowMs).toInt()
-            lastEvents = events
-            lastSubmitted = submitted
-            lastAt = now
-            val depth = ingest.queued.get()
-            // Read once, shared by the document and the line, so the two cannot disagree.
-            val constraint = bottleneckOf(depth, rate)
-            val open = client.connectedRelaysFlow().value.size
-            val load = peers.socketLoad()
-            val stages = stageSplit()
-            health =
-                SyncProgress.Health(
-                    bottleneck = constraint,
-                    eventsPerSec = rate,
-                    arrivingPerSec = arriving,
-                    heapUsedMb = usedMb,
-                    heapMaxMb = maxMb,
-                    sockets = open,
-                    socketCeiling = PeerClient.MAX_CONCURRENT_SOCKETS,
-                    socketsRunning = load.running,
-                    socketsQueued = load.queued,
-                    servingMs = pressure?.meanMs(),
-                    // On this clock rather than the progress tick: the stage split explains `bottleneck`.
-                    stageDetail = stages,
-                    // What holds the store's write lock now; null means nothing does.
-                    lockHeld =
-                        IngestStats.heldNow()?.let { held ->
-                            SyncProgress.LockHeld(
-                                stage = held.stage,
-                                heldMs = held.heldForMillis(),
-                                detail = held.detail,
-                            )
-                        },
-                    feed = (store as? VespaEventStore)?.runCatching { feedStatus() }?.getOrNull(),
-                )
-            System.err.println(
-                "router: health heap $usedMb/${maxMb}MB ($heapPct%)" +
-                    (if (heapPct >= 90) " !! AT THE CEILING" else "") +
-                    ", ingest queue $depth/${ingest.capacity}" +
-                    (
-                        when (constraint) {
-                            "wedged" -> {
-                                " FULL and NOT DRAINING — ingest is wedged, not backpressured: " +
-                                    "${ingest.inBatch()}/${ingest.workerCount} worker(s) in a batch, the oldest " +
-                                    "for ${ingest.oldestBatchMs() / 1000}s. The store stopped answering; look " +
-                                    "there, not at the relays" +
-                                    (
-                                        storeCalls.describeOldest()?.let { ". Longest store call: $it" }
-                                            ?: ". No store call is outstanding — the workers are held somewhere other than the store"
-                                    )
-                            }
-
-                            "ingest" -> {
-                                " FULL (ingest is the limit — downloads are backpressured)"
-                            }
-
-                            "upstream" -> {
-                                " empty (nothing is arriving — the limit is upstream of ingest)"
-                            }
-
-                            "downloads" -> {
-                                " drained (ingest is keeping up; downloads are the limit)"
-                            }
-
-                            else -> {
-                                ""
-                            }
-                        }
-                    ) +
-                    ", $arriving ev/s in, $rate ev/s out" +
-                    ", $open connected" +
-                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
-                    (
-                        retraction.deleted
-                            .get()
-                            .takeIf { it > 0 }
-                            ?.let { ", $it record(s) DELETED as retracted upstream" } ?: ""
-                    ) +
-                    (pressure?.describe()?.let { ", $it" } ?: "") +
-                    (
-                        ingest.workerCount
-                            .minus(ingest.workersRunning())
-                            .takeIf { it > 0 }
-                            ?.let { ", $it of ${ingest.workerCount} ingest worker(s) HAVE STOPPED — that share of the queue has no drain" }
-                            ?: ""
-                    ) +
-                    (
-                        if (ingest.lostToStore.get() > 0) {
-                            ", ${ingest.lostToStore.get()} event(s) LOST to store errors (good events, gone — check the schema)"
-                        } else {
-                            ""
-                        }
-                    ),
-            )
+        val rates = IngestRates(System.currentTimeMillis())
+        repeatEvery(60_000, "health line") {
+            val reading = readHealth(rates)
+            health = healthDocument(reading)
+            System.err.println(healthLine(reading))
             // On the health clock so `wedged` above and the call it is stuck in read together.
             storeCalls.warnSlow().forEach { System.err.println(it) }
             monitor.heldOutDead().takeIf { it > 0 }?.let { dead ->
@@ -535,9 +385,63 @@ class SyncEngine(
         }
     }
 
+    /** One reading of every counter the health line and the document share. */
+    private fun readHealth(rates: IngestRates): HealthReading {
+        val rt = Runtime.getRuntime()
+        val (rate, arriving) = rates.next(ingest.accepted.get() + ingest.rejected.get(), ingest.submitted.get(), System.currentTimeMillis())
+        val depth = ingest.queued.get()
+        return HealthReading(
+            heapUsedMb = (rt.totalMemory() - rt.freeMemory()) / 1_048_576,
+            heapMaxMb = rt.maxMemory() / 1_048_576,
+            queueDepth = depth,
+            queueCapacity = ingest.capacity,
+            bottleneck = bottleneckOf(ingest.wedged(), depth, ingest.capacity, rate),
+            arrivingPerSec = arriving,
+            eventsPerSec = rate,
+            connected = client.connectedRelaysFlow().value.size,
+            fatals = fatals.get(),
+            retracted = retraction.deleted.get(),
+            pressure = pressure?.describe(),
+            ingestWorkers = ingest.workerCount,
+            ingestWorkersRunning = ingest.workersRunning(),
+            lostToStore = ingest.lostToStore.get(),
+            inBatch = ingest.inBatch(),
+            oldestBatchSec = ingest.oldestBatchMs() / 1000,
+            oldestStoreCall = storeCalls.describeOldest(),
+        )
+    }
+
+    /** The document's health block, on this clock rather than the progress tick: the stage split explains `bottleneck`. */
+    private fun healthDocument(r: HealthReading): SyncProgress.Health {
+        val load = peers.socketLoad()
+        return SyncProgress.Health(
+            bottleneck = r.bottleneck,
+            eventsPerSec = r.eventsPerSec,
+            arrivingPerSec = r.arrivingPerSec,
+            heapUsedMb = r.heapUsedMb,
+            heapMaxMb = r.heapMaxMb,
+            sockets = r.connected,
+            socketCeiling = PeerClient.MAX_CONCURRENT_SOCKETS,
+            socketsRunning = load.running,
+            socketsQueued = load.queued,
+            servingMs = pressure?.meanMs(),
+            stageDetail = stageSplit(),
+            // What holds the store's write lock now; null means nothing does.
+            lockHeld =
+                IngestStats.heldNow()?.let { held ->
+                    SyncProgress.LockHeld(
+                        stage = held.stage,
+                        heldMs = held.heldForMillis(),
+                        detail = held.detail,
+                    )
+                },
+            feed = (store as? VespaEventStore)?.runCatching { feedStatus() }?.getOrNull(),
+        )
+    }
+
     private suspend fun statsLoop() {
-        while (scope.isActive) {
-            delay(60_000)
+        repeatEvery(60_000, "stats line") {
+            val pool = visitPool.workerHealth()
             System.err.println(
                 "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                     ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
@@ -546,7 +450,9 @@ class SyncEngine(
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
                     (if (discoveryStreams.isNotEmpty()) " + discovery" else "") +
                     (if (refusedIds.enabled) "; ${refusedIds.summary()}" else "") +
-                    (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else ""),
+                    (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else "") +
+                    (if (visitStreams.isNotEmpty()) "; visit workers ${pool.alive}/${pool.configured} alive" else "") +
+                    (if (pool.respawned > 0) ", ${pool.respawned} replaced after dying" else ""),
             )
             IngestStats.statusLine().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
             ingest.probeStatus().takeIf { it.isNotEmpty() }?.let { System.err.println(it) }
@@ -562,19 +468,20 @@ class SyncEngine(
     /** Number of streams whose relays are discovered from the store, not configured. */
     fun dynamicStreamCount(): Int = discoveryStreams.size
 
+    /** Each step guarded, so one that throws never keeps the next from running. */
     override fun close() {
         // Cursors first: a visit or sweep killed mid-flight keeps the ground it gained.
-        runCatching { bands.flush() }
-        runCatching { sweepState.flush() }
+        shutdownStep("flush the bands") { bands.flush() }
+        shutdownStep("flush the sweep state") { sweepState.flush() }
         // Workers before transport, so cancelled visits do not count their own deaths as aborts.
-        scope.cancel()
+        shutdownStep("cancel the workers") { scope.cancel() }
         // Listeners off the client before the client's pool closes.
-        runCatching { complaints.close() }
-        runCatching { pages.close() }
-        peers.close()
-        ingest.closeIntake()
+        shutdownStep("detach the complaints listener") { complaints.close() }
+        shutdownStep("detach the pages listener") { pages.close() }
+        shutdownStep("close the peer client") { peers.close() }
+        shutdownStep("close ingest's intake") { ingest.closeIntake() }
         // After the scope, so a worker mid-batch is cancelled rather than stranded.
-        ingest.close()
+        shutdownStep("close ingest") { ingest.close() }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +

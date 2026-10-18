@@ -492,3 +492,78 @@ the cursor, so a relay graded through kinds 39000 carries no `pageable` claim.
 No epoch bump: each grade is re-taken on the next sweep. `RelayShapesProbe`
 prints the per-shape answers and the grade for any list of urls.
 
+**Unused monitor code is deleted, not kept for later.** `HostStrikes` lost its
+last caller when the visit pool replaced the dynamic cycle, and its test kept
+it compiling; `ConsistencyPass.applyVerdicts`, `RelayConsistency.adopt` and
+`forget`, `ReachabilityProbe.canDial`, `FitnessPass.pendingWrites` and
+`AliasMonitor.generation` were the same: reachable from tests alone. A test
+that asserted a real property through one of them now asserts it through the
+record or the path production takes (`replace` for a lapsed verdict).
+
+**`silent` needs a transport word that is evidence.** The silence branch
+signed `silent` for everything `Silence` did not route elsewhere, which took
+in an HTTP 429 (a server answering), terminal text the table has not been
+taught (`UNKNOWN`), and a relay that CLOSED one shape and went quiet on the
+others. None of those supports "never answered": a rate limit and an
+unrecognised word are deferred and measured again next pass, and a partial
+refusal is deferred as a server that answered. Only `REFUSED`, `NO_ROUTE` and
+`TIMEOUT` still earn `silent`.
+
+**A queued write is dropped only by a decision that replaces it.** Each batch
+cleared the queue for its candidates before it had measured anything, so a
+batch the guard then refused threw away the grades and withdrawals an earlier
+batch had earned, and a batch whose standing read failed left an old `prime`
+queued to be replayed after the stability gate had refused the relay. The
+queue is now cleared per url once the batch has decided that url, and the
+replay reads the record first: a write a later grade has overtaken, or a
+`prime` the stability gate or the fold has since contradicted, is dropped.
+
+**The replay's read has the write deadline, and the queue follows the sweep.**
+`flushPending` read the record over the queued urls with no clock while
+holding the pass gate, so one read that never answered stopped every sweep and
+fast-lane tick behind it. The read now runs under the write deadline; a read
+that times out or fails is logged as such and leaves every write queued for the
+next retry. The queue was also never pruned: a url that left the candidate set
+(excluded, held out as dead) kept a write retried every five minutes, which
+could land as a claim about a url the monitor no longer measures. Each full
+sweep now drops the queued writes for urls it does not name.
+
+**An unrecognised failure counts as blind, once per host.** Deferring words
+`Silence` does not know took them out of the batch guard's denominator and
+out of its blind share at once, so a broad failure on our side (connection
+resets, EOFs, OkHttp's `Canceled`) set every url aside and never tripped
+REFUSING TO PUBLISH. They are counted as an unexplained lookup is: blind, once
+per host, so one host's paths failing alike are one blind dial and a socket
+layer failing everywhere refuses the batch.
+
+**A url a relay deferred backs off before it is dialled again.** The three
+deferrals added for 429s, unrecognised words and partial refusals wrote
+nothing, and the fast lane drops only urls holding a grade younger than a
+sweep, so a relay that 429'd us and sits in any fresh relay list was dialled
+again on every 120-second tick, by the stability gate and by fitness. Every
+deferral where the relay's side ended the dial (a 5xx, a rate limit,
+unrecognised words, a partial refusal) now starts an in-memory, unsigned
+backoff of one sweep period, or as long as a `Retry-After` in the failure text
+asks, capped at a day. The fast lane's candidate set leaves those urls out
+before any pass sees them, and the sweep skips them too; since the next sweep
+starts at least one period after the deferral, it is the one that dials again.
+A url that answers clears its backoff.
+
+**A standing `prime` does not outlive a relay that keeps deferring.** Deferring
+writes nothing, so a `prime` measured before the relay began refusing stood for
+the whole 30-day TTL and kept it on every roster that selects on the grade. A
+sweep now withdraws it (`retireFitness`, the same path a waiting url's grade
+takes, so nothing negative is said) once the url has deferred two full sweeps
+in a row, a backoff still running counting as deferring, or as soon as it
+defers with a grade older than two sweep periods. The fast lane never
+withdraws: one tick is not a pattern.
+
+**The NIP-11 fetch has its own dispatcher and a clock over its queue.**
+`RelayDocument` enqueued on the client `PeerClient` shares with the mirror's
+live tails, whose dispatcher is sized for sockets across both planes, so a
+document could wait behind tails, or hold a slot a tail needed, and OkHttp's
+call timeout starts only once a call leaves the queue. Each fetch now runs on
+a dispatcher of its own sized to the passes' dials over both transports
+(one document per dial), four at a time per host, and its wall clock covers
+the wait for a slot as well as the call. Cancelling the caller still cancels
+the call.

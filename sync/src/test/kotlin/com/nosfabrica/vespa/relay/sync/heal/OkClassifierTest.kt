@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.sync.heal
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -154,5 +156,44 @@ class WriteCapabilityTest {
         caps.succeeded(relay)
         caps.strike(relay, passId = 3)
         assertFalse(caps.isClosed(relay), "strikes separated by answers are not a pattern of silence")
+    }
+
+    @Test
+    fun `a closure lapses, and the relay starts its strikes over`() {
+        var now = 1_000_000L
+        val caps = WriteCapability(nowMs = { now }, log = {})
+        caps.close(relay, "restricted: not on the allow list")
+        now += WriteCapability.CLOSURE_TTL_MS - 1
+        assertTrue(caps.isClosed(relay), "a closure stands for its whole period")
+        now += 1
+        assertFalse(caps.isClosed(relay), "a relay that changed its policy is offered repairs again")
+        assertEquals(0, caps.closedCount())
+
+        caps.strike(relay, passId = 1)
+        assertEquals(1, caps.state(relay).strikes, "silence before the closure is not held against the reopened relay")
+    }
+
+    @Test
+    fun `concurrent strikes past the threshold close the relay once and never leave it open over the line`() {
+        repeat(200) { round ->
+            val announced = AtomicInteger()
+            val openOverTheLine = AtomicInteger()
+            val caps = WriteCapability(log = { announced.incrementAndGet() })
+            val start = CountDownLatch(1)
+            val threads =
+                (0 until 8).map { i ->
+                    Thread {
+                        start.await()
+                        caps.strike(relay, passId = i.toLong())
+                        val seen = caps.state(relay)
+                        if (!seen.closed && seen.strikes >= 3 && seen.passes.size >= 2) openOverTheLine.incrementAndGet()
+                    }.apply { start() }
+                }
+            start.countDown()
+            threads.forEach { it.join() }
+            assertTrue(caps.isClosed(relay))
+            assertEquals(0, openOverTheLine.get(), "round $round saw an open relay past the threshold")
+            assertEquals(1, announced.get(), "round $round announced the closure ${announced.get()} times")
+        }
     }
 }

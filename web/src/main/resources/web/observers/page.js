@@ -1,0 +1,394 @@
+// observer_stats.html's logic: every kind-10040 observer and whether their scores reached this
+// relay. A classic script with its own relay client, escaping and bech32, so the page works
+// when the app's modules do not.
+
+const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+/**
+ * Idle time, reset by every message on the connection, so a relay working through
+ * a queue is never cut off. Must cover the slowest single COUNT: relays answer serially.
+ */
+const IDLE_TIMEOUT_MS = 60000;
+
+/** Why a cell has no number. "We stopped waiting" and "the relay declined" must not render as one thing. */
+const TIMED_OUT = { state: "timeout" };
+const REFUSED = { state: "refused" };
+// Remote relays are other people's servers. A handful at a time, never a burst.
+const REMOTE_CONCURRENCY = 4;
+// COUNTs in flight within one relay, which can hold most of the pairs.
+const PER_RELAY_CONCURRENCY = 4;
+// The same courtesy for this relay, which is also serving clients.
+const LOCAL_CONCURRENCY = 4;
+// A COUNT landing exactly on one of these is more likely a default page size
+// than a total. Flagged, not hidden.
+const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
+
+const rowsEl = document.getElementById("rows");
+const statusEl = document.getElementById("status");
+const footEl = document.getElementById("foot");
+const runEl = document.getElementById("run");
+const fmt = (n) => n.toLocaleString();
+
+/** `display_name` first, `name` as the fallback, whitespace-only meaning blank. Same rule as the search page. */
+const str = (v) => (typeof v === "string" ? v : "");
+const displayName = (c) => (c && (str(c.display_name).trim() || str(c.name).trim())) || "";
+
+/**
+ * HTML escaping, inlined because this page must work when the app's modules do
+ * not. Every row is built from a stranger's kind 0 and served unauthenticated.
+ */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/** npub, never hex. Inlined bech32 so the page stays self-contained; encode-only. */
+const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function npub(hex) {
+  const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
+  const words = [];
+  let acc = 0, bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b; bits += 8;
+    while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+  }
+  if (bits) words.push((acc << (5 - bits)) & 31);
+  const polymod = (v) => {
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const x of v) {
+      const top = chk >> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ x;
+      for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+    }
+    return chk;
+  };
+  const hrp = "npub";
+  const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+  const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
+  return hrp + "1" + words.concat(Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31)).map((w) => B32[w]).join("");
+}
+const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 12) + "…" + n.slice(-6); };
+
+/**
+ * A tiny COUNT + REQ client, every ask multiplexed by subscription id through one
+ * `pending` map. `lensless` is for this relay only: it appends the NIP-50
+ * `include:spam` token an unauthenticated read here needs; a remote relay would take it for a word.
+ */
+function client(url, { lensless = false } = {}) {
+  // Appended, so a filter that already carries a search keeps it.
+  const asked = (f) => {
+    if (!lensless) return f;
+    const search = ((f && f.search) || "").trim();
+    return { ...f, search: search ? search + " include:spam" : "include:spam" };
+  };
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { return reject(e); }
+    // subscription id -> { take(msg) -> done?, abort(reason) }
+    const pending = new Map();
+    const fail = (reason) => { for (const [, p] of pending) p.abort(reason); pending.clear(); };
+
+    // One idle watchdog for the connection, not a per-request deadline: the relay
+    // answers serially, so a cheap COUNT queued behind an expensive one would expire in line.
+    let idle = null;
+    const stopIdle = () => { if (idle) { clearTimeout(idle); idle = null; } };
+    const bumpIdle = () => {
+      stopIdle();
+      // Armed only while something is outstanding.
+      if (pending.size) idle = setTimeout(() => fail(TIMED_OUT), IDLE_TIMEOUT_MS);
+    };
+
+    ws.onerror = () => { stopIdle(); fail(REFUSED); reject(new Error("unreachable")); };
+    ws.onclose = () => { stopIdle(); fail(REFUSED); };
+    ws.onopen = () => resolve(ws);
+    ws.onmessage = (ev) => {
+      // Bumped before parsing: any traffic is proof the relay is still working.
+      bumpIdle();
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      const p = pending.get(m[1]);
+      if (!p) return;
+      // take() answers "is this ask finished": a COUNT by its answer, a REQ by EOSE.
+      if (p.take(m)) pending.delete(m[1]);
+      bumpIdle();
+    };
+    const subId = (prefix) => prefix + Math.random().toString(36).slice(2, 9);
+    ws.count = (author) =>
+      new Promise((res) => {
+        const id = subId("c");
+        pending.set(id, {
+          take: (m) => {
+            if (m[0] === "COUNT") { res(m[2] || REFUSED); return true; }
+            if (m[0] === "CLOSED" || m[0] === "NOTICE") { res(REFUSED); return true; }
+            return false;
+          },
+          abort: (reason) => res(reason),
+        });
+        bumpIdle();
+        try { ws.send(JSON.stringify(["COUNT", id, asked({ kinds: [30382], authors: [author] })])); }
+        catch { pending.delete(id); res(REFUSED); }
+      });
+    ws.req = (filter) =>
+      new Promise((res) => {
+        const id = subId("r");
+        const acc = [];
+        // One exit, closing the subscription however we leave: relays cap open subscriptions.
+        const finish = () => {
+          try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
+          res(acc);
+        };
+        pending.set(id, {
+          take: (m) => {
+            if (m[0] === "EVENT") { acc.push(m[2]); return false; }
+            if (m[0] === "EOSE" || m[0] === "CLOSED") { finish(); return true; }
+            return false;
+          },
+          // A REQ cut short by the watchdog leaves the same way: CLOSE sent, whatever
+          // arrived handed back.
+          abort: finish,
+        });
+        bumpIdle();
+        try { ws.send(JSON.stringify(["REQ", id, asked(filter)])); }
+        catch { pending.delete(id); res(acc); }
+      });
+  });
+}
+
+function num(v) {
+  if (v === undefined) return '<span class="pending">…</span>';
+  if (v === TIMED_OUT) {
+    return `<span class="none" title="the relay went silent for ${IDLE_TIMEOUT_MS / 1000}s with this ask outstanding — it stopped talking, it did not decline">timed out</span>`;
+  }
+  if (v === REFUSED || v === null || v.count === undefined) {
+    return '<span class="none" title="the relay answered something other than a count, or closed the subscription — it does not serve NIP-45 for this ask">no COUNT</span>';
+  }
+  const cap = SUSPICIOUS.has(v.count) ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>' : "";
+  return fmt(v.count) + cap;
+}
+
+/** A real count, as opposed to a reason there isn't one. The sentinels are objects, and so truthy. */
+const counted = (v) => !!v && typeof v.count === "number";
+
+/** here vs there, once both are known. */
+function verdict(here, there) {
+  if (!counted(here) || !counted(there)) return "";
+  if (here.count >= there.count) return ' <span class="synced">✓</span>';
+  const pct = there.count ? Math.round((here.count / there.count) * 100) : 0;
+  return ` <span class="short">${pct}%</span>`;
+}
+
+/**
+ * A face whose picture failed becomes its initials. A capture listener, since `error` does not
+ * bubble and the page's policy runs no inline `onerror`.
+ */
+rowsEl.addEventListener("error", function brokenFace(e) {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || img.dataset.ini == null) return;
+  img.replaceWith(Object.assign(document.createElement("div"), {
+    className: "ph broken", textContent: img.dataset.ini, title: "picture URL failed to load",
+  }));
+}, true);
+
+/**
+ * The observer cell: face, name, and the npub for anyone the store cannot
+ * name. Three empty-circle cases are drawn apart: no kind 0, a kind 0 with no
+ * picture, and a picture whose url failed.
+ */
+function paintWho(o) {
+  const initials = o.name ? o.name.slice(0, 2).toUpperCase() : "·";
+  // The fallback initials ride in a data attribute [brokenFace] reads, so a
+  // stranger's name is escaped once rather than twice.
+  const avatar = o.picture
+    ? `<img src="${esc(o.picture)}" alt="" loading="lazy" decoding="async" data-ini="${esc(initials)}" />`
+    : o.hasProfile
+      ? `<div class="ph" title="profile has no picture field">${esc(initials)}</div>`
+      : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
+  // The npub line only for observers the store cannot name. Never hex.
+  const key = npub(o.pubkey);
+  o.whoCell.innerHTML =
+    `<div class="who">${avatar}` +
+    `<div><div class="nm" title="${key}">${o.name ? esc(o.name) : (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+    (o.name ? "" : `<div class="key" title="${key}">${shortNpub(o.pubkey)}</div>`) +
+    `</div></div>`;
+}
+
+/** The two number cells of one dimension, from whatever is known so far. */
+function paintDim(d) {
+  if (!d.hereCell) return;
+  d.hereCell.innerHTML = d.service ? num(d.here) : "—";
+  d.thereCell.innerHTML = d.service ? num(d.there) + verdict(d.here, d.there) : "—";
+}
+
+/**
+ * Build the table once and hand every cell that can change back to its owner:
+ * an answer writes two cells and never rebuilds the tbody.
+ */
+function build(list) {
+  rowsEl.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  const relayCell = (d) =>
+    // Escaped even though normalizeRelay() already ran it through the URL parser.
+    `<td class="first"><span class="relay" title="${esc(d.relay || "")}">${d.relay ? esc(d.relay.replace(/^wss?:\/\//, "")) : "—"}</span></td>` +
+    `<td class="n"></td><td class="n"></td>`;
+  for (const o of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td></td>" + relayCell(o.rank) + relayCell(o.followers);
+    const td = tr.children;
+    o.whoCell = td[0];
+    o.rank.hereCell = td[2]; o.rank.thereCell = td[3];
+    o.followers.hereCell = td[5]; o.followers.thereCell = td[6];
+    paintWho(o);
+    paintDim(o.rank);
+    paintDim(o.followers);
+    frag.appendChild(tr);
+  }
+  rowsEl.appendChild(frag);
+}
+
+/** Run [tasks] with at most [n] in flight. */
+async function bounded(n, tasks) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, async () => {
+    while (i < tasks.length) await tasks[i++]();
+  }));
+}
+
+async function run() {
+  runEl.disabled = true;
+  statusEl.textContent = "connecting…";
+  let local;
+  try { local = await client(RELAY_URL, { lensless: true }); }
+  catch { statusEl.textContent = "could not connect to this relay"; runEl.disabled = false; return; }
+
+  statusEl.textContent = "loading 10040s…";
+  const lists = await local.req({ kinds: [10040], limit: 2000 });
+
+  // One row per observer, newest 10040 wins: a replaceable kind, but a relay
+  // may still hand us more than one.
+  const byPubkey = new Map();
+  for (const ev of lists) {
+    const prev = byPubkey.get(ev.pubkey);
+    if (!prev || prev.created_at < ev.created_at) byPubkey.set(ev.pubkey, ev);
+  }
+  /**
+   * A relay url as written in a tag, reduced to the relay it means, so `wss://host`
+   * and `wss://host/` are one row. Null for a non-ws scheme and for loopback or
+   * private hosts, which from this browser would mean the reader's machine.
+   */
+  function normalizeRelay(raw) {
+    if (!raw) return null;
+    const t = String(raw).trim();
+    if (!t || /\s/.test(t)) return null;
+    // A foreign scheme is refused before the fallback below: `wss://` +
+    // `http://localhost:7778` parses, with host "http".
+    if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^wss?:\/\//i.test(t)) return null;
+    let u;
+    try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch { return null; }
+    if (u.protocol !== "ws:" && u.protocol !== "wss:") return null;
+    // An https page cannot open ws://; dropped here so the row says "—" rather
+    // than "no COUNT".
+    if (location.protocol === "https:" && u.protocol === "ws:") return null;
+    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[::1\]|0\.0\.0\.0)/i.test(u.hostname) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return null;
+    // A bare "/" path is the same relay as no path.
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/+$/, "");
+    return `${u.protocol}//${u.host}${path}`;
+  }
+
+  const pick = (ev, tag) => {
+    const t = (ev.tags || []).find((x) => x[0] === tag);
+    return { service: t?.[1] || null, relay: normalizeRelay(t?.[2]) };
+  };
+  // Only observers naming a `30382:rank` service; the rest are counted for the
+  // footer.
+  const all = [...byPubkey.values()].map((ev) => ({
+    pubkey: ev.pubkey,
+    name: "",
+    picture: "",
+    hasProfile: false,
+    rank: pick(ev, "30382:rank"),
+    followers: pick(ev, "30382:followers"),
+  }));
+  const withoutRank = all.length - all.filter((o) => o.rank.service).length;
+  const observers = all.filter((o) => o.rank.service);
+  build(observers);
+
+  // Profile batches go out together: they are chunks of one question.
+  statusEl.textContent = `loading ${observers.length} profile(s)…`;
+  const byPk = new Map(observers.map((o) => [o.pubkey, o]));
+  const keys = [...byPk.keys()];
+  const chunks = [];
+  for (let i = 0; i < keys.length; i += 200) chunks.push(keys.slice(i, i + 200));
+  const profileEvents = await Promise.all(chunks.map((c) => local.req({ kinds: [0], authors: c, limit: c.length })));
+  for (const ev of profileEvents.flat()) {
+    const o = byPk.get(ev.pubkey);
+    if (!o) continue;
+    let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+    o.hasProfile = true; o.name = displayName(c); o.picture = str(c && c.picture);
+  }
+  for (const o of observers) paintWho(o);
+
+  const dims = observers.flatMap((o) => [o.rank, o.followers].filter((d) => d.service));
+
+  // One query per distinct question: most 10040s name the same service for both
+  // dimensions. Indexed by the question, so an answer goes straight to its rows.
+  const dimsBySvc = new Map();
+  for (const d of dims) {
+    if (!dimsBySvc.has(d.service)) dimsBySvc.set(d.service, []);
+    dimsBySvc.get(d.service).push(d);
+  }
+  const svcs = [...dimsBySvc.keys()];
+  let done = 0;
+  await bounded(LOCAL_CONCURRENCY, svcs.map((svc) => async () => {
+    const answer = await local.count(svc);
+    for (const d of dimsBySvc.get(svc)) { d.here = answer; paintDim(d); }
+    statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
+  }));
+
+  // Then the remote relays, grouped by url so one connection answers every
+  // service it serves.
+  const byRelay = new Map();   // url -> service -> the dimension rows asking it
+  for (const d of dims) {
+    if (!d.relay) { d.there = null; paintDim(d); continue; }
+    let svcMap = byRelay.get(d.relay);
+    if (!svcMap) byRelay.set(d.relay, svcMap = new Map());
+    if (!svcMap.has(d.service)) svcMap.set(d.service, []);
+    svcMap.get(d.service).push(d);
+  }
+  let rdone = 0;
+  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, svcMap]) => async () => {
+    statusEl.textContent = `asking ${++rdone}/${byRelay.size} relay(s)…`;
+    let ws = null;
+    try { ws = await client(url); } catch {
+      for (const ds of svcMap.values()) for (const d of ds) { d.there = null; paintDim(d); }
+      return;
+    }
+    await bounded(PER_RELAY_CONCURRENCY, [...svcMap.entries()].map(([svc, ds]) => async () => {
+      const answer = await ws.count(svc);
+      for (const d of ds) { d.there = answer; paintDim(d); }
+    }));
+    try { ws.close(); } catch {}
+  }));
+
+  local.close();
+
+  const withBoth = dims.filter((d) => counted(d.here) && counted(d.there));
+  const short = withBoth.filter((d) => d.here.count < d.there.count);
+  const missing = short.reduce((n, d) => n + (d.there.count - d.here.count), 0);
+  const noCount = dims.filter((d) => d.there === REFUSED || d.there === null).length;
+  const timedOut = dims.filter((d) => d.there === TIMED_OUT).length;
+  statusEl.textContent = "done";
+  footEl.innerHTML =
+    `${observers.length} observer(s) with a 30382:rank service, ` +
+    `${svcs.length} distinct service(s) asked (${dims.length} dimension row(s))` +
+    (withoutRank ? ` (${withoutRank} more declare no rank service and are not shown)` : "") +
+    ` (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
+    `${observers.filter((o) => o.hasProfile && !o.picture).length} publishing no picture), ${dims.length} dimension(s) · ` +
+    `${withBoth.length} comparable · ` +
+    (short.length
+      ? `<span class="short">${short.length} short by ${fmt(missing)} score(s)</span>`
+      : `<span class="synced">none short</span>`) +
+    (noCount ? ` · ${noCount} answered no COUNT, so those cannot be compared` : "") +
+    (timedOut ? ` · ${timedOut} went silent for ${IDLE_TIMEOUT_MS / 1000}s with the ask outstanding` : "") +
+    ` · a <span class="capped">⚠</span> marks a count landing exactly on a common page-size cap, which usually means the relay reported its default limit rather than a total`;
+  runEl.disabled = false;
+}
+
+runEl.addEventListener("click", run);
+run();

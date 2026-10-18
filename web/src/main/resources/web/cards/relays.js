@@ -2,7 +2,7 @@
 // are tags; the NIP-11 document in `content` is the only place a human-written name lives.
 
 import { esc } from "../shared/format.js";
-import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, hostOf, jsonContent, tagOf, tagsOf } from "./base.js";
+import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, relayAddress, jsonContent, tagOf, tagsOf } from "./base.js";
 
 /** Seconds as a period a person reads: "30m", "6h", "1d". */
 const everyN = (secs) => {
@@ -22,7 +22,7 @@ function relayDiscoveryCard(ev, opts) {
   const reqs = tagsOf(ev, "R").map((t) => t[1]).filter(Boolean);
   const types = tagsOf(ev, "T").map((t) => t[1]).filter(Boolean);
   const inner =
-    titleHtml(opts, nip11.name || hostOf(url), 140) +
+    titleHtml(opts, nip11.name || relayAddress(url), 140) +
     (url ? `<div class="result-body"><span class="mono">${esc(url)}</span></div>` : "") +
     bodyHtml(opts, nip11.description || "", 300) +
     chipRow([...types, ...reqs, ...nips.map((n) => `NIP-${n}`)], opts);
@@ -59,6 +59,6 @@ register([10166], relayMonitorCard);
 registerRow([30166], (ev) => {
   const nip11 = jsonContent(ev);
   const url = tagOf(ev, "d") || "";
-  return { name: nip11.name || hostOf(url), sub: nip11.description || url };
+  return { name: nip11.name || relayAddress(url), sub: nip11.description || url };
 });
 registerRow([10166], (ev) => ({ name: monitorLine(ev), sub: ev.content }));

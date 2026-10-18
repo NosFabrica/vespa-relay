@@ -27,8 +27,15 @@ import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -175,6 +182,55 @@ class SearchGateTest {
                 zero.close()
             }
             assertEquals(0, zero.searchLanesOpen, "a gate of zero opens no lane at all")
+        }
+
+    private fun connection(id: Long) =
+        object : RequestContext {
+            override val connectionId = id
+            override val policy: IRelayPolicy get() = error("not asked")
+            override val authenticatedUsers = emptySet<String>()
+        }
+
+    private val ranked = listOf(Filter(kinds = listOf(1), search = "alpha include:spam"))
+
+    /** A read that lands after its connection's disconnect must not open a lane nothing would ever close. */
+    @Test
+    fun `a lane lives only while a ranked read holds or waits on it`(): Unit =
+        runBlocking {
+            val gate = SearchGate(1)
+            val replayed = CompletableDeferred<Unit>()
+            val atLiveTail = CompletableDeferred<Unit>()
+            val tail =
+                launch(Dispatchers.Default) {
+                    gate.through(connection(7), ranked, {}) { eose ->
+                        eose()
+                        replayed.complete(Unit)
+                        atLiveTail.await()
+                    }
+                }
+            withTimeout(5_000) { replayed.await() }
+            assertEquals(0, gate.lanesOpen, "past its EOSE a subscription holds no lane, open or not")
+            atLiveTail.complete(Unit)
+            tail.join()
+
+            gate.through(connection(8), ranked, {}) { "a read with no EOSE" }
+            assertEquals(0, gate.lanesOpen, "a read that leaves without an EOSE frees its lane too")
+        }
+
+    @Test
+    fun `a read cancelled while it waits for the lane leaves nothing behind`(): Unit =
+        runBlocking {
+            val gate = SearchGate(1)
+            val first = CompletableDeferred<Unit>()
+            val holder = launch(Dispatchers.Default) { gate.through(connection(9), ranked, {}) { first.await() } }
+            withTimeout(5_000) { while (gate.lanesOpen == 0) delay(5) }
+            val waiter = launch(Dispatchers.Default) { gate.through(connection(9), ranked, {}) { fail("ran after it was cancelled") } }
+            delay(50)
+            waiter.cancelAndJoin()
+            assertEquals(1, gate.lanesOpen, "the holder's lane stays")
+            first.complete(Unit)
+            holder.join()
+            assertEquals(0, gate.lanesOpen)
         }
 
     /** Long enough for a read that would have started to have started. */

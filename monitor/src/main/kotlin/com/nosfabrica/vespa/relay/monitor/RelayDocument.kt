@@ -22,8 +22,9 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -32,9 +33,16 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * The relay's NIP-11 document, for the facts nothing can be measured against. No verdict is
@@ -44,7 +52,16 @@ import java.util.concurrent.TimeUnit
 class RelayDocument(
     private val clientFor: (NormalizedRelayUrl) -> OkHttpClient,
     private val timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+    /** Documents in flight at once: the passes' dials, each of which asks for one. */
+    concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
+    /** Its own, so a fetch neither waits behind the mirror's live tails on the shared client nor holds a slot they need. */
+    private val dispatcher =
+        Dispatcher().apply {
+            maxRequests = concurrency
+            maxRequestsPerHost = minOf(concurrency, DOCUMENTS_PER_HOST)
+        }
+
     /** What one document says, restricted to the fields NIP-66 has a tag for. */
     data class Doc(
         val software: String? = null,
@@ -68,28 +85,64 @@ class RelayDocument(
         val address = httpAddressOf(url) ?: return Reading()
         val timer = ConnectTimer()
         val body =
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val client =
-                        clientFor(url)
-                            .newBuilder()
-                            .callTimeout(timeoutSeconds, TimeUnit.SECONDS)
-                            .eventListener(timer)
-                            .build()
-                    val request =
-                        Request
-                            .Builder()
-                            .url(address)
-                            .header("Accept", NIP11_CONTENT_TYPE)
-                            .get()
-                            .build()
-                    client.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) response.peekBody(MAX_DOCUMENT_BYTES).string() else null
-                    }
-                }.getOrNull()
+            try {
+                // Over the queue as well as the call: OkHttp's own clock starts only once a call leaves it.
+                withTimeoutOrNull(timeoutSeconds * 1000) { fetch(url, address, timer) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
             }
         // The connect is kept without a body: a 404 still proves the handshake.
         return Reading(doc = body?.let { parse(it) }, openMs = timer.openMs)
+    }
+
+    /** The document's body, or null for a status that is not success. Cancelling the caller cancels the call. */
+    private suspend fun fetch(
+        url: NormalizedRelayUrl,
+        address: String,
+        timer: ConnectTimer,
+    ): String? {
+        val client =
+            clientFor(url)
+                .newBuilder()
+                .dispatcher(dispatcher)
+                .callTimeout(timeoutSeconds, TimeUnit.SECONDS)
+                .eventListener(timer)
+                .build()
+        val request =
+            Request
+                .Builder()
+                .url(address)
+                .header("Accept", NIP11_CONTENT_TYPE)
+                .get()
+                .build()
+        val call = client.newCall(request)
+        return suspendCancellableCoroutine { waiting ->
+            waiting.invokeOnCancellation { call.cancel() }
+            call.enqueue(
+                object : Callback {
+                    override fun onFailure(
+                        call: Call,
+                        e: IOException,
+                    ) = waiting.resumeWithException(e)
+
+                    override fun onResponse(
+                        call: Call,
+                        response: Response,
+                    ) {
+                        val body =
+                            try {
+                                response.use { if (it.isSuccessful) it.peekBody(MAX_DOCUMENT_BYTES).string() else null }
+                            } catch (e: IOException) {
+                                waiting.resumeWithException(e)
+                                return
+                            }
+                        waiting.resume(body)
+                    }
+                },
+            )
+        }
     }
 
     /** Brackets the TCP and TLS handshake alone. One instance per call. */
@@ -121,6 +174,9 @@ class RelayDocument(
         const val NIP11_CONTENT_TYPE = "application/nostr+json"
 
         const val DEFAULT_TIMEOUT_SECONDS = 10L
+
+        /** Documents asked of one host at once; a host serving many paths is still one server. */
+        const val DOCUMENTS_PER_HOST = 4
 
         /** Anything larger is a url that answered with something other than a document. */
         const val MAX_DOCUMENT_BYTES = 64L * 1024

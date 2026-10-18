@@ -856,7 +856,10 @@ store — five figures on a discovered corpus, and one of the "no limit" reads t
 hour, to answer a question about a dozen urls. It is `#d`-chunked like
 `RelayVerdictRecord.load` now, and the lane derives BEFORE it reads, so a tick
 that found nothing (most of them) costs no read at all. Same answer either way:
-the hold-out only ever applied to the urls the lane found.
+the hold-out only ever applied to the urls the lane found. The lane also leaves
+out every url fitness is backing off from after a deferral (a 429, a 5xx, a
+partial refusal, words `Silence` does not know), so a relay that asked us to
+come back later is not dialled again by the next tick; see `fitness.md`.
 
 **The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the

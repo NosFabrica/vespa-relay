@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -57,6 +58,8 @@ internal class StreamWorld(
     override val progress: Processors.Handle? = null,
     /** Of these urls, the ones holding a fitness grade younger than a sweep; the fast lane skips them. */
     private val recentlyGraded: suspend (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
+    /** Of these urls, the ones still backing off from a deferral; the fast lane skips them too. */
+    private val backingOff: (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
 ) : AliasMonitor.CandidateSource {
     /** What the last derivation started from and dropped. */
     @Volatile
@@ -66,6 +69,10 @@ internal class StreamWorld(
     /** The last sweep's candidate set and what the fast lane has handed over since; empty until a sweep derives. */
     @Volatile
     var known: ServerIndex = ServerIndex.EMPTY
+        private set
+
+    @Volatile
+    override var listsReadFromSec: Long? = null
         private set
 
     /** Whether a derivation has run; a fresh [Derivation] and one that found nothing are the same zeros. */
@@ -121,10 +128,13 @@ internal class StreamWorld(
         progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
+        val readingFromSec = nowSeconds()
         // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
-        derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
-            if (kept) all += url else excluded += url
-        }
+        val read =
+            derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
+                if (kept) all += url else excluded += url
+            }
+        if (read) listsReadFromSec = readingFromSec
         // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
         // url is kept is a function of the url, however many sources found it.
         val recorded = ownRecords()
@@ -172,16 +182,16 @@ internal class StreamWorld(
     private var lastSourced: Int? = null
 
     /**
-     * One walk over every derivation, [bound] applied to each config first. Discovery is asked
-     * for the unfiltered set; `kept` applies the exclude list and the self check here.
+     * One walk over every derivation, [bound] applied to each config first; false when the store
+     * could not be read, which is logged. `kept` applies the exclude list and the self check here.
      */
     private suspend fun derive(
         what: String,
         bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
         onSource: () -> Unit = {},
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
-    ) {
-        val discovery = sources ?: return
+    ): Boolean {
+        val discovery = sources ?: return true
         // Topped up after a throw: a source we could not read is still behind us.
         var ticked = 0
         val found =
@@ -200,21 +210,24 @@ internal class StreamWorld(
                 throw e
             } catch (e: Exception) {
                 System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
-                emptyList()
+                null
             }
         repeat(discovery.sources.size - ticked) { onSource() }
-        found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+        found?.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+        return found != null
     }
 
     /**
-     * The fast lane's derivation: the same sources, bounded to relay-list events ingested at or
-     * after [since].
+     * The fast lane's derivation: the same sources, bounded to relay-list events created at or after
+     * [since]. Throws when the lists could not be read, so the lane looks at the window again.
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
-        derive("fast lane", { discovery ->
-            discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
-        }) { url, kept -> if (kept) fresh += url }
+        val read =
+            derive("fast lane", { discovery ->
+                discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
+            }) { url, kept -> if (kept) fresh += url }
+        check(read) { "the relay lists could not be read" }
         // Derive first, then ask the hold-out about what was found; most ticks find nothing.
         if (fresh.isEmpty()) return emptyList()
         val dead = ownDead(among = fresh)
@@ -228,7 +241,9 @@ internal class StreamWorld(
             } catch (e: Exception) {
                 emptySet()
             }
-        val handed = live.filterNot { it in graded }
+        // A relay that just asked us to come back later is not dialled again by the next tick.
+        val waiting = backingOff(live)
+        val handed = live.filterNot { it in graded || it in waiting }
         // Known from now on, so the roster elects a server's stand-in among the urls fitness may grade.
         if (handed.isNotEmpty()) known += handed
         return handed

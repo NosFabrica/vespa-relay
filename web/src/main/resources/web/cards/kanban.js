@@ -7,7 +7,7 @@
 // `status` is a verification, a `title` or a named `col` a board, and the rest none of them.
 // 30302 is shared with Fieldbook's team memberships the same way.
 
-import { esc, clip, titleOf } from "../shared/format.js";
+import { esc, clip, titleOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow,
@@ -104,8 +104,8 @@ function verificationCard(ev, opts) {
   const v = verdictOf(ev);
   const { description, report } = reportOf(ev);
   const built = builtLine(ev);
-  const files = tagsOf(ev, "x").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || "")).length;
-  const basedOn = tagsOf(ev, "based-on").find((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  const files = tagsOf(ev, "x").filter((t) => HEX64.test(t[1] || "")).length;
+  const basedOn = tagsOf(ev, "based-on").find((t) => HEX64.test(t[1] || ""));
   const inner =
     `<div class="pill-row"><span class="status-pill lead${v.tone ? ` ${v.tone}` : ""}">${esc(clip(v.label, 24))}</span>` +
     (built ? `<span>${esc(clip(built, 100))}</span>` : "") + `</div>` +
@@ -134,7 +134,7 @@ function boardLine(ev) {
 function trackedLine(ev) {
   const k = oneLine(tagOf(ev, "k"));
   if (!/^\d+$/.test(k)) return "";
-  const e = tagsOf(ev, "e").find((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  const e = tagsOf(ev, "e").find((t) => HEX64.test(t[1] || ""));
   const a = tagsOf(ev, "a").map((t) => t[1]).find((v) => /^\d+:[0-9a-f]{64}:/.test(v || "") && !v.startsWith("30301:"));
   const link = e
     ? `<a class="mono" href="${eventHref(e[1], { relay: e[2] })}">${esc(shortNote(e[1]))}</a>`

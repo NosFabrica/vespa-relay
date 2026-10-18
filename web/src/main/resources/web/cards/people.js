@@ -1,8 +1,9 @@
 // The graph family: who somebody follows, which relays they read, and this
 // relay's own working kinds, 10040 observer declarations and 30382 score cards.
 
-import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
+import { relayAddress } from "../shared/relayurl.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import {
   register, registerRow, registerPeopleGrid, shell, bodyHtml, peopleGrid, peopleOf, personLink, noteHref,
@@ -55,7 +56,7 @@ const dimensionsOf = (ev) => tagsWhere(ev, (name, t) => /^\d+:/.test(name) && t[
 function observerCard(ev, opts) {
   const dims = dimensionsOf(ev);
   const rows = dims.map((t) =>
-    `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
+    `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(relayAddress(t[2]))}</span>` : ""}</li>`);
   const inner =
     `<div class="result-body">trusts ${esc(plural(dims.length, "score dimension"))}</div>` +
     (rows.length ? `<ul class="relay-list">${rows.join("")}</ul>` : "");
@@ -83,14 +84,14 @@ function scoreCard(ev, opts) {
 function subjectLinkFor(kind, subject) {
   if (!subject) return "(no subject)";
   if (kind === 30385) return `<span class="mono">${esc(clip(subject, 80))}</span>`;
-  if (kind === 30383 && /^[0-9a-f]{64}$/.test(subject)) {
+  if (kind === 30383 && HEX64.test(subject)) {
     return `<a class="mono" href="${noteHref(subject)}">${esc(subjectName(kind, subject))}</a>`;
   }
   if (kind === 30384) {
     const href = addrHref(subject);
     return href ? `<a href="${href}">${esc(subjectName(kind, subject))}</a>` : esc(subject);
   }
-  return /^[0-9a-f]{64}$/.test(subject) ? personLink(subject) : esc(subject);
+  return HEX64.test(subject) ? personLink(subject) : esc(subject);
 }
 
 /** The same subject as words alone, for a row: a name, else a short npub, never hex. */
@@ -98,7 +99,7 @@ function subjectName(kind, subject) {
   if (!subject) return "(no subject)";
   if (kind === 30385) return subject;                  // an external id reads as itself
   if (kind === 30384) return shortAddr(subject);       // an address is never bare hex
-  if (!/^[0-9a-f]{64}$/.test(subject)) return subject;
+  if (!HEX64.test(subject)) return subject;
   return kind === 30383 ? shortNote(subject) : displayName(profiles.get(subject)) || shortNpub(subject);
 }
 

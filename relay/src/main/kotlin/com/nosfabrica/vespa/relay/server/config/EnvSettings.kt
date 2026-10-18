@@ -57,34 +57,53 @@ fun defaultRelayLimits(): RelayLimits =
         createdAtUpperLimit = null,
     )
 
-/** [defaultRelayLimits] with any field the environment sets. A value that is not a whole number stops the boot. */
+/**
+ * [defaultRelayLimits] with any field the environment sets, each in its range: a zero cap boots and
+ * then refuses every frame. An unset `DEFAULT_LIMIT` follows a lowered `MAX_LIMIT`; a set one may not exceed it.
+ */
 fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     val d = defaultRelayLimits()
-    return RelayLimits(
-        maxMessageLength = env.intOr("MAX_MESSAGE_LENGTH", d.maxMessageLength),
-        maxSubscriptions = env.intOr("MAX_SUBSCRIPTIONS", d.maxSubscriptions),
-        maxFilters = env.intOr("MAX_FILTERS", d.maxFilters),
-        maxLimit = env.intOr("MAX_LIMIT", d.maxLimit),
-        defaultLimit = env.intOr("DEFAULT_LIMIT", d.defaultLimit),
-        maxSubidLength = env.intOr("MAX_SUBID_LENGTH", d.maxSubidLength),
-        maxEventTags = env.intOr("MAX_EVENT_TAGS", d.maxEventTags),
-        maxContentLength = env.intOr("MAX_CONTENT_LENGTH", d.maxContentLength),
-        minPowDifficulty = env.intOr("MIN_POW_DIFFICULTY", d.minPowDifficulty),
-        authRequired = d.authRequired,
-        paymentRequired = d.paymentRequired,
-        restrictedWrites = d.restrictedWrites,
-        createdAtLowerLimit = env.longOr("CREATED_AT_LOWER_LIMIT", d.createdAtLowerLimit),
-        createdAtUpperLimit = env.longOr("CREATED_AT_UPPER_LIMIT", d.createdAtUpperLimit),
-    )
+    val positive = 1..Int.MAX_VALUE
+    val maxLimit = env.intOr("MAX_LIMIT", d.maxLimit, positive)
+    val defaultLimit = env.strictInt("DEFAULT_LIMIT", positive)
+    if (defaultLimit != null && maxLimit != null && defaultLimit > maxLimit) {
+        error("DEFAULT_LIMIT=$defaultLimit is above MAX_LIMIT=$maxLimit; a REQ with no limit would ask for more than any REQ may.")
+    }
+    val limits =
+        RelayLimits(
+            maxMessageLength = env.intOr("MAX_MESSAGE_LENGTH", d.maxMessageLength, MIN_MESSAGE_LENGTH..Int.MAX_VALUE),
+            maxSubscriptions = env.intOr("MAX_SUBSCRIPTIONS", d.maxSubscriptions, positive),
+            maxFilters = env.intOr("MAX_FILTERS", d.maxFilters, positive),
+            maxLimit = maxLimit,
+            defaultLimit = defaultLimit ?: listOfNotNull(d.defaultLimit, maxLimit).minOrNull(),
+            maxSubidLength = env.intOr("MAX_SUBID_LENGTH", d.maxSubidLength, positive),
+            maxEventTags = env.intOr("MAX_EVENT_TAGS", d.maxEventTags, positive),
+            maxContentLength = env.intOr("MAX_CONTENT_LENGTH", d.maxContentLength, positive),
+            minPowDifficulty = env.intOr("MIN_POW_DIFFICULTY", d.minPowDifficulty, 0..MAX_POW_DIFFICULTY),
+            authRequired = d.authRequired,
+            paymentRequired = d.paymentRequired,
+            restrictedWrites = d.restrictedWrites,
+            createdAtLowerLimit = env.longOr("CREATED_AT_LOWER_LIMIT", d.createdAtLowerLimit, 0..Long.MAX_VALUE),
+            createdAtUpperLimit = env.longOr("CREATED_AT_UPPER_LIMIT", d.createdAtUpperLimit, 0..Long.MAX_VALUE),
+        )
+    val (lower, upper) = limits.createdAtLowerLimit to limits.createdAtUpperLimit
+    if (lower != null && upper != null && lower > upper) error("CREATED_AT_LOWER_LIMIT=$lower is above CREATED_AT_UPPER_LIMIT=$upper; no event could be stored.")
+    return limits
 }
+
+/** Room for the smallest EVENT frame: an event's id, pubkey and signature alone are 256 characters. */
+private const val MIN_MESSAGE_LENGTH = 512
+
+/** A sha256 has 256 bits, so no event could meet a harder target. */
+private const val MAX_POW_DIFFICULTY = 256
 
 /** NIP-77 bounds from the environment. `NEG_MAX_SYNC_EVENTS` caps the ids one reconciliation walks. */
 fun negentropySettingsFromEnv(env: Map<String, String>): NegentropySettings {
     val d = NegentropySettings.Default
     return NegentropySettings(
-        frameSizeLimit = env.longOr("NEG_FRAME_SIZE_LIMIT", d.frameSizeLimit) ?: d.frameSizeLimit,
-        maxSyncEvents = env.intOr("NEG_MAX_SYNC_EVENTS", d.maxSyncEvents) ?: d.maxSyncEvents,
-        maxSessionsPerConnection = env.intOr("NEG_MAX_SESSIONS_PER_CONNECTION", d.maxSessionsPerConnection) ?: d.maxSessionsPerConnection,
+        frameSizeLimit = env.longOr("NEG_FRAME_SIZE_LIMIT", d.frameSizeLimit, 0..Long.MAX_VALUE) ?: d.frameSizeLimit,
+        maxSyncEvents = env.intOr("NEG_MAX_SYNC_EVENTS", d.maxSyncEvents, 0..Int.MAX_VALUE) ?: d.maxSyncEvents,
+        maxSessionsPerConnection = env.intOr("NEG_MAX_SESSIONS_PER_CONNECTION", d.maxSessionsPerConnection, 0..Int.MAX_VALUE) ?: d.maxSessionsPerConnection,
     )
 }
 
@@ -126,8 +145,8 @@ fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.s
 
 /**
  * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset is [default]:
- * quartz's 64 for its queue, sized for SQLite; the mirror's batch for the pipeline. Set but
- * unparseable stops the boot.
+ * quartz's 64 for its queue, sized for SQLite; the mirror's batch for the pipeline. Set but unparseable
+ * stops the boot; see docs/decisions/relay-server.md for why a Vespa store wants more.
  */
 fun ingestBatchFromEnv(
     env: Map<String, String>,
@@ -162,7 +181,12 @@ fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
             // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
             // And a byte bound over waiting plus in-pass events, because a count is no bound on
             // bytes when every publish may be a full frame.
-            RelayIngest(IngestTuning(concurrency, batch, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L), batch)
+            // The store's probe width, read as the mirror reads it, since both processes probe one store.
+            val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
+            RelayIngest(
+                IngestTuning(concurrency, batch, dedupChunk = dedupChunk, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L),
+                batch,
+            )
         }
     }
 
@@ -259,9 +283,11 @@ private fun Map<String, String>.capOr(
 private fun Map<String, String>.intOr(
     key: String,
     fallback: Int?,
-): Int? = strictInt(key) ?: fallback
+    range: IntRange,
+): Int? = strictInt(key, range) ?: fallback
 
 private fun Map<String, String>.longOr(
     key: String,
     fallback: Long?,
-): Long? = strictLong(key) ?: fallback
+    range: LongRange,
+): Long? = strictLong(key, range) ?: fallback

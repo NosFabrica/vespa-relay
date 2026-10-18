@@ -56,6 +56,10 @@ class AliasFolding(
     val progress: Processors.Handle? = null,
     /** The proxy, for the gate only. */
     tor: TorTransport? = null,
+    /** The wall clock on one verdict write. */
+    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
+    /** The urls the monitor knows, so a narrower read still takes in the other urls on each candidate's server. */
+    private val world: () -> ServerIndex = { ServerIndex.EMPTY },
 ) {
     /** One gate object, not one per pass. */
     private val gate = DialGate.over(concurrency, tor)
@@ -128,267 +132,30 @@ class AliasFolding(
         if (candidates.isEmpty()) return 0
         val startedMs = System.currentTimeMillis()
 
-        val grouped = adoptWorld(candidates)
+        val grouped = adoptWorld(label, candidates) ?: return 0
         val world = grouped.urls
+        // A sweep's world is everything the fold can be asked about; a fast-lane batch is a handful of urls.
+        if (label != AliasMonitor.FAST_LANE) forgetAllBut(world)
         if (world.size < 2) return 0
         // Read after the adopt and before the first dial; with `unmeasured` after the pass it makes
         // the card's fraction.
         val fresh = candidates.count { !aliases.measured(it) }
 
+        val run = Run(label, canDial, onEvent, sockets, grouped.held, System.currentTimeMillis(), newWriter())
         // Hosts on cooldown are held back, not dropped.
-        val startedAtMs = System.currentTimeMillis()
         val all = aliases.unresolved(world)
-        val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
-        var learned = 0
-        var probed = 0
-        // Host-keyed, because a group is a host.
-        val undecided = ConcurrentHashMap<String, Undecided>()
+        val groups = all.filter { group -> !onCooldown(group, run.startedAtMs) }
         for (group in all - groups.toSet()) {
-            undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
+            run.undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
         }
         if (groups.isNotEmpty()) {
             progress?.measuring(groups.size, Processors.UNIT_HOST)
-            val newVerdicts = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-            val taken = AtomicInteger()
             coroutineScope {
                 // Widest group first, so the pass's wall clock clears the most pollution earliest.
                 for (group in groups.sortedByDescending { it.size }) {
                     launch {
                         try {
-                            val wanted = aliases.toProbe(group)
-                            val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
-                            // One anchor for the whole group, taken before any of it is dialled.
-                            val anchor = AliasProbe.settledAnchor(nowSeconds())
-
-                            // The yardstick goes first, alone: it decides the filter the whole group is asked
-                            // through. The search walks down the preference order while urls stay silent or thin.
-                            var dialled = false
-                            var spent = 0
-                            var found: NormalizedRelayUrl? = null
-                            var foundPrint: AliasProbe.Leader? = null
-                            // Answered, but too thinly to be a yardstick; held for the scheme-twin exit.
-                            var thin: NormalizedRelayUrl? = null
-                            var thinPrint: AliasProbe.Leader? = null
-                            // Asked to be the yardstick and answered nothing; a url the transport
-                            // declined was never asked.
-                            val exhausted = HashSet<NormalizedRelayUrl>()
-                            // Urls this pass asked, and the subset that answered other than by
-                            // refusing our key: what foldUnreadableGroups turns on.
-                            val askedUrls = HashSet<NormalizedRelayUrl>()
-                            val spoke = HashSet<NormalizedRelayUrl>()
-                            // Two budgets: silence costs a whole deadline, a thin answer one short page.
-                            var fruitless = 0
-                            var thinAnswers = 0
-                            for (candidate in wanted) {
-                                if (fruitless >= YARDSTICK_ATTEMPTS || thinAnswers >= THIN_ATTEMPTS) break
-                                var asked = false
-                                val attempt =
-                                    gate.withPermit(candidate) {
-                                        if (!canDial(candidate)) return@withPermit null
-                                        asked = true
-                                        dialled = true
-                                        spent++
-                                        taken.incrementAndGet()
-                                        dial(candidate, sockets) { probe.leaderPrint(candidate, anchor, onEvent) }
-                                    }
-                                if (asked) askedUrls += candidate
-                                if (attempt?.answeredForFold == true) spoke += candidate
-                                val print = attempt?.leader
-                                // Asked and silent, or cut by the deadline: a second dial this pass
-                                // buys the same silence.
-                                if (asked && print == null) exhausted += candidate
-                                if (print == null) fruitless++
-                                if (print != null) {
-                                    if (aliases.usableWindow(print.ids, print.kinds)) {
-                                        found = candidate
-                                        foundPrint = print
-                                        break
-                                    }
-                                    // A thin window is a fact about the path, not the host: a path-routing host
-                                    // serves a quiet path beside a busy one. The first is kept for the twin exit.
-                                    thinAnswers++
-                                    if (thin == null) {
-                                        thin = candidate
-                                        thinPrint = print
-                                    }
-                                }
-                            }
-                            var members = wanted
-                            // A window too thin to be a yardstick still settles its own scheme twin, and no
-                            // further: nothing else can be measured against it.
-                            val thinLeader = thin
-                            val thinLead = thinPrint
-                            if (found == null && thinLeader != null && thinLead != null) {
-                                aliases.plainTwinIn(group, thinLeader)?.let { twin ->
-                                    found = thinLeader
-                                    foundPrint = thinLead
-                                    members = listOf(twin)
-                                }
-                            }
-                            // A group nothing would read from folds onto its preferred survivor: a policy, not
-                            // a measurement, and only while every url asked so far answered.
-                            if (found == null &&
-                                thinLeader == null &&
-                                foldUnreadableGroups &&
-                                askedUrls.isNotEmpty() &&
-                                askedUrls.all { it in spoke }
-                            ) {
-                                // The rest of the group, asked before anything is concluded about the whole of it.
-                                val rest = wanted.filter { it !in askedUrls }
-                                val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
-                                coroutineScope {
-                                    for (url in rest) {
-                                        launch {
-                                            gate.withPermit(url) {
-                                                if (!canDial(url)) return@withPermit
-                                                taken.incrementAndGet()
-                                                dial(url, sockets) { probe.leaderPrint(url, anchor, onEvent) }?.let { swept[url] = it }
-                                            }
-                                        }
-                                    }
-                                }
-                                for ((url, attempt) in swept) {
-                                    if (attempt.answeredForFold) spoke += url
-                                    if (attempt.leader == null) exhausted += url
-                                }
-                                // A usable window the sweep found is a yardstick, taken in preference order so the
-                                // leader does not depend on which dial finished first.
-                                val usable =
-                                    wanted.firstOrNull { url ->
-                                        swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true
-                                    }
-                                usable?.let { better ->
-                                    found = better
-                                    foundPrint = swept.getValue(better).leader
-                                    exhausted -= better
-                                }
-                                // Anything served, thin windows included, disqualifies the shared-name default.
-                                val servedSomething = swept.values.any { it.leader != null }
-                                if (found == null && !servedSomething) {
-                                    // Every url, not most: one our transport could not reach makes this
-                                    // "we do not know".
-                                    val everyUrlAnswered = wanted.all { it in spoke }
-                                    if (everyUrlAnswered && wanted.size > 1) {
-                                        val survivor = wanted.first()
-                                        val folds = aliases.foldUnreadable(wanted, survivor)
-                                        for (alias in folds.keys) {
-                                            guarded { record.publishUnreadable(alias, survivor, wanted.size) }
-                                        }
-                                        if (folds.isNotEmpty()) {
-                                            newVerdicts += folds.keys
-                                            clearUndecidable(survivor)
-                                            System.err.println(
-                                                "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
-                                                    "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
-                                                    "on the shared name, WITHOUT a measurement",
-                                            )
-                                        }
-                                        return@launch
-                                    }
-                                }
-                            }
-                            if (found == null || foundPrint == null) {
-                                // Cooled down only when something was asked: a group the transport
-                                // declined was never measured.
-                                if (dialled) {
-                                    markUndecidable(group.first(), startedAtMs)
-                                    undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_YARDSTICK
-                                } else {
-                                    undecided[RelayAliases.hostOf(group.first().url)] = Undecided.TRANSPORT
-                                }
-                                return@launch
-                            }
-                            // Kotlin will not smart cast a captured `var` inside the lambdas below.
-                            val leader = found
-                            val lead = foundPrint
-                            prints[leader] = lead.ids
-
-                            coroutineScope {
-                                // Not the yardstick or the exhausted; a url the transport declined is
-                                // still worth a dial.
-                                for (url in members.filter { it != leader && it !in exhausted }) {
-                                    launch {
-                                        gate.withPermit(url) {
-                                            if (!canDial(url)) return@withPermit
-                                            taken.incrementAndGet()
-                                            dial(url, sockets) { probe.fingerprint(url, anchor, lead.kinds, onEvent) }?.let { prints[url] = it }
-                                        }
-                                    }
-                                }
-                            }
-                            val leaderPrint = lead.ids
-                            val result = aliases.learn(group, leader, prints, lead.kinds)
-                            // Prove the yardstick before making a negative claim: a second walk from the same
-                            // anchor through the same filter, paid only where a negative claim is about to be made.
-                            if (result.distinct.isNotEmpty()) {
-                                val again =
-                                    gate.withPermit(leader) {
-                                        if (!canDial(leader)) return@withPermit null
-                                        taken.incrementAndGet()
-                                        dial(leader, sockets) { probe.fingerprint(leader, anchor, lead.kinds, onEvent) }
-                                    }
-                                if (again == null || !aliases.reproducible(leaderPrint, again)) {
-                                    val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
-                                    // Back to what the store says; `forget` would also drop the
-                                    // verdicts adopted moments ago.
-                                    grouped.held
-                                        ?.let { aliases.replace(group, it.aliases, it.distinct) }
-                                        ?: aliases.forget(group)
-                                    markUndecidable(leader, startedAtMs)
-                                    undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
-                                    System.err.println(
-                                        "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
-                                            "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor, " +
-                                            // A short second walk is a relay or our transport cutting it; a full one, a window that moved.
-                                            "${again?.let { "which returned ${it.size}" } ?: "which never answered"}) — " +
-                                            "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
-                                            "separate relay(s)",
-                                    )
-                                    return@launch
-                                }
-                            }
-                            val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
-                            val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
-                            for ((alias, canonical) in result.folded) {
-                                val print = prints[alias].orEmpty()
-                                // Against the url it folded onto, which is not always the leader.
-                                val shared = prints[canonical].orEmpty().count { it in print }
-                                newVerdicts += alias
-                                verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
-                            }
-                            // A cleared url was held up against the leader and every other head; the
-                            // count names real comparisons.
-                            for (url in result.distinct) {
-                                val print = prints[url].orEmpty()
-                                val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
-                                val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
-                                cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
-                            }
-
-                            // Written as this group finishes, not when the pass does, so a restart mid-pass keeps
-                            // it. A leader that compared nothing ends with no verdict and takes the cooldown.
-                            if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
-                                clearUndecidable(leader)
-                            } else {
-                                markUndecidable(leader, startedAtMs)
-                                undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
-                            }
-                            for ((alias, v) in verdicts) {
-                                guarded {
-                                    // Both flags can be set at once; the twin form wins because the
-                                    // pairing is the argument.
-                                    if (v.secureTwin) {
-                                        record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
-                                    } else if (v.groupList) {
-                                        record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
-                                    } else {
-                                        record.publish(alias, v.canonical, v.sampled, v.shared)
-                                    }
-                                }
-                            }
-                            for ((url, c) in cleared) {
-                                guarded { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
-                            }
+                            measureGroup(run, group)
                         } finally {
                             // In the launch, not from `invokeOnCompletion`, which can run after the scope resumes.
                             progress?.attempted()
@@ -396,10 +163,10 @@ class AliasFolding(
                     }
                 }
             }
-            probed = taken.get()
-            learned = newVerdicts.size
         }
-
+        val probed = run.taken.get()
+        val learned = run.newVerdicts.size
+        reportUnwritten(label, run.writer)
         val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates, aliases) else null
         if (cleaned != null && (probed > 0 || learned > 0)) {
             System.err.println(
@@ -417,22 +184,355 @@ class AliasFolding(
                 unmeasured = cleaned?.unmeasured?.size ?: candidates.size,
                 dialled = probed,
                 decided = learned,
-                undecided = undecidedRows(undecided),
+                undecided = undecidedRows(run.undecided),
             ),
         )
-        if (undecided.isNotEmpty()) {
-            val byReason = undecided.entries.groupBy({ it.value }, { it.key })
+        reportUndecided(label, run.undecided)
+        return learned
+    }
+
+    /** One pass's state, shared by the groups it measures concurrently. */
+    private class Run(
+        val label: String,
+        val canDial: suspend (NormalizedRelayUrl) -> Boolean,
+        val onEvent: suspend (Event) -> Unit,
+        val sockets: Sockets,
+        /** The store's own answer at the start of the pass, which the reproducibility guard restores. */
+        val held: RelayVerdictRecord.Verdicts,
+        val startedAtMs: Long,
+        /** One set of write limits for the whole pass, so a store that stops answering stops every group's writes. */
+        val writer: VerdictWriter,
+    ) {
+        /** Aliases whose write the store took. */
+        val newVerdicts: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
+
+        /** Why each host ended with nothing written down; host-keyed, because a group is a host. */
+        val undecided = ConcurrentHashMap<String, Undecided>()
+
+        /** Dials this pass took. */
+        val taken = AtomicInteger()
+    }
+
+    /** One url's answer, or [asked] false when our transport declined to dial it. */
+    private class Asked<T>(
+        val asked: Boolean,
+        val answer: T?,
+    )
+
+    /** What the search for a group's yardstick found, and what it learned about the urls it asked. */
+    private class Search {
+        var found: NormalizedRelayUrl? = null
+        var foundPrint: AliasProbe.Leader? = null
+
+        /** Answered, but too thinly to be a yardstick; held for the scheme-twin exit. */
+        var thin: NormalizedRelayUrl? = null
+        var thinPrint: AliasProbe.Leader? = null
+
+        /** Asked and answered nothing; a url the transport declined was never asked. */
+        val exhausted = HashSet<NormalizedRelayUrl>()
+
+        /** Urls the search asked, and the subset that answered other than by refusing our key. */
+        val asked = HashSet<NormalizedRelayUrl>()
+        val spoke = HashSet<NormalizedRelayUrl>()
+    }
+
+    /** The pass's writer, under the limits every pass's verdict writes share. */
+    private fun newWriter() =
+        VerdictWriter(
+            VerdictWrites.WRITE_CONCURRENCY,
+            publishDeadlineMs,
+            VerdictWrites.PUBLISH_WEDGE_LIMIT,
+            VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
+            progress,
+            VerdictWrites.STAGE_PUBLISH,
+            // The position counts hosts, not writes.
+            tick = false,
+        )
+
+    /** One answer from [url] through [walk], dialled under its gate permit and the pass's deadline. */
+    private suspend fun <T> ask(
+        run: Run,
+        url: NormalizedRelayUrl,
+        walk: suspend () -> T,
+    ): Asked<T> =
+        gate.withPermit(url) {
+            // A stopped writer refuses whatever this dial could prove, so it is not taken.
+            if (run.writer.stoppedBy != null || !run.canDial(url)) return@withPermit Asked(false, null)
+            run.taken.incrementAndGet()
+            Asked(true, dial(url, run.sockets, walk))
+        }
+
+    /** One host's group: find a yardstick, then hold the rest up against it and publish what that proves. */
+    private suspend fun measureGroup(
+        run: Run,
+        group: List<NormalizedRelayUrl>,
+    ) {
+        if (writesStopped(run, group)) return
+        val wanted = aliases.toProbe(group)
+        // One anchor for the whole group, taken before any of it is dialled.
+        val anchor = AliasProbe.settledAnchor(nowSeconds())
+        val search = searchYardstick(run, wanted, anchor)
+        if (writesStopped(run, group)) return
+        var members = wanted
+        // A window too thin to be a yardstick still settles its own scheme twin, and no further:
+        // nothing else can be measured against it.
+        val thin = search.thin
+        val thinPrint = search.thinPrint
+        if (search.found == null && thin != null && thinPrint != null) {
+            aliases.plainTwinIn(group, thin)?.let { twin ->
+                search.found = thin
+                search.foundPrint = thinPrint
+                members = listOf(twin)
+            }
+        }
+        // A group nothing would read from folds onto its preferred survivor: a policy, not a
+        // measurement, and only while every url asked so far answered.
+        val unreadable = search.found == null && thin == null && foldUnreadableGroups && search.asked.isNotEmpty() && search.asked.all { it in search.spoke }
+        if (unreadable && foldedOnName(run, wanted, search, anchor)) return
+        val leader = search.found
+        val lead = search.foundPrint
+        if (writesStopped(run, group)) return
+        if (leader == null || lead == null) {
+            // Cooled down only when something was asked: a group the transport declined was never measured.
+            val host = RelayAliases.hostOf(group.first().url)
+            if (search.asked.isNotEmpty()) {
+                markUndecidable(group.first(), run.startedAtMs)
+                run.undecided[host] = Undecided.NO_YARDSTICK
+            } else {
+                run.undecided[host] = Undecided.TRANSPORT
+            }
+            return
+        }
+        // Not the yardstick or the exhausted; a url the transport declined is still worth a dial.
+        compareAgainst(run, group, members.filter { it != leader && it !in search.exhausted }, leader, lead, anchor)
+    }
+
+    /**
+     * Has the pass's writer stopped: then nothing this group could prove would be written, so it is left
+     * unresolved for the next pass, with no cooldown, since the store failed and not the host.
+     */
+    private fun writesStopped(
+        run: Run,
+        group: List<NormalizedRelayUrl>,
+    ): Boolean {
+        if (run.writer.stoppedBy == null) return false
+        run.undecided[RelayAliases.hostOf(group.first().url)] = Undecided.WRITES_STOPPED
+        return true
+    }
+
+    /**
+     * The yardstick goes first, alone: it decides the filter the whole group is asked through. The
+     * search walks down the preference order while urls stay silent or thin.
+     */
+    private suspend fun searchYardstick(
+        run: Run,
+        wanted: List<NormalizedRelayUrl>,
+        anchor: Long,
+    ): Search {
+        val search = Search()
+        // Two budgets: silence costs a whole deadline, a thin answer one short page.
+        var fruitless = 0
+        var thinAnswers = 0
+        for (candidate in wanted) {
+            if (fruitless >= YARDSTICK_ATTEMPTS || thinAnswers >= THIN_ATTEMPTS) break
+            val attempt = ask(run, candidate) { probe.leaderPrint(candidate, anchor, run.onEvent) }
+            if (attempt.asked) search.asked += candidate
+            if (attempt.answer?.answeredForFold == true) search.spoke += candidate
+            val print = attempt.answer?.leader
+            if (print == null) {
+                // Asked and silent, or cut by the deadline: a second dial this pass buys the same silence.
+                if (attempt.asked) search.exhausted += candidate
+                fruitless++
+                continue
+            }
+            if (aliases.usableWindow(print.ids, print.kinds)) {
+                search.found = candidate
+                search.foundPrint = print
+                break
+            }
+            // A thin window is a fact about the path, not the host: a path-routing host serves a quiet
+            // path beside a busy one. The first is kept for the twin exit.
+            thinAnswers++
+            if (search.thin == null) {
+                search.thin = candidate
+                search.thinPrint = print
+            }
+        }
+        return search
+    }
+
+    /**
+     * Ask the rest of a group nothing has served from, before concluding anything about the whole of
+     * it. A usable window found becomes the yardstick; true when the group was folded on its name instead.
+     */
+    private suspend fun foldedOnName(
+        run: Run,
+        wanted: List<NormalizedRelayUrl>,
+        search: Search,
+        anchor: Long,
+    ): Boolean {
+        val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
+        coroutineScope {
+            for (url in wanted.filter { it !in search.asked }) {
+                launch { ask(run, url) { probe.leaderPrint(url, anchor, run.onEvent) }.answer?.let { swept[url] = it } }
+            }
+        }
+        for ((url, attempt) in swept) {
+            if (attempt.answeredForFold) search.spoke += url
+            if (attempt.leader == null) search.exhausted += url
+        }
+        // Taken in preference order, so the leader does not depend on which dial finished first.
+        wanted.firstOrNull { url -> swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true }?.let { better ->
+            search.found = better
+            search.foundPrint = swept.getValue(better).leader
+            search.exhausted -= better
+        }
+        // Anything served, thin windows included, disqualifies the shared-name default.
+        if (search.found != null || swept.values.any { it.leader != null }) return false
+        // Every url, not most: one our transport could not reach makes this "we do not know".
+        if (wanted.size < 2 || !wanted.all { it in search.spoke }) return false
+        val survivor = wanted.first()
+        val folds = aliases.foldUnreadable(wanted, survivor)
+        val landed = run.writer.write(folds.keys.toList()) { record.publishUnreadable(it, survivor, wanted.size) != null }
+        run.newVerdicts += landed
+        if (folds.isNotEmpty()) clearUndecidable(survivor)
+        if (landed.size < folds.size) writesStopped(run, wanted)
+        if (landed.isNotEmpty()) {
             System.err.println(
-                "router: $label alias pass left ${undecided.size} host(s) undecided — " +
-                    Undecided.entries
-                        .filter { byReason.containsKey(it) }
-                        .joinToString("; ") { reason ->
-                            val hosts = byReason.getValue(reason)
-                            "${hosts.size} ${reason.reason} (e.g. ${hosts.sorted().take(NAMED_PER_REASON).joinToString()})"
-                        },
+                "router: ${run.label} ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
+                    "${wanted.size} url(s) and every one answered — ${landed.size} folded onto ${survivor.url} " +
+                    "on the shared name, WITHOUT a measurement",
             )
         }
-        return learned
+        return true
+    }
+
+    /** Fingerprint [members] through the yardstick's filter and publish what the group proved. */
+    private suspend fun compareAgainst(
+        run: Run,
+        group: List<NormalizedRelayUrl>,
+        members: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
+        lead: AliasProbe.Leader,
+        anchor: Long,
+    ) {
+        val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
+        prints[leader] = lead.ids
+        coroutineScope {
+            for (url in members) {
+                launch { ask(run, url) { probe.fingerprint(url, anchor, lead.kinds, run.onEvent) }.answer?.let { prints[url] = it } }
+            }
+        }
+        // Before anything is learned: a member the stopped writer kept us from asking is not a silent one.
+        if (writesStopped(run, group)) return
+        val result = aliases.learn(group, leader, prints, lead.kinds)
+        if (result.distinct.isNotEmpty() && !yardstickHolds(run, group, leader, lead, anchor, result.distinct.size)) return
+        val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
+        for ((alias, canonical) in result.folded) {
+            val print = prints[alias].orEmpty()
+            // Against the url it folded onto, which is not always the leader.
+            val shared = prints[canonical].orEmpty().count { it in print }
+            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
+        }
+        // A cleared url was held up against the leader and every other head; the count names real comparisons.
+        val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
+        for (url in result.distinct) {
+            val print = prints[url].orEmpty()
+            val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
+            val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
+            cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
+        }
+        // A leader that compared nothing ends with no verdict and takes the cooldown.
+        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
+            clearUndecidable(leader)
+        } else {
+            markUndecidable(leader, run.startedAtMs)
+            run.undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
+        }
+        publish(run, verdicts, cleared)
+    }
+
+    /**
+     * Prove the yardstick before making a negative claim: a second walk from the same anchor through
+     * the same filter. False, with the store's answer restored and the host cooled down, when it cannot.
+     */
+    private suspend fun yardstickHolds(
+        run: Run,
+        group: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
+        lead: AliasProbe.Leader,
+        anchor: Long,
+        distinct: Int,
+    ): Boolean {
+        val leaderPrint = lead.ids
+        val again = ask(run, leader) { probe.fingerprint(leader, anchor, lead.kinds, run.onEvent) }.answer
+        if (again != null && aliases.reproducible(leaderPrint, again)) return true
+        val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
+        // Back to what the store says.
+        aliases.replace(group, run.held.aliases, run.held.distinct)
+        if (writesStopped(run, group)) return false
+        markUndecidable(leader, run.startedAtMs)
+        run.undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
+        System.err.println(
+            "router: ${run.label} ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
+                "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor, " +
+                // A short second walk is a relay or our transport cutting it; a full one, a window that moved.
+                "${again?.let { "which returned ${it.size}" } ?: "which never answered"}) — " +
+                "${group.size} url(s) left unmeasured rather than published as $distinct separate relay(s)",
+        )
+        return false
+    }
+
+    /** A group's verdicts, written as it finishes so a restart mid-pass keeps them; only a fold that landed is learned. */
+    private suspend fun publish(
+        run: Run,
+        verdicts: Map<NormalizedRelayUrl, Fold>,
+        cleared: Map<NormalizedRelayUrl, Cleared>,
+    ) {
+        val landed =
+            run.writer.write((verdicts.keys + cleared.keys).toList()) { url ->
+                val v = verdicts[url]
+                // Both flags can be set at once; the twin form wins because the pairing is the argument.
+                when {
+                    v == null -> cleared[url]?.let { record.publishDistinct(url, it.sampled, it.comparedAgainst, it.bestShared) }
+                    v.secureTwin -> record.publishSecureTwin(url, v.canonical, v.sampled, v.groupList)
+                    v.groupList -> record.publishGroupList(url, v.canonical, v.sampled, v.shared)
+                    else -> record.publish(url, v.canonical, v.sampled, v.shared)
+                } != null
+            }
+        run.newVerdicts += verdicts.keys.filter { it in landed }
+    }
+
+    /** The writes the store did not take this pass; those hosts are measured again next pass. */
+    private fun reportUnwritten(
+        label: String,
+        writer: VerdictWriter,
+    ) {
+        if (writer.unwritten == 0) return
+        System.err.println(
+            "router: $label fold — ${writer.unwritten} verdict(s) NOT written (${writer.wedged} hit the write deadline, " +
+                "${writer.declined} failed outright, ${writer.refused} never started" +
+                (writer.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
+                "); those hosts are measured again next pass",
+        )
+    }
+
+    /** One line naming why hosts ended undecided, a few examples per reason. */
+    private fun reportUndecided(
+        label: String,
+        undecided: Map<String, Undecided>,
+    ) {
+        if (undecided.isEmpty()) return
+        val byReason = undecided.entries.groupBy({ it.value }, { it.key })
+        System.err.println(
+            "router: $label alias pass left ${undecided.size} host(s) undecided — " +
+                Undecided.entries
+                    .filter { byReason.containsKey(it) }
+                    .joinToString("; ") { reason ->
+                        val hosts = byReason.getValue(reason)
+                        "${hosts.size} ${reason.reason} (e.g. ${hosts.sorted().take(NAMED_PER_REASON).joinToString()})"
+                    },
+        )
     }
 
     /** The undecided map as publishable rows, in [Undecided]'s declaration order. */
@@ -470,6 +570,9 @@ class AliasFolding(
 
         /** The yardstick would not give the same window twice. */
         NOT_REPRODUCIBLE("a host that cannot repeat itself"),
+
+        /** The store stopped taking this pass's writes, so nothing was dialled to prove. */
+        WRITES_STOPPED("left for the next pass: the store stopped taking writes"),
     }
 
     /**
@@ -494,19 +597,6 @@ class AliasFolding(
         }
 
     /**
-     * One verdict write, guarded so a failed write does not take the pass down. Not
-     * `runCatching`, which swallows CancellationException.
-     */
-    private suspend fun guarded(write: suspend () -> Unit) {
-        try {
-            write()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-        }
-    }
-
-    /**
      * Is this group's host still inside the window a failed pass bought it? Keyed by host: the
      * server is what could not be measured.
      */
@@ -522,6 +612,14 @@ class AliasFolding(
             return false
         }
         return true
+    }
+
+    /** Drop what is held about urls outside [world], and cooldowns that have lapsed or whose host left it. */
+    private fun forgetAllBut(world: List<NormalizedRelayUrl>) {
+        aliases.retainOnly(world)
+        val hosts = world.mapTo(HashSet()) { RelayAliases.hostOf(it.url) }
+        val nowMs = System.currentTimeMillis()
+        undecidable.entries.removeIf { (host, until) -> host !in hosts || nowMs >= until }
     }
 
     /** This host was dialled and proved nothing. Leave it alone for a while. */
@@ -556,37 +654,15 @@ class AliasFolding(
     )
 
     /**
-     * Pull the stored verdicts into memory. A store that cannot answer is not "no verdict", so a
-     * failed query keeps what we hold.
+     * Adopt every verdict the store holds and hand back the set to group: the candidates plus every
+     * survivor a verdict names, never the urls that folded away. Null when the store cannot answer.
      */
-    private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
-        val held =
-            try {
-                record.load(candidates)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return
-            }
+    private suspend fun adoptWorld(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
+    ): World? {
         // The store is authoritative on every pass, which is what gives its TTL its teeth.
-        aliases.replace(candidates, held.aliases, held.distinct)
-    }
-
-    /**
-     * Adopt every verdict the store holds and hand back the set to group: the candidates plus
-     * every survivor a verdict names, never the urls that folded away. Falls back to [adopt]
-     * when the store cannot answer.
-     */
-    private suspend fun adoptWorld(candidates: List<NormalizedRelayUrl>): World {
-        val held =
-            try {
-                record.loadAll()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                adopt(candidates)
-                return World(candidates, null)
-            }
+        val held = readStanding("fold", label) { readWorld(label, candidates) } ?: return null
         // Candidates first, so the world keeps the caller's order.
         val world = LinkedHashSet(candidates)
         world += held.aliases.values
@@ -596,12 +672,26 @@ class AliasFolding(
     }
 
     /**
-     * What a pass grouped, and the store's own answer about it, which the reproducibility guard
-     * restores. [held] is null when the store could not answer.
+     * Every verdict we hold, or, when that paged walk fails, the verdicts over [candidates] and the other
+     * urls on their servers: narrower, but still a read, so nothing is signed blind. Throws when both fail.
      */
+    private suspend fun readWorld(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
+    ): RelayVerdictRecord.Verdicts =
+        try {
+            record.loadAll()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: fold [$label] — the walk over every verdict failed (${e.javaClass.simpleName}); reading the candidates' own instead")
+            record.load(candidates + world().matesOf(candidates))
+        }
+
+    /** What a pass grouped, and the store's own answer about it, which the reproducibility guard restores. */
     private class World(
         val urls: List<NormalizedRelayUrl>,
-        val held: RelayVerdictRecord.Verdicts?,
+        val held: RelayVerdictRecord.Verdicts,
     )
 
     /**

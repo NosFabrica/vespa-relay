@@ -4,9 +4,7 @@
 // read: NIP-85's `["30382:rank", <service>, <relay>]` and the Tapestry ADR's bare `["30392", ...]`.
 
 import { refConn } from "./conn.js";
-
-/** A key a Map may delegate to: 64 lowercase hex, the only thing an `authors` filter takes. */
-const HEX64 = /^[0-9a-f]{64}$/;
+import { HEX64 } from "./format.js";
 
 /** NIP-85's Map, the event this module reads. */
 export const MAP_KIND = 10040;

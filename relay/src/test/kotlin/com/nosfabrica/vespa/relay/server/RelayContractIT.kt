@@ -81,7 +81,7 @@ import kotlin.test.assertTrue
  * so reruns against the same store do not collide) — so point it only at a DISPOSABLE relay,
  * never at staging or production. The relay needs the operator settings it is started with:
  *
- *   docker run -d -p 8080:8080 -p 19071:19071 vespaengine/vespa
+ *   docker run -d -p 8080:8080 -p 19071:19071 vespaengine/vespa:8.763.13
  *   RELAY_URL=ws://localhost:7777 VESPA_URL=http://localhost:8080 DEFAULT_LIMIT=25 MAX_LIMIT=40 \
  *     RELAY_ADMIN_PUBKEYS=npub10xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqpkge6d \
  *     ./gradlew :relay:run

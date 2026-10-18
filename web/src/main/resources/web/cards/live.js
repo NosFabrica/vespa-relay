@@ -2,15 +2,13 @@
 // a raid that sends its audience somewhere else, and a clip cut out of it. A 30311's status is a
 // pill beside the badge.
 
-import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, HEX64 } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, addrHref, extLink,
-  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, hostOf, oneLine, multiTag,
+  videoEmbed, coverBanner, coverThumb, chipRow, topicsOf, hashtagHref, relayAddress, oneLine, multiTag,
   tagOf, tagsOf, tagsWhere, clipIf, fmtTs, plural,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** A 30311 address as a link, or its short form when it cannot be encoded. */
 function streamLink(addr) {
@@ -125,7 +123,7 @@ function roomCard(ev, opts) {
   const people = roomPeople(ev);
   const shown = people.slice(0, roomCap(opts));
   const person = (p) => personLink(p.pk) + (p.role ? ` <span class="muted-note">${esc(clip(p.role, 30))}</span>` : "");
-  const relays = [...new Set(multiTag(ev, "relays").map((r) => hostOf(oneLine(r))).filter(Boolean))];
+  const relays = [...new Set(multiTag(ev, "relays").map((r) => relayAddress(oneLine(r))).filter(Boolean))];
   const relaysShown = relays.slice(0, full ? ROOM_RELAYS.full : ROOM_RELAYS.preview);
   const andMore = (all, some) => (all.length > some.length ? ` and ${all.length - some.length} more` : "");
   const inner =

@@ -105,6 +105,8 @@ class PipelinePublishTest {
             relayIngestFromEnv(mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096", "RELAY_INGEST_QUEUE_MB" to "64")).tuning,
         )
         assertFailsWith<IllegalStateException> { relayIngestFromEnv(mapOf("RELAY_INGEST_QUEUE_MB" to "8")) }
+        // The store's probe width applies to the relay's pipeline as it does to the mirror's.
+        assertEquals(250, relayIngestFromEnv(mapOf("VESPA_DEDUP_CHUNK" to "250")).tuning!!.dedupChunk)
         val queue = relayIngestFromEnv(mapOf("RELAY_INGEST" to "queue"))
         assertNull(queue.tuning)
         assertEquals(64, queue.batch)

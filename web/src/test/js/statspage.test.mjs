@@ -36,14 +36,14 @@ const source = (path) => readFileSync(new URL(`../../../../${path}`, import.meta
 
 {
   // The page, the rollup and this suite name one relay schema between them.
-  const html = source("web/src/main/resources/stats.html");
-  assert.match(html, new RegExp(`const SCHEMA = ${versions.relay};`), "stats.html and this suite disagree on the relay schema");
+  const page = source("web/src/main/resources/web/stats/page.js");
+  assert.match(page, new RegExp(`const SCHEMA = ${versions.relay};`), "stats.html's page.js and this suite disagree on the relay schema");
   assert.match(
     source("relay/src/main/kotlin/com/nosfabrica/vespa/relay/maintenance/StatsRollup.kt"),
     new RegExp(`const val SCHEMA_VERSION = ${versions.relay}\\b`),
     "the rollup and this suite disagree on the relay schema",
   );
   // Only the relay's page counts its store over a socket: the mirror's and the monitor's have none to count.
-  assert.match(html, /const isRelayDoc = \(doc\) => !!doc\.relay && !doc\.monitor;/);
+  assert.match(page, /const isRelayDoc = \(doc\) => !!doc\.relay && !doc\.monitor;/);
   ok("only the relay's document mounts the live panels, and every reader agrees on its schema");
 }
