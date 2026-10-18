@@ -85,6 +85,16 @@ class RelayConsistencyTest {
     }
 
     @Test
+    fun `a decision carries the two windows it was decided on, and silence carries none`() {
+        val c = RelayConsistency()
+        val decided = c.judge(ids(0, 500), ids(0, 499))
+        assertEquals(RelayConsistency.Verdict.CONSISTENT, decided?.verdict)
+        assertEquals(500 to 499, decided?.let { it.first.size to it.second.size })
+        assertEquals(null, c.judge(null, ids(0, 500)))
+        assertEquals(null, c.judge(ids(0, 19), ids(0, 19)))
+    }
+
+    @Test
     fun `silence decides nothing`() {
         // A relay that could not be asked proves nothing about how it answers.
         val c = RelayConsistency()

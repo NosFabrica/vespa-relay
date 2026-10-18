@@ -380,8 +380,8 @@ class ConsistencyPass(
             silent[url] = Finding(Unmeasured.FAILED)
             return
         }
-        val answer = consistency.decide(attempt.best.first.ids, attempt.best.second.ids)
-        if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
+        val answer = consistency.judge(attempt.best.first.ids, attempt.best.second.ids)
+        if (answer == null) {
             val why = attempt.why()
             // The transport's words only under the one reason they explain.
             val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
@@ -391,20 +391,19 @@ class ConsistencyPass(
             silent[url] = Finding(why, cause)
             return
         }
-        val first = attempt.best.first.ids!!
-        val second = attempt.best.second.ids!!
+        val (verdict, first, second) = answer
         // No suspension point from here to the end, so the deadline cannot split the three.
         earned[url] =
             Earned(
-                consistent = answer == RelayConsistency.Verdict.CONSISTENT,
+                consistent = verdict == RelayConsistency.Verdict.CONSISTENT,
                 first = first.size,
                 second = second.size,
                 shared = consistency.shared(first, second),
                 score = consistency.containment(first, second),
             )
-        consistency.learn(url, answer)
+        consistency.learn(url, verdict)
         decided.incrementAndGet()
-        if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
+        if (verdict == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
     }
 
     /** One decided url's numbers, held from the dial to the write. */

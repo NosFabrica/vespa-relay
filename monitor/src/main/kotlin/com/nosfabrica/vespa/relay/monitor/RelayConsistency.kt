@@ -76,6 +76,22 @@ class RelayConsistency(
         return if (containment(first, second) >= minOverlap) Verdict.CONSISTENT else Verdict.INCONSISTENT
     }
 
+    /** A pair of answers that proved something, with the two windows it was proved on. */
+    data class Decided(
+        val verdict: Verdict,
+        val first: Set<String>,
+        val second: Set<String>,
+    )
+
+    /** [decide], carrying the windows when it proved something; null is [Verdict.UNMEASURABLE]. */
+    fun judge(
+        first: Set<String>?,
+        second: Set<String>?,
+    ): Decided? {
+        if (first == null || second == null) return null
+        return decide(first, second).takeIf { it != Verdict.UNMEASURABLE }?.let { Decided(it, first, second) }
+    }
+
     /**
      * How much of the smaller answer is inside the larger. Containment, as in [RelayAliases],
      * because a relay may truncate one ask at its own limit.
