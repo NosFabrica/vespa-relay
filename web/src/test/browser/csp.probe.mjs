@@ -57,16 +57,20 @@ await new Promise((r) => server.listen(PORT, r));
 const { chromium } = await import(`${execSync("npm root -g", { encoding: "utf8" }).trim()}/playwright/index.mjs`);
 const browser = await chromium.launch();
 
-// A relay that answers every REQ out of three events, two of which point at pictures that 404.
+// A relay that answers every REQ out of four events: two point at pictures that 404, and one at a live
+// picture on another plain-http origin, which an onion or LAN deployment serves its pages beside.
 const FAKE_RELAY = `
   const hex = (c) => c.repeat(64);
   const DEAD = location.origin + "/web/nope.png";
+  const LIVE_HTTP = "http://127.0.0.1:${PORT}/web/favicon.svg";
   const EVENTS = [
     { id: hex("1"), pubkey: hex("a"), kind: 1, created_at: ${now} - 60, tags: [], content: "csp probe note", sig: hex("c") + hex("c") },
     { id: hex("2"), pubkey: hex("a"), kind: 20, created_at: ${now} - 120, content: "a photo",
       tags: [["title", "dead picture"], ["imeta", "url " + DEAD, "m image/png"]], sig: hex("c") + hex("c") },
     { id: hex("3"), pubkey: hex("a"), kind: 0, created_at: ${now} - 180, tags: [],
       content: JSON.stringify({ name: "probe", picture: DEAD }), sig: hex("c") + hex("c") },
+    { id: hex("4"), pubkey: hex("a"), kind: 20, created_at: ${now} - 240, content: "an http photo",
+      tags: [["title", "http picture"], ["imeta", "url " + LIVE_HTTP, "m image/svg+xml"]], sig: hex("c") + hex("c") },
   ];
   class FakeWS {
     static OPEN = 1;
@@ -125,6 +129,9 @@ await visit("?q=probe", ".result", async (page) => {
   if (!/dead picture/.test(text)) fail("the picture's card is drawn", text.slice(0, 200));
   else if (dead) fail("a dead picture is undone by its data-broken mark", `${dead} still on screen`);
   else ok("a dead picture is undone by its data-broken mark");
+  const http = await page.$$eval("img", (imgs) => imgs.filter((i) => /^http:\/\/127\.0\.0\.1:/.test(i.getAttribute("src") || "") && i.naturalWidth > 0).length);
+  if (!http) fail("a live picture on a plain-http origin is drawn, not refused");
+  else ok("a live picture on a plain-http origin is drawn, not refused");
 });
 await visit("stats.html", ".card");
 await visit("trust.html", ".card");

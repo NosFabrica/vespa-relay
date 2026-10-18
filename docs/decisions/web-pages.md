@@ -317,8 +317,13 @@ the same installer. Getting there moved every inline `<script>` into `web/` (sta
 `broken.test.mjs` on a handler in a module's markup; `csp.probe.mjs` loads every page under
 the policy in Chromium and fails on a violation.
 
-**What the policy still admits, and why.** `img-src` and `media-src` take any https origin,
-`data:` and `blob:`: pictures and video come from wherever an event points. `connect-src` takes
+**What the policy still admits, and why.** `img-src` and `media-src` take any http or https
+origin, `data:` and `blob:`: pictures and video come from wherever an event points, and an image
+cannot execute. Plain `http:` is there for the pages an onion or LAN deployment serves over http,
+where a browser does not upgrade a picture's url and the policy would refuse it as a dead one; on
+an https page the browser upgrades it before the policy is checked. Each page also preloads its
+whole module graph (`preload.test.mjs` checks the hints), since a page whose code moved into a
+file waits one round trip per import level otherwise. `connect-src` takes
 `https:`, `http:`, `wss:` and `ws:`: the search page dials the relays an event or a reader's
 list names (an onion relay is `ws:`), checks NIP-05 at the name's own domain, and the monitor's
 panel reads a relay's NIP-11 over plain http when the relay is `ws://`. `style-src` keeps
