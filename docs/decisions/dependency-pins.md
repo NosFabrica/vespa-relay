@@ -300,8 +300,8 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-7d635159d7fed1aaab82b6979f7ba59b6a003c45 = vespa-eventstore branch claude/awesome-edison-x5mb5y (PR #168), five commits
-over store main 0aed31fda8 (below):
+d37c1fb2eea3 = vespa-eventstore main @ 2026-10-18, the merge of PR #168: five commits over store
+main 0aed31fda8 (below), and no change over its head 7d635159d7fe (git diff is empty):
   - the feed body written into a char array (JsonChars): the relay's CPU per published kind 3
     fell from 550/523 us to 513/490 (docs/ingest-benchmark.md's harness);
   - event.sd pins the document language ("en") instead of having Vespa detect it: Vespa's CPU
@@ -322,22 +322,23 @@ DEPLOY STEP: the stems of notes stored before the deploy come from the FTS reind
   re-puts every body that reads as Portuguese or Spanish (about 1% of kind 1s; on every walk,
   since the columns cannot be read back). After the schema deploy:
     REINDEX_FTS_ON_START=true REINDEX_FTS_KINDS=1   # or unset KINDS for every body kind
-  git merge-base --is-ancestor 0aed31fda8e8 7d635159d7fe   # verified
+  git merge-base --is-ancestor 0aed31fda8e8 d37c1fb2eea3   # verified
 
-GATED, the store with quartz 99d05ee122: its integration suite against a real Vespa in Docker
-(:benchmark:test -Pintegration, green) on 04495876a406, and on 7d635159d7fe its unit build
-(engine + store, green) plus the integration suites the review fixes reach (SearchBodyGramIT,
-RankRegressionIT, VespaParityIT, green), run locally. This relay's own gate is in the commit that set this line.
+GATED, the store with quartz 99d05ee122: its CI on the merged head 7d635159d7fe, lint, build
+and integration against a real Vespa, all green; locally, the full integration suite on
+04495876a406 and, on 7d635159d7fe, the unit build plus SearchBodyGramIT, RankRegressionIT and
+VespaParityIT, green. This relay's own gate is in the commit that set this line.
 
-SPELLED WITH 40 HEX DIGITS: the 12- and 10-digit spellings of 04495876a406 hit the transient
-maven-publish resolution failure on their first builds (com.vanniktech.maven.publish 0.37.0 not found), which JitPack
-keeps per version string. com.github.NosFabrica serves store and engine at the full hash, and
-the store's pom names engine at it and quartz-jvm at 99d05ee122.
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine
+at d37c1fb2eea3, and the store's pom names engine at it and quartz-jvm at 99d05ee122. The branch
+pins before it were spelled with 40, because the 12- and 10-digit spellings of 04495876a406 hit
+the transient maven-publish resolution failure on their first builds (com.vanniktech.maven.publish
+0.37.0 not found), which JitPack keeps per version string.
 
 NO ARROW expected: nothing else in the graph names the store.
 
-Prev 04495876a406f0a5f88268f7445a80b2c47113f6 (this branch only: the same four commits
-without the review fixes). Prev 0aed31fda8e8:
+Prev 7d635159d7fed1aaab82b6979f7ba59b6a003c45 and 04495876a406f0a5f88268f7445a80b2c47113f6 (this
+branch only: PR #168's head, and its first four commits without the review fixes). Prev 0aed31fda8e8:
 
 Prev 437712208b = vespa-eventstore branch claude/awesome-edison-x5mb5y, one commit over 94aad0feea7e:
 the feed body written in one pass instead of through a JsonObject tree (EventDoc.feedJson,
