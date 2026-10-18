@@ -243,6 +243,12 @@ pointing at an empty file, which loads as no bans at all. A disk that refuses
 the write keeps the previous file and logs; the ban already applies in memory,
 and throwing turned an enforced ban into an RPC 500.
 
+**A ban list the relay cannot read is refused as unreadable, not as bad JSON.**
+The read and the parse shared one catch, so a bind mount the image's uid 10001
+could not read stopped the boot with "it is not JSON (AccessDeniedException)",
+which sends an operator to inspect a file that is fine. An I/O failure now
+names its cause and the `chown`; a failed save carries the same hint.
+
 **`/kind_stats.html` redirects rather than 404s.** The old url is bookmarked
 and printed in this repo's own history, and the answer moved rather than went
 away: the Kinds table on `/stats.html` covers every kind where the old page
