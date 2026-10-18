@@ -286,24 +286,26 @@ class VisitPoolTest {
 
     @Test
     fun `negentropySyncThePastSeconds has an hour floor, a reconcile is not a re-walk loop`() {
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    s {
-                        dir    = "down"
-                        filter = { "kinds": [1] }
-                        relaySource = [
-                            {
-                                filter = { "kinds": [30166], "#l": ["prime"] }
-                            }
-                        ]
-                        negentropySyncThePastSeconds = 5
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    """
+                    streams {
+                        s {
+                            dir    = "down"
+                            filter = { "kinds": [1] }
+                            relaySource = [
+                                {
+                                    filter = { "kinds": [30166], "#l": ["prime"] }
+                                }
+                            ]
+                            negentropySyncThePastSeconds = 5
+                        }
                     }
-                }
-                """.trimIndent(),
-            )
-        assertEquals(3600L, cfg.streams.single().negentropySyncThePastSeconds)
+                    """.trimIndent(),
+                )
+            }
+        assertTrue("at least 3600" in e.message!!, e.message!!)
     }
 
     /** A band recorded over [min, max], as `refetchThePastSeconds` finds one before expiring it. */

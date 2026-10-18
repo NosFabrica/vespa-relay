@@ -638,7 +638,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a stream may set its own re-walk period, floored and read per stream`() {
+    fun `a stream may set its own re-walk period, refused under the floor and read per stream`() {
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -658,8 +658,9 @@ class RouterConfigTest {
         assertEquals(2_592_000L, stream("refetchThePastSeconds = 2592000").refetchThePastSeconds)
         // Unset is the router's default, not zero.
         assertNull(stream("").refetchThePastSeconds)
-        // Same floor as the audit's: under an hour it is a loop, not a period.
-        assertEquals(3600L, stream("refetchThePastSeconds = 60").refetchThePastSeconds)
+        // Same floor as the audit's: under an hour it is a loop, not a period, and a refusal rather than the floor.
+        val e = assertFailsWith<IllegalArgumentException> { stream("refetchThePastSeconds = 60") }
+        assertTrue("refetchThePastSeconds = 60" in e.message!! && "at least 3600" in e.message!!, e.message!!)
     }
 
     @Test
@@ -1347,9 +1348,9 @@ class RouterConfigTest {
         """
         val absent = RouterConfigLoader.parse("monitor { sweepSeconds = 3600 }\n$block")
         assertEquals(MonitorConfig.DEFAULT_DIAL_CONCURRENCY, absent.monitor!!.dialConcurrency)
-        // Zero dials is an off switch wearing a tuning knob's name: floored, not honored.
-        val floored = RouterConfigLoader.parse("monitor { dialConcurrency = 0 }\n$block")
-        assertEquals(1, floored.monitor!!.dialConcurrency)
+        // Zero dials is an off switch wearing a tuning knob's name: refused, neither honored nor floored.
+        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse("monitor { dialConcurrency = 0 }\n$block") }
+        assertTrue("dialConcurrency = 0" in e.message!! && "at least 1" in e.message!!, e.message!!)
     }
 
     @Test
@@ -1406,10 +1407,11 @@ class RouterConfigTest {
         assertNull(silent.streams.single().visitConcurrency)
         assertNull(silent.streams.single().maxLiveConcurrency)
 
-        // Zero is floored, not honored, as the monitor's dial gate is.
-        val floored = RouterConfigLoader.parse(block("visitConcurrency = 0\nmaxLiveConcurrency = 0"))
-        assertEquals(1, floored.streams.single().visitConcurrency)
-        assertEquals(1, floored.streams.single().maxLiveConcurrency)
+        // Zero is refused, as the monitor's dial gate is: an off switch wearing a tuning knob's name.
+        for (zero in listOf("visitConcurrency", "maxLiveConcurrency", "refetchConcurrency", "negentropyConcurrency")) {
+            val e = assertFailsWith<IllegalArgumentException>(zero) { RouterConfigLoader.parse(block("$zero = 0")) }
+            assertTrue("`$zero = 0`" in e.message!! && "at least 1" in e.message!!, e.message!!)
+        }
 
         // Accepted and dropped at the router level, a deployment would believe it had bounded its dials.
         for (moved in listOf("visitConcurrency = 64", "tailBudget = 900")) {
@@ -1625,5 +1627,82 @@ class RouterConfigTest {
 
         // What is known still parses.
         RouterConfigLoader.parse(sourced.format("authors = 1, \"#p\" = 1"))
+    }
+
+    @Test
+    fun `a number out of range is refused at boot naming the key and the bound, never read as the bound`() {
+        fun refused(
+            hocon: String,
+            monitor: String? = null,
+        ) = assertFailsWith<IllegalArgumentException>(hocon + monitor.orEmpty()) {
+            RouterConfigLoader.parse(hocon, monitorHocon = monitor)
+        }.message.orEmpty()
+
+        val static = """streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], %s } }"""
+        val sourced = """streams { s { filter = { "kinds": [1] }, relaySource = [ { filter = { "kinds": [30166] } %s } ], %s } }"""
+
+        for ((hocon, expect) in listOf(
+            // Zero is no timeout at all to OkHttp.
+            "connectionTimeout = 0\n" + static.format("") to listOf("connectionTimeout = 0", "at least 1"),
+            static.format("negentropySyncThePastSeconds = 5") to listOf("negentropySyncThePastSeconds = 5", "at least 3600"),
+            static.format("negentropy = [ { every = 60 } ]") to listOf("every = 60", "at least 3600"),
+            static.format("refetch = [ { maxAge = 0, every = 86400 }, { every = 604800 } ]") to listOf("maxAge = 0", "at least 1"),
+            static.format("refetch = [ { maxAge = -5, every = 86400 }, { every = 604800 } ]") to listOf("maxAge = -5", "at least 1"),
+            sourced.format("", "refreshSeconds = 5") to listOf("refreshSeconds = 5", "at least 60"),
+            sourced.format("", "maxRelaysPerList = 0") to listOf("maxRelaysPerList = 0", "at least 1"),
+            sourced.format(", maxAgeSeconds = 5", "") to listOf("maxAgeSeconds = 5", "at least 60"),
+            sourced.format(", refreshSeconds = 1", "") to listOf("refreshSeconds = 1", "at least 10"),
+        )) {
+            val message = refused(hocon)
+            for (part in expect) assertTrue(part in message, "expected '$part' in: $message")
+        }
+        for ((monitor, expect) in listOf(
+            "sources = [], sweepSeconds = 60" to "sweepSeconds = 60",
+            "sources = [], fastLaneSeconds = 5" to "fastLaneSeconds = 5",
+            "sources = [], fastLaneSeconds = -1" to "fastLaneSeconds = -1",
+        )) {
+            val message = refused(static.format(""), monitor)
+            assertTrue(expect in message, "expected '$expect' in: $message")
+        }
+    }
+
+    @Test
+    fun `both spellings of a schedule obey one bound`() {
+        fun stream(body: String) = RouterConfigLoader.parse("""streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], $body } }""").streams.single()
+
+        // Zero is always due in the list, so it is in the scalar that is the list's single band.
+        assertEquals(stream("negentropy = [ { every = 0 } ]").negentropySchedule, stream("negentropySyncThePastSeconds = 0").negentropySchedule)
+        assertEquals(stream("refetch = [ { every = 3600 } ]").refetchSchedule, stream("refetchThePastSeconds = 3600").refetchSchedule)
+        for (body in listOf("negentropySyncThePastSeconds = 1800", "negentropy = [ { every = 1800 } ]")) {
+            assertFailsWith<IllegalArgumentException>(body) { stream(body) }
+        }
+    }
+
+    @Test
+    fun `an invalid url or exclude entry is a config error, never a skipped line`() {
+        fun refused(
+            hocon: String,
+            monitor: String? = null,
+        ) = assertFailsWith<IllegalArgumentException>(hocon + monitor.orEmpty()) {
+            RouterConfigLoader.parse(hocon, monitorHocon = monitor)
+        }.message.orEmpty()
+
+        val static = """streams { s { filter = { "kinds": [1] }, urls = %s } }"""
+        assertTrue("'not a url'" in refused(static.format("""["wss://a.example", "not a url"]""")))
+        // An exclude that failed open would dial the relay the operator meant to forbid.
+        val sourced = """streams { s { filter = { "kinds": [1] }, relaySource = [ { filter = { "kinds": [30166] } } ], exclude = %s } }"""
+        assertTrue("'not a url'" in refused(sourced.format("""["wss://skip.example", "not a url"]""")))
+        assertTrue("'not a url'" in refused(static.format("""["wss://a.example"]"""), monitor = """sources = [], exclude = ["not a url"]"""))
+    }
+
+    @Test
+    fun `a retired key says one thing wherever it is written`() {
+        val static = """streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], sync = "fetch" } }"""
+        val sourced = """streams { s { filter = { "kinds": [1] }, relaySource = [ { filter = { "kinds": [30166] } } ], sync = "fetch" } }"""
+        val messages =
+            listOf(static, sourced).map { hocon ->
+                assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(hocon) }.message!!.substringAfter("sets `sync`")
+            }
+        assertEquals(1, messages.toSet().size, "a static and a discovered stream got different reasons: $messages")
     }
 }
