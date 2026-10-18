@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -68,6 +69,10 @@ internal class StreamWorld(
     /** The last sweep's candidate set and what the fast lane has handed over since; empty until a sweep derives. */
     @Volatile
     var known: ServerIndex = ServerIndex.EMPTY
+        private set
+
+    @Volatile
+    override var listsReadFromSec: Long? = null
         private set
 
     /** Whether a derivation has run; a fresh [Derivation] and one that found nothing are the same zeros. */
@@ -123,10 +128,13 @@ internal class StreamWorld(
         progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
+        val readingFromSec = nowSeconds()
         // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
-        derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
-            if (kept) all += url else excluded += url
-        }
+        val read =
+            derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
+                if (kept) all += url else excluded += url
+            }
+        if (read) listsReadFromSec = readingFromSec
         // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
         // url is kept is a function of the url, however many sources found it.
         val recorded = ownRecords()

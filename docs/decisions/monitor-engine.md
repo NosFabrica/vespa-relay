@@ -174,6 +174,15 @@ and left its folded set from the last read. `readStanding` is the one rule:
 the failure is logged and the pass skips its batch, because a verdict signed
 without the record it is written against can contradict that record. The
 read-only `applyVerdicts` still keeps what it holds, since it signs nothing.
+The fold's read under that rule falls back from the walk over every verdict
+to a `#d` read of its candidates before it gives up (`aliases.md`).
+
+**The fast lane's window starts no earlier than the last sweep's read of the
+lists.** A tick advances its bound only when it ran, so a failed one is looked
+at again; through a long read outage the window grew without bound and the
+first tick after it asked for hours of relay lists the sweep had since read.
+`CandidateSource.listsReadFromSec` is when the last derivation that read every
+list began, and the lane asks from no earlier than that.
 
 ## Stream world
 
