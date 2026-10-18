@@ -537,8 +537,9 @@ to `/`, so with them on (the default) an admin tool that leaves the type off get
 a `400` `NOTICE` rather than the rpc; before NIP-FE any POST reached the rpc.
 The token is checked before the body is read: a call not signed by an admin, for
 another url, or more than 60s off the relay's clock is a `401`/`403` from its
-headers alone. Four admin calls run at once (a fifth is a `503`), and a body
-still arriving after 10s is a `408`.
+headers alone. Four admin calls may upload their bodies at once (a fifth is a
+`503`; a long purge behind a ban holds none of them), and a body still arriving
+after 10s is a `408`.
 
 ## Serving over Tor (a `.onion` endpoint)
 

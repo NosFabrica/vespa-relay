@@ -50,7 +50,7 @@ class Nip86Admin(
     val purge: suspend (Filter) -> Unit,
     /** How long an admitted call may take to upload its body before it is a 408. */
     val bodyTimeoutMs: Long = DEFAULT_BODY_TIMEOUT_MS,
-    /** Admin calls running at once; one more is a 503. */
+    /** Admin calls uploading their body at once; one more is a 503. Handling holds no slot. */
     val concurrency: Int = DEFAULT_CONCURRENCY,
     val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
@@ -87,25 +87,32 @@ fun nip86Answer(
             Precheck.NotAdmin -> return@ret call.respondText("Not an admin", status = HttpStatusCode.Forbidden)
             Precheck.Admin -> Unit
         }
+        // The slot bounds uploads only: a purge that takes minutes must not turn every other admin call into a 503.
         if (!slots.tryAcquire()) {
             call.response.header(HttpHeaders.RetryAfter, "1")
-            return@ret call.respondText("Busy: ${admin.concurrency} admin calls are already running", status = HttpStatusCode.ServiceUnavailable)
+            return@ret call.respondText("Busy: ${admin.concurrency} admin calls are already uploading", status = HttpStatusCode.ServiceUnavailable)
         }
-        try {
-            // Bounded before buffering: NIP-98 binds the token to the body's sha256, so quartz can only check size after reading.
-            val max = Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES
-            val body =
-                try {
-                    withTimeout(admin.bodyTimeoutMs) { call.receiveBounded(max.toLong()) }
-                        ?: return@ret call.respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge)
-                } catch (_: TimeoutCancellationException) {
-                    call.response.header(HttpHeaders.Connection, "close")
-                    return@ret call.respondText("The body did not arrive within ${admin.bodyTimeoutMs / 1000.0}s", status = HttpStatusCode.RequestTimeout)
-                }
-            call.respond(handler.handle(auth, body), rpcType)
-        } finally {
-            slots.release()
-        }
+        val body =
+            try {
+                call.receiveRpcBody(admin.bodyTimeoutMs) ?: return@ret
+            } finally {
+                slots.release()
+            }
+        call.respond(handler.handle(auth, body), rpcType)
+    }
+}
+
+/** The rpc body within [timeoutMs], or null once the refusal (413 or 408) has been answered. */
+private suspend fun ApplicationCall.receiveRpcBody(timeoutMs: Long): ByteArray? {
+    // Bounded before buffering: NIP-98 binds the token to the body's sha256, so quartz can only check size after reading.
+    val max = Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES
+    return try {
+        withTimeout(timeoutMs) { receiveBounded(max.toLong()) }
+            ?: null.also { respondText("Payload exceeds $max bytes", status = HttpStatusCode.PayloadTooLarge) }
+    } catch (_: TimeoutCancellationException) {
+        response.header(HttpHeaders.Connection, "close")
+        respondText("The body did not arrive within ${timeoutMs / 1000.0}s", status = HttpStatusCode.RequestTimeout)
+        null
     }
 }
 

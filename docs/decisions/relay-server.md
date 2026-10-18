@@ -201,6 +201,12 @@ An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
 at once, refused with a `503` rather than queued, since a queue is what a
 stolen admin token would fill.
 
+**The admin slot covers the upload, not the handling.** It was held through
+quartz's dispatch, which awaits the purge behind a ban (`store.delete`), so a
+purge that took minutes turned every other admin call, reads included, into a
+`503`. The trickling body is the only exposure the slot exists for; once the
+body is in, the call runs without one.
+
 **A slow websocket consumer is disconnected, not throttled.** Dropping EVENT or
 EOSE frames would corrupt NIP-01 semantics. The polite close frame queues
 behind the very congestion that tripped it, so the session is cancelled after
