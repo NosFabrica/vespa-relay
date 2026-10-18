@@ -9,7 +9,7 @@ const {
 } = await import(new URL("../../main/resources/web/paging.js", import.meta.url));
 
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
-const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");
 
 const id = (n) => String(n).padStart(64, "0");
 const ev = (n) => ({ id: id(n), pubkey: "a".repeat(64), kind: 1, created_at: 1_800_000_000 - n, tags: [] });
@@ -113,7 +113,7 @@ assert.ok(
 
 // The pager is redrawn with the cards, so a listener bound to a button dies with the page it turned.
 assert.ok(/closest\("\.pg"\)/.test(app), "the pager's clicks must be delegated off the list");
-assert.ok(/\.pg \{/.test(html), "…and index.html must style what it draws");
+assert.ok(/\.pg \{/.test(css), "…and app.css must style what it draws");
 
 console.log(
   `paging: ${PAGE_SIZE} to a page, ${PRELOAD_PAGES} fetched ahead, ceiling ${MAX_ASK} (${MAX_PAGES} pages) — the cut, the fold and the two ends hold`,

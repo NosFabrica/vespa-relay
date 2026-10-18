@@ -1,4 +1,4 @@
-// The face renderer against the size table in index.html: a size the
+// The face renderer against the size table in web/app.css: a size the
 // stylesheet has no row for renders wrong or not at all, and nothing throws.
 
 import assert from "assert";
@@ -6,13 +6,13 @@ import { readFileSync } from "node:fs";
 
 const { avatarHtml, SIZES, hueOf } =
   await import(new URL("../../main/resources/web/shared/avatar.js", import.meta.url));
-const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 
 for (const size of SIZES) {
   const rule = new RegExp(`\\.av-${size}\\s*{[^}]*--av:`);
-  assert.ok(rule.test(html), `index.html has no --av rule for .av-${size}`);
+  assert.ok(rule.test(css), `app.css has no --av rule for .av-${size}`);
   assert.ok(avatarHtml("", pk, size).includes(`av-wrap av-${size}`), `avatarHtml did not emit av-${size}`);
 }
 

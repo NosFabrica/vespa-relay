@@ -5,6 +5,7 @@ import assert from "assert";
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
+const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
 
 /** The source of a top-level `function name() { … }`, closing brace included. */
@@ -70,7 +71,7 @@ for (const v of branchedOn) {
 
 // `display: inline-flex` beats the UA's `[hidden] { display: none }` on specificity.
 assert.ok(/<span id="advcount"[^>]*\bhidden\b/.test(html), "the badge must start hidden — nothing is on at load");
-assert.ok(/\.adv-count\[hidden\]\s*{\s*display:\s*none/.test(html), "index.html must hide .adv-count[hidden] explicitly");
+assert.ok(/\.adv-count\[hidden\]\s*{\s*display:\s*none/.test(css), "app.css must hide .adv-count[hidden] explicitly");
 
 // The <label> wrappers are the controls' only accessible names.
 for (const id of ["sort", "spam"]) {

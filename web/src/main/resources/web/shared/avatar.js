@@ -1,6 +1,6 @@
 // A person's picture everywhere the page draws one: the picture, a generated face keyed off
 // the pubkey when there is none, and the score chip the active lens fills in. The pixel
-// sizes live in the stylesheet's `--av` table (index.html).
+// sizes live in the stylesheet's `--av` table (web/app.css).
 
 import { esc } from "./format.js";
 

@@ -71,9 +71,9 @@ assert.ok(
 );
 
 // The rule hides the panel, not the row, which also carries the chips and the syntax button.
-const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
-assert.ok(/body\.feed #adv \{ display: none/.test(html), "the feed hides the Filters panel");
-assert.ok(!/body\.feed \.bar(-right)? \{ display: none/.test(html), "…and not the row it sits in, which carries the chips and the syntax button");
+const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");
+assert.ok(/body\.feed #adv \{ display: none/.test(css), "the feed hides the Filters panel");
+assert.ok(!/body\.feed \.bar(-right)? \{ display: none/.test(css), "…and not the row it sits in, which carries the chips and the syntax button");
 
 // Replies are dropped after the relay answers (NIP-01 cannot ask for their absence), so the ask is widened.
 assert.ok(askFor(PREVIEW_CARDS) >= 24, "three cards are asked for as a sample, not as three");
