@@ -33,6 +33,8 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyResult
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
@@ -41,6 +43,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -305,6 +308,26 @@ class RelayProtocolTest {
                 hooked.close()
                 scope.cancel()
             }
+        }
+
+    /** Each identity is a key the client minted, so the set of those already told is bounded per connection. */
+    @Test
+    fun `a connection signing in as ever more keys is told about a bounded number`() =
+        runBlocking {
+            val hooked = AtomicInteger(0)
+            val policy = MultiAddressAuthPolicy(relayUrl, onAuthenticated = { _, _ -> hooked.incrementAndGet() })
+            val ctx =
+                object : RequestContext {
+                    override val connectionId = 1L
+                    override val policy: IRelayPolicy get() = error("not asked")
+                    override val authenticatedUsers = emptySet<String>()
+                }
+            policy.onConnect(ctx) {}
+            val first = NostrSignerSync()
+            repeat(3) { policy.authorize(first.sign(RelayAuthEvent.build(relayUrl, "c"))) }
+            assertEquals(1, hooked.get(), "one identity resending its AUTH is told once")
+            repeat(MultiAddressAuthPolicy.MAX_TOLD * 2) { policy.authorize(NostrSignerSync().sign(RelayAuthEvent.build(relayUrl, "c"))) }
+            assertEquals(MultiAddressAuthPolicy.MAX_TOLD, hooked.get())
         }
 
     /** Every NOTICE this connection has been sent, once [count] of them have. */

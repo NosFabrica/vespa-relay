@@ -237,6 +237,27 @@ class ProbeDeadlineTest {
         }
 
     @Test
+    fun `a rate limit or words the silence table does not know earn no grade`() =
+        runBlocking {
+            val url = RelayUrlNormalizer.normalize("wss://busy.example")
+
+            suspend fun grade(reason: String): String? {
+                val store = newStore()
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure("one", listOf(url, answering), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                return gradeOf(store, url)
+            }
+
+            assertNull(grade("cannot:WebSocket Failure: Expected HTTP 101 response but was '429 Too Many Requests'"))
+            assertNull(grade("cannot: rate limited, slow down"))
+            assertNull(grade("cannot: the frobnicator declined"))
+        }
+
+    @Test
     fun `the deadline is a multiple of the very window it bounds`() {
         // Per url, not per process: a `.onion` is allowed its circuit on top of the clearnet budget.
         val clearnet = AliasProbe(fetch = stalling(), idleMs = { 20_000L })
@@ -312,7 +333,7 @@ class ProbeDeadlineTest {
                 ConsistencyPass.Unmeasured.ABANDONED.reason in reasons,
                 "the abandoned url must be named as abandoned, not as a probe failure: $reasons",
             )
-            assertEquals(emptySet<NormalizedRelayUrl>(), consistency.unusable(listOf(wedged)).toSet())
+            assertEquals(emptySet<NormalizedRelayUrl>(), listOf(wedged).filterTo(HashSet(), consistency::isInconsistent))
         }
 
     @Test

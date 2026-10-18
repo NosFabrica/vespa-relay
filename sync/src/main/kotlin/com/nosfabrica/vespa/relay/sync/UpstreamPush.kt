@@ -45,52 +45,27 @@ internal class UpstreamPush(
     private val client: NostrClient,
     private val store: IEventStore,
     private val intervalSec: Long,
-    /** The engine-wide one-id-snapshot-at-a-time gate. */
+    /** The engine-wide one-id-snapshot-at-a-time gate, held for the snapshot and released before any round. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
+    /** One negentropy round against an upstream, handing over the ids it lacks; quartz's unless a test stands in. */
+    private val reconcile: suspend (SyncUpstream, List<IdAndTime>, suspend (List<String>) -> Unit) -> Unit = { up, local, onHaveIds ->
+        client.negentropyReconcile(
+            relay = up.url,
+            filter = up.filter,
+            localEntries = local,
+            idleTimeoutMs = NEG_IDLE_MS,
+            onHaveIds = { ids -> onHaveIds(ids) },
+            onNeedIds = { /* up-only: nothing is pulled here */ },
+        )
+    },
 ) {
     val pushed = AtomicLong()
 
     suspend fun loop(up: SyncUpstream) {
         while (scope.isActive) {
             try {
-                var rounds = 0
-                var pushedThisRound = 0L
-                var pushedThisPass = 0L
-                streamGate.withPermit {
-                    // One snapshot per pass: a round changes the upstream's set, never ours.
-                    val local: List<IdAndTime> =
-                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(up.filter)) {
-                            store.snapshotIdsForNegentropy(listOf(up.filter))
-                        }
-                    do {
-                        pushedThisRound = 0
-                        client.negentropyReconcile(
-                            relay = up.url,
-                            filter = up.filter,
-                            localEntries = local,
-                            idleTimeoutMs = NEG_IDLE_MS,
-                            onHaveIds = { ids ->
-                                // Chunked so the store never materialises a whole diff as one query.
-                                for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
-                                    val events: List<Event> =
-                                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {
-                                            store.query(Filter(ids = chunk))
-                                        }
-                                    for (event in events) {
-                                        client.publish(event, setOf(up.url))
-                                        pushed.incrementAndGet()
-                                        pushedThisRound++
-                                        delay(PUBLISH_PACE_MS)
-                                    }
-                                }
-                            },
-                            onNeedIds = { /* up-only: nothing is pulled here */ },
-                        )
-                        pushedThisPass += pushedThisRound
-                        rounds++
-                    } while (pushedThisRound > 0 && rounds < MAX_ROUNDS && scope.isActive)
-                }
+                val (rounds, pushedThisPass) = pass(up)
                 System.err.println(
                     "router: up ${up.url.url} pushed $pushedThisPass event(s) upstream ($rounds round(s))",
                 )
@@ -102,6 +77,41 @@ internal class UpstreamPush(
             }
             delay(intervalSec * 1000)
         }
+    }
+
+    /** One pass: the id snapshot under the gate, then rounds until nothing more is missing. Returns rounds and events pushed. */
+    internal suspend fun pass(up: SyncUpstream): Pair<Int, Long> {
+        // One snapshot per pass: a round changes the upstream's set, never ours.
+        val local: List<IdAndTime> =
+            streamGate.withPermit {
+                storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(up.filter)) {
+                    store.snapshotIdsForNegentropy(listOf(up.filter))
+                }
+            }
+        var rounds = 0
+        var pushedThisRound: Long
+        var pushedThisPass = 0L
+        do {
+            pushedThisRound = 0
+            reconcile(up, local) { ids ->
+                // Chunked so the store never materialises a whole diff as one query.
+                for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
+                    val events: List<Event> =
+                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {
+                            store.query(Filter(ids = chunk))
+                        }
+                    for (event in events) {
+                        client.publish(event, setOf(up.url))
+                        pushed.incrementAndGet()
+                        pushedThisRound++
+                        delay(PUBLISH_PACE_MS)
+                    }
+                }
+            }
+            pushedThisPass += pushedThisRound
+            rounds++
+        } while (pushedThisRound > 0 && rounds < MAX_ROUNDS && scope.isActive)
+        return rounds to pushedThisPass
     }
 
     companion object {

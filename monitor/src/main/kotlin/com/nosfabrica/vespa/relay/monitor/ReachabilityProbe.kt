@@ -110,9 +110,6 @@ internal class ReachabilityProbe(
         }
     }
 
-    /** Our transport can carry it and something answers. */
-    suspend fun canDial(url: NormalizedRelayUrl): Boolean = reach(url) == Reach.REACHABLE
-
     /**
      * A direct handshake to [url] under our default trust, on the pre-probe's route, to check a
      * dial's TLS failure. A url routed through Tor cannot be checked from here.

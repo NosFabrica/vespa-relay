@@ -48,7 +48,7 @@ import kotlin.test.assertTrue
 /**
  * One server reaches the roster once: the fold decides which of a host's urls are one relay,
  * and fitness grades a url `prime` only when the fold has said it is its own. Each fixture is a
- * host measured on staging for #258.
+ * host as it answered on staging.
  */
 class SameServerTest {
     private val signer = NostrSignerInternal(KeyPair())

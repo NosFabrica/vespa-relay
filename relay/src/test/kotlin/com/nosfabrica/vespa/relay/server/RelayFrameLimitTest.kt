@@ -174,7 +174,7 @@ class RelayFrameLimitTest {
     @Test
     fun `a message at the engine's length in three-byte characters is still read`() {
         val subId = "€".repeat(200)
-        val req = """["REQ","$subId",{"ids":["${"0".repeat(64)}"],"search":"include:spam"}]"""
+        val req = """["REQ","$subId",{"ids":["${"0".repeat(64)}"],"#t":["${"€".repeat(250)}"],"search":"include:spam"}]"""
         serving(relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to req.length.toString()))) { socket, _ ->
             socket.getOutputStream().textFrame(req.toByteArray(Charsets.UTF_8))
             val input = DataInputStream(socket.getInputStream())

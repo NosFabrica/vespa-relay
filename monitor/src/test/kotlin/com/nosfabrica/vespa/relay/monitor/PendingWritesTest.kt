@@ -52,7 +52,7 @@ import kotlin.test.assertTrue
 
 /**
  * A store too busy to take the monitor's writes delays the signed records, not by a whole sweep:
- * what a batch earned is replayed from memory once the store answers, and nothing is dialled again (#260).
+ * what a batch earned is replayed from memory once the store answers, and nothing is dialled again.
  */
 class PendingWritesTest {
     private val signer = NostrSignerInternal(KeyPair())
@@ -76,25 +76,28 @@ class PendingWritesTest {
     private val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
     private val dials = AtomicInteger()
 
-    private fun fitness(store: IEventStore) =
-        FitnessPass(
-            record = RelayVerdictRecord(store, signer),
-            probe =
-                AliasProbe(
-                    fetch = { _, want, until, _ ->
-                        dials.incrementAndGet()
-                        AliasProbe.Page(corpus.filter { until == null || it.createdAt <= until }.take(want))
-                    },
-                    target = 40,
-                    page = 40,
-                    fallbackPage = 40,
-                ),
-            client = EmptyNostrClient(),
-            progress = Processors().of("fitness"),
-            // Long enough that a loaded test JVM is not mistaken for a wedged store.
-            publishDeadlineMs = 2_000L,
-            reconcile = { _, _ -> },
-        )
+    /** A url [dark] names answers nothing at all, which the batch guard counts as our dialling failing. */
+    private fun fitness(
+        store: IEventStore,
+        dark: (NormalizedRelayUrl) -> Boolean = { false },
+    ) = FitnessPass(
+        record = RelayVerdictRecord(store, signer),
+        probe =
+            AliasProbe(
+                fetch = { at, want, until, _ ->
+                    dials.incrementAndGet()
+                    if (dark(at)) AliasProbe.Page(null) else AliasProbe.Page(corpus.filter { until == null || it.createdAt <= until }.take(want))
+                },
+                target = 40,
+                page = 40,
+                fallbackPage = 40,
+            ),
+        client = EmptyNostrClient(),
+        progress = Processors().of("fitness"),
+        // Long enough that a loaded test JVM is not mistaken for a wedged store.
+        publishDeadlineMs = 2_000L,
+        reconcile = { _, _ -> },
+    )
 
     private suspend fun FitnessPass.sweep(urls: List<NormalizedRelayUrl>) = withTimeout(60_000) { measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
 
@@ -117,14 +120,12 @@ class PendingWritesTest {
             val pass = fitness(store)
 
             pass.sweep(servers)
-            assertEquals(servers.size, pass.pendingWrites())
             assertTrue(servers.all { gradeOf(store, it) == null })
 
             val dialled = dials.get()
             store.wedged = false
             assertEquals(servers.size, pass.flushPending())
 
-            assertEquals(0, pass.pendingWrites())
             assertTrue(servers.all { gradeOf(store, it)?.get(1) == Verdict.PRIME.value })
             assertEquals(dialled, dials.get(), "a retry is a write, never a measurement")
         }
@@ -176,8 +177,39 @@ class PendingWritesTest {
 
             pass.sweep(servers)
 
-            assertEquals(0, pass.pendingWrites())
             assertEquals(0, pass.flushPending())
+        }
+
+    @Test
+    fun `a batch that refuses to publish keeps the writes still waiting`() =
+        runBlocking {
+            val store = BusyWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = null))
+            val dark = (0 until FitnessPass.GUARD_FLOOR).map { url("wss://dark$it.example/") }.toSet()
+            val pass = fitness(store, dark = { it in dark })
+            pass.sweep(servers)
+
+            // Enough urls answering nothing that the guard drops the whole batch unwritten.
+            pass.sweep(servers + dark)
+            store.wedged = false
+
+            assertEquals(servers.size, pass.flushPending(), "a refused batch threw away writes an earlier one earned")
+            assertTrue(servers.all { gradeOf(store, it)?.get(1) == Verdict.PRIME.value })
+        }
+
+    @Test
+    fun `a queued prime is never written over a stability refusal that came after it`() =
+        runBlocking {
+            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+            val store = BusyWrites(inner)
+            val pass = fitness(store)
+            val shuffler = servers.first()
+            pass.sweep(listOf(shuffler))
+
+            RelayVerdictRecord(inner, signer).publishConsistency(shuffler, consistent = false, first = 40, second = 40, shared = 3, score = 0.075, anchorDays = 7)
+            store.wedged = false
+
+            assertEquals(0, pass.flushPending())
+            assertNull(gradeOf(store, shuffler), "a stale `prime` put a refused relay back on the roster")
         }
 
     @Test

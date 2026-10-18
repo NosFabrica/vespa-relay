@@ -104,7 +104,7 @@ class FitnessBudgetLiveProbe {
             runBlocking {
                 for (leg in legs) {
                     val url = leg.url
-                    leg.preProbeMs = timed { runCatching { reachability.canDial(url) } }
+                    leg.preProbeMs = timed { runCatching { reachability.reach(url) } }
                     leg.documentMs = timed { runCatching { document.read(url) } }
                     var seen = 0
                     var window: AliasProbe.Window? = null

@@ -298,6 +298,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           admit), rotating visits (catch-up, the reconcile of
                           the past, heal drain), earned live tails,
                           yield-paced revisits
+    TailBook.kt           the earned live tails: yields, eviction, and the
+                          permit handed from a visit to its tail
+    PoolStatus.kt         the pool's rows on /stats.json: in-flight, live,
+                          prime units, limits, schedule, phase flush
+    HealthLine.kt         the once-a-minute health line, worded from one
+                          reading by functions a test can call
+    Guards.kt             repeatEvery and shutdownStep: a loop that logs a bad
+                          tick and carries on, a shutdown step that cannot
+                          skip the next
     VisitQueue.kt         whose turn it is, and when a relay may be revisited
     VisitAborts.kt        WHY a visit ended early: `abortedVisits` split eight
                           ways and said once per (stream, relay, reason), with
@@ -327,6 +336,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     NegentropyPager.kt    the windowed history sweep every reconcile runs
     SweepState.kt         per-peer window sizes and the in-progress cursor
     SyncBands.kt          covered created_at bands per (relay, filter)
+    PersistedJsonState.kt the state files' shared flusher, written through
+                          writeDurably; an unreadable file is quarantined
     IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
                           batchInsert, poison isolation. Dropping FIRST is the
                           point: a schnorr check is ~48us isolated and ~70-95us
@@ -370,7 +381,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
     Silence.kt            classifying what a quiet socket actually said
     Unreachability.kt     which failures may be published as NIP-66 records
-    HostStrikes.kt        per-authority strikes and eviction
     RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
                           rtts, `R`, `s` (+version), `N`. Absent writes no tag
                           rather than a zero, and everything it writes it also

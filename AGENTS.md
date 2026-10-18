@@ -160,27 +160,31 @@ monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
-  ReachabilityProbe, Silence, Unreachability, HostStrikes, RelayDocument   what a quiet socket said, what may be published, NIP-11
+  ReachabilityProbe, Silence, Unreachability, RelayDocument   what a quiet socket said, what may be published, NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
-  sync/                       SyncEngine (wiring, the health and stats lines; starts both planes), VisitPool (the
-                              mirror), VisitQueue, VisitAborts, RelayComplaints, RelayPages, FilterWidths,
-                              RosterBuilder, RetractionAudit, NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState,
-                              SyncBands (SYNC_STATE_FILE), SyncManifest (SYNC_MANIFEST_FILE), UpstreamPush,
-                              PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
+  sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool
+                              (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
+                              VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
+                              NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              SyncManifest (SYNC_MANIFEST_FILE), PersistedJsonState (the three files' durable write),
+                              UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
                               StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/
-  RelayMain.kt                entrypoint; refuses to boot if SYNC_CONFIG* is set
-  server/config/              EnvSettings (`env.intOr(...)`, grep for it; ALLOW_PUBKEYS and the rest of the
-                              serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
+  RelayMain.kt                entrypoint: readSettings parses everything before the network, then named boot steps;
+                              refuses to boot if SYNC_CONFIG* is set
+  server/config/              EnvSettings (`env.intOr(...)`, grep for it; the engine's limits, ALLOW_PUBKEYS and the rest
+                              of the serving policy), RelaySettings (RELAY_URL + RELAY_HTTP_URL read once, NIP-11, stats
+                              intervals, state files), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
-                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
+                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS; StatsRollupTest's
+                              SELECTIVE_KINDS is the guard on which kinds the counters tier may ask)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
   resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, signin.js,

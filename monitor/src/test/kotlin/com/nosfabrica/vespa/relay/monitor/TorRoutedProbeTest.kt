@@ -128,7 +128,6 @@ class TorRoutedProbeTest {
             val probe = ReachabilityProbe(TorTransport(settings(port = 1, routeAll = true), OkHttpClient()))
             assertEquals(Reach.TRANSPORT_DOWN, probe.reach(onion))
             assertEquals(Reach.TRANSPORT_DOWN, probe.reach(clearnet))
-            assertFalse(probe.canDial(clearnet))
         }
 
     @Test

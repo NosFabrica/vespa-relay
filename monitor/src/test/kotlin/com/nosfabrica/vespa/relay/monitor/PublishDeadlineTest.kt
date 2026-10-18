@@ -82,7 +82,7 @@ class PublishDeadlineTest {
     fun `a wedged store costs the writes already in flight plus the wedge limit, never one deadline per verdict`() =
         runBlocking {
             val answering = (0 until 60).map { RelayUrlNormalizer.normalize("wss://fine$it.example") }
-            for (concurrency in listOf(1, FitnessPass.WRITE_CONCURRENCY)) {
+            for (concurrency in listOf(1, VerdictWrites.WRITE_CONCURRENCY)) {
                 val store = WedgedWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = self))
                 val pass =
                     FitnessPass(
@@ -104,9 +104,9 @@ class PublishDeadlineTest {
                 withTimeout(30_000) {
                     pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
                 }
-                val bound = concurrency + FitnessPass.PUBLISH_WEDGE_LIMIT - 1
+                val bound = concurrency + VerdictWrites.PUBLISH_WEDGE_LIMIT - 1
                 assertTrue(
-                    store.insertsAttempted.get() in FitnessPass.PUBLISH_WEDGE_LIMIT..bound,
+                    store.insertsAttempted.get() in VerdictWrites.PUBLISH_WEDGE_LIMIT..bound,
                     "$concurrency write(s) at a time paid for ${store.insertsAttempted.get()} wedged write(s), over $bound",
                 )
             }
@@ -235,9 +235,8 @@ class PublishDeadlineTest {
     @Test
     fun `a pass writing its verdicts says so, and its position moves`() =
         runBlocking {
-            // The state that reads as a hang: every dial is behind the pass, and it is writing more
-            // verdicts than it dialled. Left on the dial position that shows `n of n` with
-            // `quietForSec` climbing for as long as the writes take.
+            // Every dial is behind the pass and it writes more verdicts than it dialled: left on the
+            // dial position, that reads `n of n` with `quietForSec` climbing, which looks like a hang.
             val store = PausesOnWrite(NostrSemanticsStore(InMemoryEventIndex(), relay = self), nth = 3)
             val processors = Processors()
             val handle = processors.of("fitness")

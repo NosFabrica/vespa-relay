@@ -492,3 +492,28 @@ the cursor, so a relay graded through kinds 39000 carries no `pageable` claim.
 No epoch bump: each grade is re-taken on the next sweep. `RelayShapesProbe`
 prints the per-shape answers and the grade for any list of urls.
 
+**Unused monitor code is deleted, not kept for later.** `HostStrikes` lost its
+last caller when the visit pool replaced the dynamic cycle, and its test kept
+it compiling; `ConsistencyPass.applyVerdicts`, `RelayConsistency.adopt` and
+`forget`, `ReachabilityProbe.canDial`, `FitnessPass.pendingWrites` and
+`AliasMonitor.generation` were the same: reachable from tests alone. A test
+that asserted a real property through one of them now asserts it through the
+record or the path production takes (`replace` for a lapsed verdict).
+
+**`silent` needs a transport word that is evidence.** The silence branch
+signed `silent` for everything `Silence` did not route elsewhere, which took
+in an HTTP 429 (a server answering), terminal text the table has not been
+taught (`UNKNOWN`), and a relay that CLOSED one shape and went quiet on the
+others. None of those supports "never answered": a rate limit and an
+unrecognised word are deferred and measured again next pass, and a partial
+refusal is deferred as a server that answered. Only `REFUSED`, `NO_ROUTE` and
+`TIMEOUT` still earn `silent`.
+
+**A queued write is dropped only by a decision that replaces it.** Each batch
+cleared the queue for its candidates before it had measured anything, so a
+batch the guard then refused threw away the grades and withdrawals an earlier
+batch had earned, and a batch whose standing read failed left an old `prime`
+queued to be replayed after the stability gate had refused the relay. The
+queue is now cleared per url once the batch has decided that url, and the
+replay reads the record first: a write a later grade has overtaken, or a
+`prime` the stability gate or the fold has since contradicted, is dropped.

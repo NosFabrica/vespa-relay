@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.maintenance
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -29,6 +30,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -44,6 +46,17 @@ internal interface StatsQueries {
         source: String = StatsYql.EVENTS,
     ): JsonObject
 }
+
+/** A failed statistic whose message is safe to publish: our own words and YQL, never the engine's. */
+internal class StatsQueryFailed(
+    message: String,
+) : IllegalStateException(message)
+
+/**
+ * What `/stats.json` may say about [e]: a [StatsQueryFailed]'s own message, otherwise only the
+ * exception's class, since any other message may quote a host, a path or a response body.
+ */
+internal fun publicReason(e: Throwable): String = (e as? StatsQueryFailed)?.message ?: "${e::class.simpleName ?: "error"} (detail in the relay log)"
 
 /**
  * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to `/search/`, refuse a
@@ -79,21 +92,31 @@ internal class StatsVespa(
             }.toString()
 
         val response =
-            withContext(Dispatchers.IO) {
-                http.send(
-                    HttpRequest
-                        .newBuilder(searchUrl)
-                        .header("Content-Type", "application/json")
-                        .timeout(requestTimeout)
-                        .POST(HttpRequest.BodyPublishers.ofString(body))
-                        .build(),
-                    HttpResponse.BodyHandlers.ofString(),
-                )
+            try {
+                withContext(Dispatchers.IO) {
+                    http.send(
+                        HttpRequest
+                            .newBuilder(searchUrl)
+                            .header("Content-Type", "application/json")
+                            .timeout(requestTimeout)
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                        HttpResponse.BodyHandlers.ofString(),
+                    )
+                }
+            } catch (e: IOException) {
+                // The transport's message can name the engine's host and port.
+                failed("vespa did not answer (${e::class.simpleName})", yql, e.toString())
             }
         if (response.statusCode() >= 400) failed("vespa ${response.statusCode()}", yql, response.body())
-        val root =
-            Json.parseToJsonElement(response.body()).jsonObject["root"]?.jsonObject
-                ?: failed("vespa answered with no root", yql, response.body())
+        // Parsed apart from the shape check: a parse error quotes the body it choked on.
+        val parsed =
+            try {
+                Json.parseToJsonElement(response.body()) as? JsonObject
+            } catch (_: SerializationException) {
+                null
+            } ?: failed("vespa answered with something that is not a JSON object", yql, response.body())
+        val root = parsed["root"] as? JsonObject ?: failed("vespa answered with no root", yql, response.body())
         root.requireUndegraded(yql)
         return root
     }
@@ -121,7 +144,7 @@ internal class StatsVespa(
         detail: String,
     ): Nothing {
         System.err.println("stats: $summary for `$yql` — ${detail.take(500)}")
-        error("$summary for `$yql` (engine detail in the relay log)")
+        throw StatsQueryFailed("$summary for `$yql` (engine detail in the relay log)")
     }
 
     companion object {

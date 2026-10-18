@@ -114,30 +114,21 @@ internal class RosterBuilder(
         /** url → whether the monitor measured it answering a NEG-OPEN; absent where unmeasured. */
         val speaksNegentropy: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
         /**
-         * The urls here our own monitor holds a record about at all, whatever that record's
-         * current label says. Every other url on this roster is one the mirror syncs and the
-         * monitor is not covering — the shape a monitor whose `sources` have drifted from the
-         * streams takes. Deliberately membership and not freshness: an epoch bump or a lapsed
-         * TTL empties the labels for a pass or two without narrowing the corpus, and reading
-         * that as drift would flag the whole roster on every re-measure.
+         * The urls here our monitor holds any record about, whatever its label: membership, not
+         * freshness, so a re-measure that empties the labels for a pass does not read as drift.
          */
         val measured: Set<NormalizedRelayUrl> = emptySet(),
         /** Whether [measured] means anything; false on a deployment that measures nothing on purpose. */
         val watching: Boolean = false,
         /**
-         * Stream name → the urls that stream names in its own `urls`. They are on the roster
-         * because an operator put them there, not because a verdict admitted them, so no verdict
-         * is owed for one — but only on the stream that pins it, since another stream reaching
-         * the same url through discovery is still owed one.
+         * Stream name → the urls it names in its own `urls`. No verdict is owed for one, but only
+         * on the stream that pins it: another stream discovering the same url is still owed one.
          */
         val declared: Map<String, Set<NormalizedRelayUrl>> = emptyMap(),
     ) {
         /**
-         * Whether a verdict of ours stands behind [url] on [stream], or none was ever owed. Three
-         * absences are not drift: a router that measures nothing on purpose, one holding no record
-         * about ANYTHING (a cold start, or a rebuild whose verdict read threw), and a url this
-         * stream pins by hand — that one bypasses the verdicts by design and monitor.conf has no
-         * syntax to name it, so counting it would be a fault with no available fix.
+         * Whether a verdict of ours stands behind [url] on [stream], or none was ever owed: a
+         * router that measures nothing, one that holds no record at all, or a url the stream pins.
          */
         fun watches(
             url: NormalizedRelayUrl,

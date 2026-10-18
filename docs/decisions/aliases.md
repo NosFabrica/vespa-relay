@@ -375,3 +375,23 @@ and empty on the second never gave a window and its paths could not fold.
 It walks `AliasProbe.SHAPES` now, and the group fingerprints through whichever
 shape answered.
 
+
+**Fold writes go through the same bounded writer as the other passes.** They
+were each wrapped in an empty catch under only the record edit's own two-minute
+deadline, one group's verdicts after another while the pass gate was held, so
+a store that stopped answering stalled the stability gate, fitness and the
+fast lane behind the fold, and a failed write was counted as learned with
+nothing logged. `VerdictWriter` is `writeEach`'s limits held across a whole
+pass: each write under `PUBLISH_DEADLINE_MS`, and once the wedge limit or
+budget trips every later group's writes are refused rather than waited on.
+Groups still write as they finish; only a write the store took counts as a
+new alias, and the unwritten are logged and measured again next pass.
+
+**What the passes hold in memory is bounded by what a sweep names.**
+`RelayAliases`' three maps, `RelayConsistency`'s two sets and the fold's
+cooldowns only ever grew: `replace` touches the urls it is handed and nothing
+else, so a url that left the candidate set stayed in memory for the life of
+the process. A full sweep now drops everything outside its world (the fold's
+candidates plus every survivor the record names) and every lapsed cooldown.
+A fast-lane batch is a handful of urls, never the set, so it prunes nothing.
+The store stays the authority; a url that comes back is re-read from it.
