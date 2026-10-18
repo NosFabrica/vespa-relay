@@ -437,13 +437,26 @@ internal class VisitPool(
         flushPhases()
         scope.launch { rosterLoop() }
         scope.launch {
-            while (scope.isActive) {
-                delay(PHASE_FLUSH_MS)
-                if (phasesDirty.getAndSet(false)) flushPhases()
-            }
+            repeatEvery(PHASE_FLUSH_MS, "phase flush") { if (phasesDirty.getAndSet(false)) flushPhases() }
         }
-        repeat(workers) {
-            scope.launch {
+        repeat(workers) { launchWorker() }
+    }
+
+    /** Workers currently drawing units, and how many were replaced after dying. */
+    internal fun workerHealth(): WorkerHealth = WorkerHealth(queue.workersAlive, workers, workersRespawned.get())
+
+    internal data class WorkerHealth(
+        val alive: Int,
+        val configured: Int,
+        val respawned: Long,
+    )
+
+    private val workersRespawned = AtomicLong()
+
+    /** One worker, replaced if anything but shutdown ends its loop. */
+    private fun launchWorker() {
+        scope
+            .launch {
                 queue.visitLoop(
                     stillWanted = { key -> wantedBy(currentRoster, key) },
                     // Read, never getOrPut: a finishing visit must not resurrect a pruned yield.
@@ -454,10 +467,15 @@ internal class VisitPool(
                             revisitDelayMs(yields[key.url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(key))
                         }
                     },
-                    visit = ::guardedVisit,
+                    onEscape = ::recordFailure,
+                    visit = ::visit,
                 )
+            }.invokeOnCompletion { cause ->
+                if (cause == null || cause is CancellationException || !scope.isActive) return@invokeOnCompletion
+                workersRespawned.incrementAndGet()
+                System.err.println("router: a visit worker died (${cause.javaClass.simpleName}: ${cause.message?.take(80)}); starting a replacement")
+                launchWorker()
             }
-        }
     }
 
     /** Rebuilds the roster on the tightest `refreshSeconds` any source asks for, floored at a minute. */
@@ -536,22 +554,19 @@ internal class VisitPool(
         return out
     }
 
-    /** One visit with its failure recorded as an abort. */
-    private suspend fun guardedVisit(key: VisitKey) {
-        try {
-            visit(key)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            aborts
-                .record(
-                    key.stream,
-                    key.url,
-                    VisitAborts.Reason.FAILED,
-                    asked = "${e.javaClass.simpleName}: ${e.message?.take(80)}",
-                    said = null,
-                )?.let(System.err::println)
-        }
+    /** A visit that threw, recorded as an abort; the worker carries on. */
+    private fun recordFailure(
+        key: VisitKey,
+        e: Throwable,
+    ) {
+        aborts
+            .record(
+                key.stream,
+                key.url,
+                VisitAborts.Reason.FAILED,
+                asked = "${e.javaClass.simpleName}: ${e.message?.take(80)}",
+                said = null,
+            )?.let(System.err::println)
     }
 
     private fun asksFor(

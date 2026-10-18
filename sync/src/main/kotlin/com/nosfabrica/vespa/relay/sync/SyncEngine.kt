@@ -66,8 +66,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.atomic.AtomicLong
@@ -275,12 +273,7 @@ class SyncEngine(
         // Its own loop: the phase report below is skipped for a push-only router.
         publishProgressLoop()
         if (visitStreams.isNotEmpty()) {
-            scope.launch {
-                while (scope.isActive) {
-                    delay(PROGRESS_INTERVAL_MS)
-                    phases.report().forEach { System.err.println(it) }
-                }
-            }
+            scope.launch { repeatEvery(PROGRESS_INTERVAL_MS, "phase report") { phases.report().forEach { System.err.println(it) } } }
         }
 
         scope.launch { statsLoop() }
@@ -398,8 +391,7 @@ class SyncEngine(
     /** The status document on its own clock. It describes the process, so it runs with no streams at all. */
     private fun publishProgressLoop() {
         scope.launch {
-            while (scope.isActive) {
-                delay(PROGRESS_INTERVAL_MS)
+            repeatEvery(PROGRESS_INTERVAL_MS, "progress publish") {
                 progress.publish(
                     phases.snapshot(),
                     processors.snapshot(),
@@ -418,8 +410,7 @@ class SyncEngine(
         var lastEvents = 0L
         var lastSubmitted = 0L
         var lastAt = System.currentTimeMillis()
-        while (scope.isActive) {
-            delay(60_000)
+        repeatEvery(60_000, "health line") {
             val rt = Runtime.getRuntime()
             val usedMb = (rt.totalMemory() - rt.freeMemory()) / 1_048_576
             val maxMb = rt.maxMemory() / 1_048_576
@@ -536,8 +527,8 @@ class SyncEngine(
     }
 
     private suspend fun statsLoop() {
-        while (scope.isActive) {
-            delay(60_000)
+        repeatEvery(60_000, "stats line") {
+            val pool = visitPool.workerHealth()
             System.err.println(
                 "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                     ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
@@ -546,7 +537,9 @@ class SyncEngine(
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
                     (if (discoveryStreams.isNotEmpty()) " + discovery" else "") +
                     (if (refusedIds.enabled) "; ${refusedIds.summary()}" else "") +
-                    (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else ""),
+                    (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else "") +
+                    (if (visitStreams.isNotEmpty()) "; visit workers ${pool.alive}/${pool.configured} alive" else "") +
+                    (if (pool.respawned > 0) ", ${pool.respawned} replaced after dying" else ""),
             )
             IngestStats.statusLine().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
             ingest.probeStatus().takeIf { it.isNotEmpty() }?.let { System.err.println(it) }

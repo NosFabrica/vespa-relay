@@ -66,6 +66,17 @@ double-cadence chains. The park and the finishing visit's removal are one
 running visit could finish, see nothing parked and arm a timer, downgrading
 the prompt requeue to a timer wait and buying one spurious back-to-back visit.
 
+**A visit worker outlives the visit that threw.** `visitLoop` let any throw
+escape, and the pool's guard caught only `Exception`, so an `Error` from one
+visit ended a worker for the life of the process with nothing to say so: the
+pool simply ran narrower. The loop now hands any escape but cancellation and
+a VM error to `onEscape` and draws the next unit; a stray
+`CancellationException` while the worker is still active counts as a failed
+visit, not shutdown. A worker that dies anyway is replaced, and the stats line
+prints `visit workers alive/configured`. The periodic loops (`repeatEvery`:
+the phase flush, the progress document, the health and stats lines) guard
+each tick the same way.
+
 **Eviction disarms the pending revisit.** The delay is read when the timer is
 armed, so a unit armed while tailed got the tailed cadence (half an hour
 against five minutes) and the visit after an eviction found the old timer

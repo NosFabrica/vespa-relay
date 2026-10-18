@@ -336,4 +336,36 @@ class VisitQueueTest {
                 scope.cancel()
             }
         }
+
+    @Test
+    fun `a visit that throws does not end its worker`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val q = VisitQueue<String>(scope)
+            val escaped = Channel<String>(Channel.UNLIMITED)
+            val visited = Channel<String>(Channel.UNLIMITED)
+            scope.launch {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }, onEscape = { key, _ -> escaped.trySend(key) }) { key ->
+                    when (key) {
+                        "error" -> throw AssertionError("an Error, which a catch of Exception lets through")
+                        "stray" -> throw kotlinx.coroutines.CancellationException("not a shutdown")
+                        else -> visited.send(key)
+                    }
+                }
+            }
+            try {
+                withTimeout(5_000) {
+                    while (q.workersAlive < 1) delay(5)
+                    q.offer("error")
+                    assertEquals("error", escaped.receive())
+                    q.offer("stray")
+                    assertEquals("stray", escaped.receive())
+                    q.offer("fine")
+                    assertEquals("fine", visited.receive(), "the same worker draws the next unit")
+                }
+                assertEquals(1, q.workersAlive, "and is still counted as drawing units")
+            } finally {
+                scope.cancel()
+            }
+        }
 }
