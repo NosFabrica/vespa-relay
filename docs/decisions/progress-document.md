@@ -124,3 +124,13 @@ hundreds. Rows are longest-running first so a cut only drops the youngest.
 negentropy snapshot of a wide filter takes tens, and the two bands past five
 minutes are where a wedge lives. Even bands put the whole healthy corpus in
 one row.
+
+**`Processors.snapshot` runs its suppliers outside the lock, and a pass's
+bookkeeping is one value.** `snapshot` was `@Synchronized` and invoked the
+`nextAt`, `counts` and `reasons` lambdas inside it, so a supplier that waited
+on anything another thread needed the registry for (a processor registering)
+stalled both. It now copies the entries under the lock and asks the suppliers
+after. The phase, its clock, the pass count and the last pass's stamps were
+separate volatile fields that `finish` wrote one by one, so a reader could see
+a pass stamped as ended and not yet counted; they are one immutable `State`
+swapped by compare-and-set.

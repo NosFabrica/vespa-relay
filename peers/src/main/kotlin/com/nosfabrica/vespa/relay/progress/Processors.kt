@@ -28,6 +28,7 @@ import kotlinx.serialization.json.putJsonArray
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The work this router does that is not a stream: the probe passes, the rotating pool, ingest,
@@ -163,21 +164,28 @@ class Processors {
         val lastUnitMs = AtomicLong(startedMs)
     }
 
+    /** The phase and the pass bookkeeping, swapped whole so a reader never sees half a [Handle.finish]. */
+    internal data class State(
+        val phase: String,
+        val sinceMs: Long,
+        val passes: Long = 0,
+        val startedMs: Long? = null,
+        val lastPassAtSec: Long? = null,
+        val lastPassSec: Long? = null,
+    ) {
+        /** The clock restarts only when the word changes. */
+        fun phased(
+            word: String,
+            nowMs: Long,
+        ): State = if (phase == word) this else copy(phase = word, sinceMs = nowMs)
+    }
+
     internal class Entry(
         val name: String,
-        @Volatile var phase: String,
-        @Volatile var sinceMs: Long,
+        phase: String,
+        sinceMs: Long,
     ) {
-        val passes = AtomicLong()
-
-        @Volatile
-        var startedMs: Long? = null
-
-        @Volatile
-        var lastPassAtSec: Long? = null
-
-        @Volatile
-        var lastPassSec: Long? = null
+        val state = AtomicReference(State(phase, sinceMs))
 
         /** Epoch millis the next pass is due, asked live. */
         @Volatile
@@ -216,18 +224,18 @@ class Processors {
         return Handle(entry)
     }
 
-    /** Every registered processor, in registration order, as of now. */
-    @Synchronized
-    fun snapshot(nowMs: Long = System.currentTimeMillis()): List<Snapshot> =
-        order.mapNotNull { name ->
-            val e = entries[name] ?: return@mapNotNull null
+    /** Every registered processor, in registration order, as of now. The suppliers run outside the lock. */
+    fun snapshot(nowMs: Long = System.currentTimeMillis()): List<Snapshot> {
+        val registered = synchronized(this) { order.mapNotNull { entries[it] } }
+        return registered.map { e ->
+            val s = e.state.get()
             Snapshot(
                 name = e.name,
-                phase = e.phase,
-                phaseForSec = ((nowMs - e.sinceMs) / 1000).coerceAtLeast(0),
-                passes = e.passes.get().takeIf { it > 0 || e.startedMs != null },
-                lastPassAt = e.lastPassAtSec,
-                lastPassSec = e.lastPassSec,
+                phase = s.phase,
+                phaseForSec = ((nowMs - s.sinceMs) / 1000).coerceAtLeast(0),
+                passes = s.passes.takeIf { it > 0 || s.startedMs != null },
+                lastPassAt = s.lastPassAtSec,
+                lastPassSec = s.lastPassSec,
                 nextInSec = e.nextAt?.invoke()?.let { ((it - nowMs) / 1000).coerceAtLeast(0) },
                 measuring = measuring(e, nowMs),
                 inFlight = holding(e, nowMs),
@@ -236,6 +244,7 @@ class Processors {
                 reasons = e.reasons?.invoke().orEmpty(),
             )
         }
+    }
 
     /** The pass in flight as of [nowMs], or null. */
     private fun measuring(
@@ -289,10 +298,8 @@ class Processors {
     ) {
         /** Say what this processor is doing. The clock restarts only when the word changes. */
         fun phase(word: String) {
-            if (entry.phase != word) {
-                entry.phase = word
-                entry.sinceMs = System.currentTimeMillis()
-            }
+            val now = System.currentTimeMillis()
+            entry.state.updateAndGet { it.phased(word, now) }
         }
 
         /** A pass has started. */
@@ -300,10 +307,10 @@ class Processors {
             word: String = MEASURING,
             nowMs: Long = System.currentTimeMillis(),
         ) {
-            entry.startedMs = nowMs
             entry.run = null
             entry.held.clear()
-            phase(word)
+            val now = System.currentTimeMillis()
+            entry.state.updateAndGet { it.copy(startedMs = nowMs).phased(word, now) }
         }
 
         /** A pass has ended, however it ended. Call from a `finally`. A finish with no begin does nothing. */
@@ -311,14 +318,22 @@ class Processors {
             word: String = IDLE,
             nowMs: Long = System.currentTimeMillis(),
         ) {
-            val startedMs = entry.startedMs ?: return
-            entry.lastPassSec = ((nowMs - startedMs) / 1000).coerceAtLeast(0)
-            entry.startedMs = null
+            val now = System.currentTimeMillis()
+            while (true) {
+                val s = entry.state.get()
+                val startedMs = s.startedMs ?: return
+                val ended =
+                    s
+                        .copy(
+                            passes = s.passes + 1,
+                            startedMs = null,
+                            lastPassAtSec = nowMs / 1000,
+                            lastPassSec = ((nowMs - startedMs) / 1000).coerceAtLeast(0),
+                        ).phased(word, now)
+                if (entry.state.compareAndSet(s, ended)) break
+            }
             entry.run = null
             entry.held.clear()
-            entry.lastPassAtSec = nowMs / 1000
-            entry.passes.incrementAndGet()
-            phase(word)
         }
 
         /** What this pass set out to walk, declared once its store reads have said. The rate is timed from here. */
