@@ -423,6 +423,9 @@ pubkey, which reveals nothing NIP-01 does not, and is about the projection,
 not the person. It is one store read per anonymous request, so `ExplainGate`
 caches each well-formed key's answer for 30s (a junk key is never cached, so
 it cannot evict a real one) and runs four at once, answering a `503` past that.
+An `ok:false` answer is not cached: it describes the engine at that moment,
+and cached it kept telling callers the store was failing for 30s after it
+recovered; the four-at-once bound is what holds the store's load meanwhile.
 
 **The engine's limits have ranges.** They were parsed as any whole number, so
 `MAX_LIMIT=0` or `MAX_MESSAGE_LENGTH=-1` booted cleanly and then refused or

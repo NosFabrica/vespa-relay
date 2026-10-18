@@ -57,6 +57,36 @@ class TrustExplainTest {
         }
 
     @Test
+    fun `a failed explanation is not cached, so the next ask reads again`(): Unit =
+        runBlocking {
+            val reads = AtomicInteger(0)
+            val gate =
+                ExplainGate({
+                    val n = reads.incrementAndGet()
+                    buildJsonObject { put("ok", n > 1) }
+                }, ttlMillis = 30_000, now = { 0L })
+            assertEquals(
+                false,
+                gate
+                    .answer(key)
+                    ?.get("ok")
+                    ?.toString()
+                    ?.toBoolean(),
+            )
+            assertEquals(
+                true,
+                gate
+                    .answer(key)
+                    ?.get("ok")
+                    ?.toString()
+                    ?.toBoolean(),
+                "the engine recovered and the caller sees it at once",
+            )
+            gate.answer(key)
+            assertEquals(2, reads.get(), "and the good answer is the one cached")
+        }
+
+    @Test
     fun `a malformed key is never cached, so junk cannot evict real answers`(): Unit =
         runBlocking {
             val reads = AtomicInteger(0)
