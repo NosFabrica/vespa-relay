@@ -1,17 +1,18 @@
-// The SearchOverTrust page itself: sign-in, the search views (hero, type-ahead popup, full
-// results), the "ranking as" lens, and the URL/backstack wiring. Everything stateful lives
-// here; the shared/ modules underneath are the stateless client, codec and caches.
+// The SearchOverTrust page itself: the search views (hero, type-ahead popup, full results), the
+// "ranking as" lens, and the wiring between them. Sign-in is signin.js, the reader's own group
+// list owngroups.js, and the url urlstate.js, each owning its state; the shared/ modules
+// underneath are the stateless client, codec and caches.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
-import { esc, HEX64 } from "./shared/format.js";
+import { esc } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { watchBrokenMedia } from "./shared/broken.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
 import { SPAM_TOKEN } from "./shared/lens.js";
-import { ownGroups, metaGroup, postedTo, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
+import { metaGroup, postedTo, rank as rankGroups } from "./shared/groups.js";
 import { seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
@@ -22,10 +23,13 @@ import { providersFor, knownProviders } from "./shared/providers.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
-import { PAGE_SIZE, MAX_ASK, MAX_PAGES, firstAsk, askLimit, pageOf, pageCount, covered, canGrow, lastPage, mergePages, drained } from "./paging.js";
+import { PAGE_SIZE, MAX_ASK, firstAsk, askLimit, pageOf, pageCount, covered, canGrow, lastPage, mergePages, drained } from "./paging.js";
 import { mountSearchField, softKeyboard } from "./searchfield.js";
 import { AskCache } from "./shared/asks.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
+import { assumeRememberedFace, claimed, ensureLogin, faceOf, forgetConnection, loginSettled, me, onSignIn, rememberedFace, signIn, signInFailed, signOut, wantsSignIn } from "./signin.js";
+import { OwnGroups } from "./owngroups.js";
+import { entitySegOf, feedUrl, goTo, linkTarget, pushUrl, readSearch, searchUrl, whileRestoring } from "./urlstate.js";
 
 // Before anything renders: a picture that fails while no one listens keeps its broken box.
 watchBrokenMedia();
@@ -49,193 +53,41 @@ const KIND_TABS = [
   { label: "Lists", slug: "lists", kinds: [10003, 10015, 30001, 30003, 30015, 30267, 39701] },
 ];
 
-// ---- signed-in preference, shared across the relay's pages ----------------
-// A cookie so every page the relay serves reads it. Unset defaults to signed in.
-const AUTH_COOKIE = "sot_signedin";
-function wantsSignIn() {
-  const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
-  return m ? m[1] === "1" : true;
-}
-function rememberSignIn(yes) {
-  document.cookie = `${AUTH_COOKIE}=${yes ? 1 : 0}; path=/; max-age=31536000; SameSite=Lax`;
-}
-
-// ---- the face you ended on, kept across loads ----------------------------
-// The last signed-in account's picture and name, so the field can draw them before the
-// socket, the challenge and the kind 0 read. A cache of what was on screen; it authorises nothing.
-const FACE_KEY = "sot_face";
-let meFace = readFace();
-function readFace() {
-  try {
-    const f = JSON.parse(localStorage.getItem(FACE_KEY) || "null");
-    return f && HEX64.test(f.pubkey || "") ? f : null;
-  } catch (e) { return null; }
-}
-/**
- * Keep what the relay said about [pk]'s face, but only once it answered (`has`); a dropped
- * read is not "no picture".
- */
-function rememberFace(pk) {
-  if (!pk || !profiles.has(pk)) return;
-  const p = profiles.get(pk);
-  meFace = p ? { pubkey: pk, picture: p.picture || "", name: displayName(p) } : null;
-  writeFace();
-}
-/** Signing out is a decision: the next load must not flash the old face. */
-function forgetFace() {
-  meFace = null;
-  writeFace();
-}
-function writeFace() {
-  try {
-    if (meFace) localStorage.setItem(FACE_KEY, JSON.stringify(meFace));
-    else localStorage.removeItem(FACE_KEY);
-  } catch (e) {}
-}
-
-// ---- NIP-07 login -> NIP-42 auth -----------------------------------------
-// Signing the challenge switches the connection's ranking observer to you. It enrols nothing.
-let me = null;        // the pubkey the relay accepted a NIP-42 AUTH for
-let mePending = null; // the pubkey the extension named, before that proof
+// ---- sign-in is signin.js; the page reacts --------------------------------
+onSignIn({
+  changed: () => renderWhoami(),
+  face: () => renderMe(),
+  // The picker stays live: it is a signed-out reader's only way to a ranked answer.
+  unproved: (e) => {
+    applyViewingAs(viewingAs, $obsCurrent.textContent);
+    if (e) $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
+    else renderWhoami();
+  },
+  settled: (pk) => (pk ? checkReadiness(pk) : clearReadiness()),
+});
 
 // A dropped socket loses the AUTH, not the identity: the next request re-authenticates.
 relay.onclose = () => { renderWhoami(); };
 
-// The restore half of the back/forward cache (pagehide is in shared/conn.js): `me` is still
-// set, the socket is closed and nothing is authenticated.
+// The restore half of the back/forward cache: the socket is closed and nothing is authenticated.
 window.addEventListener("pageshow", (ev) => {
   // A normal load connects on its own path.
   if (!ev.persisted) return;
-  // NIP-42 belongs to the connection, so the proof and the settled flight are both stale.
-  loginTried = false;
-  loginFlight = null;
+  forgetConnection();
   scores.clear();
   scoreLensKey = null;
   renderWhoami();
   ensureLogin().then(paintScores).catch(() => {});
 });
 
-// Sign the current challenge and send it. A challenge belongs to one connection: if the socket
-// was replaced while the human signed, re-read it and sign again.
-async function signAndAuth(attempt = 0, waitMs = 3000) {
-  const challenge = await relay.waitForChallenge(waitMs);
-  if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
-  const signed = await window.nostr.signEvent({
-    kind: 22242,
-    created_at: Math.floor(Date.now() / 1000),
-    content: "",
-    tags: [["relay", RELAY_URL], ["challenge", challenge]],
-  });
-  if (relay.challenge !== challenge) {
-    // Two tries only: looping would spam the signer.
-    if (attempt >= 1) throw new Error("The connection kept resetting while signing — try again");
-    await relay.connect();
-    return signAndAuth(attempt + 1);
-  }
-  await relay.auth(signed);
-  return signed.pubkey;
-}
-
-/**
- * Who the extension says you are, and your face, both before the proof. `getPublicKey()` is
- * local, so this runs beside the handshake. The pubkey draws and prefetches; it never authorises.
- */
-async function prefetchFace() {
-  let pk = null;
-  try { pk = await window.nostr.getPublicKey(); } catch (e) { pk = null; }
-  if (!HEX64.test(pk || "")) {
-    // The extension would not say, so the boot's assumed face comes down.
-    mePending = null;
-    renderMe();
-    return null;
-  }
-  mePending = pk;
-  renderMe();                 // the remembered face, if this is the same account
-  // enrichProfiles skips a pubkey it has seen, including a cached `null`, so delete first.
-  profiles.delete(pk);
-  try { await enrichProfiles([pk]); } catch (e) {}
-  renderMe();
-  return pk;
-}
-
-async function login() {
-  if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
-  // The socket and the face start together; only the AUTH needs both.
-  const connecting = relay.connect();
-  const face = prefetchFace();
-  await connecting;
-  // A click gets a longer wait than a background attempt: the challenge arrives after the handshake.
-  me = await signAndAuth(0, 10000);
-  mePending = null;
-  renderWhoami();
-  // Awaited so callers can rely on the face being fetched when login() returns.
-  const named = await face;
-  if (named !== me) {
-    // The extension never answered getPublicKey, or signed as another account.
-    profiles.delete(me);
-    try { await enrichProfiles([me]); } catch (e) {}
-  }
-  rememberFace(me);
-  renderWhoami();
-  // The read above races the reference socket's opening. Retry on `has` only: a cached `null` is an answer.
-  for (let i = 0; i < 3 && me && !profiles.has(me); i++) {
-    await new Promise((r) => setTimeout(r, 600 * (i + 1)));
-    if (!me) break;
-    profiles.delete(me);
-    try { await enrichProfiles([me]); } catch (e) {}
-    rememberFace(me);
-    renderWhoami();
-  }
-}
-
-// Signed in automatically, once, best effort; a failure downgrades to the unranked corpus and
-// says so. One in-flight promise that every read awaits, so no REQ goes out on this socket
-// before its auth question is settled.
-let loginTried = false;   // the first attempt has settled (labels key on this)
-let loginFlight = null;   // the first attempt itself, awaited by every search
-async function ensureLogin() {
-  // Started, not awaited: only the AUTH needs the socket, and it connects itself.
-  relay.connect().catch(() => {});
-  if (!loginFlight) {
-    loginFlight = (async () => {
-      // A remembered "signed out" is a decision; do not prompt the extension.
-      if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
-        mePending = null;
-        // The picker stays live: it is a signed-out reader's only way to a ranked answer.
-        applyViewingAs(viewingAs, $obsCurrent.textContent);
-        renderWhoami();
-        return;
-      }
-      try { await login(); } catch (e) {
-        me = null;
-        mePending = null;   // the extension named somebody it could not prove
-        applyViewingAs(viewingAs, $obsCurrent.textContent);
-        $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
-      }
-    })().finally(() => { loginTried = true; });
-  }
-  await loginFlight;
-  if (!me) { clearReadiness(); return; }
-  // Keyed on the connection's auth state: a reconnect leaves `me` set but the socket unauthenticated.
-  if (relay.authed) { checkReadiness(me); return; }
-  me = await signAndAuth();
-  renderWhoami();
-  // Both paths to an authenticated socket meet here, and the check is about the connection's lens.
-  checkReadiness(me);
-}
-
-// The resend half of NIP-42: on CLOSED "auth-required:" the client authenticates and resends.
-// The anonymous connection gets no such hook; for it auth-required is a real answer.
-relay.onAuthRequired = () => ensureLogin();
-
 // ---- search over NIP-50 ---------------------------------------------------
 let tab = KIND_TABS[0];
 
 /**
- * Whether this page has a web of trust to read through at all. `me`, not `mePending`: an unproved
+ * Whether this page has a web of trust to read through at all. `me`, not `claimed`: an unproved
  * pubkey is not a lens.
  */
-const lensless = () => !me && !viewingAs;
+const lensless = () => !me() && !viewingAs;
 
 /** Whether this read waives a lens: the reader's switch, or having none. */
 const spamOn = () => $spam.checked || lensless();
@@ -245,7 +97,7 @@ const spamOn = () => $spam.checked || lensless();
  * does not already carry one. Separate from [searchString]: no sort menu, no spam switch.
  */
 function askString(words) {
-  if (me) return words || "";
+  if (me()) return words || "";
   const parts = words ? [words] : [];
   parts.push(viewingAs ? "observer:" + viewingAs : SPAM_TOKEN);
   return parts.join(" ");
@@ -304,7 +156,7 @@ async function search(text, limit, deep, signal) {
   const filters = buildFilters(text, limit);
   // Through the cache, so Enter reuses the popup's answer. [signal] is the popup's, so an
   // overtaken type-ahead is closed at the relay.
-  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }), relay.authed ? me : null);
+  const answer = await asks.take(filters, () => relay.req(filters, undefined, { signal }), relay.authed ? me() : null);
   // `complete` is EOSE, not the timeout. shared/relay.js marks the array and uniqueById
   // returns a new one, so read it first.
   return {
@@ -404,7 +256,7 @@ function applyViewingAs(pubkey, name) {
   viewingAs = pubkey;
   $obsBox.classList.toggle("active", !!pubkey);
   // "me" only when there is a me; signed out with nobody picked says "nobody".
-  $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : me || mePending ? "me" : "nobody";
+  $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : me() || claimed() ? "me" : "nobody";
   $obsList.innerHTML = "";
   $obsFilter.value = "";
   renderAdvCount();
@@ -425,7 +277,7 @@ function setViewingAs(pubkey, name) {
  * the render.
  */
 const trustedNow = () => {
-  const lens = viewingAs || me;
+  const lens = viewingAs || me();
   return trustedSigners(knownProviders(lens), lens);
 };
 
@@ -455,7 +307,7 @@ function rowSeed(events, mode) {
  * the page gained. Seeded from `[...events, ...pointers]`, since a spliced pointer still counts.
  */
 function enrichProvenance(events) {
-  const lens = viewingAs || me;
+  const lens = viewingAs || me();
   // The epoch this row owns, moved by each half's own write so the second folds on top of the first.
   let mine = provenanceEpoch();
   const carried = [];   // every pointer folded so far, both halves
@@ -498,7 +350,7 @@ async function rankServicesOf(observer) {
  * nothing to say: the search field's chips outlive every search.
  */
 async function paintScores() {
-  const lens = viewingAs || me;
+  const lens = viewingAs || me();
   if (scoreLensKey !== lens) { scores.clear(); scoring = new Set(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
   if (!chips.length) return;
@@ -565,7 +417,7 @@ function paintChips(chips) {
  * JSON, because the reader is a person or a model.
  */
 function exportText() {
-  const lens = viewingAs || me;
+  const lens = viewingAs || me();
   const nameOf = (k) => displayName(profiles.get(k)) || "";
   const L = [];
   L.push("SEARCH-OVER-TRUST EXPORT");
@@ -608,7 +460,7 @@ function exportText() {
           : "no — trust floor applied"
     }`,
   );
-  L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
+  L.push(`  signed in as  ${me() ? `${nameOf(me()) || "(no name)"}  ${npub(me())}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
   L.push(`  search string ${full[0].search == null ? "(none — no words and no sort/spam/lens to carry, so this is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
   // Every filter of the REQ, one per line; the label stays singular for one.
@@ -671,15 +523,14 @@ const $hero = document.querySelector(".hero");
 
 /** The avatar in the field: your picture signed in, a neutral mark signed out. */
 function renderMe() {
-  // `me` is proven; `mePending` is only what the extension named, drawn faded.
-  const who = me || mePending;
-  const p = who ? profiles.get(who) : null;
+  // `me` is proven; `claimed` is only what the extension named, drawn faded.
+  const who = me() || claimed();
   // The remembered face stands in until the relay has answered (`has`).
-  const kept = who && !profiles.has(who) && meFace && meFace.pubkey === who ? meFace : null;
-  const pic = (p && p.picture) || (kept && kept.picture) || "";
-  const nm = displayName(p) || (kept ? kept.name : "");
-  $me.classList.toggle("in", !!me);
-  $me.classList.toggle("pending", !!who && !me);
+  const { picture: pic, name: nm } = faceOf(who, {
+    known: !!who && profiles.has(who), profile: who ? profiles.get(who) : null, remembered: rememberedFace(),
+  });
+  $me.classList.toggle("in", !!me());
+  $me.classList.toggle("pending", !!who && !me());
   if (who && pic) {
     // Rewritten only when the url changed: replacing an identical <img> blinks.
     const img = $me.querySelector("img.avatar");
@@ -699,26 +550,22 @@ function renderMe() {
       ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
       `<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
   }
-  $me.title = me
-    ? `Signed in as ${nm || shortNpub(me)} — click to sign out (reconnects)`
+  $me.title = me()
+    ? `Signed in as ${nm || shortNpub(me())} — click to sign out (reconnects)`
     : who
       ? `Signing in as ${nm || shortNpub(who)}…`
-      : loginTried
+      : loginSettled()
         ? "Signed out — click to sign in with your Nostr extension"
         : "Signing in…";
-  $me.setAttribute("aria-label", me ? "Sign out" : "Sign in");
+  $me.setAttribute("aria-label", me() ? "Sign out" : "Sign in");
 }
 
 // NIP-42 auth belongs to the socket, so signing out is a reconnect, not a flag.
 $me.addEventListener("click", async () => {
   $me.classList.add("busy");
   try {
-    if (me) {
-      rememberSignIn(false);
-      me = null;
-      mePending = null;
-      // Forgotten, not merely unrendered, or it flashes back on the next load.
-      forgetFace();
+    if (me()) {
+      signOut();
       // A private group's label must not stay on a pill for whoever uses this tab next.
       forgetPrivateGroupNames();
       // The field's pills repaint only on a lookup that learned something, so repaint by hand.
@@ -728,20 +575,17 @@ $me.addEventListener("click", async () => {
       if (relay.ws) relay.ws.close();
       await relay.connect();
     } else {
-      rememberSignIn(true);
-      loginTried = true;
-      await login();
+      await signIn();
     }
   } catch (e) {
-    me = null;
-    mePending = null;
+    signInFailed();
     $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))}</span>`;
   } finally {
     $me.classList.remove("busy");
     renderMe();
     renderWhoami();
     // The readiness panel is about one account's trust chain.
-    me ? checkReadiness(me) : clearReadiness();
+    me() ? checkReadiness(me()) : clearReadiness();
     rerun();
     // The hero's feed is a different list per reader, and none signed out.
     showFeedPreview();
@@ -853,100 +697,13 @@ async function lookupAuthors(partial, signal) {
   return [...new Set(events.map((e) => e.pubkey))];
 }
 
-// The reader's own kind 10009, held for the session. Read on the authenticated socket, so it
-// comes back empty for a reader with no scores mirrored here (readiness.js explains instead).
-// Cached only when the relay answered.
-let ownGroupList = null;   // the parsed candidates, from the public tags
-let ownGroupsFor = null;   // whose they are, so signing out drops them
-let ownGroupLock = null;   // sealed(): the encrypted half, or null if there is none
-let ownGroupSecret = null; // the rows behind that lock, once it has been opened
-let unlockAsk = null;      // the in-flight decrypt, so N keystrokes are one prompt
-let unlockDenied = false;  // the extension said no; do not ask again unasked
-
-/** Every cached thing about the reader's own list, dropped when the reader changes. */
-function forgetOwnGroups() {
-  ownGroupList = null;
-  ownGroupsFor = null;
-  ownGroupLock = null;
-  ownGroupSecret = null;
-  unlockAsk = null;
-  unlockDenied = false;
-}
-
-async function ownGroupCandidates() {
-  const who = me;
-  if (!who) { forgetOwnGroups(); return []; }
-  if (ownGroupsFor !== who) forgetOwnGroups();
-  if (ownGroupsFor === who && ownGroupList) return ownGroupList;
-  let evs = [];
-  try {
-    evs = await relay.req({ kinds: [10009], authors: [who], limit: 1 });
-  } catch (e) { return ownGroupList && ownGroupsFor === who ? ownGroupList : []; }
-  if (evs.complete !== true) return [];
-  const rows = ownGroups(evs[0]);
-  ownGroupList = rows;
-  ownGroupLock = sealedGroups(evs[0]);
-  ownGroupsFor = who;
-  return rows;
-}
-
-/**
- * Whether the extension can open a payload of this scheme; "unsupported" and "denied" want
- * different words.
- */
-const canDecrypt = (scheme) => {
-  const api = window.nostr && window.nostr[scheme];
-  return !!(api && typeof api.decrypt === "function");
-};
-
-/**
- * Open the private half of the reader's own group list: one prompt, ever, and a refusal is
- * final until the reader clicks the retry row. The peer key is the reader's own pubkey.
- */
-async function unlockOwnGroups() {
-  if (ownGroupSecret) return ownGroupSecret;
-  if (!ownGroupLock || !me) return [];
-  if (unlockAsk) return unlockAsk;
-  const lock = ownGroupLock;
-  const who = me;
-  unlockAsk = (async () => {
-    const plain = await window.nostr[lock.scheme].decrypt(who, lock.content);
-    return privateGroups(plain);
-  })()
-    .then((rows) => {
-      // Cached even when empty, so the reader is not re-prompted to learn that.
-      ownGroupSecret = rows;
-      ownGroupLock = null;
-      unlockDenied = false;
-      return rows;
-    })
-    .catch(() => {
-      // Refused, dismissed or failed: the lock stays, and only a click asks again.
-      unlockDenied = true;
-      return [];
-    })
-    .finally(() => {
-      unlockAsk = null;
-      // The picker drew before this landed; `field` is declared below, and the catch covers the TDZ.
-      try { field.refreshGroups(); } catch (e) { /* nothing mounted, so nothing is showing */ }
-    });
-  return unlockAsk;
-}
-
-/** The picker's "unlock" row, clicked: the reader asking for the dialog back. */
-async function retryUnlockGroups() {
-  unlockDenied = false;
-  unlockAsk = null;
-  await unlockOwnGroups();
-}
-
-/** What the picker should say about the locked half, or null; only `denied` a click can fix. */
-function groupLockState() {
-  if (!ownGroupLock || !me) return null;
-  if (!canDecrypt(ownGroupLock.scheme)) return { state: "unsupported", scheme: ownGroupLock.scheme };
-  if (unlockDenied) return { state: "denied" };
-  return { state: "asking" };
-}
+// The reader's own kind 10009 and its private half; the picker drew before a decrypt landed,
+// and `field` is declared below, so the catch covers the TDZ.
+const ownList = new OwnGroups({
+  who: me,
+  read: (filter) => relay.req(filter),
+  unlocked: () => { try { field.refreshGroups(); } catch (e) { /* nothing mounted, so nothing is showing */ } },
+});
 
 /**
  * Which groups the picker offers for a half-typed `group:`: the reader's own kind 10009 and a
@@ -955,10 +712,10 @@ function groupLockState() {
  */
 async function lookupGroups(partial, signal) {
   await ensureLogin().catch(() => {});
-  const own = await ownGroupCandidates().catch(() => []);
+  const own = await ownList.candidates().catch(() => []);
   // Started, not awaited: the public rows return now, and the picker re-asks when the dialog is answered.
-  if (ownGroupLock && canDecrypt(ownGroupLock.scheme) && !unlockDenied) unlockOwnGroups();
-  const secret = ownGroupSecret || [];
+  if (ownList.shouldAsk()) ownList.unlock();
+  const secret = ownList.opened();
   let found = [];
   try {
     // `group:` alone is "show me my groups", not a match-all over every 39000.
@@ -970,7 +727,7 @@ async function lookupGroups(partial, signal) {
   const rows = rankGroups(partial, { own: [...own, ...secret], meta });
   // Rows go in as candidates, so groupnames.js still tells a list name from a corpus name.
   seedGroupNames(rows);
-  return { rows, lock: groupLockState() };
+  return { rows, lock: ownList.lockState() };
 }
 
 /** Every human edit of the field, whatever made it — typing, paste, a pick. */
@@ -985,7 +742,7 @@ function onQueryEdit() {
 
 // paintScores goes in because which lens fills a chip is app state.
 const field = mountSearchField($q, $mentions, {
-  lookup: lookupAuthors, lookupGroup: lookupGroups, unlockGroups: retryUnlockGroups,
+  lookup: lookupAuthors, lookupGroup: lookupGroups, unlockGroups: () => ownList.retry(),
   onEdit: onQueryEdit, onSubmit: submitField, paintScores,
 });
 
@@ -1034,7 +791,7 @@ let popupQueued = null;
 function renderWhoami() {
   renderMe();
   $whoami.textContent =
-    loginTried && !me && !wantsSignIn()
+    loginSettled() && !me() && !wantsSignIn()
       ? viewingAs
         ? "signed out — ranked through the observer you picked"
         : "signed out — the whole corpus, unranked (include:spam)"
@@ -1098,7 +855,7 @@ function renderPopup() {
  */
 const lensNote = () =>
   `<div class="prov" title="The feed is a plain NIP-01 read, so the &quot;ranking as&quot; lens — a NIP-50 observer: extension — applies to searches, not here.">` +
-  (me
+  (me()
     ? "newest first, through your own web of trust — the relay drops authors below your trust floor"
     : "newest first, the whole corpus — sign in (the avatar in the field) to read it through your web of trust") +
   `</div>`;
@@ -1123,7 +880,7 @@ function renderFeed() {
   const stats = s.error ? "" : `${s.hits.length} event${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
   // An empty feed is about the index or the trust floor, never a query.
   const empty = `<div class="empty"><b>Nothing here yet</b>` +
-    (me
+    (me()
       ? "This relay holds no recent posts from anyone your web of trust reaches."
       : "This relay's index holds no recent posts of these kinds.") +
     (tab.kinds ? ` The ${esc(tab.label)} filter is on — pick Everything for the whole feed.` : "") +
@@ -1145,15 +902,6 @@ function hideFeedPreview() {
   document.body.classList.remove("has-feed-preview");
 }
 
-/** Where "see more" goes: a parameter on the root, not a `/feed` path, so the root serves it from cold. */
-const FEED_URL = "/?feed=1";
-
-/** That url carrying the chip, `/?feed=1&tab=media`; "Everything" writes no parameter. */
-const feedUrl = (t = tab) => FEED_URL + (t.kinds ? `&tab=${t.slug}` : "");
-
-/** Does [href] name the feed, whichever chip it carries? */
-const isFeedHref = (href) => href === FEED_URL || href.startsWith(FEED_URL + "&");
-
 function renderFeedPreview() {
   // Nothing and nothing coming, including the error path: the hero stays the hero.
   if (!feedPreview.loading && !feedPreview.hits.length) { hideFeedPreview(); return; }
@@ -1161,7 +909,7 @@ function renderFeedPreview() {
     ? feedPreview.hits.map((ev) => card(ev)).join("")
     : skelCards(PREVIEW_CARDS);
   // The link carries the chip: "see more" of these three.
-  paintList($feedPreview, listHead(feedTitle(), `<a class="feed-more" href="${feedUrl()}">See more &rarr;</a>`) + body);
+  paintList($feedPreview, listHead(feedTitle(), `<a class="feed-more" href="${feedUrl(tab)}">See more &rarr;</a>`) + body);
 }
 
 /**
@@ -1173,10 +921,10 @@ async function showFeedPreview() {
   try { await ensureLogin(); } catch (e) {}
   // Anything that left the hero, and any second call, moved the counter on.
   if (my !== feedPreview.requestId) return;
-  if (!me || !$results.hidden) { hideFeedPreview(); return; }
-  if (feedPreview.reader !== me || feedPreview.tab !== tab) {
+  if (!me() || !$results.hidden) { hideFeedPreview(); return; }
+  if (feedPreview.reader !== me() || feedPreview.tab !== tab) {
     feedPreview.hits = [];
-    feedPreview.reader = me;
+    feedPreview.reader = me();
     feedPreview.tab = tab;
   }
   $feedPreview.hidden = false;
@@ -1257,8 +1005,7 @@ function goPage(n) {
   if (want === s.page) return;
   s.page = want;
   // A page turn is a place: Back undoes it. Pushed here rather than through syncUrl(), which reads the box.
-  const url = pageUrl();
-  if (url !== location.pathname + location.search) history.pushState(null, "", url);
+  goTo(pageUrl());
   renderResults();
   // Back to the top of the list, clear of the sticky toolbar.
   $results.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
@@ -1738,58 +1485,23 @@ $sort.addEventListener("change", () => { renderAdvCount(); rerun(); });
 $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 
 // ---- the URL is the search ------------------------------------------------
-// The results view is derived from q, tab, sort, spam and lens, so those are the location.
-// Sign-in state is not among them: auth belongs to the socket. The hero is the bare path, the
-// floor Back lands on; the popup never appears here.
-
-// A restore must not re-push what it is restoring, or popstate truncates the forward stack.
-let navRestoring = false;
-
-/**
- * `?page=4` as this page counts pages: 0-based, 0 for anything that is not a page, clamped at
- * the ceiling the ask stops at.
- */
-function pageParam(p) {
-  const n = Number(p.get("page"));
-  return Number.isInteger(n) && n > 1 ? Math.min(n - 1, MAX_PAGES - 1) : 0;
-}
+// Both directions are urlstate.js; this half reads and writes the controls.
 
 /**
  * The url for the page as it stands, optionally with a different query, which is what a
  * hashtag chip navigates to. Knows nothing about the feed; "where am I now" is syncUrl's question.
  */
 function currentUrl(text = $q.value.trim(), showing = !$results.hidden, page = s.page) {
-  const p = new URLSearchParams();
-  if (showing && text) p.set("q", text);
-  // One-based, because a person reads it against the pager's buttons.
-  if (showing && text && page > 0) p.set("page", String(page + 1));
-  if (tab.slug !== KIND_TABS[0].slug) p.set("tab", tab.slug);
-  if ($sort.value) p.set("sort", $sort.value);
-  if ($spam.checked) p.set("spam", "1");
-  // npub, like everywhere else on the page.
-  if (viewingAs) p.set("as", npub(viewingAs));
-  const qs = p.toString();
-  // Anchored at "/": a search launched from /note1… belongs at the root.
-  return "/" + (qs ? "?" + qs : "");
+  return searchUrl({ text, showing, page, tab, tabs: KIND_TABS, sort: $sort.value, spam: $spam.checked, viewingAs });
 }
 
 function syncUrl() {
-  if (navRestoring) return;
   // The feed url is the flag and the chip, since the view reads nothing else.
-  const url = onFeed() ? feedUrl() : $results.hidden ? "/" : currentUrl();
-  // Re-submitting the same search is not a second place.
-  if (url === location.pathname + location.search) return;
-  history.pushState(null, "", url);
+  pushUrl(onFeed() ? feedUrl(tab) : $results.hidden ? "/" : currentUrl());
 }
-
-// A NIP-19 path is the third view. The shape test only routes; entity.js validates.
-const ENTITY_PATH = /^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i;
 
 /** The identifier this page is showing, or null when it is showing anything else. */
-function entitySeg() {
-  const seg = location.pathname.slice(1);
-  return ENTITY_PATH.test(seg) ? seg : null;
-}
+const entitySeg = () => entitySegOf(location.pathname);
 
 /** Draw the entity view for [seg]: the one call, so the router and [rerun] cannot open it two ways. */
 function openEntity(seg) {
@@ -1802,13 +1514,23 @@ function openEntity(seg) {
   });
 }
 
+/** Pick [as] in "ranking as", and fill its name in after the fact so the restore never waits on it. */
+function restoreViewingAs(as) {
+  applyViewingAs(as, null);
+  if (!as) return;
+  enrichProfiles([as]).then(() => {
+    const nm = displayName(profiles.get(as));
+    if (nm && viewingAs === as) { $obsCurrent.textContent = nm; renderAdvCount(); }
+  }).catch(() => {});
+}
+
 /**
  * URL to page, the single restore path: initial load, Back and Forward. Returns whether it
  * started a search, so boot knows whether sign-in is already being driven.
  */
 function applyUrl() {
-  navRestoring = true;
-  try {
+  return whileRestoring(() => {
+    const want = readSearch(location.search, KIND_TABS);
     const seg = entitySeg();
     if (seg) {
       clearTimeout(debounceTimer);
@@ -1816,15 +1538,7 @@ function applyUrl() {
       resetPages();
       // The lens is part of a permalink only when the URL carries one: a click keeps the session's
       // observer.
-      const asHere = pubkeyParam(new URLSearchParams(location.search).get("as"));
-      if (asHere) {
-        applyViewingAs(asHere, null);
-        // The name is filled in after the fact so the restore never waits on it.
-        enrichProfiles([asHere]).then(() => {
-          const nm = displayName(profiles.get(asHere));
-          if (nm && viewingAs === asHere) { $obsCurrent.textContent = nm; renderAdvCount(); }
-        }).catch(() => {});
-      }
+      if (want.as) restoreViewingAs(want.as);
       $q.value = "";
       hideFeedPreview();
       document.body.classList.remove("has-query", "feed");
@@ -1836,15 +1550,14 @@ function applyUrl() {
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch
     document.title = "SearchOverTrust";
-    const p = new URLSearchParams(location.search);
+    tab = want.tab;
+    renderChips();
     // The feed takes no q and none of the bar's extensions, so those go back to their defaults;
     // the tab is read, not cleared.
-    if (p.get("feed") === "1") {
-      tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
+    if (want.feed) {
       // A url naming two views, or an unknown tab, is corrected to what is on screen; replaceState,
       // the same place spelled properly.
-      if (location.search !== feedUrl().slice(1)) history.replaceState(null, "", feedUrl());
-      renderChips();
+      if (location.search !== feedUrl(tab).slice(1)) history.replaceState(null, "", feedUrl(tab));
       $sort.value = "";
       $spam.checked = false;
       applyViewingAs(null, null); // last: it recounts the badge, and the two
@@ -1854,29 +1567,16 @@ function applyUrl() {
       runFeed();
       return true;
     }
-    const text = (p.get("q") || "").trim();
-    tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
-    renderChips();
-    $sort.value = p.get("sort") || "";
+    $sort.value = want.sort;
     if ($sort.selectedIndex < 0) $sort.value = ""; // an unknown sort is no sort
-    $spam.checked = p.get("spam") === "1";
-    const as = pubkeyParam(p.get("as"));
-    applyViewingAs(as, null); // recounts the badge for all three: setting the
-                              // two above fires no `change` of its own
-    if (as) {
-      // The name is filled in after the fact so the restore never waits on it.
-      enrichProfiles([as]).then(() => {
-        const nm = displayName(profiles.get(as));
-        if (nm && viewingAs === as) { $obsCurrent.textContent = nm; renderAdvCount(); }
-      }).catch(() => {});
-    }
-    $q.value = text;
-    document.body.classList.toggle("has-query", !!text);
-    if (text) runFull(text, pageParam(p)); else showHero();
-    return !!text;
-  } finally {
-    navRestoring = false;
-  }
+    $spam.checked = want.spam;
+    restoreViewingAs(want.as); // recounts the badge for all three: setting the
+                               // two above fires no `change` of its own
+    $q.value = want.text;
+    document.body.classList.toggle("has-query", !!want.text);
+    if (want.text) runFull(want.text, want.page); else showHero();
+    return !!want.text;
+  });
 }
 
 window.addEventListener("popstate", applyUrl);
@@ -1888,19 +1588,14 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest("a[href^='/']");
   if (!a) return;
   const href = a.getAttribute("href");
-  if (href === "/") { e.preventDefault(); reset(); return; }
-  if (isFeedHref(href)) { e.preventDefault(); navigate(href); return; }
-  // A hashtag chip is a search. Its url is rebuilt through currentUrl() so the filters it does not
-  // name are kept.
-  if (/^\/\?q=/.test(href)) {
-    e.preventDefault();
-    // Page one: a hashtag clicked on page four is a different search.
-    navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true, 0));
-    return;
-  }
-  if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
+  const to = linkTarget(href);
+  if (!to) return;
   e.preventDefault();
-  navigate(href);
+  if (to.view === "home") reset();
+  // A hashtag chip is a search, rebuilt through currentUrl() so the filters it does not name are
+  // kept, and on page one: a hashtag clicked on page four is a different search.
+  else if (to.view === "search") navigate(currentUrl(to.text, true, 0));
+  else navigate(href);
 });
 
 // ---- media that loads when it is nearly on screen -------------------------
@@ -1925,13 +1620,13 @@ new MutationObserver((records) => {
 
 /** An internal path as a pushState render: the one place a href becomes a view. */
 function navigate(href) {
-  if (location.pathname + location.search !== href) history.pushState(null, "", href);
+  goTo(href);
   applyUrl();
 }
 
-// The face from the last load, drawn on the first paint as an assumption prefetchFace()
-// corrects. Chips render here too: the entity branch of applyUrl() returns before drawing them.
-if (wantsSignIn() && meFace) mePending = meFace.pubkey;
+// The face from the last load, drawn on the first paint as an assumption sign-in corrects.
+// Chips render here too: the entity branch of applyUrl() returns before drawing them.
+assumeRememberedFace();
 renderChips();
 renderWhoami();
 // The anonymous reference socket, warmed at boot.

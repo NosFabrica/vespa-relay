@@ -61,14 +61,16 @@ assert.ok(
   `found ${inert.length} (${inert.map(([s]) => s).join(", ")})`,
 );
 
-// The chip is view state: written by feedUrl(), read back in applyUrl()'s feed branch.
-assert.ok(/const feedUrl = .*tab=\$\{t\.slug\}/.test(appJs), "feedUrl() must write the chip into the url");
-const feedBranch = appJs.slice(appJs.indexOf(`if (p.get("feed") === "1") {`));
-assert.ok(feedBranch.startsWith(`if (p.get("feed") === "1") {`), "applyUrl() has no feed branch");
-assert.ok(
-  feedBranch.slice(0, feedBranch.indexOf("runFeed();")).includes(`p.get("tab")`),
-  "applyUrl()'s feed branch must read ?tab= — otherwise a shared narrowed feed opens as Everything",
-);
+// The chip is view state: written by feedUrl(), read back by the restore.
+const { feedUrl, readSearch } = await import(new URL("../../main/resources/web/urlstate.js", import.meta.url));
+const tabRows = tabs.map(([slug, kinds]) => ({ slug, kinds }));
+for (const t of tabRows) {
+  const back = readSearch(feedUrl(t).slice(1), tabRows);
+  assert.ok(back.feed, `${feedUrl(t)} does not open the feed`);
+  assert.strictEqual(back.tab.slug, t.slug, `a shared feed narrowed to "${t.slug}" opens as "${back.tab.slug}"`);
+}
+assert.strictEqual(feedUrl(tabRows.find((t) => !t.kinds)), "/?feed=1", "Everything writes no parameter");
+assert.ok(/if \(want\.feed\) \{/.test(appJs), "applyUrl() has no feed branch");
 
 // The rule hides the panel, not the row, which also carries the chips and the syntax button.
 const css = readFileSync(new URL("../../main/resources/web/app.css", import.meta.url), "utf8");

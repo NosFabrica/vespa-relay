@@ -44,11 +44,24 @@ assert.strictEqual(
   "renderAdvCount() counts a different number of things than the panel holds",
 );
 
-const write = bodyOf(app, "currentUrl");
-const read = bodyOf(app, "applyUrl");
+// Every filter survives a share and a reload: set alone, written by searchUrl(), read back by
+// readSearch(), the two halves currentUrl() and applyUrl() call.
+const { searchUrl, readSearch } = await import(new URL("../../main/resources/web/urlstate.js", import.meta.url));
+const tabs = [{ slug: "all", kinds: null }];
+const lens = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
+const SET = { sort: { sort: "recent" }, spam: { spam: true }, as: { viewingAs: lens } };
+const READ = { sort: (r) => r.sort === "recent", spam: (r) => r.spam === true, as: (r) => r.as === lens };
 for (const [id, f] of Object.entries(FILTERS)) {
-  assert.ok(write.includes(`p.set("${f.param}"`), `currentUrl() never writes ?${f.param}= — #${id} does not survive a share`);
-  assert.ok(read.includes(`p.get("${f.param}")`), `applyUrl() never reads ?${f.param}= — #${id} does not survive a reload`);
+  const url = searchUrl({ text: "x", tab: tabs[0], tabs, ...SET[f.param] });
+  assert.ok(new URL(url, "http://x").searchParams.has(f.param), `searchUrl() never writes ?${f.param}= — #${id} does not survive a share`);
+  assert.ok(READ[f.param](readSearch(url.slice(1), tabs)), `readSearch() never reads ?${f.param}= back — #${id} does not survive a reload`);
+}
+const defaults = new URL(searchUrl({ text: "x", tab: tabs[0], tabs }), "http://x").searchParams;
+assert.deepStrictEqual([...defaults.keys()], ["q"], "a filter left at its default writes nothing");
+// …and the page hands searchUrl() the state the badge reads.
+const write = bodyOf(app, "currentUrl");
+for (const [id, f] of Object.entries(FILTERS)) {
+  assert.ok(write.includes(f.state), `currentUrl() never passes ${f.state} — #${id} is not written`);
 }
 
 // exportText() compares `sort` against a bare token, so only the spelling is held here.

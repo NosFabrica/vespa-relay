@@ -90,10 +90,19 @@ assert.ok(
 );
 
 // The page is written by currentUrl() and read back by applyUrl(), like the three filters.
-assert.ok(/p\.set\("page"/.test(app), "currentUrl() never writes ?page= — a page four does not survive a share");
-assert.ok(/p\.get\("page"\)/.test(app), "…and applyUrl() never reads it back, so it does not survive a reload");
+{
+  const { searchUrl, readSearch } = await import(new URL("../../main/resources/web/urlstate.js", import.meta.url));
+  const tabs = [{ slug: "all", kinds: null }];
+  const url = searchUrl({ text: "bitcoin", page: 3, tab: tabs[0], tabs });
+  assert.strictEqual(new URL(url, "http://x").searchParams.get("page"), "4", "a page four is written one-based, as the pager reads");
+  assert.strictEqual(readSearch(url.slice(1), tabs).page, 3, "…and comes back as the same page on a reload");
+  assert.strictEqual(readSearch("?q=x&page=1", tabs).page, 0, "page one is no page");
+  assert.strictEqual(readSearch("?q=x&page=junk", tabs).page, 0);
+  assert.strictEqual(readSearch("?q=x&page=99999", tabs).page, MAX_PAGES - 1, "a page past the ceiling is the last one asked for");
+  assert.ok(!new URL(searchUrl({ text: "", page: 3, tab: tabs[0], tabs }), "http://x").searchParams.has("page"), "no query, no page");
+}
 assert.ok(
-  /runFull\(text, pageParam\(p\)\)/.test(app),
+  /runFull\(want\.text, want\.page\)/.test(app),
   "the restore must hand the page to runFull(), or a deep link opens at page one",
 );
 

@@ -183,9 +183,9 @@ relay/…/relay/
                               StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
-  resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, searchfield.js,
-                              paging.js, feed.js, entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and
-                              shared/lens.js first)
+  resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, signin.js,
+                              owngroups.js, urlstate.js, searchfield.js, paging.js, feed.js, entity.js, related.js,
+                              readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
   resources/stats.html        the one status page (web/stats/page.js); web/relay/, web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client (web/observers/)
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes

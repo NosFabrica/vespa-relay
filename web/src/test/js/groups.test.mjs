@@ -174,8 +174,8 @@ assert.strictEqual(postedTo({ tags: [null, ["h", "ok"]] }), "ok", "a malformed t
 // The store applies the observer as a filter, so an unmirrored reader reads back nothing on
 // the authenticated socket, their own 10009 included, and the read must stay there.
 const appSrc = readFileSync(new URL("../../main/resources/web/app.js", import.meta.url), "utf8");
-const ownRead = /(\w+)\.req\(\{ kinds: \[10009\]/.exec(appSrc);
-assert(ownRead, "app.js must read the reader's own kind 10009 somewhere");
+const ownRead = /new OwnGroups\(\{[^}]*read: \(filter\) => (\w+)\.req\(filter\)/.exec(appSrc);
+assert(ownRead, "app.js must hand the reader's own group list a socket to read kind 10009 on");
 assert.strictEqual(ownRead[1], "relay",
   "the reader's own group list is read on the AUTHENTICATED socket, behind the observer gate like " +
   "everything else served to them — an unmirrored reader is meant to see no personal groups");

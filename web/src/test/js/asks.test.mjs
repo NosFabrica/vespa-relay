@@ -78,7 +78,7 @@ assert.strictEqual(askLimitOf([f(40), f(160)]), 160, "the width of a list of fil
 }
 
 assert.ok(/const asks = new AskCache\(\)/.test(app), "app.js keeps one ask cache");
-assert.ok(/asks\.take\(filters, \(\) => relay\.req\(filters, undefined, \{ signal \}\), relay\.authed \? me : null\)/.test(app),
+assert.ok(/asks\.take\(filters, \(\) => relay\.req\(filters, undefined, \{ signal \}\), relay\.authed \? me\(\) : null\)/.test(app),
   "…and every ranked search goes through it, under the reader the socket authenticated as");
 assert.ok(/if \(pop\.loading\) \{ popupQueued = text; return; \}/.test(app), "a type-ahead while one is in flight only replaces the waiting text");
 assert.ok(/if \(live && next != null && next !== text && \$q\.value\.trim\(\) === next\) armPopup\(next\)/.test(app), "the waiting text runs when the ask lands, if the box still says it — through the debounce again");
