@@ -395,6 +395,38 @@ class RelayDiscoveryTest {
             assertEquals(12, found.size)
         }
 
+    @Test
+    fun `a verdict source ages a grade on the label's own stamp, not on the record a later writer re-signed`() =
+        runBlocking {
+            val now = 1_800_000_000L
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+
+            fun verdict(
+                url: String,
+                measuredAt: Long,
+                epoch: String = RelayVerdictRecord.FITNESS_EPOCH,
+            ) = NostrSignerSync().sign<Event>(
+                now - 60,
+                30166,
+                arrayOf(arrayOf("d", url), arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "ok", measuredAt.toString(), epoch)),
+                "",
+            )
+            store.insert(verdict("wss://fresh.example", measuredAt = now - 3_600))
+            // Re-signed a minute ago by another pass, but graded two days back.
+            store.insert(verdict("wss://stale.example", measuredAt = now - 172_800))
+            store.insert(verdict("wss://old-rules.example", measuredAt = now - 3_600, epoch = "0"))
+
+            val primes =
+                RelaySource(
+                    selects = listOf(select(tag = "d")),
+                    filter = Filter(kinds = listOf(30166), tags = mapOf("l" to listOf("prime"))),
+                    maxAgeSeconds = 50_400,
+                )
+            val found = RelayDiscovery.discover(store, dynamic(primes), now = now).map { it.url.url }
+
+            assertEquals(listOf("wss://fresh.example/"), found)
+        }
+
     // ---- when the engine's aggregate may answer ----------------------------
 
     /**

@@ -77,8 +77,8 @@ object StoreMetricsLog {
     ): Thread? {
         if (everySeconds <= 0) return null
         return every(role, everySeconds * 1000L) {
-            System.err.println(line(role, store.metrics()))
-            store.backgroundStatus().takeIf { it.isNotBlank() }?.let { System.err.println("store-background[$role] $it") }
+            println(line(role, store.metrics()))
+            store.backgroundStatus().takeIf { it.isNotBlank() }?.let { println("store-background[$role] $it") }
         }
     }
 

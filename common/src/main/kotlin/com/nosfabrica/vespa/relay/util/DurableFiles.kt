@@ -23,7 +23,7 @@ package com.nosfabrica.vespa.relay.util
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -46,8 +46,10 @@ fun writeDurably(
         }
         try {
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: FileSystemException) {
+            // A target that cannot be renamed over (a bind-mounted file, another device) is rewritten in place.
+            Files.copy(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            tmp.delete()
         }
     } catch (e: Exception) {
         tmp.delete()
