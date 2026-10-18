@@ -22,7 +22,9 @@ package com.nosfabrica.vespa.relay.server
 
 import java.io.File
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -80,27 +82,43 @@ class RelayStateTest {
         assertFalse(store.isBanned(a))
     }
 
+    /** Starting unmoderated, then overwriting the file on the next ban, would lose every ban it held. */
     @Test
-    fun `a corrupt state file starts empty instead of taking the relay down`() {
-        // Three shapes, because they throw from different places.
-        for ((label, text) in listOf(
-            "not json at all" to "{ this is not json",
-            "json, but not an object" to """["bannedPubkeys"]""",
-            // A valid object whose fields are the wrong shape throws from every accessor.
-            "an object with the wrong field types" to """{"bannedPubkeys":"nope","allowedKinds":{"a":1}}""",
+    fun `an unreadable state file refuses the boot, names what is wrong, and is left as it was`() {
+        val good = """{"value":"$a","reason":"spam"}"""
+        for ((text, named) in listOf(
+            "{ this is not json" to "not JSON",
+            """["bannedPubkeys"]""" to "not a JSON object",
+            """{"bannedPubkeys":"nope"}""" to "bannedPubkeys is not a list",
+            """{"bannedPubkeys":[$good,{"reason":"no value"}]}""" to "bannedPubkeys[1]",
+            """{"bannedPubkeys":[$good],"allowedKinds":[1,"seven"]}""" to "allowedKinds[1] is not a kind number",
+            """{"bannedPubkeys":[$good],"disallowedKinds":[4,1.5]}""" to "disallowedKinds[1] is not a kind number",
         )) {
             val file = File.createTempFile("relay-state-corrupt", ".json")
             try {
                 file.writeText(text)
-                val store = openBanStore(file.path)
-                assertFalse(store.isBanned(a), "$label: should start with empty lists")
-                // Still usable, so the next admin rpc rewrites the file.
-                store.banPubkey(a, "spam")
-                assertTrue(openBanStore(file.path).isBanned(a), "$label: the file should have been rewritten")
+                val refused = assertFailsWith<IllegalStateException>(text) { openBanStore(file.path) }
+                val message = refused.message.orEmpty()
+                assertContains(message, file.path)
+                assertContains(message, named)
+                assertEquals(text, file.readText(), "the evidence is not overwritten")
             } finally {
                 file.delete()
-                File(file.path + ".tmp").delete()
             }
+        }
+    }
+
+    @Test
+    fun `a file with every list well formed loads, and a missing list is an empty one`() {
+        val file = File.createTempFile("relay-state-partial", ".json")
+        try {
+            file.writeText("""{"bannedPubkeys":[{"value":"$a"}],"allowedKinds":[1]}""")
+            val store = openBanStore(file.path)
+            assertTrue(store.isBanned(a), "a reason is optional")
+            assertEquals(listOf(1), store.listAllowedKinds())
+            assertTrue(store.listDisallowedKinds().isEmpty())
+        } finally {
+            file.delete()
         }
     }
 }

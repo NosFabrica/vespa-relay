@@ -525,7 +525,7 @@ catch-up are untouched.
 | var | meaning | default |
 |---|---|---|
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
-| `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
+| `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart). A file that exists but cannot be read as a ban list stops the boot, naming the bad entry; move it aside to start empty | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with, here and on the [HTTP commands](#commands-over-http-nip-fe) | derived from `RELAY_URL` |
 
 A call is a `POST /` with `Content-Type: application/nostr+json+rpc`, as NIP-86

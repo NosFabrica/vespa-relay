@@ -173,11 +173,15 @@ silently denying nothing is the same failure for kinds. An nsec is refused
 outright because quartz would decode it to its public key and leave a private
 key in a public setting.
 
-**The ban file's read and decode are guarded together.** The outer catch once
-covered only `parseToJsonElement`, and every field accessor throws in its own
-right, so a state file that was valid JSON but wrong in shape (a truncated
-write, a hand edit) threw out of `RelayMain` and the relay did not start. The
-documented behaviour is to say so loudly and come up with empty lists.
+**An unreadable ban file refuses the boot.** It once came up with empty lists
+and a stderr line: one hand-edited kind (`"seven"`) discarded every ban, the
+relay served unmoderated, and the next NIP-86 mutation overwrote the file and
+the bans with it. A configured moderation list that enforces nothing is the
+silently-inert case, so the boot stops with the file and the bad entry named
+(`allowedKinds[1] is not a kind number`) and the file left as it was; moving
+it aside is the explicit way to start empty. Every entry is checked, not only
+the JSON parse, because each field accessor throws in its own right. Writes
+go through `writeDurably`, so a crash leaves the old file or the new one.
 `openBanStore` treats blank as unset because compose's `${RELAY_STATE_FILE:-}`
 delivers `""`.
 
