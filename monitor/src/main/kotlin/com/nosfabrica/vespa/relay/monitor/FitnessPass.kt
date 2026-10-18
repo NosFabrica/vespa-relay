@@ -121,7 +121,7 @@ class FitnessPass(
         val queued = HashMap(pending)
         progress.phase(RETRYING_WRITES)
         try {
-            val held = readStanding("fitness", RETRYING_WRITES) { record.load(queued.keys) } ?: return 0
+            val held = readBeforeReplay(queued.keys) ?: return 0
             val overtaken = queued.filter { (url, write) -> overtaken(url, write, held) }
             for ((url, write) in overtaken) pending.remove(url, write)
             val urls = (queued.keys - overtaken.keys).sortedBy { it.url }
@@ -142,6 +142,24 @@ class FitnessPass(
             progress.clearMeasuring()
             progress.phase(Processors.IDLE)
         }
+    }
+
+    /**
+     * The record over the queued urls, under the write deadline: the caller holds the pass gate, so a
+     * read that never answers would stop every sweep and lane behind it. Null leaves the queue as it is.
+     */
+    private suspend fun readBeforeReplay(urls: Set<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts? {
+        val why =
+            try {
+                withTimeoutOrNull(publishDeadlineMs) { record.load(urls) }?.let { return it }
+                "the read outlived the ${fmtDuration(publishDeadlineMs)} write deadline"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "the read failed (${e.javaClass.simpleName})"
+            }
+        System.err.println("router: fitness [$RETRYING_WRITES] — could not read the record before replaying ${urls.size} pending write(s): $why; they stay queued for the next retry")
+        return null
     }
 
     /**
@@ -299,6 +317,8 @@ class FitnessPass(
         sockets: Sockets,
     ): Int {
         if (candidates.isEmpty()) return 0
+        // A url the sweep no longer names is not ours to grade; its queued write would land as a claim about it.
+        if (label != AliasMonitor.FAST_LANE) pending.keys.retainAll(candidates.toHashSet())
         progress.begin("measuring fitness")
         val startedMs = System.currentTimeMillis()
         val batch = Batch()

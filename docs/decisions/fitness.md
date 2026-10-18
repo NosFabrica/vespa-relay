@@ -517,3 +517,13 @@ queued to be replayed after the stability gate had refused the relay. The
 queue is now cleared per url once the batch has decided that url, and the
 replay reads the record first: a write a later grade has overtaken, or a
 `prime` the stability gate or the fold has since contradicted, is dropped.
+
+**The replay's read has the write deadline, and the queue follows the sweep.**
+`flushPending` read the record over the queued urls with no clock while
+holding the pass gate, so one read that never answered stopped every sweep and
+fast-lane tick behind it. The read now runs under the write deadline; a read
+that times out or fails is logged as such and leaves every write queued for the
+next retry. The queue was also never pruned: a url that left the candidate set
+(excluded, held out as dead) kept a write retried every five minutes, which
+could land as a claim about a url the monitor no longer measures. Each full
+sweep now drops the queued writes for urls it does not name.

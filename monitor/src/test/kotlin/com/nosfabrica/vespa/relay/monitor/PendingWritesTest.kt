@@ -67,9 +67,18 @@ class PendingWritesTest {
         @Volatile
         var wedged = true
 
+        /** Reads hang too, the way a store whose search side stops answering does. */
+        @Volatile
+        var readsHang = false
+
         override suspend fun insert(event: Event) {
             if (wedged) CompletableDeferred<Unit>().await()
             inner.insert(event)
+        }
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            if (readsHang) CompletableDeferred<Unit>().await()
+            return inner.query(filter)
         }
     }
 
@@ -149,6 +158,37 @@ class PendingWritesTest {
 
             assertNull(gradeOf(store, path))
             assertEquals(Verdict.PRIME.value, gradeOf(store, root)?.get(1))
+        }
+
+    @Test
+    fun `a replay whose read never answers gives up and keeps its writes for the next retry`() =
+        runBlocking {
+            val store = BusyWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = null))
+            val pass = fitness(store)
+            pass.sweep(servers)
+
+            store.wedged = false
+            store.readsHang = true
+            // The caller holds the pass gate through this, so it must come back on its own.
+            assertEquals(0, withTimeout(30_000) { pass.flushPending() })
+
+            store.readsHang = false
+            assertEquals(servers.size, pass.flushPending(), "a read that timed out dropped the writes it was guarding")
+        }
+
+    @Test
+    fun `a write queued for a url the sweep no longer names never lands`() =
+        runBlocking {
+            val store = BusyWrites(NostrSemanticsStore(InMemoryEventIndex(), relay = null))
+            val pass = fitness(store)
+            pass.sweep(servers)
+
+            store.wedged = false
+            // The rest were excluded, or held out, between the two sweeps.
+            pass.sweep(servers.take(1))
+
+            assertEquals(0, pass.flushPending())
+            assertTrue(servers.drop(1).all { gradeOf(store, it) == null }, "a grade landed about a url the monitor no longer measures")
         }
 
     @Test
