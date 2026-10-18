@@ -38,8 +38,8 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `up` direction: pushes our matching events to an upstream that lacks them, every
- * [intervalSec], reconciling until nothing more is missing.
+ * The `up` direction: pushes our matching events to each upstream of a stream that lacks them,
+ * every [intervalSec], reconciling until nothing more is missing.
  */
 internal class UpstreamPush(
     private val client: NostrClient,
@@ -62,32 +62,55 @@ internal class UpstreamPush(
 ) {
     val pushed = AtomicLong()
 
-    suspend fun loop(up: SyncUpstream) {
+    /** Pushes one stream to each of its [urls] in turn, every [intervalSec]. */
+    suspend fun loop(urls: List<SyncUpstream>) {
         while (scope.isActive) {
             try {
-                val (rounds, pushedThisPass) = pass(up)
-                System.err.println(
-                    "router: up ${up.url.url} pushed $pushedThisPass event(s) upstream ($rounds round(s))",
-                )
+                pass(urls)
             } catch (e: CancellationException) {
                 // Shutdown, not a failed push.
                 throw e
             } catch (e: Exception) {
-                System.err.println("router: up ${up.url.url} failed: ${e.message}")
+                System.err.println("router: up ${urls.first().streamName} failed: ${e.message}")
             }
             delay(intervalSec * 1000)
         }
     }
 
-    /** One pass: the id snapshot under the gate, then rounds until nothing more is missing. Returns rounds and events pushed. */
-    internal suspend fun pass(up: SyncUpstream): Pair<Int, Long> {
-        // One snapshot per pass: a round changes the upstream's set, never ours.
+    /**
+     * One pass: one id snapshot under the gate, shared by the stream's urls in turn, so a stream
+     * holds at most one snapshot however many urls it pushes to. Returns rounds and events per url.
+     */
+    internal suspend fun pass(urls: List<SyncUpstream>): Map<SyncUpstream, Pair<Int, Long>> {
+        val filter = urls.first().filter
+        require(urls.all { it.streamName == urls.first().streamName && it.filter == filter }) { "one pass is one stream's urls" }
         val local: List<IdAndTime> =
             streamGate.withPermit {
-                storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(up.filter)) {
-                    store.snapshotIdsForNegentropy(listOf(up.filter))
+                storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(filter)) {
+                    store.snapshotIdsForNegentropy(listOf(filter))
                 }
             }
+        val outcomes = LinkedHashMap<SyncUpstream, Pair<Int, Long>>()
+        for (up in urls) {
+            if (!scope.isActive) break
+            try {
+                val (rounds, events) = pushTo(up, local).also { outcomes[up] = it }
+                System.err.println("router: up ${up.url.url} pushed $events event(s) upstream ($rounds round(s))")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // One url failing still leaves the stream's other urls their turn.
+                System.err.println("router: up ${up.url.url} failed: ${e.message}")
+            }
+        }
+        return outcomes
+    }
+
+    /** Rounds against one url until nothing more is missing; a round changes the upstream's set, never [local]. */
+    private suspend fun pushTo(
+        up: SyncUpstream,
+        local: List<IdAndTime>,
+    ): Pair<Int, Long> {
         var rounds = 0
         var pushedThisRound: Long
         var pushedThisPass = 0L

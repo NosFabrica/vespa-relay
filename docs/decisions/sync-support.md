@@ -193,6 +193,14 @@ permit wrapped the snapshot, up to eight reconcile rounds and the paced
 publish loop, so one slow upstream held every other `up` stream's snapshot
 behind its pushes. The permit is now released once the ids are read.
 
+**One push loop per stream, not per url.** Releasing the gate after the
+snapshot bounded the build but not the holding: `upUpstreams()` yields one
+entry per (stream, url), and with a loop per entry every url of a stream held
+its own copy of a possibly multi-GB id set through up to eight rounds and the
+paced publish, all at once. The stream now takes one snapshot per interval and
+pushes it to its urls in turn, so the live snapshots are bounded by the number
+of `up` streams; a url that fails still leaves the rest their turn.
+
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before
 recording the id. The only way into the heal queue is a store refusal of an

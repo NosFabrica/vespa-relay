@@ -244,7 +244,7 @@ class SyncEngine(
 
         // Registered before anything is launched, so silence never reads as unconfigured.
         visitStreams.forEach { phases.register(it.name) }
-        upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
+        upUpstreams.groupBy { it.streamName }.values.forEach { urls -> scope.launch { upPush.loop(urls) } }
         visitPool.start()
 
         monitor.start()
