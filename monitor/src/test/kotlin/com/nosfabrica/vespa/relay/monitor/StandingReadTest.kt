@@ -85,6 +85,25 @@ class StandingReadTest {
             assertNothingSigned(store, "fold")
         }
 
+    /** The paged walk over every record fails; a read naming its urls still answers. */
+    private class WalkFails(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            check(filter.tags?.containsKey("d") == true) { "the walk cannot be served" }
+            return inner.query(filter)
+        }
+    }
+
+    @Test
+    fun `the fold reads its candidates' own verdicts when the walk over every verdict fails`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
+
+            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a narrower read that answered skipped the whole fold")
+        }
+
     @Test
     fun `the stability gate skips a sweep whose standing read failed`() =
         runBlocking {

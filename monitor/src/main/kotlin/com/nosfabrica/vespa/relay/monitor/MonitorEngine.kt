@@ -112,6 +112,7 @@ class MonitorEngine(
                 progress = processors.of(FOLD_PROCESSOR),
                 // Hidden services gate on Tor's own socket budget, not the clearnet permits.
                 tor = tor,
+                world = { world.known },
             )
         }
 

@@ -58,6 +58,8 @@ class AliasFolding(
     tor: TorTransport? = null,
     /** The wall clock on one verdict write. */
     private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
+    /** The urls the monitor knows, so a narrower read still takes in the other urls on each candidate's server. */
+    private val world: () -> ServerIndex = { ServerIndex.EMPTY },
 ) {
     /** One gate object, not one per pass. */
     private val gate = DialGate.over(concurrency, tor)
@@ -254,7 +256,8 @@ class AliasFolding(
         walk: suspend () -> T,
     ): Asked<T> =
         gate.withPermit(url) {
-            if (!run.canDial(url)) return@withPermit Asked(false, null)
+            // A stopped writer refuses whatever this dial could prove, so it is not taken.
+            if (run.writer.stoppedBy != null || !run.canDial(url)) return@withPermit Asked(false, null)
             run.taken.incrementAndGet()
             Asked(true, dial(url, run.sockets, walk))
         }
@@ -264,10 +267,12 @@ class AliasFolding(
         run: Run,
         group: List<NormalizedRelayUrl>,
     ) {
+        if (writesStopped(run, group)) return
         val wanted = aliases.toProbe(group)
         // One anchor for the whole group, taken before any of it is dialled.
         val anchor = AliasProbe.settledAnchor(nowSeconds())
         val search = searchYardstick(run, wanted, anchor)
+        if (writesStopped(run, group)) return
         var members = wanted
         // A window too thin to be a yardstick still settles its own scheme twin, and no further:
         // nothing else can be measured against it.
@@ -286,6 +291,7 @@ class AliasFolding(
         if (unreadable && foldedOnName(run, wanted, search, anchor)) return
         val leader = search.found
         val lead = search.foundPrint
+        if (writesStopped(run, group)) return
         if (leader == null || lead == null) {
             // Cooled down only when something was asked: a group the transport declined was never measured.
             val host = RelayAliases.hostOf(group.first().url)
@@ -299,6 +305,19 @@ class AliasFolding(
         }
         // Not the yardstick or the exhausted; a url the transport declined is still worth a dial.
         compareAgainst(run, group, members.filter { it != leader && it !in search.exhausted }, leader, lead, anchor)
+    }
+
+    /**
+     * Has the pass's writer stopped: then nothing this group could prove would be written, so it is left
+     * unresolved for the next pass, with no cooldown, since the store failed and not the host.
+     */
+    private fun writesStopped(
+        run: Run,
+        group: List<NormalizedRelayUrl>,
+    ): Boolean {
+        if (run.writer.stoppedBy == null) return false
+        run.undecided[RelayAliases.hostOf(group.first().url)] = Undecided.WRITES_STOPPED
+        return true
     }
 
     /**
@@ -375,12 +394,13 @@ class AliasFolding(
         val survivor = wanted.first()
         val folds = aliases.foldUnreadable(wanted, survivor)
         val landed = run.writer.write(folds.keys.toList()) { record.publishUnreadable(it, survivor, wanted.size) != null }
-        if (folds.isNotEmpty()) {
-            run.newVerdicts += landed
-            clearUndecidable(survivor)
+        run.newVerdicts += landed
+        if (folds.isNotEmpty()) clearUndecidable(survivor)
+        if (landed.size < folds.size) writesStopped(run, wanted)
+        if (landed.isNotEmpty()) {
             System.err.println(
                 "router: ${run.label} ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
-                    "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
+                    "${wanted.size} url(s) and every one answered — ${landed.size} folded onto ${survivor.url} " +
                     "on the shared name, WITHOUT a measurement",
             )
         }
@@ -403,6 +423,8 @@ class AliasFolding(
                 launch { ask(run, url) { probe.fingerprint(url, anchor, lead.kinds, run.onEvent) }.answer?.let { prints[url] = it } }
             }
         }
+        // Before anything is learned: a member the stopped writer kept us from asking is not a silent one.
+        if (writesStopped(run, group)) return
         val result = aliases.learn(group, leader, prints, lead.kinds)
         if (result.distinct.isNotEmpty() && !yardstickHolds(run, group, leader, lead, anchor, result.distinct.size)) return
         val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
@@ -448,6 +470,7 @@ class AliasFolding(
         val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
         // Back to what the store says.
         aliases.replace(group, run.held.aliases, run.held.distinct)
+        if (writesStopped(run, group)) return false
         markUndecidable(leader, run.startedAtMs)
         run.undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
         System.err.println(
@@ -547,6 +570,9 @@ class AliasFolding(
 
         /** The yardstick would not give the same window twice. */
         NOT_REPRODUCIBLE("a host that cannot repeat itself"),
+
+        /** The store stopped taking this pass's writes, so nothing was dialled to prove. */
+        WRITES_STOPPED("left for the next pass: the store stopped taking writes"),
     }
 
     /**
@@ -636,7 +662,7 @@ class AliasFolding(
         candidates: List<NormalizedRelayUrl>,
     ): World? {
         // The store is authoritative on every pass, which is what gives its TTL its teeth.
-        val held = readStanding("fold", label) { record.loadAll() } ?: return null
+        val held = readStanding("fold", label) { readWorld(label, candidates) } ?: return null
         // Candidates first, so the world keeps the caller's order.
         val world = LinkedHashSet(candidates)
         world += held.aliases.values
@@ -644,6 +670,23 @@ class AliasFolding(
         aliases.replace(world, held.aliases, held.distinct)
         return World(world.toList(), held)
     }
+
+    /**
+     * Every verdict we hold, or, when that paged walk fails, the verdicts over [candidates] and the other
+     * urls on their servers: narrower, but still a read, so nothing is signed blind. Throws when both fail.
+     */
+    private suspend fun readWorld(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
+    ): RelayVerdictRecord.Verdicts =
+        try {
+            record.loadAll()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: fold [$label] — the walk over every verdict failed (${e.javaClass.simpleName}); reading the candidates' own instead")
+            record.load(candidates + world().matesOf(candidates))
+        }
 
     /** What a pass grouped, and the store's own answer about it, which the reproducibility guard restores. */
     private class World(
