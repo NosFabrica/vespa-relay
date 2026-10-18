@@ -194,7 +194,8 @@ class PulseSiteTest {
     @Test
     fun `one signature opens a session, and the session reads the document`() =
         testApplication {
-            mount(guard())
+            val g = guard()
+            mount(g)
 
             val opened =
                 client.post(PULSE_SESSION_PATH) {
@@ -205,7 +206,7 @@ class PulseSiteTest {
 
             val cookie = assertNotNull(opened.headers[HttpHeaders.SetCookie], "no session cookie was set")
             // NIP-98 tokens are single-use, so a polling page would need an extension popup per poll.
-            assertTrue(cookie.startsWith("$PULSE_COOKIE="))
+            assertTrue(cookie.startsWith("${g.cookie}="))
             assertTrue(cookie.contains("HttpOnly", ignoreCase = true), "the cookie must be unreadable from the page's own scripts")
             assertTrue(cookie.contains("SameSite=Strict", ignoreCase = true), "no other site may cause this cookie to be sent")
             assertTrue(cookie.contains("Max-Age=1800"), "the session must state its own lifetime")
@@ -214,6 +215,30 @@ class PulseSiteTest {
 
             val read = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Cookie, sessionOf(cookie)) }
             assertEquals(HttpStatusCode.OK, read.status)
+        }
+
+    @Test
+    fun `two pulse sites on one host keep separate sessions`() =
+        testApplication {
+            // Cookies ignore ports: the relay's site and the mirror's share a jar on one host.
+            val relaySite = PulseGuard(Nip98AdminGate(setOf(admin.pubKey), "http://ops.test:7780"))
+            val mirrorSite = PulseGuard(Nip98AdminGate(setOf(admin.pubKey), "http://ops.test:7781"))
+            assertTrue(relaySite.cookie != mirrorSite.cookie, "signing in to one site would evict the other's session")
+
+            mount(relaySite)
+            val signed =
+                admin
+                    .sign(HTTPAuthorizationEvent.build("http://ops.test:7780$PULSE_SESSION_PATH", "POST", null, System.currentTimeMillis() / 1000) {})
+                    .toAuthToken()
+            val relayCookie = sessionOf(assertNotNull(client.post(PULSE_SESSION_PATH) { header(HttpHeaders.Authorization, signed) }.headers[HttpHeaders.SetCookie]))
+            assertTrue(relayCookie.startsWith("${relaySite.cookie}="))
+
+            // The jar sends both sites' cookies to either port; each site reads only its own.
+            val mirrorToken = mirrorSite.sessions.open(admin.pubKey)
+            val read = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Cookie, "$relayCookie; ${mirrorSite.cookie}=$mirrorToken") }
+            assertEquals(HttpStatusCode.OK, read.status)
+            val foreign = client.get(PULSE_DOC_PATH) { header(HttpHeaders.Cookie, "${mirrorSite.cookie}=$mirrorToken") }
+            assertEquals(HttpStatusCode.Unauthorized, foreign.status, "another site's session must not open this one")
         }
 
     @Test
