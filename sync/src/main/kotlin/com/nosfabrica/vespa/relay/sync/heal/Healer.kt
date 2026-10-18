@@ -96,7 +96,7 @@ class Healer(
      */
     suspend fun drain(url: NormalizedRelayUrl) {
         if (caps.isClosed(url)) {
-            // It has already told us: nothing to learn and nothing to gain.
+            // It has told us, and the closure has not lapsed: nothing to learn and nothing to gain.
             queue.discard(url)
             return
         }

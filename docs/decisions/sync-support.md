@@ -203,6 +203,15 @@ verdict, not a sign of life. `probedCount` records clean states too: counting
 only struck or closed relays read `0/0` on a fan-out where every relay
 accepted, which is what a healer that never ran also prints.
 
+**A write closure lapses after six hours, and a strike closes in the same step.**
+A closure lasted the process's life, so a relay that fixed its write policy
+or came back from an outage got no repairs until the router restarted. Six
+hours retries within a shift and costs one refused push per relay per
+period. `strike` used to count in one `compute` and close with a separate
+put, so a `succeeded` from a second stream draining the same relay could land
+in between, and two strikes past the line could both announce the closure;
+counting and closing are now one `compute`.
+
 **`rate-limited:` and `error:` are transient, and an unknown prefix is nothing.**
 Reading a momentary refusal as policy would suppress the very ids the relay
 was about to accept, permanently and silently. Unknown prefixes get the same
