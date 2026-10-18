@@ -366,3 +366,10 @@ still being mirrored, and a global search whose House Observer has none is a `50
 never an empty `200`. Nothing asks whether the scores are ready: an earlier version
 sampled the service's newest cards before each search to answer a `202`, a second
 engine query that eight cards could not settle anyway.
+
+**A search lane lives only while a ranked read holds or waits on it.** The
+lanes were created on demand and removed on disconnect, so a ranked read that
+reached the gate after its connection's `onDisconnect` created a lane nothing
+would remove, and `lanesOpen` drifted upward. Each lane now counts its readers
+under the map's own lock and is dropped by the last one to leave, at its EOSE
+or when it is cancelled waiting, so the gate needs no disconnect hook at all.

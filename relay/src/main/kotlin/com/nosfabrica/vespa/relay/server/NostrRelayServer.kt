@@ -88,8 +88,6 @@ class NostrRelayServer(
     private val servingPressure: ServingPressure? = null,
     // Ranked reads one connection may run at once; 0 turns the gate off.
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
-    // A default parameter so the gate exists before the super constructor takes it as the listener.
-    private val searchGate: SearchGate = SearchGate(searchConcurrencyPerConnection),
     // Published events one store write may take; see ingestBatchFromEnv.
     ingestBatch: Int = IngestQueue.DEFAULT_MAX_BATCH,
 ) : RelayServerBase(
@@ -109,7 +107,7 @@ class NostrRelayServer(
         },
         parentContext = parentContext,
         negentropySettings = negentropySettings,
-        listener = searchGate.listening(listener),
+        listener = listener,
         limits = limits,
     ) {
     private val ingest =
@@ -121,10 +119,12 @@ class NostrRelayServer(
             verify = { it.verify() },
         )
 
+    private val searchGate = SearchGate(searchConcurrencyPerConnection)
+
     override val backend: SessionBackend =
         ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure, searchGate, liveGatesOf(store))
 
-    /** Connections holding a search lane right now. */
+    /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
 
     override fun close() {

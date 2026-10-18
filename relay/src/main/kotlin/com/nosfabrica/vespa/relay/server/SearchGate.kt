@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlinx.coroutines.sync.Semaphore
@@ -36,8 +35,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SearchGate(
     /** Ranked reads in flight per connection. 0 turns the gate off. */
     val permits: Int,
-) : RelayServerListener {
-    private val lanes = ConcurrentHashMap<Long, Semaphore>()
+) {
+    /** A connection's queue, and how many reads hold or wait on it; it exists only while one does. */
+    private class Lane(
+        permits: Int,
+    ) {
+        val slots = Semaphore(permits)
+        var users = 0
+    }
+
+    private val lanes = ConcurrentHashMap<Long, Lane>()
 
     /** Whether any of [filters] would be held by this gate. */
     fun gates(filters: List<Filter>): Boolean = permits > 0 && filters.any(Filter::isRankedRead)
@@ -53,10 +60,23 @@ class SearchGate(
         block: suspend (onEose: () -> Unit) -> T,
     ): T {
         if (!gates(filters)) return block(onEose)
-        val lane = lanes.computeIfAbsent(ctx.connectionId) { Semaphore(permits) }
-        lane.acquire()
+        val id = ctx.connectionId
+        // Joined and left under the map's own lock, so a lane is dropped by its last reader and never resurrected empty.
+        val lane = lanes.compute(id) { _, l -> (l ?: Lane(permits)).also { it.users++ } }!!
+        val leave = { lanes.computeIfPresent(id) { _, l -> l.takeIf { --it.users > 0 } } }
+        try {
+            lane.slots.acquire()
+        } catch (e: Throwable) {
+            leave()
+            throw e
+        }
         val held = AtomicBoolean(true)
-        val release = { if (held.compareAndSet(true, false)) lane.release() }
+        val release = {
+            if (held.compareAndSet(true, false)) {
+                lane.slots.release()
+                leave()
+            }
+        }
         try {
             return block {
                 release()
@@ -74,28 +94,13 @@ class SearchGate(
         block: suspend () -> T,
     ): T = through(ctx, filters, {}) { block() }
 
-    /** How many connections currently hold a lane. */
+    /** How many connections have a ranked read running or queued. */
     val lanesOpen: Int get() = lanes.size
-
-    override fun onDisconnect(connectionId: Long) {
-        lanes.remove(connectionId)
-    }
 
     companion object {
         /** A page never benefits from two ranked reads on one socket. */
         const val DEFAULT_PERMITS = 1
     }
-
-    /** This gate's lifecycle hook composed in front of [other], so the server installs one listener. */
-    fun listening(other: RelayServerListener): RelayServerListener =
-        object : RelayServerListener {
-            override fun onConnect(connectionId: Long) = other.onConnect(connectionId)
-
-            override fun onDisconnect(connectionId: Long) {
-                this@SearchGate.onDisconnect(connectionId)
-                other.onDisconnect(connectionId)
-            }
-        }
 }
 
 /** Whether this filter ranks: terms, a phrase, or a `sort:`, the shapes the store ranks by relevance. */
