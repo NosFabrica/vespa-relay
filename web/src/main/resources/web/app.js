@@ -6,6 +6,7 @@ import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc, HEX64 } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
+import { watchBrokenMedia } from "./shared/broken.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
@@ -25,6 +26,9 @@ import { PAGE_SIZE, MAX_ASK, MAX_PAGES, firstAsk, askLimit, pageOf, pageCount, c
 import { mountSearchField, softKeyboard } from "./searchfield.js";
 import { AskCache } from "./shared/asks.js";
 import { checkReadiness, clearReadiness } from "./readiness.js";
+
+// Before anything renders: a picture that fails while no one listens keeps its broken box.
+watchBrokenMedia();
 
 // Rows the popup draws; the ask itself is one results page wide, so Enter can reuse it.
 const POPUP_LIMIT = 8;

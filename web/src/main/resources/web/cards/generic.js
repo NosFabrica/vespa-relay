@@ -17,7 +17,7 @@ export function genericCard(ev, opts) {
         ${title ? `<h2 class="result-title"><a href="${noteHref(ev.id)}">${esc(clipIf(opts, title, 120))}</a></h2>` : ""}
         ${bodyHtml(opts, body, 400, !!summary && !(opts && opts.full))}
       </div>
-      ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+      ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />` : ""}
     </div>`;
   return shell(ev, opts, inner);
 }

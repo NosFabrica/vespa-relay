@@ -40,7 +40,7 @@ function reactionCard(ev, opts) {
   const shortcode = /^:([^:]+):$/.exec(c);
   const custom = shortcode && tagsOf(ev, "emoji").find((t) => t[1] === shortcode[1]);
   const glyph = custom
-    ? `<img class="react-emoji" src="${esc(custom[2])}" alt=":${esc(shortcode[1])}:" title=":${esc(shortcode[1])}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
+    ? `<img class="react-emoji" src="${esc(custom[2])}" alt=":${esc(shortcode[1])}:" title=":${esc(shortcode[1])}:" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`
     : `<span class="react-glyph">${esc(clip(c || "+", 16))}</span>`;
   const verb = reactionVerb(c);
   const target = targetLink(ev);
@@ -279,7 +279,7 @@ function communityCard(ev, opts) {
   const mods = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk));
   const full = opts && opts.full;
   const inner =
-    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
+    (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>` : "") +
     titleHtml(opts, titleOf(ev), 140) +
     bodyHtml(opts, summaryOf(ev) || ev.content, 400) +
     (mods.length ? `<div class="result-body">${mods.length} moderator${mods.length === 1 ? "" : "s"}</div>` + faceStrip(mods, full ? 24 : 12) : "");

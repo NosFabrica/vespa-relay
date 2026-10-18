@@ -4,7 +4,7 @@
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
-const { avatarHtml, SIZES, hueOf, BLANK } =
+const { avatarHtml, SIZES, hueOf } =
   await import(new URL("../../main/resources/web/shared/avatar.js", import.meta.url));
 const html = readFileSync(new URL("../../main/resources/index.html", import.meta.url), "utf8");
 
@@ -22,7 +22,8 @@ const withPic = avatarHtml("https://example.test/p.png?a=1&b=2", pk, "lg");
 assert.ok(withPic.includes(`src="https://example.test/p.png?a=1&amp;b=2"`), "the picture url must be escaped");
 assert.ok(withPic.includes('referrerpolicy="no-referrer"'), "a face must not leak the reader to the picture's host");
 assert.ok(withPic.includes('loading="lazy"'));
-assert.ok(withPic.includes(BLANK), "a broken picture must fall back in place");
+assert.ok(withPic.includes('data-broken="face"'), "a broken picture must fall back in place");
+assert.ok(!/\son[a-z]+=/.test(withPic), "no inline handler: the page's policy refuses to run one");
 assert.ok(withPic.includes(`class="score-chip" data-pk="${pk}"`), "every face carries a score chip");
 
 const noPic = avatarHtml("", pk, "sm");

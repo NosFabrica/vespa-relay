@@ -130,7 +130,7 @@ export const fmtDuration = (secs) => {
 export const videoEmbed = (url) => {
   const safe = safeUrl(url);
   return safe
-    ? `<div class="embed"><video controls playsinline preload="none" data-src="${esc(safe)}" onerror="this.parentElement.remove()"></video></div>`
+    ? `<div class="embed"><video controls playsinline preload="none" data-src="${esc(safe)}" data-broken="frame"></video></div>`
     : "";
 };
 
@@ -409,10 +409,10 @@ export const safeUrl = (u) => {
 
 /** A cover, at the depth it belongs to: a banner on the permalink, a thumb beside the text in the list. */
 export const coverBanner = (img) => (img
-  ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>`
+  ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>`
   : "");
 export const coverThumb = (img) => (img
-  ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
+  ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`
   : "");
 
 /** The one external link. An unlinkable url renders as its own text rather than disappearing. */
@@ -465,7 +465,7 @@ export function chipRow(values, opts, hrefOf = null) {
 export function emojiGrid(pairs, opts) {
   const shown = opts && opts.full ? pairs : pairs.slice(0, 16);
   if (!shown.length) return "";
-  return `<div class="emoji-grid">${shown.map(([name, url]) => `<img src="${esc(url)}" alt=":${esc(name)}:" title=":${esc(name)}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`;
+  return `<div class="emoji-grid">${shown.map(([name, url]) => `<img src="${esc(url)}" alt=":${esc(name)}:" title=":${esc(name)}:" loading="lazy" referrerpolicy="no-referrer" data-broken="self" />`).join("")}</div>`;
 }
 
 /**

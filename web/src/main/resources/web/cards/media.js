@@ -42,15 +42,15 @@ function pictureCard(ev, opts) {
  * One picture. `whenBroken` is what a dead url removes: the frame around a lone picture,
  * the cell inside a grid.
  */
-const pictureImg = (m, whenBroken = "this.parentElement.remove()") =>
-  `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="${whenBroken}" />`;
+const pictureImg = (m, whenBroken = "frame") =>
+  `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" data-broken="${whenBroken}" />`;
 
 /** The album: four in the list, all of them on the permalink. */
 function pictureGrid(pics, opts) {
   if (!pics.length) return "";
   const shown = opts && opts.full ? pics : pics.slice(0, 4);
   const more = pics.length - shown.length;
-  return `<div class="media-grid">${shown.map((m) => pictureImg(m, "this.remove()")).join("")}</div>` +
+  return `<div class="media-grid">${shown.map((m) => pictureImg(m, "self")).join("")}</div>` +
     (more > 0 ? `<div class="muted-note">…and ${more} more</div>` : "");
 }
 
@@ -77,7 +77,7 @@ function videoFrame(m, ev, url, opts) {
   const src = (p || url.includes("#")) ? url : `${url}#t=0.1`;
   // `data-src`, not `src`: app.js promotes it when the card nears the viewport.
   return mediaFrame(frameStyle(fieldOf(m, ev, "dim"), opts),
-    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} data-src="${esc(src)}" onerror="this.parentElement.remove()"></video>` +
+    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} data-src="${esc(src)}" data-broken="frame"></video>` +
     (dur ? `<span class="media-chip">${esc(dur)}</span>` : ""));
 }
 

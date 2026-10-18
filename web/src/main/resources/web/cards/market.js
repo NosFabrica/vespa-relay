@@ -28,7 +28,7 @@ const priceLine = (amount, currency, period) => {
 };
 
 const imgEmbed = (url) =>
-  url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "";
+  url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-broken="frame" /></div>` : "";
 
 /** 30402 — a classified listing. */
 function listingCard(ev, opts) {
