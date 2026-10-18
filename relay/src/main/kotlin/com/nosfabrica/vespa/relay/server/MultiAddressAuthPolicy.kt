@@ -62,7 +62,7 @@ class MultiAddressAuthPolicy(
 
     /**
      * Identities already told: a client may resend a still-valid AUTH any number of times, and the
-     * notice is paid once per identity per connection.
+     * notice is paid once per identity per connection, for at most [MAX_TOLD] identities.
      */
     private val told = HashSet<String>()
 
@@ -73,7 +73,8 @@ class MultiAddressAuthPolicy(
     override suspend fun authorize(event: RelayAuthEvent) {
         val notify = onAuthenticated ?: return
         val send = send ?: return
-        if (!synchronized(told) { told.add(event.pubKey) }) return
+        // A client can mint keys without end; past the bound the courtesy stops rather than the set growing.
+        if (!synchronized(told) { told.size < MAX_TOLD && told.add(event.pubKey) }) return
         try {
             notify(event.pubKey, send)
         } catch (e: CancellationException) {
@@ -109,6 +110,11 @@ class MultiAddressAuthPolicy(
         }
 
         return PolicyResult.Accepted(cmd)
+    }
+
+    companion object {
+        /** Identities one connection is told about; real clients sign in as one or two. */
+        internal const val MAX_TOLD = 16
     }
 }
 
