@@ -162,16 +162,41 @@ class RelayProfilePublisher(
     private val maxWaitMs: Long = PROFILE_MAX_WAIT_MS,
     private val time: TimeSource = TimeSource.Monotonic,
     private val log: (String) -> Unit = ::println,
+    private val alarm: (String) -> Unit = System.err::println,
 ) {
     private val wanted = Channel<Unit>(Channel.CONFLATED)
 
+    @Volatile private var stoppedBy: Throwable? = null
+
     init {
-        scope.launch { for (ignored in wanted) publishWaitingOutTheEngine() }
+        scope.launch {
+            try {
+                for (ignored in wanted) publishOnce()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                stoppedBy = e
+                alarm("profile: the publisher stopped on $e — no later rename republishes the relay's kind 0 / 10002 until a restart")
+                throw e
+            }
+        }
     }
 
     /** Asks for a publish of whatever [info] says when it runs; returns at once. */
     fun request() {
+        stoppedBy?.let { return alarm("profile: not republished — the publisher stopped earlier on $it; restart the relay to publish") }
         wanted.trySend(Unit)
+    }
+
+    /** One request's publish; its failure is said and the next request tries again. */
+    private suspend fun publishOnce() {
+        try {
+            publishWaitingOutTheEngine()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            alarm("profile: publish failed (${e::class.simpleName}: ${e.message?.take(120)}); the next request tries again")
+        }
     }
 
     /** A failed read is retried rather than read as an empty store, up to a deadline from the first try. */
@@ -190,7 +215,7 @@ class RelayProfilePublisher(
                     e
                 }
             if (started.elapsedNow().inWholeMilliseconds >= maxWaitMs) {
-                System.err.println(
+                alarm(
                     "profile: could not publish the relay's own kind 0 / 10002 after ${started.elapsedNow().inWholeSeconds}s " +
                         "(${cause.message?.take(120)}) — serving without them; clients meeting this key elsewhere " +
                         "will see no name and no relay list",

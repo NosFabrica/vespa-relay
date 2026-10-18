@@ -237,6 +237,13 @@ document on each attempt, so a burst of renames costs one more publish and the
 last word is the last rename. The ten-minute budget is a monotonic deadline
 from the first try, as in `TrustReconcile`.
 
+**The publisher outlives a failed request, and says when it cannot.** Only the
+store call was guarded, so an exception reading the document, or any `Error`,
+ended the one job, and every later rename was accepted and published nothing.
+Each request's failure is now said and the next request runs; an `Error` still
+ends the job, since the process may not be sound, but it is said as the
+publisher stopping, and every request after it says it was not published.
+
 ## FtsReindex
 
 **The walk repairs fed columns only, never derived ones.** `search_text_gram`
