@@ -16,7 +16,7 @@ export function hostnameOf(url) {
 
 // A relay url as somebody wrote it, reduced to the relay it means, or null for one this page
 // could not dial: a non-ws scheme, a loopback or private host, or `ws://` from an https
-// page. observer_stats.html keeps its own inline copy; the two must agree.
+// page. web/observers/page.js keeps its own copy; the two must agree.
 export function normalizeRelay(raw) {
   if (!raw) return null;
   const t = String(raw).trim();

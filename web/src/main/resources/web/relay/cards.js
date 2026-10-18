@@ -1,0 +1,529 @@
+// The relay's own cards: the corpus totals, the activity charts, kinds, relays, zaps and the
+// trust projection, each drawn from one section of the relay's `stats.json`. The mirror's and
+// the monitor's cards sit beside this in sync/ and monitor/.
+
+import { kindLabel } from "../shared/kinds.js";
+import { ago, cardHead, el, fitTiles, fmt, hideTip, isoOf, moveTip, short, showTip, shownOf, svgEl } from "../shared/page.js";
+
+/** What to call a kind: the document's own name first, `kinds.js` as the fallback; the two sets are not nested. */
+const kindName = (kind, given) => given || kindLabel(kind);
+
+/** Past this an age is coloured. Not a verdict: a serve-only deployment has every right to an old corpus. */
+const STALE_CORPUS_SECONDS = 24 * 3600;
+
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Axis label for a `yyyy-mm-dd` key, sliced rather than parsed: Date would shift it into the reader's zone. */
+const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
+/** "2025-07" → "Jul ’25". The year is on every month label because the window spans several. */
+const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
+
+/** How many bars apart the x labels stand, measured from the widest label present. */
+function tickStride(points, plotW) {
+  const widest = points.reduce((m, p) => Math.max(m, (p.tick || "").length), 0);
+  if (!widest) return points.length;
+  // Character width at the tick size plus a gutter; two labels is the floor.
+  const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
+  return Math.max(1, Math.ceil(points.length / room));
+}
+
+/** A bar chart of one series. */
+function barChart(points, { label, height = 130 }) {
+  // A fixed viewBox scaled by CSS, so nothing re-measures on resize. PAD_L fits
+  // the widest label `short` produces plus an inset.
+  const W = 720, H = height, PAD_L = 34, PAD_B = 20, PAD_T = 8;
+  const plotW = W - PAD_L, plotH = H - PAD_B - PAD_T;
+  const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label });
+
+  const max = Math.max(1, ...points.map((p) => p.value));
+  // Round tick values: the axis carries every value not labelled directly.
+  const step = Math.pow(10, Math.floor(Math.log10(max)));
+  const tick = [1, 2, 5, 10].map((m) => m * step).find((t) => t >= max) || max;
+  const y = (v) => PAD_T + plotH - (v / tick) * plotH;
+
+  // Deduped by rendered label: a maximum of 1 puts the midpoint at 0.5, which
+  // also prints "1".
+  const drawn = new Set();
+  for (const v of [0, tick / 2, tick]) {
+    const label = short(Math.round(v));
+    if (drawn.has(label)) continue;
+    drawn.add(label);
+    svg.appendChild(svgEl("line", { class: "grid", x1: PAD_L, x2: W, y1: y(v), y2: y(v) }));
+    const t = svgEl("text", { class: "tick", x: PAD_L - 6, y: y(v) + 3, "text-anchor": "end" });
+    t.textContent = label;
+    svg.appendChild(t);
+  }
+
+  const band = plotW / points.length;
+  // Bars are separated by a gap, never a stroke.
+  const w = Math.max(1, Math.min(24, band - 2, band * 0.72));
+  points.forEach((p, i) => {
+    const x = PAD_L + i * band + (band - w) / 2;
+    const top = y(p.value), h = Math.max(p.value > 0 ? 1 : 0, PAD_T + plotH - top);
+    // Rounded at the data end, square at the baseline.
+    const r = Math.min(4, w / 2, h);
+    const marks = [];
+    if (h > 0) {
+      marks.push(svgEl("rect", { class: "mark", x, y: top, width: w, height: h, rx: r, ry: r }));
+      if (h > r) marks.push(svgEl("rect", { class: "mark", x, y: top + r, width: w, height: h - r }));
+      marks.forEach((m) => svg.appendChild(m));
+    }
+    // The hit target is the whole band: a thin bar is unhoverable. The highlight
+    // goes on this bar's own marks, which are appended before its hit.
+    const hit = svgEl("rect", { class: "hit", x: PAD_L + i * band, y: PAD_T, width: band, height: plotH });
+    hit.addEventListener("pointerenter", (e) => {
+      marks.forEach((m) => m.classList.add("on"));
+      showTip(e, `${p.label} · ${fmt(p.value)}`);
+    });
+    hit.addEventListener("pointermove", moveTip);
+    hit.addEventListener("pointerleave", () => {
+      marks.forEach((m) => m.classList.remove("on"));
+      hideTip();
+    });
+    svg.appendChild(hit);
+  });
+
+  // Labelled from the newest bar backwards, so the last bucket always carries
+  // a label whatever the stride.
+  const stride = tickStride(points, plotW);
+  for (let i = points.length - 1; i >= 0; i -= stride) {
+    const p = points[i];
+    if (!p.tick) continue;
+    // End labels anchored inward so they stay inside the plot.
+    const anchor = i === points.length - 1 ? "end" : i === 0 ? "start" : "middle";
+    const t = svgEl("text", { class: "tick", x: PAD_L + i * band + band / 2, y: H - 6, "text-anchor": anchor });
+    t.textContent = p.tick;
+    svg.appendChild(t);
+  }
+  return svg;
+}
+
+/**
+ * The hero numbers, from three sections of the charts pass (`StatsTier` in
+ * StatsRollup), each dated on its own. The Kinds tile takes the histogram's own
+ * `total`, so it cannot disagree with the table.
+ */
+export function tiles(doc) {
+  const out = [];
+  const wrap = el("div", "tiles");
+  const d = (doc.corpus && doc.corpus.data) || {};
+  const authors = (doc.authors && doc.authors.data) || {};
+  const kinds = (doc.kinds && doc.kinds.data) || {};
+  for (const [value, label] of [[d.events, "Events"], [authors.pubkeys, "Pubkeys"], [kinds.total, "Kinds"]]) {
+    const t = el("div", "tile");
+    // An absent value is an em dash: never a zero this page did not measure.
+    t.appendChild(el("div", "v", value == null ? "—" : fmt(value)));
+    t.appendChild(el("div", "k", label));
+    wrap.appendChild(t);
+  }
+
+  // Freshness is the headline: a relay whose mirror died keeps its event count.
+  if (d.newestEvent != null) {
+    const t = el("div", "tile");
+    const age = Math.max(0, Math.floor(Date.now() / 1000) - d.newestEvent);
+    const v = el("div", "v", ago(d.newestEvent));
+    if (age > STALE_CORPUS_SECONDS) {
+      v.classList.add("stale");
+      t.title =
+        "The newest event this relay holds is over a day old. Either the mirror has stopped, or this " +
+        "deployment serves without one — this page cannot tell which.";
+    } else {
+      t.title = isoOf(d.newestEvent);
+    }
+    t.appendChild(v);
+    t.appendChild(el("div", "k", "Newest event"));
+    wrap.appendChild(t);
+  }
+  out.push(fitTiles(wrap));
+
+  // `corpus.futureDated` is deliberately not drawn: a fact about the protocol,
+  // not about this relay.
+
+  // The totals have no card header to hang an error on, so the engine's
+  // messages ride in their own strip, each prefixed with its section.
+  const strip = el("div", "card");
+  for (const [name, section] of [["corpus", doc.corpus], ["authors", doc.authors]]) {
+    for (const [k, v] of Object.entries((section && section.errors) || {})) {
+      const p = el("p", "err");
+      p.append(`${name}.${k}: `);
+      p.appendChild(el("code", null, v));
+      strip.appendChild(p);
+    }
+  }
+  if (strip.firstChild) out.push(strip);
+  return out;
+}
+
+/**
+ * One chart card, or a stated empty window. An all-zero series is said, never
+ * dropped: a missing chart cannot be told from a panel this page does not know.
+ */
+function chartCard(title, sub, points, section, noun = "events") {
+  const card = el("div", "card");
+  cardHead(card, title, sub, section);
+  if (!points.length) {
+    card.appendChild(el("p", "why", "Not in this document."));
+  } else if (points.every((p) => !p.value)) {
+    card.appendChild(el("p", "err", `No ${noun} in this window.`));
+  } else {
+    card.appendChild(barChart(points, { label: title }));
+  }
+  return card;
+}
+
+/**
+ * The three granularities, each a separate series from the rollup. Events sum
+ * across buckets; distinct authors do not, so a week is asked of the engine at
+ * weekly granularity and never built out of days.
+ */
+const GRAINS = [
+  // [tick] is the axis label, [tip] the hover (a week is keyed by its Monday).
+  // [span] is null when the document states no window, so the title omits it.
+  { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `last ${d.windowDays} days`), tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `last ${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: monthSpan, tick: monthTick, tip: (p) => p },
+];
+
+/** "since Jan ’23"; falls back to the count for a document written before `monthsSince` existed. */
+function monthSpan(d) {
+  if (d.monthsSince) return `since ${monthTick(d.monthsSince)}`;
+  return d.windowMonths == null ? null : `last ${d.windowMonths} months`;
+}
+
+/** "· last 30 days" when the document states a window, and nothing at all when it does not. */
+const spanNote = (span) => (span ? ` · ${span}` : "");
+let grain = null;
+
+/** The granularities this document actually carries, finest first. */
+const grainsIn = (activity) => {
+  const d = (activity && activity.data) || {};
+  return GRAINS.filter((g) => (d[g.key] || []).length);
+};
+
+/** Settle [grain] on the finest granularity the document can draw, keeping the reader's choice while it stays valid. */
+export function settleGrain(activity) {
+  const available = grainsIn(activity);
+  if (!available.length) return;
+  if (!available.some((g) => g.key === grain)) grain = available[0].key;
+}
+
+function grainToggle(activity, onChange) {
+  const row = el("div", "seg");
+  const available = grainsIn(activity);
+  if (available.length < 2) return null;
+  for (const g of available) {
+    const b = el("button", g.key === grain ? "on" : null, g.label);
+    b.addEventListener("click", () => {
+      grain = g.key;
+      onChange();
+    });
+    row.appendChild(b);
+  }
+  return row;
+}
+
+function activityCards(activity) {
+  const d = (activity && activity.data) || {};
+  const g = GRAINS.find((x) => x.key === grain) || grainsIn(activity)[0] || GRAINS[0];
+  const series = d[g.key] || [];
+  const hours = d.hours || [];
+  const span = g.span(d);
+  const out = [];
+
+  // The window is in the title: 30 days and 30 months are the same 30 bars.
+  out.push(chartCard(
+    `Events per ${g.unit}${spanNote(span)}`,
+    null,
+    series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
+    activity,
+  ));
+
+  // A second chart, never a second y-axis: two scales on one plot invent a
+  // correlation.
+  if (series.some((x) => x.pubkeys != null)) {
+    out.push(chartCard(
+      `Publishing pubkeys per ${g.unit}${spanNote(span)}`,
+      null,
+      series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
+      null,
+      "publishing pubkeys",
+    ));
+  }
+
+  // "14:00", not "14": a bare number under a bar reads as a count. The tooltip
+  // names the zone.
+  out.push(chartCard(
+    `Events by hour of day${spanNote(d.hourWindowDays == null ? null : `last ${d.hourWindowDays} days`)}`,
+    null,
+    hours.map((x) => {
+      const hh = String(x.hour).padStart(2, "0");
+      return { label: `${hh}:00–${hh}:59 UTC`, tick: `${hh}:00`, value: x.events };
+    }),
+    null,
+  ));
+  return out;
+}
+
+/**
+ * A compact bar chart with no axis. Each kind gets its own vertical scale
+ * (kind 1 would flatten every other kind on a shared one), which is why the
+ * peak is printed beside every title.
+ */
+function sparkline(points) {
+  const W = 240, H = 40;
+  const svg = svgEl("svg", { class: "chart spark", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+  const max = Math.max(1, ...points.map((p) => p.value));
+  const band = W / Math.max(1, points.length);
+  const w = Math.max(1, Math.min(10, band - 1));
+  points.forEach((p, i) => {
+    if (!p.value) return;
+    const h = Math.max(1, (p.value / max) * H);
+    svg.appendChild(svgEl("rect", { class: "mark", x: i * band + (band - w) / 2, y: H - h, width: w, height: h, rx: 1 }));
+  });
+  return svg;
+}
+
+export function kindActivityCard(section) {
+  const d = (section && section.data) || {};
+  const kinds = d.kinds || [];
+  const card = el("div", "card");
+  // "peak N/day" on every cell is what tells a reader the scales are not shared.
+  cardHead(
+    card,
+    kinds.length
+      ? `Event types over time · ${kinds.length} largest kinds, last ${d.windowDays} days`
+      : "Event types over time",
+    kinds.length ? null : "No per-kind series in this document.",
+    section,
+  );
+  if (!kinds.length) return card;
+
+  const grid = el("div", "sparks");
+  for (const k of kinds) {
+    const cell = el("div", "spark-cell");
+    const head = el("div", "spark-head");
+    // Number first, name second: these heads truncate, and the number is the
+    // unambiguous part.
+    const name = kindName(k.kind, k.name);
+    const label = el("span", "spark-kind", `${k.kind} · ${name}`);
+    label.title = `${name} — kind ${k.kind}`;
+    head.appendChild(label);
+    const peak = Math.max(0, ...k.days.map((x) => x.events));
+    head.appendChild(el("span", "spark-peak", `peak ${short(peak)}/day`));
+    cell.appendChild(head);
+    cell.appendChild(sparkline(k.days.map((x) => ({ label: x.day, value: x.events }))));
+    grid.appendChild(cell);
+  }
+  card.appendChild(grid);
+  return card;
+}
+
+/**
+ * Whether ranked search can rank at all. The four numbers are a chain (observers
+ * name providers, providers publish scores, scores project onto pubkeys), read
+ * together to localise a break. A `.panel`, not a `.card`, like the corpus totals.
+ */
+export function trustCard(section) {
+  const d = (section && section.data) || {};
+  const card = el("div", "panel");
+  cardHead(card, "Trust", null, section);
+
+  // Plain `.tiles`, sized like the corpus row above it, or the seam shows.
+  const row = el("div", "tiles");
+  for (const [key, label, help] of [
+    ["observers", "Observers", "Distinct authors of a kind-10040 list naming a score provider"],
+    // "Service Keys": the count is of keys that signed scores, and one provider
+    // may sign under several.
+    ["providers", "Service Keys", "Distinct authors of kind-30382 scores"],
+    ["scores", "Scores", "Stored kind-30382 events"],
+    ["scoredPubkeys", "Scored pubkeys", "Pubkeys carrying projected trust state — what a ranked search can order by"],
+  ]) {
+    const t = el("div", "tile");
+    t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
+    t.appendChild(el("div", "k", label));
+    t.title = help;
+    row.appendChild(t);
+  }
+  card.appendChild(fitTiles(row));
+
+  if (d.scoredPubkeys === 0) {
+    card.appendChild(el("p", "err",
+      "No pubkey carries trust state, so every ranked search is falling back to unranked — " +
+      (d.scores ? "scores are stored but not projected; a trust reconcile is what fixes that."
+                : "no kind-30382 scores are stored yet; the mirror has not fetched them.")));
+  }
+  return card;
+}
+
+
+export function relaysCard(section) {
+  const d = (section && section.data) || {};
+  const top = d.top || [];
+  const card = el("div", "card");
+  cardHead(
+    card,
+    "Relay distribution",
+    // A capped list and a complete one are different facts; only this line tells
+    // them apart.
+    top.length
+      ? `${shownOf(d.shown, d.total, "relays", "most-named")}.`
+      : "No relay distribution in this document.",
+    section,
+  );
+  if (!top.length) return card;
+
+  const max = Math.max(...top.map((r) => r.lists));
+  const wrap = el("div", "wrap tall");
+  const table = el("table");
+  const thead = el("thead");
+  const hr = el("tr");
+  for (const [label, cls] of [["Relay", ""], ["Lists", "n"], ["", ""]]) hr.appendChild(el("th", cls, label));
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const r of top) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "relay", r.relay));
+    tr.appendChild(el("td", "n", fmt(r.lists)));
+    const share = el("td", "share");
+    const bar = el("i");
+    bar.style.width = Math.max(2, (r.lists / max) * 100) + "%";
+    share.appendChild(bar);
+    tr.appendChild(share);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  return card;
+}
+
+export function zapsCard(section) {
+  const d = (section && section.data) || {};
+  const card = el("div", "card");
+  cardHead(card, "Zaps", null, section);
+
+  const row = el("div", "tiles inline");
+  // "Zap services": under NIP-57 the receipt is signed by the LNURL service that
+  // settled it, never by the zapper.
+  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Zap services"]]) {
+    const t = el("div", "tile");
+    t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
+    t.appendChild(el("div", "k", label));
+    wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
+    row.appendChild(t);
+  }
+  card.appendChild(fitTiles(row));
+
+  const days = d.days || [];
+  if (!days.length) {
+    card.appendChild(el("p", "why", "No daily series in this document."));
+  } else if (days.every((x) => !x.receipts)) {
+    card.appendChild(el("p", "err", "No zap receipts in this window."));
+  } else {
+    card.appendChild(barChart(
+      days.map((x) => ({ label: x.day, tick: dayTick(x.day), value: x.receipts })),
+      { label: "Zap receipts per day" },
+    ));
+  }
+  return card;
+}
+
+function wrapTitle(node, title) {
+  if (title) node.title = title;
+}
+
+/**
+ * Every kind in the store, largest first. The rollup's histogram enumerates what
+ * is there, so this table is complete rather than a top-N.
+ */
+export function kindsCard(kinds) {
+  const card = el("div", "card");
+  const d = (kinds && kinds.data) || {};
+  const all = d.all || [];
+  // No count in the sub: the filter row prints it.
+  cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
+  if (!all.length) return card;
+
+  const controls = el("div", "bar-row");
+  const filter = el("input");
+  filter.type = "search";
+  // Named, so render() restores what was typed into this box and not the one
+  // on Sync coverage.
+  filter.name = "kinds";
+  filter.placeholder = "filter by kind number or name";
+  filter.setAttribute("aria-label", "filter kinds");
+  const count = el("span", "status");
+  controls.appendChild(filter);
+  controls.appendChild(count);
+  card.appendChild(controls);
+
+  const top = all;
+  // reduce, not Math.max(...spread): past the engine's argument limit a spread
+  // throws RangeError.
+  const max = top.reduce((m, k) => (k.events > m ? k.events : m), 1);
+  const wrap = el("div", "wrap tall");
+  const table = el("table");
+  const thead = el("thead");
+  const hr = el("tr");
+  // No Pubkeys column: distinct authors per kind is a grouping over the whole
+  // corpus. See StatsRollup.kindsSection.
+  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Last event", "n"]]) {
+    const th = el("th", cls, label);
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const k of top) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "kind", String(k.kind)));
+    tr.appendChild(el("td", "name", kindName(k.kind, k.name)));
+    tr.appendChild(el("td", "n", fmt(k.events)));
+    const share = el("td", "share");
+    const bar = el("i");
+    bar.style.width = Math.max(2, (k.events / max) * 100) + "%";
+    share.appendChild(bar);
+    tr.appendChild(share);
+    // An age, not a date: "kind 30023 six days ago" localises the stalled stream.
+    // The rollup bounds lastSeen to the present.
+    const newest = el("td", "n", ago(k.lastSeen));
+    if (k.lastSeen != null) newest.title = isoOf(k.lastSeen);
+    tr.appendChild(newest);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+
+  const rows = [...tbody.children];
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach((tr, i) => {
+      const k = top[i];
+      // Filtered on the name on screen, which may differ from kindLabel().
+      const hit = !q || String(k.kind).includes(q) || kindName(k.kind, k.name).toLowerCase().includes(q);
+      tr.hidden = !hit;
+      if (hit) shown++;
+    });
+    // The denominator stays visible while filtering.
+    count.textContent = q ? `${fmt(shown)} of ${fmt(top.length)}` : `${fmt(top.length)} kinds`;
+  };
+  filter.addEventListener("input", applyFilter);
+  applyFilter();
+  return card;
+}
+
+/** The activity charts and their toggle, redrawn by one closure so they cannot disagree. */
+export function activityPanel(activity) {
+  const wrap = el("div");
+  const draw = () => {
+    wrap.replaceChildren();
+    const toggle = grainToggle(activity, draw);
+    if (toggle) wrap.appendChild(toggle);
+    for (const card of activityCards(activity)) wrap.appendChild(card);
+  };
+  draw();
+  return wrap;
+}
