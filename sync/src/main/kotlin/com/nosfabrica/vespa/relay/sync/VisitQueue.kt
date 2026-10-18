@@ -96,10 +96,11 @@ internal class VisitQueue<K : Any>(
                     }
                 if (parkedInstead) continue
                 var requeue = false
+                var fatal: VirtualMachineError? = null
                 try {
                     if (stillWanted(url)) visit(url)
                 } catch (e: VirtualMachineError) {
-                    throw e
+                    fatal = e
                 } catch (e: Throwable) {
                     // A stray CancellationException while this worker is still active is a failed visit, not shutdown.
                     currentCoroutineContext().ensureActive()
@@ -111,11 +112,16 @@ internal class VisitQueue<K : Any>(
                             parked.remove(url)
                         }
                 }
-                if (requeue) {
-                    // A requeue arrived mid-visit: back on the queue now, and the prompt visit arms its own timer.
-                    offer(url)
-                } else {
-                    armRevisit(url, revisitDelayMs, stillWanted)
+                // The worker still dies of a VM error, but its unit stays in the rotation, on a timer rather than at once.
+                try {
+                    if (requeue && fatal == null) {
+                        // A requeue arrived mid-visit: back on the queue now, and the prompt visit arms its own timer.
+                        offer(url)
+                    } else {
+                        armRevisit(url, revisitDelayMs, stillWanted)
+                    }
+                } finally {
+                    fatal?.let { throw it }
                 }
             }
         } finally {

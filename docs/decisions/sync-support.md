@@ -77,6 +77,14 @@ prints `visit workers alive/configured`. The periodic loops (`repeatEvery`:
 the phase flush, the progress document, the health and stats lines) guard
 each tick the same way.
 
+**A unit outlives the VM error that killed its worker.** The rethrow skipped
+the re-arm: the `finally` cleared the unit's in-flight mark, but neither the
+requeue nor the revisit timer ran, so the unit dropped out of the rotation
+until its roster asks changed, while the replacement worker had nothing to
+draw for it. The loop now arms the revisit before rethrowing, on the timer
+even when a requeue was parked, so a visit that exhausts the heap is not
+re-run at once.
+
 **Eviction disarms the pending revisit.** The delay is read when the timer is
 armed, so a unit armed while tailed got the tailed cadence (half an hour
 against five minutes) and the visit after an eviction found the old timer
