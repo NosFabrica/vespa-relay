@@ -26,12 +26,12 @@ import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
+import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
 import com.nosfabrica.vespa.relay.maintenance.StatsTier
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
-import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.orphanSweepDryRun
 import com.nosfabrica.vespa.relay.maintenance.parseReindexKinds
@@ -88,6 +88,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The relay process: open the store, serve the NIP-50 relay and the NIP-11 doc, and block.
@@ -282,11 +283,12 @@ fun main() {
     } else {
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
     }
-    // One instance, held past the boot publish: a NIP-86 rename republishes through it.
-    val profile = identity?.let { RelayProfile(store, it, relayUrl) }
-    if (profile != null) {
-        launchRelayProfile(maintenanceScope, profile, nip11)
-    }
+    // The kind 0's source: the NIP-11 doc as a NIP-86 rewrite last left it, read when the publish runs.
+    val profileInfo = AtomicReference(nip11)
+    val profile =
+        identity?.let {
+            RelayProfilePublisher(maintenanceScope, RelayProfile(store, it, relayUrl), profileInfo::get).also { p -> p.request() }
+        }
     // On by default: the page is gated, these counters are not, and a diagnostic nobody enables is missing.
     StoreMetricsLog.startLogging("relay", store, env.strictInt("STORE_METRICS_LOG_SECONDS") ?: 300)
 
@@ -392,13 +394,8 @@ fun main() {
         pressure = servingPressure,
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.
         onInfoChanged = { doc ->
-            profile?.let {
-                launchRelayProfile(
-                    maintenanceScope,
-                    it,
-                    nip11.copy(name = doc.name ?: nip11.name, description = doc.description, icon = doc.icon, banner = doc.banner),
-                )
-            }
+            profileInfo.set(nip11.copy(name = doc.name ?: nip11.name, description = doc.description, icon = doc.icon, banner = doc.banner))
+            profile?.request()
         },
         onionLocation = addresses::onionLocation,
         landingPage = resourceText("/index.html"),

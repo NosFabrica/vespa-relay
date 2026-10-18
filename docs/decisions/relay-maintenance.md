@@ -219,6 +219,15 @@ stored" would replace a profile carrying a `nip05` with the two fields this
 file knows about. Bounded at ten minutes, because a wrong url must not retry
 for the life of the process.
 
+**One publisher, reading the document when it publishes.** Each NIP-86 rename
+once launched its own retry loop with its own snapshot of the document; the
+mutex serialized them but did not order them, so two renames during a cold
+engine could sign the older one last, as the newest kind 0. `RelayProfilePublisher`
+runs every publish on one job behind a conflated channel and reads the current
+document on each attempt, so a burst of renames costs one more publish and the
+last word is the last rename. The ten-minute budget is a monotonic deadline
+from the first try, as in `TrustReconcile`.
+
 ## FtsReindex
 
 **The walk repairs fed columns only, never derived ones.** `search_text_gram`
@@ -254,6 +263,12 @@ second after start against a content node still loading 24M events, and the
 projection stayed empty for hours. Zero is indistinguishable from cold, so it is
 only accepted once the ten-minute wait budget is spent; a real failure past the
 budget serves unranked results rather than holding the relay off its port.
+
+**The budget is a deadline, not a sum of sleeps.** It once added 5s per retry
+and never counted the attempts themselves, so an engine that took minutes to
+fail each call kept the loop going for hours against a "ten-minute" budget.
+The loop now measures a `TimeSource.Monotonic` deadline from the first attempt;
+the time source is a parameter, so the test drives it.
 
 **The first failure prints its stack, whichever attempt it is on.** A success on
 attempt 1 followed by a throw on attempt 2 deserves the same diagnostic, or the

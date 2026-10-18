@@ -34,10 +34,19 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip65RelayList.AdvertisedRelayListEvent
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayInfo
 import com.vitorpamplona.quartz.nip65RelayList.tags.AdvertisedRelayType
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -220,5 +229,87 @@ class RelayProfileTest {
             assertFailsWith<IllegalStateException> { profile(store).publish(info) }
             assertNull(stored(inner, MetadataEvent.KIND))
             assertNull(stored(inner, AdvertisedRelayListEvent.KIND))
+        }
+
+    private fun nameOf(event: Event?): String? = event?.let { contentOf(it)["name"] }
+
+    /** Polls [store] until the newest kind 0 is named [name]; the publisher runs on its own job. */
+    private suspend fun awaitName(
+        store: IEventStore,
+        name: String,
+    ) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (nameOf(stored(store, MetadataEvent.KIND)) != name) {
+            if (System.currentTimeMillis() > deadline) error("the newest kind 0 never said \"$name\": ${nameOf(stored(store, MetadataEvent.KIND))}")
+            delay(10)
+        }
+    }
+
+    /** Renames that land while a publish is in flight end with the last one signed as the newest kind 0. */
+    @Test
+    fun `the newest kind 0 is the last document asked for, however the publishes overlap`() =
+        runBlocking {
+            val inner = newStore()
+            val held = CompletableDeferred<Unit>()
+            val kind0Writes = AtomicInteger(0)
+            val store =
+                object : IEventStore by inner {
+                    override suspend fun insert(event: Event) {
+                        if (event.kind == MetadataEvent.KIND && kind0Writes.incrementAndGet() == 1) held.await()
+                        inner.insert(event)
+                    }
+                }
+            val current = AtomicReference(info.copy(name = "A"))
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                val publisher = RelayProfilePublisher(scope, profile(store), current::get, log = {})
+                publisher.request()
+                while (kind0Writes.get() == 0) delay(5)
+                for (name in listOf("B", "C", "D")) {
+                    current.set(info.copy(name = name))
+                    publisher.request()
+                }
+                held.complete(Unit)
+                awaitName(inner, "D")
+                delay(200)
+                assertEquals("D", nameOf(stored(inner, MetadataEvent.KIND)), "an older document was signed after the newest")
+                assertEquals(2, kind0Writes.get(), "three renames during one publish fold into one more")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** A publish waiting out a cold engine signs the document as it stands when the engine answers. */
+    @Test
+    fun `a retry publishes the document current when it runs, not the one it was asked with`() =
+        runBlocking {
+            val inner = newStore()
+            val cold = AtomicBoolean(true)
+            val signed = java.util.Collections.synchronizedList(mutableListOf<String?>())
+            val store =
+                object : IEventStore by inner {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        if (cold.get()) throw IllegalStateException("Backend communication error")
+                        return inner.query(filter)
+                    }
+
+                    override suspend fun insert(event: Event) {
+                        if (event.kind == MetadataEvent.KIND) signed += nameOf(event)
+                        inner.insert(event)
+                    }
+                }
+            val current = AtomicReference(info.copy(name = "old"))
+            // The engine warms on the first attempt to read the new document, so no attempt that read the old one can succeed.
+            val source = { current.get().also { if (it.name == "new") cold.set(false) } }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                RelayProfilePublisher(scope, profile(store), source, retryMs = 10, log = {}).request()
+                delay(50)
+                current.set(info.copy(name = "new"))
+                awaitName(inner, "new")
+                assertEquals(listOf<String?>("new"), signed.toList(), "the stale document was never signed")
+            } finally {
+                scope.cancel()
+            }
         }
 }
