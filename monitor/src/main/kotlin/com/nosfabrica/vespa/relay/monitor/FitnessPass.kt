@@ -189,19 +189,21 @@ class FitnessPass(
             RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
         }
 
-    /** Why a url was set aside with no verdict. Only [LOOKUP_UNEXPLAINED] counts as blind, once per host. */
+    /** Why a url was set aside with no verdict. */
     private enum class Deferral(
         val why: String,
         /** A server answered, which is evidence our own network works. */
         val serverAnswered: Boolean,
+        /** As readily our own side failing as the relay's, so it counts as a blind dial, once per host. */
+        val blind: Boolean = false,
     ) {
         SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true),
         TOR_DOWN("our Tor proxy is not answering", serverAnswered = false),
-        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false),
+        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false, blind = true),
         OUR_TLS("the dial failed TLS where our direct handshake succeeded, so our transport did", serverAnswered = false),
         TLS_UNCHECKED("the dial failed TLS and no direct handshake could check it", serverAnswered = false),
         RATE_LIMITED("the relay rate limited us", serverAnswered = true),
-        UNRECOGNISED("the dial gave up in words we do not recognise", serverAnswered = false),
+        UNRECOGNISED("the dial gave up in words we do not recognise", serverAnswered = false, blind = true),
         PARTLY_REFUSED("it refused some shapes and went quiet on the rest", serverAnswered = true),
     }
 
@@ -269,16 +271,19 @@ class FitnessPass(
         /** Urls set aside for a reason that is neither a verdict nor our dialling failing. Never published. */
         val deferred = ConcurrentHashMap<NormalizedRelayUrl, Deferral>()
 
-        /** Urls whose lookup failed with no reason in it. */
-        fun lookups(): Set<NormalizedRelayUrl> = deferred.filterValues { it == Deferral.LOOKUP_UNEXPLAINED }.keys
+        /** Urls set aside for [why]. */
+        fun deferredFor(why: Deferral): Set<NormalizedRelayUrl> = deferred.filterValues { it == why }.keys
 
-        /** Their hosts: one host's cached failure repeats across all of its paths, so it counts once. */
-        fun lookupHosts(): Int = lookups().mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+        /** The hosts of [urls]: one host's failure repeats across all of its paths, so it counts once. */
+        fun hostsOf(urls: Collection<NormalizedRelayUrl>): Int = urls.mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
 
-        /** Every other deferral, by why. */
+        /** The hosts of every blind deferral, the share of the batch guard they count for. */
+        fun blindHosts(): Int = hostsOf(deferred.filterValues { it.blind }.keys)
+
+        /** Every deferral that is not blind, by why. */
         fun deferredCounts(): Map<String, Int> =
             deferred.values
-                .filter { it != Deferral.LOOKUP_UNEXPLAINED }
+                .filter { !it.blind }
                 .groupingBy { it.why }
                 .eachCount()
 
@@ -390,9 +395,9 @@ class FitnessPass(
         batch: Batch,
     ): Boolean {
         // The share is over the dials that went out: a url set aside before any server could answer is outside it.
-        val lookupHosts = batch.lookupHosts()
-        val wentOut = toDial.size - batch.deferred.values.count { !it.serverAnswered } + lookupHosts
-        val blind = batch.unmeasured.size + batch.abandonedCount.get() + lookupHosts
+        val blindHosts = batch.blindHosts()
+        val wentOut = toDial.size - batch.deferred.values.count { !it.serverAnswered } + blindHosts
+        val blind = batch.unmeasured.size + batch.abandonedCount.get() + blindHosts
         if (wentOut < GUARD_FLOOR || blind <= wentOut * GUARD_SHARE) return false
         System.err.println(
             "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
@@ -993,12 +998,20 @@ class FitnessPass(
                     "no EOSE, no CLOSED and no transport reason on any rung, or our own resolver, route or socket layer failing",
             )
         }
-        val lookups = batch.lookups().size
-        if (lookups > 0) {
+        val lookups = batch.deferredFor(Deferral.LOOKUP_UNEXPLAINED)
+        if (lookups.isNotEmpty()) {
             System.err.println(
-                "router: fitness [$label] — $lookups url(s) on ${batch.lookupHosts()} host(s) failed the lookup with no reason left " +
+                "router: fitness [$label] — ${lookups.size} url(s) on ${batch.hostsOf(lookups)} host(s) failed the lookup with no reason left " +
                     "to read, no verdict written; counted once per host as this router failing to dial, since our resolver " +
                     "fails that way as readily as the name",
+            )
+        }
+        val unrecognised = batch.deferredFor(Deferral.UNRECOGNISED)
+        if (unrecognised.isNotEmpty()) {
+            System.err.println(
+                "router: fitness [$label] — ${unrecognised.size} url(s) on ${batch.hostsOf(unrecognised)} host(s) gave up in words " +
+                    "we do not recognise, no verdict written; counted once per host as this router failing to dial, since a reset, " +
+                    "an EOF or a cancellation is our own socket layer as readily as the relay",
             )
         }
         val deferredCounts = batch.deferredCounts()

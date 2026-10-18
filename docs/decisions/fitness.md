@@ -527,3 +527,11 @@ next retry. The queue was also never pruned: a url that left the candidate set
 (excluded, held out as dead) kept a write retried every five minutes, which
 could land as a claim about a url the monitor no longer measures. Each full
 sweep now drops the queued writes for urls it does not name.
+
+**An unrecognised failure counts as blind, once per host.** Deferring words
+`Silence` does not know took them out of the batch guard's denominator and
+out of its blind share at once, so a broad failure on our side (connection
+resets, EOFs, OkHttp's `Canceled`) set every url aside and never tripped
+REFUSING TO PUBLISH. They are counted as an unexplained lookup is: blind, once
+per host, so one host's paths failing alike are one blind dial and a socket
+layer failing everywhere refuses the batch.
