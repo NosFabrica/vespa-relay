@@ -38,19 +38,15 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
 
-/**
- * Sizes for the window stack, all counts of events; the pager turns them into `created_at`
- * boundaries.
- *
- * @param target where a peer never asked before starts.
- * @param minTarget the floor the learned target may shrink to; a peer refusing this refuses negentropy.
- * @param maxTarget the ceiling it may grow to.
- * @param slackSeconds how far below `now` a sweep stops; a window must be immutable to be checkpointed.
- */
+/** Sizes for the window stack, all counts of events; the pager turns them into `created_at` boundaries. */
 internal data class NegPageTuning(
+    /** Where a peer never asked before starts. */
     val target: Int = 100_000,
+    /** The floor the learned target may shrink to; a peer refusing this refuses negentropy. */
     val minTarget: Int = 1_000,
+    /** The ceiling it may grow to. */
     val maxTarget: Int = 1_000_000,
+    /** How far below `now` a sweep stops; a window must be immutable to be checkpointed. */
     val slackSeconds: Long = 60,
 )
 

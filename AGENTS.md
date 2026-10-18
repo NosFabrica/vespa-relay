@@ -159,11 +159,12 @@ monitor/…/relay/monitor/
   ReachabilityProbe, Silence, Unreachability, HostStrikes, RelayDocument   what a quiet socket said, what may be published, NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
-  sync/                       SyncEngine (wiring, the health and stats lines; starts both planes), VisitPool (the
-                              mirror), VisitQueue, VisitAborts, RelayComplaints, RelayPages, FilterWidths,
-                              RosterBuilder, RetractionAudit, NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState,
-                              SyncBands (SYNC_STATE_FILE), SyncManifest (SYNC_MANIFEST_FILE), UpstreamPush,
-                              PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
+  sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool
+                              (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
+                              VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
+                              NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              SyncManifest (SYNC_MANIFEST_FILE), PersistedJsonState (the three files' durable write),
+                              UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
                               StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/

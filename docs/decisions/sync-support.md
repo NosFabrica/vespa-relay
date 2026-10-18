@@ -66,6 +66,17 @@ double-cadence chains. The park and the finishing visit's removal are one
 running visit could finish, see nothing parked and arm a timer, downgrading
 the prompt requeue to a timer wait and buying one spurious back-to-back visit.
 
+**A visit worker outlives the visit that threw.** `visitLoop` let any throw
+escape, and the pool's guard caught only `Exception`, so an `Error` from one
+visit ended a worker for the life of the process with nothing to say so: the
+pool simply ran narrower. The loop now hands any escape but cancellation and
+a VM error to `onEscape` and draws the next unit; a stray
+`CancellationException` while the worker is still active counts as a failed
+visit, not shutdown. A worker that dies anyway is replaced, and the stats line
+prints `visit workers alive/configured`. The periodic loops (`repeatEvery`:
+the phase flush, the progress document, the health and stats lines) guard
+each tick the same way.
+
 **Eviction disarms the pending revisit.** The delay is read when the timer is
 armed, so a unit armed while tailed got the tailed cadence (half an hour
 against five minutes) and the visit after an eviction found the old timer
@@ -147,6 +158,14 @@ three places (the engine gate, the status walk, the retraction plane) and the
 copies disagreed, so the panel built to certify that audits run only when due
 read permanently in arrears while the audits ran perfectly well.
 
+**The re-fetch row reads the key the pool writes.** The schedule row windowed
+the filter before looking its coverage up, while `catchUpBand` records under
+the stream's own filter once the band moved off the sliding window, so every
+lookup missed and every re-fetch row on three streams reported `neverRun`,
+asks whose coverage was sitting right there included. A status page that asks
+a different question than the writer answered reports a catastrophe it
+invented; `AuditScheduleTest` pins the join.
+
 **The manifest scopes the mirror comparison to the kinds actually asked for.**
 A client comparing a filtered mirror against an unfiltered total drew 35% on a
 relay that was not behind by one event (31,118 here of 89,485 there for one
@@ -167,6 +186,12 @@ left `close()` a no-op.
 **`UpstreamPush` takes one id snapshot per pass.** A round changes the
 upstream's set (it gains what we push), never ours, and re-reading gigabytes
 of ids per round bought nothing.
+
+**The snapshot gate is held for the snapshot alone.** The engine's one-permit
+`streamGate` is documented as bounding the id-set build, never a run, but the
+permit wrapped the snapshot, up to eight reconcile rounds and the paced
+publish loop, so one slow upstream held every other `up` stream's snapshot
+behind its pushes. The permit is now released once the ids are read.
 
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before
@@ -196,6 +221,15 @@ for writes while plainly replying. `CLOSED` is excluded because it is a
 verdict, not a sign of life. `probedCount` records clean states too: counting
 only struck or closed relays read `0/0` on a fan-out where every relay
 accepted, which is what a healer that never ran also prints.
+
+**A write closure lapses after six hours, and a strike closes in the same step.**
+A closure lasted the process's life, so a relay that fixed its write policy
+or came back from an outage got no repairs until the router restarted. Six
+hours retries within a shift and costs one refused push per relay per
+period. `strike` used to count in one `compute` and close with a separate
+put, so a `succeeded` from a second stream draining the same relay could land
+in between, and two strikes past the line could both announce the closure;
+counting and closing are now one `compute`.
 
 **`rate-limited:` and `error:` are transient, and an unknown prefix is nothing.**
 Reading a momentary refusal as policy would suppress the very ids the relay

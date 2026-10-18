@@ -64,6 +64,9 @@ internal class UnownedClock<K>(
     /** Every running clock, for the state file. */
     fun stamps(): Map<K, Long> = HashMap(since)
 
+    /** Drops every clock, for a state file that could not be read whole. */
+    fun clear() = since.clear()
+
     /** A clock read back from the state file, so a restart does not restart it. */
     fun restore(
         key: K,
