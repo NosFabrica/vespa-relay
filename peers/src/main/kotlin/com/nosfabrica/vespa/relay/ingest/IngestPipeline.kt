@@ -140,13 +140,10 @@ class IngestPipeline(
 
     private val versionGate = ProbeGate(minHitRate = 0.20)
 
-    /** Probes that threw. A failed probe teaches its gate nothing, so it is counted here instead. */
-    private val idProbeFailures = AtomicLong()
+    /** Probes that threw. A failed probe teaches its gate nothing, so it is counted and backed off here instead. */
+    private val idProbeTrouble = ProbeTrouble("id")
 
-    private val versionProbeFailures = AtomicLong()
-
-    /** When a probe failure was last logged; at most one line per [PROBE_FAILURE_LOG_MS]. */
-    private val probeFailureLoggedAt = AtomicLong()
+    private val versionProbeTrouble = ProbeTrouble("version")
 
     /** When each worker entered its current batch pass, or 0 while it waits on the channel. */
     private val busySince = AtomicLongArray(workers)
@@ -375,13 +372,13 @@ class IngestPipeline(
         val probe = knownIds
         // Trusted events skip verification, so they earn the probe nothing.
         val verifiable = copies.count { !batch[it[0]].skipVerify }
-        val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
+        val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idProbeTrouble.ready() && idGate.worthIt()
         // Null where the probe did not run or failed; a failed probe costs time, never correctness.
         val stored =
             if (!probed) {
                 null
             } else {
-                probing(idProbeFailures, "id") {
+                probing(idProbeTrouble) {
                     // One store call round the whole probe: the worker is suspended in the fan-out.
                     storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(copies.size)) {
                         IngestStats.timed("dedup.pre") {
@@ -554,7 +551,7 @@ class IngestPipeline(
         for (versions in byAddress.values) versions.sortWith(newestFirst)
 
         val probe = newestVersions
-        if (probe == null || byAddress.size < PROBE_MIN_VERIFIABLE || !versionGate.worthIt()) return contests
+        if (probe == null || byAddress.size < PROBE_MIN_VERIFIABLE || !versionProbeTrouble.ready() || !versionGate.worthIt()) return contests
         val stored = readNewestVersions(probe, byAddress.keys) ?: return contests
         val beaten = ArrayList<List<Int>>()
         var beatenAddresses = 0
@@ -599,7 +596,7 @@ class IngestPipeline(
         probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
         addresses: Set<Pair<Int, String>>,
     ): Map<Pair<Int, String>, AddressVersion>? =
-        probing(versionProbeFailures, "version") {
+        probing(versionProbeTrouble) {
             storeCall(
                 StoreCalls.CALLER_INGEST_VERSIONS,
                 StoreCalls.OP_NEWEST_VERSIONS,
@@ -615,27 +612,18 @@ class IngestPipeline(
             }
         }
 
-    /** [read]'s answer, or null when it threw: counted in [failures] and logged, rate-limited. */
+    /** [read]'s answer, or null when it threw: counted, logged and backed off in [trouble]. */
     private suspend fun <T> probing(
-        failures: AtomicLong,
-        name: String,
+        trouble: ProbeTrouble,
         read: suspend () -> T,
     ): T? =
         try {
-            read()
+            read().also { trouble.succeeded() }
         } catch (e: CancellationException) {
             // Swallowed, a shutdown cancellation would write into a closing store.
             throw e
         } catch (e: Exception) {
-            val total = failures.incrementAndGet()
-            val now = System.currentTimeMillis()
-            val last = probeFailureLoggedAt.get()
-            if (now - last >= PROBE_FAILURE_LOG_MS && probeFailureLoggedAt.compareAndSet(last, now)) {
-                System.err.println(
-                    "router: ingest $name probe FAILED ($total so far) — ${e.javaClass.simpleName}: " +
-                        "${e.message?.take(200)}; the batch goes to the store unprobed",
-                )
-            }
+            trouble.failed(e)
             null
         }
 
@@ -698,8 +686,8 @@ class IngestPipeline(
     fun probeStatus(): String {
         val parts =
             listOfNotNull(
-                describeGate("id", idGate, knownIds != null, idProbeFailures.get()),
-                describeGate("version", versionGate, newestVersions != null, versionProbeFailures.get()),
+                describeGate("id", idGate, knownIds != null, idProbeTrouble.failures()),
+                describeGate("version", versionGate, newestVersions != null, versionProbeTrouble.failures()),
             )
         return if (parts.isEmpty()) "" else "router: ingest probes ${parts.joinToString(", ")}"
     }
@@ -792,8 +780,6 @@ class IngestPipeline(
 
         /** Authors per version query. */
         private const val CHECK_CHUNK = 500
-
-        private const val PROBE_FAILURE_LOG_MS = 60_000L
 
         /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
         private const val REASON_LIMIT = 64

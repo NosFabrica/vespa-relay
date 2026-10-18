@@ -47,11 +47,13 @@ refuses, so the HOCON numbers now refuse too, naming the key and the bound.
 `fastLaneSeconds = 0` stays the documented off switch for the lane, and
 `connectionTimeout = 0` is refused because OkHttp reads it as no timeout.
 
-**Both spellings of a schedule obey one bound.** The scalar
-`negentropySyncThePastSeconds` was floored at an hour while a tier's `every`
-took anything from 0, so the same schedule was legal in one spelling and not
-the other. A period is now 0 (always due, spaced by `attemptSpacingSeconds`)
-or at least 3600 in either, and a tier's `maxAge` is at least 1.
+**A scalar period is at least an hour; a tier's cadence is honoured as written.**
+The scalar used to be raised quietly to an hour and is now refused below it,
+0 included: 0 had meant an hour, and reading it as "always due" would have
+re-reconciled four times as often with no word at boot. A tier's `every` keeps
+taking any value from 0, as it always did, so a working half-hourly band still
+boots — except a `refetch` tier at 0, which re-pages its whole band on every
+visit (`SyncBands.isStale` is always true at 0) and never accumulates coverage.
 
 **An invalid `urls` or `exclude` entry is refused, not skipped.** Both used to
 print a warning and drop the entry. A dropped `urls` entry is a relay the

@@ -39,9 +39,9 @@ raised to it), and a `urls` or `exclude` entry that is not a relay url or a
 regex. The bounds: `connectionTimeout`, every `*Concurrency`,
 `maxRelaysPerList` and a tier's `maxAge` at least 1; a stream's
 `refreshSeconds` at least 60; a `relaySource` entry's `maxAgeSeconds` at least
-60 and its `refreshSeconds` at least 10; a re-check period, as
-`negentropySyncThePastSeconds`, `refetchThePastSeconds` or a tier's `every`, 0
-(always due) or at least 3600; the monitor's `sweepSeconds` at least 300 and
+60 and its `refreshSeconds` at least 10; a scalar re-check period,
+`negentropySyncThePastSeconds` or `refetchThePastSeconds`, at least 3600; a
+tier's `every` 0 or more, except that a `refetch` tier may not be 0; the monitor's `sweepSeconds` at least 300 and
 its `fastLaneSeconds` 0 (off) or at least 30.
 
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
@@ -182,7 +182,9 @@ youngest-first, or that omits `maxAge` anywhere but the last entry — either
 would leave a hole in the middle of the past, and a hole is invisible, because
 every band still reports itself verified.
 
-`every = 0` is always due, floored by `attemptSpacingSeconds` at 15 minutes.
+`every = 0` is always due, floored by `attemptSpacingSeconds` at 15 minutes —
+for a `negentropy` band only: a `refetch` band due on every visit would re-page
+the whole band each time, so it is refused.
 That is what a stream wants when its upstream is the source of truth for the
 records in the ask and its past must be re-read as of today rather than taken
 on trust.
