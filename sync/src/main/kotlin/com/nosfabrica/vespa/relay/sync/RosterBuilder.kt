@@ -233,7 +233,10 @@ internal class RosterBuilder(
         return kept
     }
 
-    /** A stream's discovery, cached per source for that source's own `refreshSeconds`, with the fold applied. */
+    /**
+     * A stream's discovery, cached per source for that source's own `refreshSeconds`, with the fold
+     * applied: a folded url's bindings move onto the url standing in for it, which the gate then judges.
+     */
     private suspend fun discovered(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
@@ -241,9 +244,11 @@ internal class RosterBuilder(
         val perSource = cached(stream.name, "source", discovery.sources, discovery)
         // Over the whole discovered universe: `dropFolded` diffs against last time, and a missing url un-hides.
         val all = perSource
-        val folded = foldedAway(all.map { it.url }.distinct())
+        // Never onto a url this stream forbids or this relay itself: the survivor may come from the monitor's set, not ours.
+        val folded = foldedAway(all.map { it.url }.distinct()).filterValues { it !in discovery.exclude && it != store.relay }
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
-        return if (folded.isEmpty()) all else all.filter { it.url !in folded }
+        // Entry by entry, never merged: two sources naming one url are two sets of asks, and stay so.
+        return all.map { relay -> folded[relay.url]?.let { DiscoveredRelay(it, relay.bindings) } ?: relay }
     }
 
     /** [sources] read out of the store, each held for its own `refreshSeconds`; [what] keeps a gate's cache apart. */

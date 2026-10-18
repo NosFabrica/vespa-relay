@@ -2,7 +2,7 @@
 // `p` is always faces, `relay` always relay rows, `emoji` always the emoji themselves.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
-import { relayLabel } from "../shared/groups.js";
+import { relayAddress } from "../shared/relayurl.js";
 import {
   register, registerRow, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, uniquePubkeys, relayRows,
   chipRow, hashtagHref, emojiGrid, refRows, extLink, tagsOf, tagOf, groupHref, plural,
@@ -17,7 +17,7 @@ function groupRows(rows, opts) {
     const href = groupHref(id);
     const label = esc(name || id);
     return `<li>${href ? `<a href="${href}">${label}</a>` : label}` +
-      (url ? `<span class="muted-note mono"> ${esc(relayLabel(url))}</span>` : "") + `</li>`;
+      (url ? `<span class="muted-note mono"> ${esc(relayAddress(url))}</span>` : "") + `</li>`;
   });
   return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }

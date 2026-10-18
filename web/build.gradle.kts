@@ -1,12 +1,5 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
-}
-
-// JitPack pins are commit hashes and Gradle picks the lexicographically higher one, so force ours.
-configurations.all {
-    resolutionStrategy {
-        force(libs.quartz)
-    }
+    id("vespa-relay.kotlin-module")
 }
 
 dependencies {
@@ -22,16 +15,7 @@ dependencies {
     implementation(libs.ktor.server.cors)
     implementation(libs.ktor.server.compression)
     api(libs.kotlinx.serialization.json)
-    testImplementation(kotlin("test"))
     testImplementation(libs.ktor.server.test.host)
-}
-
-kotlin {
-    jvmToolchain(21)
-}
-
-tasks.test {
-    useJUnitPlatform()
 }
 
 /**

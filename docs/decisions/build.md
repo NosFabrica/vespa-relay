@@ -30,3 +30,22 @@ reads exactly like a probe nobody asked for; that happened on the first run of
 `RelayListLiveProbe`. `ProbeSwitchesAreForwardedTest` holds the list, in
 `:common` with the other guards that read the checkout rather than run it; the
 module graph and the package map are `docs/decisions/module-boundaries.md`.
+
+**Module conventions live in `build-logic/`.** The Kotlin plugin, JVM 21, JUnit,
+`kotlin("test")`, the `-PtestHeap` opt-in and the quartz force were copied into
+six build files, and the trap list's "a new module must add its own force" was
+enforced by copy-paste alone. One precompiled plugin, `vespa-relay.kotlin-module`,
+now carries them, and `forwardProbeSwitches(...)` replaced roughly sixty
+hand-written `System.getProperty(x)?.let { systemProperty(x, it) }` lines;
+`ProbeSwitchesAreForwardedTest` reads that call's argument list.
+
+**The catalog holds pins, not their history.** About 1,190 of the 1,253 lines
+in `libs.versions.toml` were notes on past bumps, which made every bump a large
+diff. They moved verbatim to `dependency-pins.md`; the catalog keeps one line on
+each pin that a bump must not forget.
+
+**Hooks are installed 0755, where git reads them, and never under CI.** They
+were installed world-writable, into a linked worktree's private gitdir (which
+git never reads hooks from), and on every compile in CI and image builds.
+pre-push runs `check`, so `archTest` and `jsTest` gate a push the way CI does.
+

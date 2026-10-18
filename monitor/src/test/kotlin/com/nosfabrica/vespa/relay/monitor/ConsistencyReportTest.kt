@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -185,7 +186,8 @@ class ConsistencyReportTest {
     fun `the hosts under a reason are ranked, and do not pretend to be all of them`() =
         runBlocking {
             val processors = Processors()
-            val wide = (1..4).map { RelayUrlNormalizer.normalize("wss://busy.example/$it") }
+            // Four servers on one host, one per port: four paths of ONE server would wait behind one walk.
+            val wide = (1..4).map { RelayUrlNormalizer.normalize("wss://busy.example:444$it") }
             val thin = (1..4).map { RelayUrlNormalizer.normalize("wss://lonely$it.example") }
             val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
 
@@ -250,6 +252,30 @@ class ConsistencyReportTest {
         assertEquals(0, row.undecidedOmitted, "…and nothing is being dropped for the member to disclose")
         assertEquals(row.unmeasured, row.undecided.sumOf { it.urls }, "…so the rows still sum to what they account for")
     }
+
+    @Test
+    fun `the undecided paths of one server wait behind one walk`() =
+        runBlocking {
+            // yzzss…onion on staging: 27 generated paths of one hidden service, each held for a
+            // two-minute paired walk on a Tor socket while the fold had not decided any of them.
+            val paths = (listOf("/") + (1..6).map { "/path-$it" }).map { RelayUrlNormalizer.normalize("wss://many.example$it") }
+            val processors = Processors()
+            val walked = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+            val gate =
+                pass(processors.of("consistency")) { at, want, _, _ ->
+                    walked += at
+                    AliasProbe.Page(corpus().take(want))
+                }
+
+            gate.measure("t", paths, canDial = { true })
+
+            assertEquals(1, walked.size, "one walk per server until the fold decides: $walked")
+            val work = row(processors)
+            val waiting = work.undecided.single { it.reason == ConsistencyPass.Unmeasured.WAITING.reason }
+            assertEquals(paths.size - 1, waiting.urls)
+            assertEquals(1, waiting.hosts)
+            assertEquals(work.unmeasured, work.undecided.sumOf { it.urls }, "the waiting urls are counted, not dropped")
+        }
 
     @Test
     fun `the candidate set divides exactly once`() =

@@ -3,6 +3,7 @@
 
 import { esc, clip, titleOf, summaryOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
+import { relayAddress } from "../shared/relayurl.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import {
   register, registerRow, registerPeopleGrid, shell, bodyHtml, peopleGrid, peopleOf, personLink, noteHref,
@@ -55,7 +56,7 @@ const dimensionsOf = (ev) => tagsWhere(ev, (name, t) => /^\d+:/.test(name) && t[
 function observerCard(ev, opts) {
   const dims = dimensionsOf(ev);
   const rows = dims.map((t) =>
-    `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
+    `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(relayAddress(t[2]))}</span>` : ""}</li>`);
   const inner =
     `<div class="result-body">trusts ${esc(plural(dims.length, "score dimension"))}</div>` +
     (rows.length ? `<ul class="relay-list">${rows.join("")}</ul>` : "");

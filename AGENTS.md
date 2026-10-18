@@ -80,6 +80,8 @@ node web/src/test/browser/csp.probe.mjs          # every public page under the s
 ./gradlew :monitor:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i              # a whole stability pass; -DliveConsistencyUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i             # each url walked twice at four anchors; -DselfConsistencyUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i                  # does a relay serve what it was asked; -DcomplianceUrls='wss://a,wss://b'
+./gradlew :monitor:test --tests '*RelayShapesProbe*' -DshapesProbe=true --rerun -i                          # which ask shapes a relay serves, refuses or ignores, and the grade; -DshapesUrls='wss://a,wss://b'
+./gradlew :monitor:test --tests '*MonitorReplayProbe*' -DreplayProbe=true -DreplayUrls=urls.txt -DreplayOut=out.tsv -PtestHeap=6g --rerun -i   # fold then fitness over a url list, a TSV of grade + same-as per url; the default 512m heap dies on a full sweep
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i  # does the abort sampler fire; wants a busy relay
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
 ./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)
@@ -97,7 +99,7 @@ ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCen
 WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i   # the whole #185 fix running; ~20 minutes
 BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test --tests '*RelayListReadCostBench*' --rerun -i    # what a relay-list read costs; BENCH_LIST_VISIT=0 BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
 BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i   # what one arriving event costs ingest
-docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa                                    # a bare engine is enough for the next one
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa:8.763.13                           # a bare engine is enough for the next one
 ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i                        # real 10040s off a live relay through a real Vespa; -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
 
 docker compose up -d --build relay            # the usual dev loop (serving only)
@@ -121,7 +123,7 @@ TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-d
 ```
 
 Git hooks are installed by the build: pre-commit runs `spotlessCheck`, pre-push
-runs the tests. Run `spotlessApply` before committing.
+runs `check` (the tests, `archTest` and `jsTest`). Run `spotlessApply` before committing.
 
 ## Layout
 
@@ -153,7 +155,7 @@ peers/…/relay/
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline, BisectingInsert, ProbeGate, ParseAudit, refused/; Processors, InFlight,
-                              StoreCalls, StatusVocabulary
+                              StoreCalls, StatusVocabulary (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
@@ -174,7 +176,7 @@ relay/…/relay/
                               serving policy), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
-                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route,
+                              (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), RelayProfile, MirrorReport, StatsYql / StatsVespa /
@@ -241,7 +243,9 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
   (`self-consistent`), then `FitnessPass`, which grades what survives with a
   NIP-32 label `["l","prime","relay.fitness",…]` (or `dead`) beside `pageable`,
-  `compliant` and `nip77`. All ride one signed kind-30166 record per url, so
+  `compliant` and `nip77`. A url the fold has not decided waits behind one
+  stand-in per server (`RelayAliases.heldForFold`), so a server is graded and
+  rostered once until the fold says its paths are distinct. All ride one signed kind-30166 record per url, so
   `RelayVerdictRecord.edit` is a read-modify-write and the passes never overlap.
   A verdict ages on its own stamp (`DEFAULT_TTL_SECONDS`) and on a rules epoch
   (`FOLD_EPOCH`, `CONSISTENCY_EPOCH`, `FITNESS_EPOCH`: bump one in the same
@@ -343,7 +347,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.
-- Gradle resolves hash conflicts lexicographically and silently: `resolutionStrategy { force(libs.quartz) }` in every module, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
+- Gradle resolves hash conflicts lexicographically and silently: `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention (`build-logic/`), which every module applies, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
 - JitPack's build-status API lies; only the artifact file proves a build.
 - JitPack caches builds per group-spelling (`com.github.NosFabrica` vs `com.github.nosfabrica`).
 - An integration run that skips still prints `BUILD SUCCESSFUL`: start `DOCKER_MIN_API_VERSION=1.24 dockerd`, and read `skipped="…"` in `build/test-results/test/*.xml`.

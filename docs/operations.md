@@ -172,6 +172,17 @@ container carries the large limit because the negentropy id snapshots live
 there; check the machine's total against those three limits when the profile is
 on (Tor's rounds to nothing).
 
+**The JVMs run as uid 10001, not root.** The image owns `/var/lib/vespa-relay`
+for that user, so a named volume works as is; a bind mount over it (compose's
+`${PARSE_AUDIT_LOCAL_DIR:-./.audit}`) must be writable by that uid, once:
+`sudo chown -R 10001:10001 ./.audit`. Until it is, every state file (bands,
+sweeps, the FTS cursor, the ban lists) fails to save and says so on stderr.
+A Kubernetes deployment sets `fsGroup: 10001` on the pod instead.
+
+**The Vespa image is pinned** in `docker-compose.yml`. Bumping it is a
+deliberate change: run the store's integration gate against the new engine
+first (see AGENTS.md, Commands), and read `docs/migrations.md`.
+
 **Tor is a container, not a layer.** One image carries both JVM processes on
 purpose, so installing a daemon in it would put Tor in the serving relay too,
 give the container a second thing to supervise, and make `restart sync` — a
@@ -226,6 +237,16 @@ and none finished, the mean halves every 30 seconds, so a slow burst followed
 by silence cannot hold ingest back for good. A read that hangs is the opposite
 case: while one is in flight the mean holds, and past the threshold it counts
 at its age, so a stalled store throttles ingest before any read returns.
+
+**The ORE search backend is public and opt-in.** With `ORE_ENABLED` the relay
+answers `POST /search/pubkeys` for Brainstorm's server, which proxies its own
+ORE-05 here (see [configuration](configuration.md#search-backend-for-brainstorms-open-ranking)),
+and for anyone else who calls it, on the clearnet and the `.onion` alike.
+The House Observer the proxy names must have a 10040 that resolves to a rank
+service, or every global search is a `503`; until that service's scores are
+mirrored, its searches answer an empty `200`. Its searches
+are reads like any REQ's, so they count toward `/pressure` and the mirror yields
+to them.
 
 **The trust reconcile runs in the background.** It used to be
 `runBlocking { reconcileTrustWithRetry(store) }` between opening the store and

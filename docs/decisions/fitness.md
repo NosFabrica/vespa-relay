@@ -196,11 +196,15 @@ where it used to make four passes and then a filter of the whole map per row,
 seven times over five thousand urls. `dialled` counts sockets opened, not
 `wanted.size`, since a url `canDial` held back is work that never happened.
 
-**An auth refusal ends the filter ladder.** On `filter.nostr.wine` the first
-ask is refused in 1.6s and every later ask on that connection is answered
-with nothing, each waiting out the full idle window; the pass used to fall
-through to the kinds pair regardless because the refusal was flattened into
-"proved nothing".
+**An auth refusal followed by silence ends the filter ladder.** On
+`filter.nostr.wine` the first ask is refused in 1.6s and every later ask on
+that connection is answered with nothing, each waiting out the full idle
+window; the pass used to fall through to the kinds pair regardless because the
+refusal was flattened into "proved nothing". A refusal alone no longer ends it:
+`chorus.bonsai.com` refuses one shape for our key ("At least one matching event
+requires AUTH") and serves profiles and relay lists to anyone, so the ladder
+asks the next shape and stops only when that one goes silent. A url refused for
+our key that served nothing on any shape is `auth-refused`.
 
 **The consistency verdict write is not wrapped in `runCatching`.** It runs
 inside the per-url deadline, and a swallowed cancellation let `measureOne`
@@ -421,3 +425,70 @@ that never landed were skipped to the back of the rotation. `writeEach` now
 records which writes were stored and hands back the earliest one that was not
 (wedged, declined or never started). No write is launched once a limit has
 tripped; those already in flight may finish.
+
+**A url the fold has not decided waits behind its server's stand-in.**
+`prime` says "canonical", and fitness read that as "not a known alias", so
+every path of a server the fold had not decided was graded on its own: on
+staging 1,135 prime urls sat on 153 servers, `rrr.pupupu.monster` with 71
+(it serves 19 events, under the fold's 20-event floor, so no fold can ever
+decide it), and the `FOLD_EPOCH` bump to 3 made every standing fold
+undecided at once. Per server (hostname plus an explicit non-default port),
+one undecided url stands in: a decided twin of the same endpoint, else the
+server's canonical, else its preferred url. The rest are not dialled and
+their standing `prime` is withdrawn rather than replaced, because whether a
+path is its own relay is the fold's claim, and an `alias` written for it would
+be a claim nothing measured. A fast-lane batch reads the other urls of each
+candidate's server from the last sweep's candidate set, so the stand-in is the
+same url whichever lane grades it.
+
+**The sweep publishes which servers are prime more than once.** `sharedHosts`
+on the fitness row groups the sweep's prime urls by server and names the
+fold's word on each. A path-routing relay (an inbox beside an outbox) belongs
+there; `unproven`, servers with two or more prime urls the fold has not
+measured apart, does not. Over a sweep only: a fast-lane batch is a handful of
+urls, and a census over it would read as the roster shrinking.
+
+**The boot retraction reports on the fitness row.** It is a paged walk of the
+whole graded corpus plus a write per stale grade, and every pass waits on it;
+after the `FITNESS_EPOCH` bump on staging it ran for over forty minutes with
+every monitor row at `starting`, which reads as the six-hour clock. The row
+now says `retiring` with a `verdict` position.
+
+**Writes the store did not take are replayed, not dropped until the next
+sweep.** The first sweep after a staging restart measured 36,889 urls in 75
+minutes and then wrote almost none of it: 13,116 verdicts unwritten, and the
+withdrawals skipped because the batch had stopped, so #259 took back no
+`prime` for six hours. The cause is in the store, not the relays: every write
+in this process, the mirror's 1,000-event ingest commits and the monitor's
+one-record edits alike, takes the store's single `writes` mutex
+(`WriteLocks.writes` in vespa-eventstore), and a single insert holds it across
+its whole admission, three to five Vespa round trips. With ingest at 16,483 of
+16,384 queued and negentropy id snapshots averaging a second a page, a verdict
+edit waited behind every queued commit past its 60-second deadline; since boot
+that process had spent 81 hours of cumulative lock wait against 14 of hold.
+Each grade and withdrawal the store refuses now stays in memory with the time
+it was measured, and the monitor replays them every five minutes without
+dialling; a later measurement of the url replaces one. `pendingWrites` on the
+fitness row says how many wait. The queueing itself is the store's to fix.
+
+**The ladder asks five shapes and steps past a refusal.** It asked a bare
+filter, then kinds 1, then kinds 39000, and moved on only from silence: a
+CLOSED reached the probe as an empty page, so a relay refusing the bare filter
+was graded `prime` on "an empty anchored page" without ever being asked
+anything it serves. On staging that grade was 437 of 1,555 `prime`s. A battery
+over 76 of them sorted them: haven-style relays that close a bare filter
+("can't handle empty filters") and serve every kinds filter; indexers that
+serve only kinds 0 and 10002 (purplepag.es: "filters must specify at least one
+kind"); NIP-29 hosts that answer only kinds 39000 without an `h` tag; spaces
+that close everything to a non-member even after our AUTH; and relays that
+answer every shape with an empty EOSE. `AliasProbe.SHAPES` is now bare, kinds
+1, 0, 10002, 39000, shared with the fold's yardstick search; `AliasProbe.Page`
+and `Window` carry the CLOSED words apart from an EOSE. The first shape that
+serves events is graded and named in the evidence; a relay that heard every
+shape and closed each is `restricted`, or `auth-refused` when every refusal is
+NIP-42's `auth-required:`; one that answered every shape empty stays `prime`
+and its evidence says so. Group metadata is a complete list served whatever
+the cursor, so a relay graded through kinds 39000 carries no `pageable` claim.
+No epoch bump: each grade is re-taken on the next sweep. `RelayShapesProbe`
+prints the per-shape answers and the grade for any list of urls.
+

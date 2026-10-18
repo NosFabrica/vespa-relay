@@ -363,12 +363,65 @@ class RelayAliases(
      * so a new alias cannot re-point an existing verdict; otherwise the best by [PREFERENCE].
      */
     private fun leaderOf(group: List<NormalizedRelayUrl>): NormalizedRelayUrl {
-        group.firstOrNull { it in canonicals }?.let { return it }
-        return group.minWith(PREFERENCE)
+        val leader = group.firstOrNull { it in canonicals } ?: return group.minWith(PREFERENCE)
+        // A plain canonical yields to its secure twin, so a fold never settles onto the unencrypted endpoint.
+        if (isSecure(leader.url)) return leader
+        val twin = endpointKey(leader.url)?.let { secureTwins(group)[it] }
+        return twin?.takeIf { !folded.containsKey(it) } ?: leader
     }
 
     /** The best url of [urls] by [PREFERENCE], which stays private so every caller picks the same one. */
     fun preferred(urls: Collection<NormalizedRelayUrl>): NormalizedRelayUrl? = urls.minWithOrNull(PREFERENCE)
+
+    /**
+     * Of [candidates], each url nothing is decided about that another url of [world] stands in
+     * for, onto that url: a decided twin naming the same endpoint, else the server's preferred
+     * canonical, else its preferred undecided url. A url measured `distinct`, canonical or not, never
+     * stands in for another path: it is proven its own relay, not anyone else's. Until the fold
+     * decides, a server is graded once.
+     */
+    fun heldForFold(
+        candidates: Collection<NormalizedRelayUrl>,
+        world: Collection<NormalizedRelayUrl> = emptyList(),
+        /** Which urls may stand in for their server; a server with none eligible falls back to all. */
+        eligible: (NormalizedRelayUrl) -> Boolean = { true },
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val mates =
+            (candidates.asSequence() + world.asSequence())
+                .filter { !folded.containsKey(it) }
+                .distinct()
+                .groupBy { authorityOf(it.url) }
+        // Once per server, not per candidate: a filter service can wear thousands of urls on one host.
+        val servers = HashMap<String, StandIns>()
+        val held = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in candidates) {
+            if (measured(url)) continue
+            val server = servers.getOrPut(authorityOf(url.url)) { standInsOf(mates.getValue(authorityOf(url.url)), eligible) }
+            val target = server.twinOf(url) ?: server.standIn?.let { server.twinOf(it) ?: it } ?: continue
+            if (target != url) held[url] = target
+        }
+        return held
+    }
+
+    /** One server's decided url per endpoint, and the undecided url that stands in for the rest. */
+    private class StandIns(
+        val twins: Map<String, NormalizedRelayUrl>,
+        val standIn: NormalizedRelayUrl?,
+    ) {
+        fun twinOf(url: NormalizedRelayUrl): NormalizedRelayUrl? = endpointKey(url.url)?.let(twins::get)
+    }
+
+    private fun standInsOf(
+        all: List<NormalizedRelayUrl>,
+        eligible: (NormalizedRelayUrl) -> Boolean,
+    ): StandIns {
+        val here = all.filter(eligible).ifEmpty { all }.sortedWith(PREFERENCE)
+        val twins = HashMap<String, NormalizedRelayUrl>()
+        for (u in here) if (measured(u)) endpointKey(u.url)?.let { twins.putIfAbsent(it, u) }
+        // A canonical the fold also cleared is a relay of its own that a twin folds onto, not the server's face.
+        val standIn = here.firstOrNull { it in canonicals && it !in distinct } ?: here.firstOrNull { !measured(it) }
+        return StandIns(twins, standIn)
+    }
 
     companion object {
         /** How many newest events a fingerprint holds, paged backwards to reach it. */
@@ -422,7 +475,7 @@ class RelayAliases(
 
         /** The hostname, lowercased, without the port. */
         fun hostOf(url: String): String {
-            val authority = afterScheme(url).substringBefore('/')
+            val authority = afterScheme(url).substringBefore('/').substringBefore('?')
             // An IPv6 literal keeps its brackets; only a colon after the bracket is the port separator.
             val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
             return host.lowercase()
@@ -442,12 +495,22 @@ class RelayAliases(
             return hostOf(url) + "/" + pathOf(url)
         }
 
+        /**
+         * The hostname, plus the port where it is explicit and not the scheme's default: one
+         * server, whatever its scheme or path. Two ports are two servers.
+         */
+        fun authorityOf(url: String): String = if (isDefaultPort(url)) hostOf(url) else hostOf(url) + ":" + portOf(url)
+
         /** No port at all, or the one this url's scheme implies. */
         private fun isDefaultPort(url: String): Boolean {
-            val authority = afterScheme(url).substringBefore('/')
-            val port =
-                if (authority.startsWith("[")) authority.substringAfter(']').removePrefix(":") else authority.substringAfter(':', "")
+            val port = portOf(url)
             return port.isEmpty() || port == (if (isSecure(url)) "443" else "80")
+        }
+
+        /** The explicit port, or empty. */
+        private fun portOf(url: String): String {
+            val authority = afterScheme(url).substringBefore('/').substringBefore('?')
+            return if (authority.startsWith("[")) authority.substringAfter(']').removePrefix(":") else authority.substringAfter(':', "")
         }
 
         private fun hasExplicitPort(url: String): Boolean {

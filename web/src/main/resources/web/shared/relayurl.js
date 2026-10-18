@@ -1,5 +1,5 @@
-/** Everything after `ws://` or `wss://` in either case, or the string unchanged. */
-const afterWsScheme = (url) => String(url || "").replace(/^wss?:\/\//i, "");
+/** A relay url past its `ws://` or `wss://` in either case, and nothing else changed; anything else comes back whole. */
+export const afterWsScheme = (url) => String(url || "").replace(/^wss?:\/\//i, "");
 
 /** A relay url as a card or a sentence names it: no scheme, no trailing slash, port and path kept. */
 export const relayAddress = (url) => afterWsScheme(url).replace(/\/+$/, "");

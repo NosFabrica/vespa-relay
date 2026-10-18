@@ -2,6 +2,8 @@
 // is, which legs are worth naming and when one is stuck. Functions over plain data; the
 // page formats the numbers and hangs the document's own words on them.
 
+import { afterWsScheme } from "./relayurl.js";
+
 /** Past this, a leg is not slow, it is stuck. The router's own log floor. */
 export const STUCK_LEG_SEC = 600;
 
@@ -200,7 +202,7 @@ export function heldOf(inFlight, limit = IN_FLIGHT_SHOWN) {
   const rows = all.slice(0, limit).map((r) => ({
     relay: r.relay,
     // The scheme is dropped and nothing else is.
-    short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+    short: afterWsScheme(r.relay),
     heldForSec: r.heldForSec || 0,
     stage: r.stage || null,
   }));
@@ -228,6 +230,8 @@ const FUNNEL_TONE = {
   foldedAway: "mute",
   heldOutDead: "mute",
   recordedOnly: "mute",
+  // Another url of its server is walked instead, until the fold decides.
+  "waits on the fold behind another url of its server": "mute",
   // Ours: we could not carry it, or our probe broke.
   "declined by our own transport": "ours",
   "the probe failed mid-walk": "ours",
@@ -371,7 +375,7 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
     return {
       relay: r.relay,
       // The scheme is dropped and nothing else is.
-      short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+      short: afterWsScheme(r.relay),
       pass: r.pass != null ? String(r.pass) : null,
       heldForSec: r.heldForSec || 0,
       events: r.events || 0,
@@ -669,7 +673,7 @@ export function relayStatusOf(relays) {
     freshness: FRESHNESS.map(([key, label, tone]) => ({ key, label, tone, pairs: fresh.get(key) || 0 })),
     rows: (relays.rows || []).map((r) => ({
       relay: r.relay || "",
-      short: String(r.relay || "").replace(/^wss?:\/\//, ""),
+      short: afterWsScheme(r.relay),
       stream: r.stream || null,
       syncStatus: r.syncStatus || null,
       label: SYNC_STATUSES.find(([k]) => k === r.syncStatus)?.[1] || r.syncStatus || "—",

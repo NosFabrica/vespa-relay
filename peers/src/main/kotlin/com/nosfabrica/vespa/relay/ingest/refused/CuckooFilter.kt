@@ -103,6 +103,7 @@ internal class CuckooFilter private constructor(
         runCatching { (buffer as? MappedByteBuffer)?.force() }
     }
 
+    /** Flushes. A `MappedByteBuffer` cannot be unmapped, so the mapping lives until the filter is collected. */
     override fun close() {
         flush()
     }

@@ -26,10 +26,12 @@ import com.nosfabrica.vespa.relay.server.Cidr
 import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
+import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
@@ -121,6 +123,17 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.strictInt("SEARCH_CONCURRENCY_PER_CONNECTION", 0..Int.MAX_VALUE) ?: SearchGate.DEFAULT_PERMITS
 
 /**
+ * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset keeps quartz's
+ * 64, sized for SQLite. Measured on staging 2026-10-13 under a 5.3M-event kind-3 publish: the
+ * write lock held 93-98% of each 5-minute window, batches at the 64 cap, 170-320 ms per batch,
+ * so publishing topped out near 200-380 events/s. Set but unparseable stops the boot.
+ */
+fun ingestBatchFromEnv(env: Map<String, String>): Int = env.strictInt("RELAY_INGEST_BATCH", 1..MAX_INGEST_BATCH) ?: IngestQueue.DEFAULT_MAX_BATCH
+
+/** The largest batch docs/decisions/ingest.md measured through the store (2 x 8192). */
+private const val MAX_INGEST_BATCH = 8_192
+
+/**
  * `HTTP_RELAY` and its settings, or null when the switch is off. [origins] are the addresses a NIP-98
  * token may name. Anything set that does not parse stops the boot: each of these is a limit.
  */
@@ -150,6 +163,17 @@ fun httpRelayFromEnv(
         deadlineMs = (env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", 1..MAX_DEADLINE_SECONDS) ?: HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt()) * 1000L,
         origins = origins,
         clients = ClientAddresses(header, proxies),
+    )
+}
+
+/**
+ * The ORE-05 search backend's settings (`ORE_ENABLED`, off by default), or null when it is off; anything
+ * set that does not parse stops the boot. The House Observer comes with each global search, from the proxy.
+ */
+fun openRankingFromEnv(env: Map<String, String>): OpenRankingConfig? {
+    if (env.strictFlag("ORE_ENABLED") != true) return null
+    return OpenRankingConfig(
+        concurrency = env.strictInt("ORE_CONCURRENCY", 1..Int.MAX_VALUE) ?: OpenRankingConfig.DEFAULT_CONCURRENCY,
     )
 }
 

@@ -29,7 +29,6 @@ import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
-import com.nosfabrica.vespa.relay.util.strictInt
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -85,6 +84,7 @@ class IngestPipeline(
 
     private val workers = tuning.concurrency
     private val configuredBatch = tuning.batch
+    private val dedupChunk = tuning.dedupChunk
 
     /** How many downloaded events may wait for ingest. */
     val capacity = (tuning.batch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
@@ -139,6 +139,14 @@ class IngestPipeline(
     private val idGate = ProbeGate(minHitRate = 0.35)
 
     private val versionGate = ProbeGate(minHitRate = 0.20)
+
+    /** Probes that threw. A failed probe teaches its gate nothing, so it is counted here instead. */
+    private val idProbeFailures = AtomicLong()
+
+    private val versionProbeFailures = AtomicLong()
+
+    /** When a probe failure was last logged; at most one line per [PROBE_FAILURE_LOG_MS]. */
+    private val probeFailureLoggedAt = AtomicLong()
 
     /** When each worker entered its current batch pass, or 0 while it waits on the channel. */
     private val busySince = AtomicLongArray(workers)
@@ -368,33 +376,28 @@ class IngestPipeline(
         // Trusted events skip verification, so they earn the probe nothing.
         val verifiable = copies.count { !batch[it[0]].skipVerify }
         val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
+        // Null where the probe did not run or failed; a failed probe costs time, never correctness.
         val stored =
             if (!probed) {
-                emptySet()
+                null
             } else {
-                try {
+                probing(idProbeFailures, "id") {
                     // One store call round the whole probe: the worker is suspended in the fan-out.
                     storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(copies.size)) {
                         IngestStats.timed("dedup.pre") {
                             copies
                                 .map { batch[it[0]].event.id }
-                                .chunked(DEDUP_CHUNK)
+                                .chunked(dedupChunk)
                                 .mapBounded(QUERY_FANOUT) { probe(it) }
                                 .flatMapTo(HashSet()) { it }
                         }
                     }
-                } catch (e: CancellationException) {
-                    // Swallowed, a shutdown cancellation would write into a closing store.
-                    throw e
-                } catch (_: Throwable) {
-                    // A failed probe costs time, never correctness.
-                    emptySet()
                 }
             }
 
-        val fresh = if (stored.isEmpty()) copies else copies.filter { batch[it[0]].event.id !in stored }
-        // Only the probe teaches the gate.
-        if (probed) idGate.record(copies.size, copies.size - fresh.size)
+        val fresh = if (stored.isNullOrEmpty()) copies else copies.filter { batch[it[0]].event.id !in stored }
+        // Only an answered probe teaches the gate.
+        if (stored != null) idGate.record(copies.size, copies.size - fresh.size)
         val dropped = copies.sumOf { it.size } - fresh.sumOf { it.size }
         if (dropped > 0) {
             rejected.addAndGet(dropped.toLong())
@@ -552,7 +555,7 @@ class IngestPipeline(
 
         val probe = newestVersions
         if (probe == null || byAddress.size < PROBE_MIN_VERIFIABLE || !versionGate.worthIt()) return contests
-        val stored = readNewestVersions(probe, byAddress.keys)
+        val stored = readNewestVersions(probe, byAddress.keys) ?: return contests
         val beaten = ArrayList<List<Int>>()
         var beatenAddresses = 0
         for ((key, versions) in byAddress) {
@@ -591,12 +594,12 @@ class IngestPipeline(
         }
     }
 
-    /** One query per kind per chunk of authors. */
+    /** One query per kind per chunk of authors; null if the probe failed. */
     private suspend fun readNewestVersions(
         probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
         addresses: Set<Pair<Int, String>>,
-    ): Map<Pair<Int, String>, AddressVersion> =
-        try {
+    ): Map<Pair<Int, String>, AddressVersion>? =
+        probing(versionProbeFailures, "version") {
             storeCall(
                 StoreCalls.CALLER_INGEST_VERSIONS,
                 StoreCalls.OP_NEWEST_VERSIONS,
@@ -610,10 +613,30 @@ class IngestPipeline(
                         .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
                 }
             }
+        }
+
+    /** [read]'s answer, or null when it threw: counted in [failures] and logged, rate-limited. */
+    private suspend fun <T> probing(
+        failures: AtomicLong,
+        name: String,
+        read: suspend () -> T,
+    ): T? =
+        try {
+            read()
         } catch (e: CancellationException) {
+            // Swallowed, a shutdown cancellation would write into a closing store.
             throw e
-        } catch (_: Throwable) {
-            emptyMap()
+        } catch (e: Exception) {
+            val total = failures.incrementAndGet()
+            val now = System.currentTimeMillis()
+            val last = probeFailureLoggedAt.get()
+            if (now - last >= PROBE_FAILURE_LOG_MS && probeFailureLoggedAt.compareAndSet(last, now)) {
+                System.err.println(
+                    "router: ingest $name probe FAILED ($total so far) — ${e.javaClass.simpleName}: " +
+                        "${e.message?.take(200)}; the batch goes to the store unprobed",
+                )
+            }
+            null
         }
 
     /**
@@ -675,8 +698,8 @@ class IngestPipeline(
     fun probeStatus(): String {
         val parts =
             listOfNotNull(
-                describeGate("id", idGate, knownIds != null),
-                describeGate("version", versionGate, newestVersions != null),
+                describeGate("id", idGate, knownIds != null, idProbeFailures.get()),
+                describeGate("version", versionGate, newestVersions != null, versionProbeFailures.get()),
             )
         return if (parts.isEmpty()) "" else "router: ingest probes ${parts.joinToString(", ")}"
     }
@@ -685,11 +708,15 @@ class IngestPipeline(
         name: String,
         gate: ProbeGate,
         wired: Boolean,
+        failures: Long,
     ): String? {
         if (!wired) return "$name off (not wired)"
         val rate = gate.hitRate()
-        if (rate == 0.0 && !gate.hasJudged()) return null
-        return "$name ${"%.0f".format(rate * 100)}% dropped${if (gate.paying()) "" else ", sampling only"}"
+        val judged =
+            if (rate == 0.0 && !gate.hasJudged()) null else "${"%.0f".format(rate * 100)}% dropped${if (gate.paying()) "" else ", sampling only"}"
+        val failed = if (failures > 0) "$failures failed" else null
+        val parts = listOfNotNull(judged, failed)
+        return if (parts.isEmpty()) null else "$name ${parts.joinToString(", ")}"
     }
 
     /** Workers inside a batch pass right now; with [oldestBatchMs], what tells backpressure from a wedge. */
@@ -766,8 +793,7 @@ class IngestPipeline(
         /** Authors per version query. */
         private const val CHECK_CHUNK = 500
 
-        /** Ids per probe query, read from the store's own knob so a widened stage B is matched here. */
-        private val DEDUP_CHUNK: Int = System.getenv().strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: 500
+        private const val PROBE_FAILURE_LOG_MS = 60_000L
 
         /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
         private const val REASON_LIMIT = 64
@@ -792,8 +818,14 @@ data class AddressVersion(
     fun beats(event: Event): Boolean = createdAt > event.createdAt || (createdAt == event.createdAt && id < event.id)
 }
 
-/** `ingestConcurrency` and `ingestBatch` from `sync.conf`. A type so a caller cannot swap them. */
+/** `SYNC_INGEST_CONCURRENCY`, `SYNC_INGEST_BATCH` and `VESPA_DEDUP_CHUNK`, read at boot. A type so a caller cannot swap them. */
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,
-)
+    /** Ids per dedup probe query: the store's own knob, so a widened stage B is matched here. */
+    val dedupChunk: Int = DEFAULT_DEDUP_CHUNK,
+) {
+    companion object {
+        const val DEFAULT_DEDUP_CHUNK = 500
+    }
+}

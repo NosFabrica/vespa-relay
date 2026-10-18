@@ -22,9 +22,9 @@ import { esc, clip, titleOf, summaryOf, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, chipRow, relayRows,
   personLink, extLink, jsonContent, tagOf, tagsOf, oneLine, plural, noteHref, coverThumb, safeUrl,
-  firstPerson,
+  firstPerson, addrHref,
 } from "./base.js";
-import { shortNote } from "../shared/nip19.js";
+import { shortNote, shortAddr } from "../shared/nip19.js";
 import { codeBlock } from "./code.js";
 
 /** A field off a stranger's JSON as one line of text, or "". */
@@ -201,6 +201,9 @@ function cvmServerCard(ev, opts) {
 
 // ---- the napplets ----------------------------------------------------------
 
+/** The two snapshot kinds: one pinned build of the site or napplet their `a` names. */
+const SNAPSHOTS = new Set([5128, 5129]);
+
 /** What a manifest ships: one `["path", <path>, <hash>]` per file. */
 const pathsOf = (ev) => tagsOf(ev, "path").filter((t) => t[1]).map((t) => t[1]);
 
@@ -209,11 +212,16 @@ const NAPPLET_ROLE = {
   5129: "one pinned build",
   15129: "the default napplet for this key",
   35129: "a named napplet",
+  5128: "one pinned website build",
   15128: "the default website for this key",
   35128: "a named website",
 };
 
-/** 5129 / 15129 / 35129 — a napplet manifest: the files it is made of, and where they are served. */
+/**
+ * 5129 / 15129 / 35129 — a napplet manifest: the files it is made of, and where they are served.
+ * 5128 / 15128 / 35128 are the same manifest for a website. A snapshot (5128 / 5129) pins one
+ * build of the site or napplet its `a` names.
+ */
 function nappletCard(ev, opts) {
   const paths = pathsOf(ev);
   const servers = tagsOf(ev, "server").map((t) => t[1]).filter(Boolean);
@@ -224,7 +232,9 @@ function nappletCard(ev, opts) {
     `<div class="result-body">${esc(plural(paths.length, "file"))}</div>` +
     (opts && opts.full ? relayRows(servers.map((url) => ({ url })), opts) : "") +
     chipRow(tagsOf(ev, "requires").map((t) => t[1]).filter(Boolean), opts);
+  const of = SNAPSHOTS.has(ev.kind) ? tagsOf(ev, "a").map((t) => t[1]).find((v) => addrHref(v)) : null;
   return shell(ev, opts, inner, [
+    ["snapshot of", of ? `<a class="mono" href="${addrHref(of)}">${esc(clip(shortAddr(of), 60))}</a>` : null],
     ["source", extLink(tagOf(ev, "source"))],
     // The aggregate hash over every path: what "the same napplet" means between two manifests.
     ["hash", tagOf(ev, "x") ? `<span class="mono">${esc(clip(tagOf(ev, "x"), 20))}</span>` : null],
@@ -236,7 +246,7 @@ register([30175], personaCard);
 register([30176], teamCard);
 register([30177], managedAgentCard);
 register([30620], workflowCard);
-register([5129, 15129, 35129, 15128, 35128], nappletCard);
+register([5128, 5129, 15129, 35129, 15128, 35128], nappletCard);
 register([30178], teamCatalogCard);
 register(Object.keys(JOB_STEP).map(Number), jobCard);
 register([11316], cvmServerCard);
@@ -275,7 +285,7 @@ registerRow([30620], (ev) => ({
   name: tagOf(ev, "name") || tagOf(ev, "d"),
   sub: plural(String(ev.content || "").split("\n").filter((l) => l.trim()).length, "line"),
 }));
-registerRow([5129, 15129, 35129, 15128, 35128], (ev) => ({
+registerRow([5128, 5129, 15129, 35129, 15128, 35128], (ev) => ({
   name: titleOf(ev),
   sub: [NAPPLET_ROLE[ev.kind], plural(pathsOf(ev).length, "file"), summaryOf(ev)].filter(Boolean).join(" · "),
 }));

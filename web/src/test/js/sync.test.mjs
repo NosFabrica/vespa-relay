@@ -387,6 +387,12 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("never answered a REQ").tone, null, "a relay that will not answer is not our fault");
   assert.equal(at("never answered a REQ").hosts, 2201, "the url count's resolution into servers rides along");
   ok("the tree nests by depth, guides its own branches, and scales every bar to the root");
+
+  // Walked through its server's stand-in instead: neither a fault nor a finding, like a folded url.
+  const waiting = "waits on the fold behind another url of its server";
+  const held = funnelOf(gate({}, { undecided: { reasons: [{ reason: waiting, urls: 4728, hosts: 292, top: [] }], omitted: 0 } }));
+  assert.equal(held.rows.find((r) => r.key === waiting).tone, "mute");
+  ok("a url waiting on the fold draws muted, as a folded url does");
 }
 
 {

@@ -1,14 +1,68 @@
 // stats.html's entry: one page for the relay, the mirror and the monitor, each panel guarded on
 // the section it reads, so whichever service serves it draws only what that service publishes.
 
+import { ago, el, isoOf } from "../shared/page.js";
 import { mountStatsPage } from "../shared/statspage.js";
+import { Relay } from "../shared/relay.js";
+import { LiveCounts, socketUrlOf } from "../relay/live.js";
+import { liveCards } from "../relay/cards.js";
 // Imported unconditionally: one page serves all three services (see PANELS).
-import { activityPanel, kindActivityCard, kindsCard, relaysCard, settleGrain, tiles, trustCard, zapsCard } from "../relay/cards.js";
+import { activityPanel, kindActivityCard, kindsCard, relaysCard, settleGrain, tiles, trustCard, zapsCard } from "../relay/charts.js";
 import { syncCard } from "../sync/cards.js";
 import { monitorCard, verdictsCard } from "../monitor/cards.js";
 
 /** The document schema this page reads; see SCHEMA_VERSION in StatsRollup. */
-const SCHEMA = 2;
+const SCHEMA = 3;
+
+/**
+ * The relay's document, as against the mirror's (which names no relay) and the monitor's (which
+ * carries `monitor`). Only the relay's page counts the store over a socket.
+ */
+const isRelayDoc = (doc) => !!doc.relay && !doc.monitor;
+
+/** Started on the first relay document and kept for the life of the tab. */
+let live = null;
+
+function livePanels() {
+  if (!live) {
+    // Same-origin, beside this page: `doc.relay` is the public url, which a local or tunnelled
+    // reader may not be able to reach.
+    const socketUrl = socketUrlOf(location.href);
+    const relay = new Relay(socketUrl, { lensless: true });
+    let cards = null;
+    live = new LiveCounts(relay, { onChange: () => cards && cards.update() });
+    cards = liveCards(live, socketUrl);
+    live.cards = cards.cards;
+    // Closed on pagehide, which keeps the page eligible for the back-forward cache.
+    window.addEventListener("pagehide", () => { try { relay.ws && relay.ws.close(); } catch (e) {} });
+    live.start();
+  }
+  return live.cards;
+}
+
+/** When the charts pass that computed everything under the divider ran, in epoch seconds; null when unstated. */
+function rolledUpAt(doc) {
+  const iso = doc.tiers?.charts?.generatedAt || doc.corpus?.generatedAt;
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
+/**
+ * The line between the live panels and the rollup: everything under it is as old as it says.
+ * Its age is re-read on a timer, since the panel is only rebuilt when the rollup is.
+ */
+function asOfDivider(doc) {
+  const at = rolledUpAt(doc);
+  const line = el("div", "asof");
+  const label = el("span");
+  const tick = () => { label.textContent = at == null ? "As of the last rollup" : `As of ${ago(at)}`; };
+  tick();
+  if (at != null) label.title = `Everything below was rolled up at ${isoOf(at)}; the numbers above are live.`;
+  line.appendChild(label);
+  return { line, tick };
+}
+let divider = null;
+setInterval(() => divider && divider.tick(), 15000);
 
 /**
  * The body, panel by panel. `reads` is the redraw key: a panel is rebuilt only
@@ -18,6 +72,16 @@ const SCHEMA = 2;
 const has = (doc, ...members) => members.some((m) => doc[m]);
 
 const PANELS = [
+  // `reads: []`: built once, because it holds its own socket and redraws itself.
+  { name: "live", reads: [], build: (doc) => (isRelayDoc(doc) ? livePanels() : []) },
+  {
+    name: "asOf",
+    reads: ["corpus", "kinds"],
+    build: (doc) => {
+      divider = isRelayDoc(doc) && has(doc, "corpus", "kinds") ? asOfDivider(doc) : null;
+      return divider ? [divider.line] : [];
+    },
+  },
   { name: "totals", reads: ["corpus", "authors", "kinds"], build: (doc) => (has(doc, "corpus") ? tiles(doc) : []) },
   { name: "trust", reads: ["trust"], build: (doc) => (has(doc, "trust") ? [trustCard(doc.trust)] : []) },
   { name: "activity", reads: ["activity"], build: (doc) => (has(doc, "activity") ? [activityPanel(doc.activity)] : []) },

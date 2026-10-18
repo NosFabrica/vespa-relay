@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.ingest
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
+import com.nosfabrica.vespa.relay.util.writeDurably
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip50Search.SearchableEvent
 import com.vitorpamplona.quartz.utils.Log
@@ -47,6 +48,8 @@ class ParseAudit(
     private val outFile: File,
     private val maxSamplesPerFinding: Int = 5,
     private val delegate: LogSink = Log.sink,
+    /** Distinct findings kept before the rest fold into [overflow]: quartz's messages embed event content. */
+    private val maxFindings: Int = MAX_FINDINGS,
 ) : LogSink,
     AutoCloseable {
     /** The event whose parse this thread is currently inside. */
@@ -59,6 +62,9 @@ class ParseAudit(
     private val inFlight = ThreadLocal<InFlight?>()
 
     private val findings = ConcurrentHashMap<String, Finding>()
+
+    /** Every report past [maxFindings] distinct ones, counted without samples. */
+    private val overflow = Finding(OVERFLOW_TAG, LogLevel.WARN, "findings past the cap of $maxFindings distinct")
 
     // Parse reports that arrived outside [inspect].
     private val unattributed = ConcurrentHashMap<String, AtomicLong>()
@@ -113,15 +119,30 @@ class ParseAudit(
         message: String,
     ) {
         ctx.reported = true
-        val finding = findings.computeIfAbsent(signature(tag, message)) { Finding(tag, level, normalize(message)) }
-        finding.hit(message, ctx.event, maxSamplesPerFinding)
+        val normalized = normalize(message)
+        val key = "$tag|$normalized"
+        val finding = findings[key] ?: admit(key) { Finding(tag, level, normalized) }
+        if (finding === overflow) {
+            overflow.count.incrementAndGet()
+        } else {
+            finding.hit(message.take(MAX_MESSAGE_CHARS), ctx.event, maxSamplesPerFinding)
+        }
     }
 
-    /** Everything seen so far, most frequent first. */
-    fun snapshot(): List<Finding> = findings.values.sortedByDescending { it.count.get() }
+    /** A new finding under [key], or [overflow] once [maxFindings] are held. Locked so the cap is exact. */
+    private fun admit(
+        key: String,
+        create: () -> Finding,
+    ): Finding =
+        synchronized(findings) {
+            findings[key] ?: if (findings.size >= maxFindings) overflow else create().also { findings[key] = it }
+        }
+
+    /** Everything seen so far, most frequent first; the overflow bucket is one of them once it counts. */
+    fun snapshot(): List<Finding> = (findings.values + listOfNotNull(overflow.takeIf { it.count.get() > 0 })).sortedByDescending { it.count.get() }
 
     /** One event can trip more than one defect. */
-    private fun totalReports(): Long = findings.values.sumOf { it.count.get() }
+    private fun totalReports(): Long = findings.values.sumOf { it.count.get() } + overflow.count.get()
 
     /** A one-line summary for the periodic progress log. */
     fun summary(): String =
@@ -129,7 +150,7 @@ class ParseAudit(
             "${withFindings.get()} affected of ${inspected.get()} event(s)" +
             unattributed.entries.sumOf { it.value.get() }.let { if (it > 0) ", $it unattributed" else "" }
 
-    /** Write the report via a sibling temp file and a move. Synchronized: the flusher and [close] share the temp path. */
+    /** Write the report durably. Synchronized: the flusher and [close] share the temp path. */
     @Synchronized
     fun writeReport() {
         val report =
@@ -146,13 +167,7 @@ class ParseAudit(
                 )
                 put("findings", JsonArray(snapshot().map { it.toJson() }))
             }
-        val tmp = File(outFile.parentFile ?: File("."), "${outFile.name}.tmp")
-        tmp.parentFile?.mkdirs()
-        tmp.writeText(json.encodeToString(JsonObject.serializer(), report))
-        if (!tmp.renameTo(outFile)) {
-            tmp.copyTo(outFile, overwrite = true)
-            tmp.delete()
-        }
+        writeDurably(outFile, json.encodeToString(JsonObject.serializer(), report))
     }
 
     /** Rewrite the report every [intervalSec] on a daemon thread. */
@@ -176,8 +191,9 @@ class ParseAudit(
         return this
     }
 
-    /** Flush the final report. */
+    /** Flush the final report and hand quartz's log back to the sink this audit wrapped. */
     override fun close() {
+        if (Log.sink === this) Log.sink = delegate
         flusher?.interrupt()
         // Joined, not just interrupted: a flusher mid-writeReport() shares the temp file.
         runCatching { flusher?.join(FLUSHER_JOIN_MS) }
@@ -245,6 +261,14 @@ class ParseAudit(
 
         private const val FLUSHER_JOIN_MS = 5_000L
 
+        const val MAX_FINDINGS = 256
+
+        /** The tag of the bucket every finding past the cap folds into. */
+        const val OVERFLOW_TAG = "overflow"
+
+        /** A finding's message and a sample's quartz message are cut here: both can quote event content. */
+        const val MAX_MESSAGE_CHARS = 200
+
         private val PARSE_TAGS =
             setOf(
                 "MetadataEvent",
@@ -272,11 +296,7 @@ class ParseAudit(
                 .replace(OFFSET, "offset N")
                 .replace(JSON_INPUT, "")
                 .trim()
-
-        private fun signature(
-            tag: String,
-            message: String,
-        ): String = "$tag|${normalize(message)}"
+                .take(MAX_MESSAGE_CHARS)
 
         /** Install the audit from the environment, or null when `PARSE_AUDIT_FILE` is unset. */
         fun installFromEnv(env: Map<String, String>): ParseAudit? {

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.progress.Processors
+import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -55,7 +56,7 @@ class MonitorStatus(
             progress.takeIf { rows.isNotEmpty() }?.let {
                 buildJsonObject {
                     put("progress", it)
-                    put("terms", StatusVocabulary.termsFor(it))
+                    put("terms", StatusVocabulary.termsFor(it, StatusPlane.MONITOR))
                 }
             }
 

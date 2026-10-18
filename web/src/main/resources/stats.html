@@ -13,15 +13,17 @@
 <!--
   The corpus this deployment holds, charted from GET /stats.json.
 
-  The JSON is the artifact and this page is one reader of it; only the verdicts
-  panel speaks the relay protocol, since it has no rollup to read. Every number
-  describes this store, counted anonymously. A stale or missing rollup is said,
-  never drawn as zeros. Charts are single-series: events and pubkeys are two
-  charts, never two y-axes.
+  The JSON is the artifact and this page is one reader of it. Two things speak the
+  relay protocol instead: the relay's live panels at the top, since a rollup hours
+  old cannot say what is happening now, and the verdicts panel, which has no rollup
+  to read. Every number describes this store, counted anonymously. A stale or
+  missing rollup is said, never drawn as zeros. Charts are single-series: events
+  and pubkeys are two charts, never two y-axes.
 
   The logic is web/stats/page.js, which hands each service's panels to
-  mountStatsPage (web/shared/statspage.js); the relay's own cards are
-  web/relay/cards.js. No inline script: the page's policy refuses one.
+  mountStatsPage (web/shared/statspage.js); the relay's own panels are
+  web/relay/cards.js (live) and web/relay/charts.js (rolled up). No inline
+  script: the page's policy refuses one.
 -->
 <link rel="stylesheet" href="./web/shared/stats.css" />
 </head>

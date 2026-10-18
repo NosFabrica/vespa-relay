@@ -352,6 +352,22 @@ export const bodyHtml = (opts, text, n = 400, muted = false) => {
   return s ? `<div class="result-body${clampCls(opts)}${muted ? " muted" : ""}">${esc(s)}</div>` : "";
 };
 
+/** NIP-04 or NIP-44 ciphertext: one unbroken base64 run, with NIP-04's `?iv=` tail if any. */
+const CIPHERTEXT = /^[A-Za-z0-9+/]{32,}={0,2}(?:\?iv=[A-Za-z0-9+/]+={0,2})?$/;
+
+/**
+ * An event another app wrote on a kind number a card is written for (Shopstr's carts on 30405,
+ * a planner's encrypted tasks on 30301, Paygress on 38385): said for what it is not, with a
+ * ciphertext body left undrawn. The kind's own badge gives way to "kind N" (`registerBadge`).
+ */
+export function notOursCard(ev, opts, noun) {
+  const text = String(ev.content || "").trim();
+  const inner =
+    `<div class="result-body muted">a kind ${esc(ev.kind)} event that is not ${esc(noun)}</div>` +
+    (CIPHERTEXT.test(text) ? `<div class="muted-note">its content is encrypted</div>` : bodyHtml(opts, text, 200, true));
+  return shell(ev, opts, inner);
+}
+
 /**
  * A person, linked: their name when the store knows one, else a short npub, the full npub in the
  * hover. Never hex.

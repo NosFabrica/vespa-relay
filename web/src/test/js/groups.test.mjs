@@ -3,7 +3,7 @@
 import assert from "assert";
 import { readFileSync } from "node:fs";
 
-const { ownGroups, metaGroup, postedTo, rank, where, relayLabel, isNip04, sealed, privateGroups } =
+const { ownGroups, metaGroup, postedTo, rank, where, isNip04, sealed, privateGroups } =
   await import(new URL("../../main/resources/web/shared/groups.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
@@ -162,8 +162,6 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(where({ relayUrl: null, host: null }).text, "unknown relay", "and nothing invents one");
 
-assert.strictEqual(relayLabel("wss://x.example/"), "x.example", "the label drops the scheme and the trailing slash");
-assert.strictEqual(relayLabel("wss://x.example/inbox"), "x.example/inbox", "…and keeps a real path");
 
 // The `h` tag carries the bare id, the same half-identity the filter has.
 assert.strictEqual(postedTo({ tags: [["h", "chachi"], ["h", "second"]] }), "chachi", "the `h` tag is the room");
