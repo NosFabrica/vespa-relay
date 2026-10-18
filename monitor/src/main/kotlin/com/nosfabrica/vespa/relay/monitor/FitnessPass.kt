@@ -392,7 +392,7 @@ class FitnessPass(
             withholdTlsDead(label, toDial, batch)
             withholdUnspoken(label, toDial, batch)
             val written = write(label, held, waiting, stale, batch)
-            if (label != AliasMonitor.FAST_LANE) {
+            if (sweep) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
                 val prime =
                     candidates.filterTo(HashSet()) { url ->
