@@ -99,29 +99,42 @@ class FitnessPass(
      */
     private val writeCursors = ConcurrentHashMap<String, String>()
 
-    /**
-     * Writes a batch earned and the store did not take, per url: a grade or a withdrawal, replayed by
-     * [flushPending] rather than dropped until the next sweep. A later measurement of the url replaces it.
-     */
-    private val pending = ConcurrentHashMap<NormalizedRelayUrl, suspend () -> Boolean>()
+    /** One write the store did not take: when it was earned, the grade it signs (null takes one back), and the write. */
+    private class Pending(
+        val earnedAt: Long,
+        val grade: String?,
+        val write: suspend () -> Boolean,
+    )
 
     /**
-     * Replay the writes the store did not take, under the same limits as a batch's own. Returns how
-     * many landed; what still does not stays pending. The caller serialises this with [measure].
+     * Writes a batch earned and the store did not take, per url, replayed by [flushPending] rather
+     * than dropped until the next sweep. A later batch's decision about the url replaces it.
+     */
+    private val pending = ConcurrentHashMap<NormalizedRelayUrl, Pending>()
+
+    /**
+     * Replay the writes the store did not take, under the same limits as a batch's own, dropping any
+     * the record has since overtaken. Returns how many landed. The caller serialises this with [measure].
      */
     suspend fun flushPending(): Int {
         if (pending.isEmpty()) return 0
-        val urls = pending.keys.sortedBy { it.url }
+        val queued = HashMap(pending)
         progress.phase(RETRYING_WRITES)
-        progress.measuring(urls.size, Processors.UNIT_VERDICT)
         try {
+            val held = readStanding("fitness", RETRYING_WRITES) { record.load(queued.keys) } ?: return 0
+            val overtaken = queued.filter { (url, write) -> overtaken(url, write, held) }
+            for ((url, write) in overtaken) pending.remove(url, write)
+            val urls = (queued.keys - overtaken.keys).sortedBy { it.url }
+            progress.measuring(urls.size, Processors.UNIT_VERDICT)
             val tally =
                 writeEach(urls, writeConcurrency, publishDeadlineMs, PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_PUBLISH) { url ->
-                    pending[url]?.invoke() ?: true
+                    queued.getValue(url).write()
                 }
-            pending.keys.removeAll(tally.stored)
+            // Removed only if still the write that landed: a batch may have queued a newer one meanwhile.
+            for (url in tally.stored) pending.remove(url, queued.getValue(url))
             System.err.println(
                 "router: fitness — ${tally.stored.size} of ${urls.size} pending write(s) landed" +
+                    (if (overtaken.isEmpty()) "" else ", ${overtaken.size} dropped as overtaken by the record") +
                     (tally.stoppedBy?.let { "; the rest wait again because $it" }.orEmpty()),
             )
             return tally.stored.size
@@ -129,6 +142,20 @@ class FitnessPass(
             progress.clearMeasuring()
             progress.phase(Processors.IDLE)
         }
+    }
+
+    /**
+     * Has the record moved past this queued write: a grade measured after it, or, for a `prime`, a
+     * stability refusal or a fold the roster would otherwise be overruled on.
+     */
+    private fun overtaken(
+        url: NormalizedRelayUrl,
+        write: Pending,
+        held: RelayVerdictRecord.Verdicts,
+    ): Boolean {
+        val standing = held.fitness[url]?.measuredAt
+        if (standing != null && standing > write.earnedAt) return true
+        return write.grade == Verdict.PRIME.value && (url in held.inconsistent || url in held.aliases)
     }
 
     /** The NEG-OPEN's answer, boxed so `withTimeoutOrNull` can tell null from the clock firing. */
@@ -229,8 +256,6 @@ class FitnessPass(
             val mates = world().matesOf(candidates)
             // After the passes before this one wrote; without the standing folds an alias would be graded as its own relay.
             val held = readStanding("fitness", label) { record.load(candidates + mates) } ?: return 0
-            // This batch measures these again, and its outcome is the one to write.
-            pending.keys.removeAll(candidates.toSet())
             // The free refusals first: standing verdicts other passes paid dials for.
             val folded = foldedAway(held, candidates)
             for ((alias, canonical) in folded) {
@@ -397,7 +422,6 @@ class FitnessPass(
                     writes.getValue(url)()
                 }
             tally.resumeAt?.let { writeCursors[label] = it.url }
-            for ((url, write) in writes) if (url !in tally.stored) pending[url] = write
             // A waiting url's standing `prime` is withdrawn, not replaced: whether it is its own relay is the fold's to say.
             val unprimed = waiting.keys.filter { held.fitness[it]?.value == Verdict.PRIME.value }.sortedBy { it.url }
             val withdrawals = unprimed.associateWith { url -> suspend { record.retireFitness(url) != null } }
@@ -411,7 +435,10 @@ class FitnessPass(
                         withdrawals.getValue(url)()
                     }.stored
                 }
-            for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = withdraw
+            // This batch's decision replaces whatever waited for these urls; a url it decided nothing about keeps its write.
+            for (url in outcomes.keys + waiting.keys) pending.remove(url)
+            for ((url, write) in writes) if (url !in tally.stored) pending[url] = Pending(measuredAt, outcomes.getValue(url).verdict.value, write)
+            for ((url, withdraw) in withdrawals) if (url !in withdrawn) pending[url] = Pending(measuredAt, null, withdraw)
             if (label != AliasMonitor.FAST_LANE) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
                 val prime = candidates.filterTo(HashSet()) { url -> outcomes[url]?.let { it.verdict == Verdict.PRIME } ?: (url !in withdrawn && held.fitness[url]?.value == Verdict.PRIME.value) }

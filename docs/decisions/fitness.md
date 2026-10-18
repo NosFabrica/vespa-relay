@@ -508,3 +508,12 @@ others. None of those supports "never answered": a rate limit and an
 unrecognised word are deferred and measured again next pass, and a partial
 refusal is deferred as a server that answered. Only `REFUSED`, `NO_ROUTE` and
 `TIMEOUT` still earn `silent`.
+
+**A queued write is dropped only by a decision that replaces it.** Each batch
+cleared the queue for its candidates before it had measured anything, so a
+batch the guard then refused threw away the grades and withdrawals an earlier
+batch had earned, and a batch whose standing read failed left an old `prime`
+queued to be replayed after the stability gate had refused the relay. The
+queue is now cleared per url once the batch has decided that url, and the
+replay reads the record first: a write a later grade has overtaken, or a
+`prime` the stability gate or the fold has since contradicted, is dropped.
