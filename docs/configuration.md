@@ -157,7 +157,10 @@ without scraping the page's markup. It carries an `ETag` and answers `304` to a
 conditional request, which is what makes polling it cheap. The one rule to hold
 when adding fields: everything in the document is a fact about **stored events**,
 never about clients. `/pressure` caps its `samples` field for exactly that
-reason.
+reason. Beside it, `/pressure`'s `liveGate` counts the live events dropped
+since boot because their author's trust check failed (`failed`) or got no
+store read in time (`shed`); either growing means gated live feeds are missing
+events.
 
 ## Relay identity (NIP-11)
 

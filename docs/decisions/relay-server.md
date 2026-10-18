@@ -390,10 +390,23 @@ or when it is cancelled waiting, so the gate needs no disconnect hook at all.
 such event on each gated subscription launched its own store read, unbounded,
 and a failed read was swallowed by `runCatching` along with cancellation. The
 reads now run under `ColdAuthorChecks.MAX_IN_FLIGHT` across every
-subscription; past it the event is dropped, as the gate already drops one whose
-read failed, and both are counted and said once a minute. Concurrent reads for
-one author are coalesced in the store's `TrustCells`, so the bound counts
-events waiting, not distinct reads. A subscription closing is not a failure.
+subscription; a check that gets no slot in time is dropped, as the gate
+already drops one whose read failed, and both are counted and said once a
+minute. A subscription closing is not a failure.
+
+**Cold-author checks coalesce per author before taking a slot.** The bound was
+first taken per subscription that saw the event, while the store's
+`TrustCells` already merged their reads, so a hundred gated feeds meeting one
+burst of cold authors (most of a global feed, on a 60s cell TTL) used the bound
+up on waiters and silently dropped live events. One read per author is now in
+flight; every other check on that author waits on it without a slot and then
+asks its own gate's cache, and only one whose rule reads a cell that read did
+not warm (another rank service) reads for itself. Keyed by author alone because
+the gate's rules are the store's; the cost of a miss is one extra wait, never a
+wrong answer. Waiting checks are bounded separately and far higher, a check
+queues up to `QUEUE_MS` for a slot instead of dropping at once, and the
+waiters on a failed read fail closed with it. The dropped counts are on
+`GET /pressure` as `liveGate`.
 
 **The trust pages are public, and `explain` is bounded and cached.** The pulse
 is gated because it quotes what people searched for; every field on
