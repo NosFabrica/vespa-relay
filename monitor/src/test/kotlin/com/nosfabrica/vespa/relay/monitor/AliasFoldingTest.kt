@@ -99,6 +99,41 @@ class AliasFoldingTest {
         override suspend fun <T : Event> query(filter: Filter): List<T> = throw IllegalStateException("the store cannot answer")
     }
 
+    /** Reads answer; every write hangs, or is refused outright. */
+    private class StuckWrites(
+        private val inner: IEventStore,
+        private val hang: Boolean,
+    ) : IEventStore by inner {
+        override suspend fun insert(event: Event) {
+            if (hang) CompletableDeferred<Unit>().await() else throw IllegalStateException("the store refused the write")
+        }
+    }
+
+    /** Six hosts of two urls, each a fold once measured. */
+    private val sixHosts = (0 until 6).flatMap { listOf(RelayUrlNormalizer.normalize("wss://host$it.example"), RelayUrlNormalizer.normalize("wss://host$it.example/alpha")) }
+
+    private fun stuckFold(hang: Boolean) =
+        AliasFolding(
+            aliases = RelayAliases(),
+            record = RelayVerdictRecord(StuckWrites(newStore(), hang), signer),
+            probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+            publishDeadlineMs = 300L,
+        )
+
+    @Test
+    fun `a store that stops taking writes stops the fold's writes and not the pass`() =
+        runBlocking {
+            val learned = withTimeout(30_000) { stuckFold(hang = true).measure("t", sixHosts, canDial = { true }) }
+
+            assertEquals(0, learned, "a fold the store never took was counted as learned")
+        }
+
+    @Test
+    fun `a fold the store refused is not counted as learned`() =
+        runBlocking {
+            assertEquals(0, stuckFold(hang = false).measure("t", sixHosts, canDial = { true }))
+        }
+
     private fun folding(
         store: NostrSemanticsStore,
         upstreams: Upstreams,

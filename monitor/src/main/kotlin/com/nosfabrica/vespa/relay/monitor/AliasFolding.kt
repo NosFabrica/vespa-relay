@@ -56,6 +56,8 @@ class AliasFolding(
     val progress: Processors.Handle? = null,
     /** The proxy, for the gate only. */
     tor: TorTransport? = null,
+    /** The wall clock on one verdict write. */
+    private val publishDeadlineMs: Long = FitnessPass.PUBLISH_DEADLINE_MS,
 ) {
     /** One gate object, not one per pass. */
     private val gate = DialGate.over(concurrency, tor)
@@ -146,6 +148,18 @@ class AliasFolding(
         for (group in all - groups.toSet()) {
             undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
         }
+        // One set of write limits for the whole pass, so a store that stops answering stops every group's writes.
+        val writer =
+            VerdictWriter(
+                FitnessPass.WRITE_CONCURRENCY,
+                publishDeadlineMs,
+                FitnessPass.PUBLISH_WEDGE_LIMIT,
+                FitnessPass.PUBLISH_WEDGE_BUDGET_MS,
+                progress,
+                FitnessPass.STAGE_PUBLISH,
+                // The position counts hosts, not writes.
+                tick = false,
+            )
         if (groups.isNotEmpty()) {
             progress?.measuring(groups.size, Processors.UNIT_HOST)
             val newVerdicts = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
@@ -271,11 +285,9 @@ class AliasFolding(
                                     if (everyUrlAnswered && wanted.size > 1) {
                                         val survivor = wanted.first()
                                         val folds = aliases.foldUnreadable(wanted, survivor)
-                                        for (alias in folds.keys) {
-                                            guarded { record.publishUnreadable(alias, survivor, wanted.size) }
-                                        }
+                                        val landed = writer.write(folds.keys.toList()) { record.publishUnreadable(it, survivor, wanted.size) != null }
                                         if (folds.isNotEmpty()) {
-                                            newVerdicts += folds.keys
+                                            newVerdicts += landed
                                             clearUndecidable(survivor)
                                             System.err.println(
                                                 "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
@@ -350,7 +362,6 @@ class AliasFolding(
                                 val print = prints[alias].orEmpty()
                                 // Against the url it folded onto, which is not always the leader.
                                 val shared = prints[canonical].orEmpty().count { it in print }
-                                newVerdicts += alias
                                 verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
                             }
                             // A cleared url was held up against the leader and every other head; the
@@ -370,22 +381,20 @@ class AliasFolding(
                                 markUndecidable(leader, startedAtMs)
                                 undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
                             }
-                            for ((alias, v) in verdicts) {
-                                guarded {
-                                    // Both flags can be set at once; the twin form wins because the
-                                    // pairing is the argument.
-                                    if (v.secureTwin) {
-                                        record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
-                                    } else if (v.groupList) {
-                                        record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
-                                    } else {
-                                        record.publish(alias, v.canonical, v.sampled, v.shared)
-                                    }
+                            val landed =
+                                writer.write((verdicts.keys + cleared.keys).toList()) { url ->
+                                    val v = verdicts[url]
+                                    val c = cleared[url]
+                                    // Both flags can be set at once; the twin form wins because the pairing is the argument.
+                                    when {
+                                        v == null -> c?.let { record.publishDistinct(url, it.sampled, it.comparedAgainst, it.bestShared) }
+                                        v.secureTwin -> record.publishSecureTwin(url, v.canonical, v.sampled, v.groupList)
+                                        v.groupList -> record.publishGroupList(url, v.canonical, v.sampled, v.shared)
+                                        else -> record.publish(url, v.canonical, v.sampled, v.shared)
+                                    } != null
                                 }
-                            }
-                            for ((url, c) in cleared) {
-                                guarded { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
-                            }
+                            // Only what the store took is learned; the rest is measured again next pass.
+                            newVerdicts += verdicts.keys.filter { it in landed }
                         } finally {
                             // In the launch, not from `invokeOnCompletion`, which can run after the scope resumes.
                             progress?.attempted()
@@ -397,6 +406,14 @@ class AliasFolding(
             learned = newVerdicts.size
         }
 
+        if (writer.unwritten > 0) {
+            System.err.println(
+                "router: $label fold — ${writer.unwritten} verdict(s) NOT written (${writer.wedged} hit the write deadline, " +
+                    "${writer.declined} failed outright, ${writer.refused} never started" +
+                    (writer.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
+                    "); those hosts are measured again next pass",
+            )
+        }
         val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates, aliases) else null
         if (cleaned != null && (probed > 0 || learned > 0)) {
             System.err.println(
@@ -489,19 +506,6 @@ class AliasFolding(
                 progress?.released(url.url)
             }
         }
-
-    /**
-     * One verdict write, guarded so a failed write does not take the pass down. Not
-     * `runCatching`, which swallows CancellationException.
-     */
-    private suspend fun guarded(write: suspend () -> Unit) {
-        try {
-            write()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-        }
-    }
 
     /**
      * Is this group's host still inside the window a failed pass bought it? Keyed by host: the
