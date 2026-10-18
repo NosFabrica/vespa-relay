@@ -34,6 +34,8 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 
 /** File persistence for the NIP-86 [BanStore]. Only the moderation lists are durable. */
 object BanListFile {
@@ -49,9 +51,15 @@ object BanListFile {
     ) {
         val file = File(path)
         if (!file.exists()) return
+        val text =
+            try {
+                Files.readString(file.toPath())
+            } catch (e: IOException) {
+                refuse(path, "it cannot be read (${e::class.simpleName}: ${e.message}); $OWNER_HINT")
+            }
         val root =
             try {
-                Json.parseToJsonElement(file.readText())
+                Json.parseToJsonElement(text)
             } catch (e: Exception) {
                 refuse(path, "it is not JSON (${e::class.simpleName})")
             }
@@ -83,9 +91,15 @@ object BanListFile {
             writeDurably(File(path), json.encodeToString(JsonObject.serializer(), doc))
         } catch (e: Exception) {
             // Not thrown: the ban is already enforced in memory. It vanishes on restart, so said aloud.
-            System.err.println("nip86: could not persist ban lists to $path (${e.message}) — the change holds until restart; the previous file is kept")
+            System.err.println(
+                "nip86: could not persist ban lists to $path (${e::class.simpleName}: ${e.message}) — the change holds until restart; " +
+                    "the previous file is kept. If it is a permissions error, $OWNER_HINT",
+            )
         }
     }
+
+    /** The image's user; a bind-mounted state directory must be its to read and write. */
+    private const val OWNER_HINT = "the relay runs as uid 10001, so the file and its directory must be that user's (on the host: sudo chown -R 10001:10001 <dir>)"
 
     private fun refuse(
         path: String,

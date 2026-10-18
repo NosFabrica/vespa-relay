@@ -108,6 +108,22 @@ class RelayStateTest {
         }
     }
 
+    /** A permissions error is the operator's chown, not a corrupt file to move aside. */
+    @Test
+    fun `a state file the relay cannot read is refused as unreadable, with the owner to fix, not as bad JSON`() {
+        // A directory where the file goes fails the read as a permissions error would, even for root.
+        val dir = File.createTempFile("relay-state-unreadable", ".json").apply { delete() }
+        try {
+            assertTrue(dir.mkdir())
+            val message = assertFailsWith<IllegalStateException> { openBanStore(dir.path) }.message.orEmpty()
+            assertContains(message, "cannot be read")
+            assertContains(message, "uid 10001")
+            assertFalse("not JSON" in message, message)
+        } finally {
+            dir.delete()
+        }
+    }
+
     @Test
     fun `a file with every list well formed loads, and a missing list is an empty one`() {
         val file = File.createTempFile("relay-state-partial", ".json")

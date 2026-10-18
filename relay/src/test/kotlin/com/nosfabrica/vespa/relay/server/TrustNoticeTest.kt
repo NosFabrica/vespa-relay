@@ -156,7 +156,7 @@ class TrustNoticeTest {
 
     /** A 10040 is the reader's to write, so its size is too: one check costs one bounded filter and one short NOTICE. */
     @Test
-    fun `a list naming more rank services than the cap is checked on the first few and says how many it skipped`() =
+    fun `a list naming more rank services than the cap is checked on the first few and claims nothing about the rest`() =
         runBlocking {
             val asked = Collections.synchronizedList(mutableListOf<Filter>())
             val watched =
@@ -166,11 +166,12 @@ class TrustNoticeTest {
                         return store.query(filter)
                     }
                 }
-            val many = List(TrustNotice.MAX_RANK_SERVICES + 5) { "%064x".format(it + 1) }
+            // The only service with cards here is past the cap, so the reader's ranking does work.
+            val many = List(TrustNotice.MAX_RANK_SERVICES + 4) { "%064x".format(it + 1) } + service.pubKey
             store.insert(providerList(by = reader, tags = many.map { arrayOf("30382:rank", it, relayUrl.url) }))
+            store.insert(scoreCard())
             val said = TrustNotice(watched, CoroutineScope(SupervisorJob())).notices(reader.pubKey)
-            assertEquals(listOf(TrustNotice.noScores(many.take(TrustNotice.MAX_RANK_SERVICES), dropped = 5)), said)
-            assertTrue("and 5 more" in said.single(), said.single())
+            assertEquals(emptyList(), said, "no restriction claimed over services it did not check")
             val cardAsk = asked.single { it.kinds == listOf(30382) }
             assertEquals(TrustNotice.MAX_RANK_SERVICES, cardAsk.authors?.size)
         }

@@ -279,6 +279,45 @@ class RelayProfileTest {
             }
         }
 
+    @Test
+    fun `a request that fails outside the store read leaves the publisher serving the next one`() =
+        runBlocking {
+            val store = newStore()
+            val asks = AtomicInteger(0)
+            val said = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val source = { if (asks.incrementAndGet() == 1) throw IllegalStateException("document unreadable") else info }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                val publisher = RelayProfilePublisher(scope, profile(store), source, log = {}, alarm = { said += it })
+                publisher.request()
+                while (said.isEmpty()) delay(5)
+                assertTrue("document unreadable" in said.single(), said.single())
+                publisher.request()
+                awaitName(store, info.name)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `an error that stops the publisher is said, and so is every request after it`() =
+        runBlocking {
+            val said = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val stopped = CompletableDeferred<Unit>()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + kotlinx.coroutines.CoroutineExceptionHandler { _, _ -> stopped.complete(Unit) })
+            try {
+                val publisher = RelayProfilePublisher(scope, profile(newStore()), { throw AssertionError("broken build") }, log = {}, alarm = { said += it })
+                publisher.request()
+                kotlinx.coroutines.withTimeout(5_000) { stopped.await() }
+                assertTrue(said.single().contains("stopped on java.lang.AssertionError"), said.single())
+                publisher.request()
+                assertEquals(2, said.size)
+                assertTrue("not republished" in said[1], said[1])
+            } finally {
+                scope.cancel()
+            }
+        }
+
     /** A publish waiting out a cold engine signs the document as it stands when the engine answers. */
     @Test
     fun `a retry publishes the document current when it runs, not the one it was asked with`() =

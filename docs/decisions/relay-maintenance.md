@@ -237,6 +237,13 @@ document on each attempt, so a burst of renames costs one more publish and the
 last word is the last rename. The ten-minute budget is a monotonic deadline
 from the first try, as in `TrustReconcile`.
 
+**The publisher outlives a failed request, and says when it cannot.** Only the
+store call was guarded, so an exception reading the document, or any `Error`,
+ended the one job, and every later rename was accepted and published nothing.
+Each request's failure is now said and the next request runs; an `Error` still
+ends the job, since the process may not be sound, but it is said as the
+publisher stopping, and every request after it says it was not published.
+
 ## FtsReindex
 
 **The walk repairs fed columns only, never derived ones.** `search_text_gram`
@@ -278,6 +285,15 @@ and never counted the attempts themselves, so an engine that took minutes to
 fail each call kept the loop going for hours against a "ten-minute" budget.
 The loop now measures a `TimeSource.Monotonic` deadline from the first attempt;
 the time source is a parameter, so the test drives it.
+
+**A failure after a walk longer than the budget starts a fresh budget.** As a
+deadline from the first try, an hour-long walk that failed at minute fifty
+(typically an engine restarted under it) got no retry at all, though the
+engine was about to need the whole budget to come back. An attempt that ran
+longer than the budget was walking, not waiting out a cold engine, so its
+failure restarts the deadline from the moment it ended; an engine that times
+out each call in minutes never outlasts the budget and still stops at it. The
+first failure is therefore always retried.
 
 **The first failure prints its stack, whichever attempt it is on.** A success on
 attempt 1 followed by a throw on attempt 2 deserves the same diagnostic, or the

@@ -126,6 +126,22 @@ class TrustReconcileProgressTest {
             assertEquals(3, attempts, "four minutes per attempt spends a ten-minute budget on the third")
         }
 
+    /** A walk that fails late (an engine restarted under it) must still wait out the engine coming back. */
+    @Test
+    fun `a failure after a walk longer than the budget gets a fresh budget from its end`(): Unit =
+        runBlocking {
+            val clock = TestTimeSource()
+            val out = mutableListOf<String>()
+            var attempts = 0
+            reconcileWithRetry(time = clock, retryMs = 1, maxWaitMs = 10 * 60_000L, log = { out += it }) {
+                attempts++
+                clock += if (attempts == 1) 50.minutes else 1.minutes
+                throw IllegalStateException("engine restarted")
+            }
+            assertEquals(11, attempts, "ten one-minute failures fit the fresh ten-minute budget after the walk")
+            assertTrue(out.any { "failed 3000s into its walk" in it }, "the fresh budget is said: $out")
+        }
+
     @Test
     fun `zero providers is retried within the same deadline, then accepted`(): Unit =
         runBlocking {
