@@ -45,14 +45,14 @@ object StatusVocabulary {
 
     private val byPlane: Map<StatusPlane, JsonObject> =
         mapOf(
-            StatusPlane.MIRROR to JsonObject(TERMS + MIRROR_TERMS),
-            StatusPlane.MONITOR to JsonObject(TERMS + MONITOR_TERMS),
+            StatusPlane.MIRROR to JsonObject(SHARED_TERMS + MIRROR_TERMS),
+            StatusPlane.MONITOR to JsonObject(SHARED_TERMS + MONITOR_TERMS),
         )
 
     /** The definitions [document] needs: every member it publishes, at any depth, and no others. */
     fun termsFor(document: JsonObject): JsonObject = select(document, TERMS)
 
-    /** [termsFor] for [plane]'s own document, where a name both planes define reads that plane's definition. */
+    /** [termsFor] for [plane]'s own document: the shared terms and that plane's, never the other plane's words. */
     fun termsFor(
         document: JsonObject,
         plane: StatusPlane,
