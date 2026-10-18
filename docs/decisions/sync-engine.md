@@ -403,9 +403,8 @@ The bands, the sweep cursors and the manifest were written to a temp file and
 renamed without an fsync, so a crash shortly after a flush could leave an
 empty or torn file. A load that failed part way kept the maps it had already
 filled, said "starting fresh", and the next flush overwrote the only copy of
-the damage. All three now go through one durable write (`PersistedJsonState`:
-the temp file synced before the rename, the directory after it), and a parse
-failure moves the file aside as `<name>.corrupt-<ms>` and empties every map,
-so the process starts from a clean state rather than from half a file. The
-write mirrors `:common`'s `util.writeDurably`; once this module's base carries
-that helper, the private copy goes.
+the damage. All three now go through `:common`'s `writeDurably` (the temp
+file synced before the rename, the directory after it), and a parse failure
+in `PersistedJsonState.read` quarantines the file as `<name>.corrupt-<ms>` and
+empties every map, so the process starts from a clean state rather than from
+half a file.

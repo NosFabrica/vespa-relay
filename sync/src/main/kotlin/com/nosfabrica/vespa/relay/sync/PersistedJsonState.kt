@@ -20,16 +20,12 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.util.quarantine
+import com.nosfabrica.vespa.relay.util.writeDurably
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.io.File
-import java.io.FileOutputStream
-import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -167,39 +163,4 @@ private val prettyJson = Json { prettyPrint = true }
 internal fun writeJsonFile(
     target: File,
     doc: JsonObject,
-) = writeDurably(target, prettyJson.encodeToString(JsonObject.serializer(), doc).toByteArray(Charsets.UTF_8))
-
-/**
- * The same contract as `:common`'s `util.writeDurably`, which this module's base does not carry
- * yet: the temp file reaches the device before the rename, and the rename before this returns.
- */
-private fun writeDurably(
-    target: File,
-    bytes: ByteArray,
-) {
-    val dir = target.absoluteFile.parentFile
-    dir.mkdirs()
-    val tmp = File(dir, "${target.name}.tmp")
-    try {
-        FileOutputStream(tmp).use { out ->
-            out.write(bytes)
-            out.fd.sync()
-        }
-        try {
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-    } catch (e: Exception) {
-        tmp.delete()
-        throw e
-    }
-    // The rename is durable only once the directory entry is; a filesystem that cannot sync one is left as is.
-    runCatching { FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) } }
-}
-
-/** `:common`'s `util.quarantine`: [file] moved aside as `<name>.corrupt-<epochMillis>`, or null when it could not be. */
-private fun quarantine(file: File): File? {
-    val aside = File(file.absoluteFile.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}")
-    return runCatching { Files.move(file.toPath(), aside.toPath()) }.map { aside }.getOrNull()
-}
+) = writeDurably(target, prettyJson.encodeToString(JsonObject.serializer(), doc))
