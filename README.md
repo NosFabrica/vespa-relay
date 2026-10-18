@@ -146,6 +146,7 @@ from the query before matching, so they never become search terms:
 | `sort:recent` | chronological: the same match set a search always recalls, newest first and still trust-gated, with match quality not consulted |
 | `filter:rank:gte:N` | drop results below trust rank `N` (0–100) |
 | `include:spam` | lift the default trust floor and include everything |
+| `language:pt` / `language:es` | also match the other forms of each word (plural, gender, accents) in Portuguese or Spanish notes, ranked below the form typed; other languages are ignored |
 | `-word` / `"exact phrase"` | Google-style exclusions and phrase matching |
 
 A NIP-42 login is an implicit `observer:` on every query: searches rank through
