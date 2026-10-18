@@ -17,6 +17,17 @@ none sent and the only grade still reachable was `dead` off the raw TCP
 pre-probe; and the progress document was never published, so the rows moved
 in memory and reached no page.
 
+**One boot sequence, with the mirror's steps conditional.** The fix above was
+a second copy of `start` behind the early return, and the two copies were
+bound to drift the next time a step was added to one. `start` now runs one
+sequence; the pool and the push loops are inert with no streams, and only the
+closing announcement differs.
+
+**Every shutdown step is guarded.** `close` and the shutdown hook ran their
+steps bare, so a throw from `peers.close()` or `ingest.closeIntake()` skipped
+everything after it, the state files' last write included. Each step now runs
+under `shutdownStep`, which logs the failure and lets the next one run.
+
 **The progress document is published on its own loop.** It used to ride the
 per-stream phase report, which is skipped for a push-only router, so a
 perfectly healthy mirror with no down stream rendered as a stopped one. The

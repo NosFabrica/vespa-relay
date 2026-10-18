@@ -234,38 +234,21 @@ class SyncEngine(
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
+    /** One boot for every node; a monitor-only one still needs ingest, a connected client and the progress document. */
     fun start(): SyncEngine {
-        if (visitStreams.isEmpty() && upUpstreams.isEmpty()) {
-            System.err.println("router: no upstreams configured; nothing to mirror")
-            // A monitor-only node still needs ingest draining, a connected client and the
-            // progress document; each of those fails silently when skipped.
-            ingest.start()
-            registerProcessors()
-            peers.announceTor()
-            watchForFatals()
-            scope.launch { healthLoop() }
-            peers.connect()
-            monitor.start()
-            publishProgressLoop()
-            scope.launch { statsLoop() }
-            return this
-        }
+        val mirrors = visitStreams.isNotEmpty() || upUpstreams.isNotEmpty()
+        if (!mirrors) System.err.println("router: no upstreams configured; nothing to mirror")
 
         ingest.start()
         registerProcessors()
-
         peers.announceTor()
-
         watchForFatals()
         scope.launch { healthLoop() }
-
         peers.connect()
 
         // Registered before anything is launched, so silence never reads as unconfigured.
         visitStreams.forEach { phases.register(it.name) }
-
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
-
         visitPool.start()
 
         monitor.start()
@@ -275,9 +258,9 @@ class SyncEngine(
         if (visitStreams.isNotEmpty()) {
             scope.launch { repeatEvery(PROGRESS_INTERVAL_MS, "phase report") { phases.report().forEach { System.err.println(it) } } }
         }
-
         scope.launch { statsLoop() }
 
+        if (!mirrors) return this
         System.err.println(
             "router: ${visitStreams.size} down stream(s) on the pool (${downUpstreams.size} declared relay(s))" +
                 " + ${upUpstreams.size} up relay(s)" +
@@ -555,19 +538,20 @@ class SyncEngine(
     /** Number of streams whose relays are discovered from the store, not configured. */
     fun dynamicStreamCount(): Int = discoveryStreams.size
 
+    /** Each step guarded, so one that throws never keeps the next from running. */
     override fun close() {
         // Cursors first: a visit or sweep killed mid-flight keeps the ground it gained.
-        runCatching { bands.flush() }
-        runCatching { sweepState.flush() }
+        shutdownStep("flush the bands") { bands.flush() }
+        shutdownStep("flush the sweep state") { sweepState.flush() }
         // Workers before transport, so cancelled visits do not count their own deaths as aborts.
-        scope.cancel()
+        shutdownStep("cancel the workers") { scope.cancel() }
         // Listeners off the client before the client's pool closes.
-        runCatching { complaints.close() }
-        runCatching { pages.close() }
-        peers.close()
-        ingest.closeIntake()
+        shutdownStep("detach the complaints listener") { complaints.close() }
+        shutdownStep("detach the pages listener") { pages.close() }
+        shutdownStep("close the peer client") { peers.close() }
+        shutdownStep("close ingest's intake") { ingest.closeIntake() }
         // After the scope, so a worker mid-batch is cancelled rather than stranded.
-        ingest.close()
+        shutdownStep("close ingest") { ingest.close() }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +

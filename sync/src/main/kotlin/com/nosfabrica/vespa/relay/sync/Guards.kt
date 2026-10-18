@@ -24,6 +24,18 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
+/** One step of a shutdown: a throw is logged under [what] and swallowed, so the steps after it still run. */
+internal inline fun shutdownStep(
+    what: String,
+    step: () -> Unit,
+) {
+    try {
+        step()
+    } catch (e: Throwable) {
+        System.err.println("router: shutdown could not $what: ${e.javaClass.simpleName}: ${e.message?.take(120)}")
+    }
+}
+
 /**
  * Runs [tick] every [periodMs] until cancelled. A tick that throws is logged under [what] and
  * the loop goes on, so one bad tick cannot silence a periodic job for the life of the process.

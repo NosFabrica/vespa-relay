@@ -33,8 +33,20 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/** A periodic job outlives a bad tick and ends only on cancellation. */
-class GuardedLoopTest {
+/** A periodic job outlives a bad tick and ends only on cancellation; a shutdown runs every step. */
+class GuardsTest {
+    @Test
+    fun `a shutdown step that throws does not keep the next from running`() {
+        val ran = mutableListOf<String>()
+        shutdownStep("close the engine") {
+            ran += "engine"
+            error("the client pool would not close")
+        }
+        shutdownStep("close the bands") { ran += "bands" }
+        shutdownStep("close the store") { ran += "store" }
+        assertEquals(listOf("engine", "bands", "store"), ran, "the state files still get their last write")
+    }
+
     @Test
     fun `a tick that throws does not end the loop`() =
         runBlocking {

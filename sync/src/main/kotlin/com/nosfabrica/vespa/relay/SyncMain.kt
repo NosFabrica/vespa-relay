@@ -51,6 +51,7 @@ import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
+import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -346,21 +347,22 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            // Each step guarded: one that throws must not keep the state files from their last write.
             // Pages before the engine: they read state the engine is about to stop updating.
-            pulseSite?.stop(0, 0)
+            shutdownStep("stop the pulse page") { pulseSite?.stop(0, 0) }
             listOfNotNull(statusSite, monitorSite).forEach { (rollup, server) ->
-                rollup.close()
-                server.stop(1_000, 2_000)
+                shutdownStep("stop a status rollup") { rollup.close() }
+                shutdownStep("stop a status page") { server.stop(1_000, 2_000) }
             }
             // Engine before the store it writes to; the audit after the engine, so its final
             // report includes the last batch.
-            engine.close()
-            parseAudit?.close()
-            refusedIds.close()
-            poller?.close()
-            bands.close()
-            sweepState.close()
-            store.close()
+            shutdownStep("close the engine") { engine.close() }
+            shutdownStep("close the parse audit") { parseAudit?.close() }
+            shutdownStep("close the refused ids") { refusedIds.close() }
+            shutdownStep("close the pressure poller") { poller?.close() }
+            shutdownStep("close the bands") { bands.close() }
+            shutdownStep("close the sweep state") { sweepState.close() }
+            shutdownStep("close the store") { store.close() }
         },
     )
 
