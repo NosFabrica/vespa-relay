@@ -29,6 +29,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.time.Instant
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * What `/trust.html` charts: coverage, repairs in flight, and why reads come
@@ -116,9 +117,18 @@ object TrustDocument {
                 put("error", "not a 64-hex pubkey")
                 return@buildJsonObject
             }
-            val line = runCatching { store.explainTrust(pubkey) }
-            put("ok", line.isSuccess)
-            line.fold({ put("line", it) }, { put("error", it.message?.take(200) ?: it::class.simpleName ?: "failed") })
+            // The engine's own message can quote its answer, so it goes to the log and the page gets the class.
+            try {
+                val line = store.explainTrust(pubkey)
+                put("ok", true)
+                put("line", line)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("trust: explain $pubkey failed: ${e.message}")
+                put("ok", false)
+                put("error", "${e::class.simpleName ?: "failed"} (detail in the relay log)")
+            }
         }
 
     private val HEX64 = Regex("^[0-9a-fA-F]{64}$")

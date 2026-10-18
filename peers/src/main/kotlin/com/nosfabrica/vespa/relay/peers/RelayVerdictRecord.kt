@@ -82,7 +82,7 @@ class RelayVerdictRecord(
 
     /**
      * Read back every verdict covering [candidates]. Throws when the store cannot answer, and
-     * must: [AliasFolding.adopt] forgets every verdict it holds before adopting what comes back.
+     * must: a pass that reads nothing back skips its batch rather than acting on an empty set.
      */
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         val self = signer?.pubKey ?: return Verdicts()
@@ -580,7 +580,7 @@ class RelayVerdictRecord(
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 
-        /** The wall clock on one whole [edit]. Wider than `FitnessPass.PUBLISH_DEADLINE_MS`, which must fire first. */
+        /** The wall clock on one whole [edit]. Wider than `VerdictWrites.PUBLISH_DEADLINE_MS`, which must fire first. */
         const val EDIT_DEADLINE_MS = 120_000L
 
         private const val EDIT_FAILURE_LOG_MS = 60_000L
