@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
-import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
@@ -140,7 +139,7 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, IngestTuning(config.ingestConcurrency, config.ingestBatch), audit, servingPressure, scope, knownIds, newestVersions, refusals)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure, scope, knownIds, newestVersions, refusals)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */

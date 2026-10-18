@@ -1,6 +1,6 @@
 #!/bin/bash
-# Pre-push: block a push whose tests do not pass. CI runs the full gate on main;
-# this is the fast local check.
+# Pre-push: block a push that would fail CI's gate. `check` is the tests plus
+# what hangs off it: archTest (module boundaries) and jsTest (the web suite).
 
 GREEN='\033[1;32m'
 NC='\033[0m'
@@ -8,15 +8,15 @@ NC='\033[0m'
 echo "JAVA_HOME = $JAVA_HOME"
 java -version
 
-echo "Running tests..."
-./gradlew test --daemon
+echo "Running checks..."
+./gradlew check --daemon
 status=$?
 
 if [ "$status" = 0 ]; then
-    echo "All tests passed."
+    echo "All checks passed."
     exit 0
 else
-    echo 1>&2 "Some tests failed."
-    echo -e "Run ${GREEN}./gradlew test${NC} and fix the failures before pushing."
+    echo 1>&2 "Some checks failed."
+    echo -e "Run ${GREEN}./gradlew check${NC} and fix the failures before pushing."
     exit 1
 fi

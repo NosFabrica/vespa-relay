@@ -18,7 +18,8 @@
 
 services:
   vespa:
-    image: vespaengine/vespa
+    # Pinned: a pull must never swap the engine under a deployed schema (docs/migrations.md).
+    image: vespaengine/vespa:8.763.13
     container_name: vespa
     hostname: vespa
     # A LIMIT, not a reservation. Without one every container sees the whole

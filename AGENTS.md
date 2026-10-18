@@ -95,7 +95,7 @@ ABORT_CENSUS_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*AbortCen
 WIDTH_RESCUE_VESPA=http://localhost:8080 ./gradlew :sync:test --tests '*WidthRescueLiveProbe*' --rerun -i   # the whole #185 fix running; ~20 minutes
 BENCH_VESPA_URL=http://localhost:8080 ./gradlew :peers:test --tests '*RelayListReadCostBench*' --rerun -i    # what a relay-list read costs; BENCH_LIST_VISIT=0 BENCH_LIST_KIND=10002 BENCH_LIST_TAGS=r BENCH_LIST_INDEX=1
 BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :peers:test --tests '*IngestCostBench*' -PtestHeap=6g --rerun-tasks -i   # what one arriving event costs ingest
-docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa                                    # a bare engine is enough for the next one
+docker run -d --name vespa -p 8080:8080 -p 19071:19071 vespaengine/vespa:8.763.13                           # a bare engine is enough for the next one
 ./gradlew :peers:test --tests '*RelayListLiveProbe*' -DliveListProbe=true --rerun -i                        # real 10040s off a live relay through a real Vespa; -DliveListRelay=wss://… -DliveListVespa=http://… -DliveListKind=10002
 
 docker compose up -d --build relay            # the usual dev loop (serving only)
@@ -119,7 +119,7 @@ TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-d
 ```
 
 Git hooks are installed by the build: pre-commit runs `spotlessCheck`, pre-push
-runs the tests. Run `spotlessApply` before committing.
+runs `check` (the tests, `archTest` and `jsTest`). Run `spotlessApply` before committing.
 
 ## Layout
 
@@ -151,7 +151,7 @@ peers/…/relay/
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline, BisectingInsert, ProbeGate, ParseAudit, refused/; Processors, InFlight,
-                              StoreCalls, StatusVocabulary
+                              StoreCalls, StatusVocabulary (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
@@ -342,7 +342,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.
-- Gradle resolves hash conflicts lexicographically and silently: `resolutionStrategy { force(libs.quartz) }` in every module, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
+- Gradle resolves hash conflicts lexicographically and silently: `force(libs.quartz)` in the `vespa-relay.kotlin-module` convention (`build-logic/`), which every module applies, and check `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->` on every bump.
 - JitPack's build-status API lies; only the artifact file proves a build.
 - JitPack caches builds per group-spelling (`com.github.NosFabrica` vs `com.github.nosfabrica`).
 - An integration run that skips still prints `BUILD SUCCESSFUL`: start `DOCKER_MIN_API_VERSION=1.24 dockerd`, and read `skipped="…"` in `build/test-results/test/*.xml`.
