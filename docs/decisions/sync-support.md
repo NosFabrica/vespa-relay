@@ -168,6 +168,12 @@ left `close()` a no-op.
 upstream's set (it gains what we push), never ours, and re-reading gigabytes
 of ids per round bought nothing.
 
+**The snapshot gate is held for the snapshot alone.** The engine's one-permit
+`streamGate` is documented as bounding the id-set build, never a run, but the
+permit wrapped the snapshot, up to eight reconcile rounds and the paced
+publish loop, so one slow upstream held every other `up` stream's snapshot
+behind its pushes. The permit is now released once the ids are read.
+
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before
 recording the id. The only way into the heal queue is a store refusal of an
