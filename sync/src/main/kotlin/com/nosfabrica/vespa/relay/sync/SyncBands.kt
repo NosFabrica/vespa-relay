@@ -258,18 +258,6 @@ class SyncBands(
         return out
     }
 
-    /** What the relay said, for a band that reads as impossible; null for any other band. */
-    fun cannotReconcileWhy(
-        stream: String,
-        url: NormalizedRelayUrl,
-        filter: Filter,
-        band: String = "",
-        at: Long = System.currentTimeMillis() / 1000,
-    ): String? {
-        if (!cannotReconcile(stream, url, filter, band, at)) return null
-        return cannot[VerifiedKey(stream, filter.toJson(), url.url, band)]?.why
-    }
-
     /** When this ask's history was last verified by a completed reconcile, or null before its first. */
     fun verifiedAt(
         stream: String,
@@ -435,19 +423,6 @@ class SyncBands(
         band: SyncCoverage.Band,
         now: Long,
     ): Boolean = now - band.fullAt >= refetchThePastSecondsFor(stream)
-
-    fun coveringWindow(
-        stream: String,
-        urls: List<NormalizedRelayUrl>,
-        filter: Filter,
-    ): Filter = coverage(stream).coveringWindow(urls, filter)
-
-    /** Whether any of [urls] still has work outside its band. */
-    fun anyOutstanding(
-        stream: String,
-        urls: List<NormalizedRelayUrl>,
-        filter: Filter,
-    ): Boolean = urls.any { legs(stream, it, filter).isNotEmpty() }
 
     fun band(
         stream: String,
@@ -793,13 +768,6 @@ class SyncBands(
             walkedMin: Long,
             walkedTop: Long,
         ): Boolean = held == null || (walkedMin <= held.max && held.min <= walkedTop)
-
-        /** The dueness rule as a predicate, for tests. A clock of zero is always due. */
-        internal fun auditDue(
-            fullAt: Long,
-            now: Long,
-            negentropySyncThePastSeconds: Long,
-        ): Boolean = fullAt <= 0L || now - fullAt >= negentropySyncThePastSeconds
 
         /**
          * How long after an audit ran before the same ask may try again, whatever the outcome.

@@ -182,20 +182,20 @@ class SyncBandsTest {
         c.flush()
         val rebooted = SyncBands(f)
         assertTrue(rebooted.cannotReconcile(mirror, relay, profiles, "tier:all", at), "the verdict must ride the band file")
-        assertEquals("declined the NEG-OPEN", rebooted.cannotReconcileWhy(mirror, relay, profiles, "tier:all", at))
         assertEquals(mapOf((mirror to relay.url) to "declined the NEG-OPEN"), rebooted.cannotReconcileByUnit(at))
         f.delete()
     }
 
     @Test
     fun `an ask that never had a verified pass is due on its first visit`() {
-        // fullAt = 0 is quartz's never.
-        assertTrue(SyncBands.auditDue(fullAt = 0L, now = 1_000_000, negentropySyncThePastSeconds = 604_800))
+        val c = SyncBands(null)
         val week = 604_800L
-        val nowSec = 2_000_000L
-        assertFalse(SyncBands.auditDue(fullAt = nowSec - week + 1, now = nowSec, negentropySyncThePastSeconds = week))
-        assertTrue(SyncBands.auditDue(fullAt = nowSec - week, now = nowSec, negentropySyncThePastSeconds = week))
-        assertTrue(SyncBands.auditDue(fullAt = nowSec - 2 * week, now = nowSec, negentropySyncThePastSeconds = week))
+        assertNull(c.auditDueAt(mirror, relay, profiles, week), "no clock at all reads as never audited, which is due")
+        assertTrue(c.claimAudit(mirror, relay, profiles, week), "and the gate admits it on the first visit")
+
+        val verified = now() - 60
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = verified)
+        assertEquals(verified + week, c.auditDueAt(mirror, relay, profiles, week), "a verified ask is due one period after its reconcile")
     }
 
     @Test
@@ -319,71 +319,6 @@ class SyncBandsTest {
 
         val band = c.band(mirror, relay, profiles)!!
         assertEquals(1_700_005_000L, band.minCreatedAt, "the second pass walked everything; its span is the whole picture")
-    }
-
-    // ---- the shared snapshot window ----------------------------------------
-
-    @Test
-    fun `covering window collapses to the oldest ceiling once everyone is caught up`() {
-        val c = SyncBands(null)
-        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        c.record(mirror, other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
-
-        assertEquals(1_700_003_000L, c.coveringWindow(mirror, listOf(relay, other), profiles).since)
-    }
-
-    @Test
-    fun `one relay that has never synced puts the window back to the whole filter`() {
-        val c = SyncBands(null)
-        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-
-        // Identity, since Filter has no equals.
-        assertSame(profiles, c.coveringWindow(mirror, listOf(relay, other), profiles))
-        assertSame(profiles, c.coveringWindow(mirror, emptyList(), profiles))
-    }
-
-    @Test
-    fun `one shared window serves a whole stream of relays`() {
-        val c = SyncBands(null)
-        val third = RelayUrlNormalizer.normalize("wss://third.example")
-        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        c.record(mirror, other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
-        c.record(mirror, third, profiles, null, null, paged = false, reconciledThrough = 1_700_007_000L)
-
-        assertEquals(1_700_003_000L, c.coveringWindow(mirror, listOf(relay, other, third), profiles).since)
-    }
-
-    @Test
-    fun `a relay that needs nothing does not widen the shared window`() {
-        // `legs()` is empty for a covered relay, and empty must not read as "needs everything".
-        val capped = Filter(kinds = listOf(0), until = 1_700_005_000L)
-        val c = SyncBands(null)
-        c.record(mirror, relay, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        assertTrue(c.legs(mirror, relay, capped).isEmpty(), "the premise: this relay wants nothing")
-        c.record(mirror, other, capped, null, null, paged = false, reconciledThrough = 1_700_003_000L)
-
-        assertEquals(1_700_003_000L, c.coveringWindow(mirror, listOf(relay, other), capped).since)
-    }
-
-    @Test
-    fun `a group where nobody needs anything is asked about before a snapshot is built`() {
-        // `anyOutstanding` is how the caller avoids building an id set nobody needs.
-        val capped = Filter(kinds = listOf(0), until = 1_700_005_000L)
-        val c = SyncBands(null)
-        c.record(mirror, relay, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        c.record(mirror, other, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-
-        assertTrue(!c.anyOutstanding(mirror, listOf(relay, other), capped), "nobody wants anything")
-        assertTrue(c.anyOutstanding(mirror, listOf(relay, other), profiles), "…but a filter with no band still does")
-    }
-
-    @Test
-    fun `a relay with an older gap also widens the shared window`() {
-        val c = SyncBands(null)
-        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        c.record(mirror, other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
-
-        assertSame(profiles, c.coveringWindow(mirror, listOf(relay, other), profiles))
     }
 
     @Test

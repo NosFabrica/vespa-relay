@@ -1251,8 +1251,6 @@ internal class VisitPool(
             return from < mine.maxOf { it.max } && to > mine.minOf { it.min }
         }
 
-        const val DEFAULT_MAX_LIVE_CONCURRENCY = RouterConfig.DEFAULT_MAX_LIVE_CONCURRENCY
-
         internal const val SCHEDULE_CACHE_MS = 60_000L
 
         /**

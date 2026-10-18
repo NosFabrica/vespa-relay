@@ -556,7 +556,7 @@ An ask leaves `waiting` by its clock running out and by nothing else, so a
 steady while the audit counters climb is a rule being broken.
 
 **`neverRun` is the honest exception.** An ask with no completed pass is always
-due — `SyncBands.auditDue` short-circuits on a zero clock, so a relay's first
+due — `SyncBands.auditDueAt` reads a zero clock as never audited, so a relay's first
 audit happens on its first visit rather than a period later. That is deliberate,
 and it is also why a fresh deployment audits everything at once. It is counted
 apart from `due` so that storm reads as what it is: scheduled work whose
