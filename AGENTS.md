@@ -34,12 +34,15 @@ which is why it depends on quartz: verifying an `Authorization` header belongs
 beside the routes it protects, and the dependency can only run one way — Ktor
 must never reach `:common`.
 
-`pulse.html` is the one page here whose logic and styling are NOT inline
-(`web/pulse/page.js`, `web/pulse/pulse.css`). It is the one page serving a
-non-public document, so its policy is `default-src 'none'` with no
-`unsafe-inline` on script or style — which an inline `<script>` cannot satisfy.
-Putting one back would not fail loudly; the page would just stop working, in a
-browser only, so `PulseSiteTest` fails the build instead. One `stats.html`
+No page here carries inline code: every script is a file under `web/`
+(`app.js`, `stats/page.js`, `trust/page.js`, `observers/page.js`,
+`pulse/page.js`), and no markup carries an `on…=` handler (a failed picture is
+`data-broken`, `shared/broken.js`). Every page is served under
+`script-src 'self'` (`PAGE_CONTENT_SECURITY_POLICY` in `installPageDefaults`;
+pulse's own stricter one also refuses inline style). Putting inline code back
+would not fail loudly; the page would just stop working, in a browser only, so
+`PageSecurityTest`, `PulseSiteTest` and `broken.test.mjs` fail the build
+instead, and `csp.probe.mjs` shows it in Chromium. One `stats.html`
 serves the relay, the mirror and the monitor, each panel guarded on the section
 it reads, and every reference it makes is document-relative (`./web/…`,
 `stats.json`; `paths.test.mjs`) so it mounts behind `/sync/` or `/monitor/`.
@@ -63,6 +66,7 @@ node web/src/test/js/run.mjs       # the same suite, run directly
 node web/src/test/browser/row.probe.mjs http://localhost:7777 <observer-npub> "<a list title>"
 node web/src/test/browser/syncstatus.probe.mjs   # the per-relay table off a fixture; SHOT=/tmp/sync.png keeps the picture
 node web/src/test/browser/pager.probe.mjs        # the pager against a fake WebSocket
+node web/src/test/browser/csp.probe.mjs          # every public page under the served CSP; fails on a violation
 
 # Live probes: off by default, selected by a -D switch, most assert nothing. `--rerun` is load-bearing:
 # a second identical run is up-to-date-checked, skipped, and prints nothing.
@@ -177,10 +181,11 @@ relay/…/relay/
                               StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS, SELECTIVE_KINDS)
 web/…/relay/web/
   StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
-  resources/index.html        the search UI; its behaviour is resources/web/ (app.js, searchfield.js, paging.js, feed.js,
-                              entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)
-  resources/stats.html        the one status page; web/sync/ and web/monitor/ hold each plane's cards
-  resources/observer_stats.html   an operator diagnostic with its own relay client
+  resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, searchfield.js,
+                              paging.js, feed.js, entity.js, related.js, readiness.js, cards/, shared/ — shared/asks.js and
+                              shared/lens.js first)
+  resources/stats.html        the one status page (web/stats/page.js); web/relay/, web/sync/ and web/monitor/ hold each plane's cards
+  resources/observer_stats.html   an operator diagnostic with its own relay client (web/observers/)
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket

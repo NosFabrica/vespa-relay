@@ -25,6 +25,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
+import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -35,13 +36,41 @@ import io.ktor.server.plugins.compression.deflate
 import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.compression.minimumSize
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 
-/** Compression and CORS, on the terms every page this repo serves wants them. */
+/**
+ * The policy every public page is served under: no inline, eval'd or foreign script, and no
+ * framing. Images, media and sockets reach any origin because the events and the relays they name
+ * do; inline style attributes stay, since the renderers emit them per event.
+ */
+const val PAGE_CONTENT_SECURITY_POLICY =
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self'; " +
+        "img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; " +
+        "connect-src 'self' https: http: wss: ws:; manifest-src 'self'; object-src 'none'; " +
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+/** No framing, no sniffing, no referrer, and [policy] as the CSP, on every response. */
+internal fun Application.installSecurityHeaders(policy: String) {
+    install(
+        createApplicationPlugin("SecurityHeaders") {
+            onCall { call ->
+                call.response.header("X-Frame-Options", "DENY")
+                call.response.header("X-Content-Type-Options", "nosniff")
+                call.response.header("Referrer-Policy", "no-referrer")
+                call.response.header("Content-Security-Policy", policy)
+            }
+        },
+    )
+}
+
+/** Compression, CORS and the security headers, on the terms every public page this repo serves wants them. */
 fun Application.installPageDefaults() {
+    installSecurityHeaders(PAGE_CONTENT_SECURITY_POLICY)
+
     // Text above a threshold only; websocket frames are untouched.
     install(Compression) {
         gzip { priority = 1.0 }

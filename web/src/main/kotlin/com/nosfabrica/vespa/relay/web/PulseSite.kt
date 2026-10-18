@@ -25,7 +25,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -82,19 +81,9 @@ fun Application.installPulseDefaults() {
         deflate { priority = 0.9 }
         minimumSize(1024)
     }
-    install(
-        createApplicationPlugin("PulseHeaders") {
-            onCall { call ->
-                call.response.header("X-Frame-Options", "DENY")
-                call.response.header("X-Content-Type-Options", "nosniff")
-                call.response.header("Referrer-Policy", "no-referrer")
-                call.response.header(
-                    "Content-Security-Policy",
-                    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
-                        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-                )
-            }
-        },
+    installSecurityHeaders(
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; " +
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     )
 }
 
