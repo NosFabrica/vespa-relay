@@ -312,3 +312,14 @@ finding per event and the map grew for the life of the process. Past the cap
 a report is counted in one `overflow` finding without samples, and every
 message is cut at 200 characters. `close()` hands `Log.sink` back to the sink
 it wrapped, so a closed audit stops swallowing quartz's log.
+
+**`RefusedIds.record` decides on what the add reports.** It checked the
+candidate table and then added to one table or the other with nothing held
+between, so two relays refusing one id at once both found no candidate, both
+added it, and the id stayed a candidate with `candidatesAdded` counted twice.
+The cuckoo `add` is already atomic per table and says `PRESENT` when it lost
+such a race; that answer now promotes the refusal to a suppression.
+`retireBelow` is private, since only the boot calls it, and
+`CuckooFilter.close` says it only flushes: a `MappedByteBuffer` cannot be
+unmapped, and the filters are mmap'd in place, so `writeDurably` has no part
+in them.

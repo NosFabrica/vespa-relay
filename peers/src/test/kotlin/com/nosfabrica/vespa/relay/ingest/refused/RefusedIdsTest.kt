@@ -24,6 +24,9 @@ import com.vitorpamplona.quartz.utils.Hex
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.Collections
+import java.util.concurrent.CyclicBarrier
+import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -102,17 +105,43 @@ class RefusedIdsTest {
 
     @Test
     fun `retiring an epoch below the floor un-suppresses the ids it held`() {
-        refused().use { r ->
+        val d = dir()
+        refused(d).use { r ->
             r.record(id(4), 1_500) // epoch 1
             r.record(id(4), 1_500)
             r.record(id(5), 9_500) // epoch 9
             r.record(id(5), 9_500)
             assertTrue(r.suppressed(id(4), 1_500))
+        }
 
-            r.retireBelow(9_000)
-
+        RefusedIds(d, epoch, 10_000, floor = 9_000).use { r ->
             assertFalse(r.suppressed(id(4), 1_500), "a retired epoch keeps nothing")
             assertTrue(r.suppressed(id(5), 9_500), "epochs above the floor are untouched")
+        }
+    }
+
+    @Test
+    fun `two refusals of one id racing each other still suppress it, counted once`() {
+        val ids = (0 until 2_000).map { id(10_000 + it) }
+        refused().use { r ->
+            val barrier = CyclicBarrier(2)
+            val outcomes = Collections.synchronizedList(ArrayList<RecordOutcome>())
+            val workers =
+                (0 until 2).map {
+                    thread {
+                        for (i in ids) {
+                            barrier.await()
+                            outcomes += r.record(i, 5_000)
+                        }
+                    }
+                }
+            workers.forEach { it.join() }
+
+            assertTrue(ids.all { r.suppressed(it, 5_000) }, "a refusal lost to the race left an id downloadable")
+            assertEquals(ids.size.toLong(), r.candidatesAdded.get(), "one candidate per id, however the two raced")
+            assertEquals(ids.size.toLong(), r.suppressionsAdded.get())
+            assertEquals(ids.size, outcomes.count { it == RecordOutcome.CANDIDATE })
+            assertEquals(ids.size, outcomes.count { it == RecordOutcome.SUPPRESSED })
         }
     }
 
