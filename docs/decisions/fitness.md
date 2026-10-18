@@ -557,3 +557,13 @@ takes, so nothing negative is said) once the url has deferred two full sweeps
 in a row, a backoff still running counting as deferring, or as soon as it
 defers with a grade older than two sweep periods. The fast lane never
 withdraws: one tick is not a pattern.
+
+**The NIP-11 fetch has its own dispatcher and a clock over its queue.**
+`RelayDocument` enqueued on the client `PeerClient` shares with the mirror's
+live tails, whose dispatcher is sized for sockets across both planes, so a
+document could wait behind tails, or hold a slot a tail needed, and OkHttp's
+call timeout starts only once a call leaves the queue. Each fetch now runs on
+a dispatcher of its own sized to the passes' dials over both transports
+(one document per dial), four at a time per host, and its wall clock covers
+the wait for a slot as well as the call. Cancelling the caller still cancels
+the call.

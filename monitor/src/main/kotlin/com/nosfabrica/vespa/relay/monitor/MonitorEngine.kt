@@ -80,6 +80,9 @@ class MonitorEngine(
 
     private val monitorConcurrency = settings?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
+    /** One NIP-11 fetch for every dial the passes may hold at once, over either transport. */
+    private val documentConcurrency = DialGate.over(monitorConcurrency, tor).let { it.clearnetPermits + if (tor != null) it.torPermits else 0 }
+
     /** How often the fast lane looks, or null for a lane that is off. */
     private val fastLaneSeconds = fastLaneSecondsFor(settings)
 
@@ -174,7 +177,7 @@ class MonitorEngine(
                 // The fold and the stability gate are read off the pass's one load of the record.
                 progress = processors.of(FITNESS_PROCESSOR),
                 // The per-url transport, so a `.onion` document is fetched inside the circuit.
-                document = RelayDocument(peers::httpFor),
+                document = RelayDocument(peers::httpFor, concurrency = documentConcurrency),
                 tor = tor,
                 concurrency = monitorConcurrency,
                 tlsCheck = probe::tls,
