@@ -151,7 +151,7 @@ peers/…/relay/
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline, BisectingInsert, ProbeGate, ParseAudit, refused/; Processors, InFlight,
-                              StoreCalls, StatusVocabulary
+                              StoreCalls, StatusVocabulary (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
