@@ -1,7 +1,12 @@
 // Small pure helpers: escaping, clipping, dates, and the tag extractors that decide what a
 // generic event "is" on screen. The extractors mirror the fields the search indexes.
 
+/** An event id or pubkey as NIP-01 spells it: 64 lowercase hex, the only form a filter takes. */
+export const HEX64 = /^[0-9a-f]{64}$/;
+
 export const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+/** A count with the reader's own digit grouping. */
+export const fmt = (n) => Number(n).toLocaleString();
 export const clip = (s, n) => { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
 // A date these cannot read prints nothing rather than "Invalid Date".

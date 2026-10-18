@@ -1,3 +1,19 @@
+/** Everything after `ws://` or `wss://` in either case, or the string unchanged. */
+const afterWsScheme = (url) => String(url || "").replace(/^wss?:\/\//i, "");
+
+/** A relay url as a card or a sentence names it: no scheme, no trailing slash, port and path kept. */
+export const relayAddress = (url) => afterWsScheme(url).replace(/\/+$/, "");
+
+/**
+ * The hostname a relay url reaches: no port, no path, lowercased. Must match `RelayAliases.hostOf`.
+ * An IPv6 literal keeps its brackets, so only a colon after the bracket is the port.
+ */
+export function hostnameOf(url) {
+  const authority = afterWsScheme(url).split("/")[0];
+  const host = authority.startsWith("[") ? authority.split("]")[0] + "]" : authority.split(":")[0];
+  return host.toLowerCase();
+}
+
 // A relay url as somebody wrote it, reduced to the relay it means, or null for one this page
 // could not dial: a non-ws scheme, a loopback or private host, or `ws://` from an https
 // page. observer_stats.html keeps its own inline copy; the two must agree.

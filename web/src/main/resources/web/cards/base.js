@@ -3,13 +3,15 @@
 // register(); dispatch lives in cards.js so registration stays cycle-free. Every renderer is
 // (ev, opts) -> HTML string; opts.full is the permalink depth, else a clipped preview.
 
-import { esc, clip, fullDate, when } from "../shared/format.js";
+import { esc, clip, fullDate, when, HEX64 } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
 import { npub, noteId, naddr, addrOf, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 import { groupTokenizes, labelTokenizes } from "../shared/query.js";
+// Re-exported for the family modules, which take their helpers from here.
+export { relayAddress } from "../shared/relayurl.js";
 import { postedTo } from "../shared/groups.js";
 import { groupName } from "../shared/groupnames.js";
 import { provenance, attribution, PILL_BUDGET } from "../provenance.js";
@@ -70,8 +72,6 @@ export const selfHref = (ev) => {
   if (byAddr) return byAddr;
   return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
 };
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry: a hint-fetched event is rendered before anything has verified its tags.
@@ -165,8 +165,6 @@ export function topicsOf(ev) {
   return out;
 }
 
-/** A relay url as the host a card heads itself with: no scheme, no trailing slash. */
-export const hostOf = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
 
 /** Unix seconds as a local date; a non-number comes back verbatim, so escape the result. */
 export const fmtTs = (secs) => {
@@ -482,7 +480,7 @@ export function refRows(refs, opts) {
   const row = (r) => {
     const named = oneLine(r.label);
     if (r.kind === "e") {
-      if (!/^[0-9a-f]{64}$/.test(r.value)) return `<span class="mono">${esc(clip(r.value, 40))}</span>`;
+      if (!HEX64.test(r.value)) return `<span class="mono">${esc(clip(r.value, 40))}</span>`;
       return named
         ? `<a href="${noteHref(r.value)}">${esc(clip(named, 60))}</a>`
         : `<a class="mono" href="${noteHref(r.value)}">${esc(shortNote(r.value))}</a>`;

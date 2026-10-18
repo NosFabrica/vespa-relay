@@ -1,6 +1,8 @@
 // NIP-19 identifiers, both directions, with no library. Encoding emits npub, note, naddr and
 // nevent; decoding accepts nprofile too, since it arrives in pasted links.
 
+import { HEX64 } from "./format.js";
+
 const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 
@@ -79,7 +81,7 @@ export const shortNote = (hex) => shortB32(noteId(hex));
  */
 export function addrOf(ev) {
   if (!ev || !Number.isInteger(ev.kind) || ev.kind < 30000 || ev.kind > 39999) return null;
-  if (!/^[0-9a-f]{64}$/.test(ev.pubkey || "")) return null;
+  if (!HEX64.test(ev.pubkey || "")) return null;
   const d = ((ev.tags || []).find((t) => Array.isArray(t) && t[0] === "d" && typeof t[1] === "string") || [])[1] || "";
   return `${ev.kind}:${ev.pubkey}:${d}`;
 }
@@ -152,7 +154,7 @@ export const shortAddr = (a) => {
 /** An npub or bare hex back to a hex pubkey; null if malformed. */
 export function pubkeyParam(v) {
   v = String(v || "").trim().toLowerCase();
-  if (/^[0-9a-f]{64}$/.test(v)) return v;
+  if (HEX64.test(v)) return v;
   if (!v.startsWith("npub1")) return null;
   const d = bech32Decode(v);
   return d && d.hrp === "npub" && d.bytes.length === 32 ? bytesToHex(d.bytes) : null;

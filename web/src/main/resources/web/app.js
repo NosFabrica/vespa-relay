@@ -4,7 +4,7 @@
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
-import { esc } from "./shared/format.js";
+import { esc, HEX64 } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
@@ -64,7 +64,7 @@ let meFace = readFace();
 function readFace() {
   try {
     const f = JSON.parse(localStorage.getItem(FACE_KEY) || "null");
-    return f && /^[0-9a-f]{64}$/.test(f.pubkey || "") ? f : null;
+    return f && HEX64.test(f.pubkey || "") ? f : null;
   } catch (e) { return null; }
 }
 /**
@@ -139,7 +139,7 @@ async function signAndAuth(attempt = 0, waitMs = 3000) {
 async function prefetchFace() {
   let pk = null;
   try { pk = await window.nostr.getPublicKey(); } catch (e) { pk = null; }
-  if (!/^[0-9a-f]{64}$/.test(pk || "")) {
+  if (!HEX64.test(pk || "")) {
     // The extension would not say, so the boot's assumed face comes down.
     mePending = null;
     renderMe();

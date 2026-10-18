@@ -1,7 +1,7 @@
 // The graph family: who somebody follows, which relays they read, and this
 // relay's own working kinds, 10040 observer declarations and 30382 score cards.
 
-import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, HEX64 } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import {
@@ -83,14 +83,14 @@ function scoreCard(ev, opts) {
 function subjectLinkFor(kind, subject) {
   if (!subject) return "(no subject)";
   if (kind === 30385) return `<span class="mono">${esc(clip(subject, 80))}</span>`;
-  if (kind === 30383 && /^[0-9a-f]{64}$/.test(subject)) {
+  if (kind === 30383 && HEX64.test(subject)) {
     return `<a class="mono" href="${noteHref(subject)}">${esc(subjectName(kind, subject))}</a>`;
   }
   if (kind === 30384) {
     const href = addrHref(subject);
     return href ? `<a href="${href}">${esc(subjectName(kind, subject))}</a>` : esc(subject);
   }
-  return /^[0-9a-f]{64}$/.test(subject) ? personLink(subject) : esc(subject);
+  return HEX64.test(subject) ? personLink(subject) : esc(subject);
 }
 
 /** The same subject as words alone, for a row: a name, else a short npub, never hex. */
@@ -98,7 +98,7 @@ function subjectName(kind, subject) {
   if (!subject) return "(no subject)";
   if (kind === 30385) return subject;                  // an external id reads as itself
   if (kind === 30384) return shortAddr(subject);       // an address is never bare hex
-  if (!/^[0-9a-f]{64}$/.test(subject)) return subject;
+  if (!HEX64.test(subject)) return subject;
   return kind === 30383 ? shortNote(subject) : displayName(profiles.get(subject)) || shortNpub(subject);
 }
 

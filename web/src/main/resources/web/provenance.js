@@ -4,6 +4,7 @@
 // gate is applied here from the `trusted` map, never inferred from arrival or adjacency.
 
 import { addrOf } from "./shared/nip19.js";
+import { HEX64 } from "./shared/format.js";
 
 /**
  * The label namespaces that are metadata rather than provenance: a language on every card, or a
@@ -32,7 +33,6 @@ const MEMBER_TAG = { 30000: "p", 30392: "p", 30393: "e", 30394: "a", 39089: "p" 
 /** How many pills a preview draws before the rest go behind a count. */
 export const PILL_BUDGET = { preview: 4, full: 40 };
 
-const HEX64 = /^[0-9a-f]{64}$/;
 const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === name && t[1]);
 const tagOf = (ev, name) => (tagsOf(ev, name)[0] || [])[1] || "";
 

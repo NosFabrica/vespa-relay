@@ -16,14 +16,12 @@
 //
 // The group or room is the byline's pill wherever an `h` names it, so no card repeats it.
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
 import {
   register, registerRow, registerNamedPeople, shell, titleHtml, bodyHtml, personLink, noteHref,
   tagsOf, tagOf, oneLine, plural, peopleOf, firstPerson,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /**
  * A NIP-28 moderation reason, read as quartz reads it: plain text as written, or the `reason`

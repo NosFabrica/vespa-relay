@@ -10,7 +10,7 @@ import { unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { postedTo } from "./shared/groups.js";
 import { enrichGroupNames } from "./shared/groupnames.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { esc, titleOf } from "./shared/format.js";
+import { esc, titleOf, HEX64 } from "./shared/format.js";
 import { answers, idHolds, nip19Parse, shortNpub } from "./shared/nip19.js";
 import { njumpFor, tagsWhere, badgeLabel } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
@@ -115,7 +115,7 @@ function titleFor(ev, parsed) {
  * renders, or it falls back to an npub.
  */
 async function enrichMentions(ev) {
-  const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+  const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => HEX64.test(v || "")))];
   const room = postedTo(ev);
   await Promise.all([
     loadParentAuthors(unknownParents([ev])),

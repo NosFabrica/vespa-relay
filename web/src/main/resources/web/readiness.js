@@ -5,10 +5,10 @@
 
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
-import { esc } from "./shared/format.js";
+import { esc, fmt } from "./shared/format.js";
 import { readMirrorScope, scopedTo } from "./shared/mirrors.js";
 import { assess, counted, worthShowing, TIMED_OUT } from "./shared/readiness.js";
-import { normalizeRelay, whyNotDialable } from "./shared/relayurl.js";
+import { normalizeRelay, relayAddress, whyNotDialable } from "./shared/relayurl.js";
 import { seedProviders } from "./shared/providers.js";
 
 const $panel = document.getElementById("readiness");
@@ -26,8 +26,6 @@ const READY_COOKIE = "sot_ready";
 /** How long a dismissal is trusted: the router's own refresh interval. */
 const DISMISS_TTL_MS = 6 * 60 * 60 * 1000;
 
-const fmt = (n) => Number(n).toLocaleString();
-const host = (url) => String(url || "").replace(/^wss?:\/\//, "");
 const many = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 
 let checkedFor = null;   // the pubkey this page has already checked
@@ -303,7 +301,7 @@ function words(v) {
         state: "blocked",
         headline: "None of your provider’s scores have reached this relay yet.",
         body:
-          `Your list trusts <b>${esc(host(v.chain.find((l) => l.key === "scoreList")?.detail?.relay) || "a scoring service")}</b>, ` +
+          `Your list trusts <b>${esc(relayAddress(v.chain.find((l) => l.key === "scoreList")?.detail?.relay) || "a scoring service")}</b>, ` +
           "and this relay holds none of its cards — so there is nothing to rank your results by. The " +
           "router reads new lists on its next pass and starts importing then, usually within six hours. " +
           "Nothing here is waiting on you.",
@@ -336,7 +334,7 @@ function words(v) {
             headline: `Importing your provider’s scores — ${fmt(counted(c.here) ? c.here : 0)} here so far`,
             meter:
               `<p class="rdy-figures"><span><b>${fmt(counted(c.here) ? c.here : 0)}</b> scores here</span>` +
-              `<span>${esc(host(scoreRelay(v)) || "that relay")}: no count</span></p>`,
+              `<span>${esc(relayAddress(scoreRelay(v)) || "that relay")}: no count</span></p>`,
             body:
               "That relay doesn’t answer counts, so we can’t say how many are still to come. The number " +
               "above is what has arrived — it is ours, not theirs.",
@@ -347,7 +345,7 @@ function words(v) {
             meter:
               `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
               `<p class="rdy-figures"><span><b>${fmt(c.here)}</b> here</span>` +
-              `<span>of <b>${fmt(c.there)}</b> on ${esc(host(scoreRelay(v)))}</span></p></div>`,
+              `<span>of <b>${fmt(c.there)}</b> on ${esc(relayAddress(scoreRelay(v)))}</span></p></div>`,
             body:
               "Search works now, but ranks fewer people than it will — anyone your provider has scored " +
               "whose card hasn’t arrived yet is missing from your results. Nothing to do; the router is " +
@@ -364,7 +362,7 @@ function words(v) {
           meter:
             `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
             `<p class="rdy-figures"><span><b>${fmt(p.here)}</b> here</span>` +
-            `<span>of <b>${fmt(p.there)}</b> on ${esc(host(p.relay))}</span></p></div>`,
+            `<span>of <b>${fmt(p.there)}</b> on ${esc(relayAddress(p.relay))}</span></p></div>`,
           body:
             "This doesn’t change how results are ranked — it only means searching for something you " +
             "wrote may not find it yet.",
@@ -375,7 +373,7 @@ function words(v) {
         state: "mirroring",
         headline: `Ranking is ready. We have your posts up to ${day(p.newestHere)}.`,
         body:
-          `${esc(host(p.relay))} doesn’t answer counts, so there’s no percentage to show — but it holds ` +
+          `${esc(relayAddress(p.relay))} doesn’t answer counts, so there’s no percentage to show — but it holds ` +
           `posts of yours newer than anything here, the most recent from <b>${day(p.newestThere)}</b>.`,
         hint: scopeNote(p),
       };
@@ -416,7 +414,7 @@ function chainHtml(chain) {
         case "scoreList":
           if (d.reason === "absent") sub = "none published, or none mirrored here";
           else if (d.reason === "no-rank-dimension") sub = "names a followers service, no rank service";
-          else sub = `names ${esc(host(d.relay) || "a service")} for rank`;
+          else sub = `names ${esc(relayAddress(d.relay) || "a service")} for rank`;
           break;
         case "scores":
           sub = counted(d.there)
@@ -430,7 +428,7 @@ function chainHtml(chain) {
           break;
         case "posts":
           sub = counted(d.there)
-            ? `${fmt(d.here)} here · ${esc(host(d.relay))} has ${fmt(d.there)} — doesn’t affect ranking`
+            ? `${fmt(d.here)} here · ${esc(relayAddress(d.relay))} has ${fmt(d.there)} — doesn’t affect ranking`
             : "doesn’t affect ranking";
           break;
       }
@@ -479,12 +477,12 @@ async function fetchFrom(url, me, say) {
     return;
   }
 
-  say({ tone: "working", state: "dialling", headline: `Connecting to ${esc(host(dial))}…`, spin: true });
+  say({ tone: "working", state: "dialling", headline: `Connecting to ${esc(relayAddress(dial))}…`, spin: true });
   const found = new Map();               // event id -> event
   // Bounded: a stranger's relay may send more than one of each replaceable kind.
   const first = await askRemote(dial, (c) => c.req({ kinds: [0, 10002, 10040], authors: [me], limit: 10 }));
   if (first == null) {
-    say({ tone: "blocked", state: "refused", headline: `${esc(host(dial))} didn’t answer.`,
+    say({ tone: "blocked", state: "refused", headline: `${esc(relayAddress(dial))} didn’t answer.`,
           body: "It may be down, or it may not accept connections from a browser. Try another relay you use.",
           form: true, value: url });
     return;
@@ -511,7 +509,7 @@ async function fetchFrom(url, me, say) {
 
   if (!found.size) {
     say({ tone: "blocked", state: "empty",
-          headline: `Nothing of yours on ${esc(host(dial))}.`,
+          headline: `Nothing of yours on ${esc(relayAddress(dial))}.`,
           body: "It answered, and it holds no profile, relay list or trusted-scores list for your key. " +
                 "If that is the relay you post to, the lists have not been published yet.",
           form: true, value: "" });
@@ -554,7 +552,7 @@ function foundHtml(found, dial, pending) {
   const seen = new Set([...found.values()].map((e) => e.kind));
   return `<ul class="rdy-found">${[0, 10002, 10040].map((k) => {
     if (seen.has(k)) {
-      return `<li><span class="tick">✓</span><b>${esc(KIND_NAME[k])}</b> <span class="kind">kind ${k} · ${esc(host(dial))}</span></li>`;
+      return `<li><span class="tick">✓</span><b>${esc(KIND_NAME[k])}</b> <span class="kind">kind ${k} · ${esc(relayAddress(dial))}</span></li>`;
     }
     return pending
       ? `<li><span class="dash">·</span>${esc(KIND_NAME[k])} — still looking <span class="kind">kind ${k}</span></li>`

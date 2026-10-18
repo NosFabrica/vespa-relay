@@ -12,15 +12,13 @@
 // git verdicts already use, because "valid" and "revoked" are the same sort of fact as "merged"
 // and "closed".
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import { kindLabel } from "../shared/kinds.js";
 import {
   register, registerRow, shell, bodyHtml, chipRow, personLink, noteHref, addrHref,
   tagOf, tagsOf, oneLine, fmtTs, plural,
 } from "./base.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** The vocabulary an attestation's `s` may carry, and which tint each verdict takes. */
 const STATUS_TONE = { valid: "open", verifying: "tentative", invalid: "closed", revoked: "closed" };

@@ -7,15 +7,13 @@
 // them apart by tags (EventFactory), and so does [kind38000], in the same order, so a market is
 // never drawn as "recommends 0 mints".
 
-import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, registerBadge, registerNamedPeople, shell, bodyHtml, chipRow, relayRows,
   refRows, faceStrip, hashtagHref, topicsOf, satCount, tagsOf, tagOf, jsonContent, clipIf, oneLine,
   fmtTs, plural, satsOf, personLink, noteHref, extLink, titleHtml, firstPerson,
 } from "./base.js";
 import { shortNote } from "../shared/nip19.js";
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** "250 USD", "9 EUR / month". Every part goes through oneLine first: `{"price": {}}` is legal. */
 const priceText = (amount, currency, period) => {
@@ -148,7 +146,7 @@ function mintRecommendationCard(ev, opts) {
 function marketplaceCard(ev, opts) {
   const c = jsonContent(ev);
   const ui = c && typeof c.ui === "object" && c.ui ? c.ui : {};
-  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => /^[0-9a-f]{64}$/.test(pk || "")) : [];
+  const merchants = Array.isArray(c.merchants) ? c.merchants.filter((pk) => HEX64.test(pk || "")) : [];
   const banner = oneLine(ui.banner) || oneLine(ui.picture);
   const full = opts && opts.full;
   const inner =

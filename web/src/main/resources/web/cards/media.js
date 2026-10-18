@@ -5,7 +5,7 @@
 // and a promise, never the thing itself. A NIP-17 file (15) is the same promise, encrypted.
 // The cyberspace shapes (11333, 33331) are small 3D meshes in JSON, described, not drawn.
 
-import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, clip, titleOf, summaryOf, imageOf, HEX64 } from "../shared/format.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref,
   extLink, relayRows, refRows, imetas, tagOf, tagsOf, topicsOf, clipIf, audioEmbed, noteHref,
@@ -197,7 +197,7 @@ const fileFacts = (ev) => [
  */
 function fileStorageCard(ev, opts) {
   const preview = tagOf(ev, "image", "thumb");
-  const data = tagsOf(ev, "e").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const data = tagsOf(ev, "e").map((t) => t[1]).filter((v) => HEX64.test(v || ""));
   const full = opts && opts.full;
   const inner =
     (full && preview ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url: preview })) : "") +
@@ -213,7 +213,7 @@ function fileStorageCard(ev, opts) {
 /** 1163 — a gallery entry: a picture the author pinned to their profile, and where it came from. */
 function galleryCard(ev, opts) {
   const url = tagOf(ev, "url") || tagOf(ev, "image");
-  const from = tagsOf(ev, "e").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v || ""));
+  const from = tagsOf(ev, "e").map((t) => t[1]).find((v) => HEX64.test(v || ""));
   const inner =
     (url ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url, alt: tagOf(ev, "alt") })) : "") +
     bodyHtml(opts, summaryOf(ev) || ev.content, 200) +
@@ -281,7 +281,7 @@ function torrentCommentCard(ev, opts) {
  */
 function encryptedFileCard(ev, opts) {
   const url = String(ev.content || "").trim();
-  const to = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk || ""));
+  const to = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => HEX64.test(pk || ""));
   const algo = tagOf(ev, "encryption-algorithm");
   const inner =
     `<div class="result-body">an encrypted ${esc(clip(tagOf(ev, "file-type") || "file", 40))}` +

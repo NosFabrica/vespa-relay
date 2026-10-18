@@ -10,7 +10,7 @@
 // spec's "nonstandard method"), so it carries the header vocabulary too; both cards read it.
 // Not NIP-51: there is no people grid here, because an item names its person once, as a face.
 
-import { esc, clip } from "../shared/format.js";
+import { esc, clip, HEX64 } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, registerRow, shell, titleHtml, bodyHtml, chipRow, refRows, faceStrip, noteHref, addrHref,
@@ -65,7 +65,7 @@ function parentsOf(ev) {
 
 /** One parent, linked when it is an id or an address, named when it is a word. */
 const parentLink = (v) => {
-  if (/^[0-9a-f]{64}$/.test(v)) return `<a class="mono" href="${noteHref(v)}">${esc(shortNote(v))}</a>`;
+  if (HEX64.test(v)) return `<a class="mono" href="${noteHref(v)}">${esc(shortNote(v))}</a>`;
   const href = /^\d+:[0-9a-f]{64}:/.test(v) ? addrHref(v) : null;
   return href ? `<a href="${href}">${esc(shortAddr(v))}</a>` : `<b>${esc(clip(v, 60))}</b>`;
 };
@@ -81,7 +81,7 @@ function itemCard(ev, opts) {
   const parents = parentsOf(ev);
   const people = uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
   const refs = [
-    ...tagsOf(ev, "e").map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")).map((v) => ({ kind: "e", value: v })),
+    ...tagsOf(ev, "e").map((t) => t[1]).filter((v) => HEX64.test(v || "")).map((v) => ({ kind: "e", value: v })),
     ...tagsOf(ev, "a").map((t) => oneLine(t[1])).filter(Boolean).map((v) => ({ kind: "a", value: v })),
   ];
   const declares = pairOf(ev, "names");
@@ -113,7 +113,7 @@ registerRow([9998, 39998], (ev) => {
   };
 });
 registerRow([9999, 39999], (ev) => {
-  const parents = parentsOf(ev).filter((v) => !/^[0-9a-f]{64}$/.test(v) && !/^\d+:/.test(v));
+  const parents = parentsOf(ev).filter((v) => !HEX64.test(v) && !/^\d+:/.test(v));
   return {
     name: itemName(ev) || "a list item",
     sub: [parents.length ? `on ${parents.join(", ")}` : "", tagOf(ev, "description") || tagOf(ev, "comments")].filter(Boolean).join(" · "),

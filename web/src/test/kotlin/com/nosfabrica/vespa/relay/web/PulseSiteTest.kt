@@ -431,6 +431,7 @@ class PulseSiteTest {
             listOf(
                 "/web/shared/stats.css",
                 "/web/shared/page.js",
+                "/web/shared/format.js",
                 "/web/shared/pulse.js",
                 "/web/shared/pulseauth.js",
                 "/web/pulse/page.js",

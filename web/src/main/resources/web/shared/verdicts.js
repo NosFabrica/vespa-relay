@@ -2,6 +2,8 @@
 // its verdicts as NIP-66 kind 30166 records (`RelayAliasRecord` on the Kotlin side), one per
 // url, addressed on `d`. This is the parsing half and is pure; the page supplies the events.
 
+import { hostnameOf, relayAddress } from "./relayurl.js";
+
 /** NIP-66's relay-discovery record. `d` is the relay url. */
 export const MONITOR_KIND = 30166;
 
@@ -87,36 +89,16 @@ export const FOLD_EPOCH = "2";
 
 export const CONSISTENCY_EPOCH = "1";
 
-/** Everything after `ws://` or `wss://`, or the string unchanged. */
-function afterScheme(url) {
-  const lower = url.toLowerCase();
-  if (lower.startsWith("wss://")) return url.slice(6);
-  if (lower.startsWith("ws://")) return url.slice(5);
-  return url;
-}
-
-/**
- * The hostname a url reaches: no port, no path, lowercased. Must match `RelayAliases.hostOf`.
- * An IPv6 literal keeps its brackets, so only a colon after the bracket is the port.
- */
-export function hostOf(url) {
-  const authority = afterScheme(url).split("/")[0];
-  const host = authority.startsWith("[") ? authority.split("]")[0] + "]" : authority.split(":")[0];
-  return host.toLowerCase();
-}
-
 /**
  * Are these two strings the same relay url? A cleared verdict's `same-as` may spell its own
  * url with a trailing slash.
  */
 export function sameUrl(a, b) {
   const norm = (u) => {
-    const rest = afterScheme(u);
+    const rest = relayAddress(u);
     const slash = rest.indexOf("/");
-    const authority = (slash < 0 ? rest : rest.slice(0, slash)).toLowerCase();
-    // Path case is preserved (a path is opaque), but a lone trailing slash is not a path.
-    const path = (slash < 0 ? "" : rest.slice(slash)).replace(/\/+$/, "");
-    return authority + path;
+    // Path case is preserved (a path is opaque); the authority's is not.
+    return slash < 0 ? rest.toLowerCase() : rest.slice(0, slash).toLowerCase() + rest.slice(slash);
   };
   return norm(a) === norm(b);
 }
@@ -130,7 +112,7 @@ export function readRecord(event) {
   const url = d[1];
   const out = {
     url,
-    host: hostOf(url),
+    host: hostnameOf(url),
     author: event.pubkey,
     // The record's clock, not the verdict's: the monitor rewrites the record on every connect.
     recordAt: event.created_at,
@@ -236,7 +218,7 @@ export function groupByHost(events, nowSec) {
     const known = new Set(group.urls.map((u) => u.url));
     for (const u of [...group.urls]) {
       if (!u.fold || !u.foldCurrent) continue;
-      if (known.has(u.fold) || hostOf(u.fold) !== group.host) continue;
+      if (known.has(u.fold) || hostnameOf(u.fold) !== group.host) continue;
       known.add(u.fold);
       group.urls.push({
         url: u.fold,
