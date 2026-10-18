@@ -195,7 +195,7 @@ class SyncEngine(
         )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
-    private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
+    private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds)
 
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }

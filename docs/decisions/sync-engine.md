@@ -306,6 +306,15 @@ arrears while the audits ran perfectly well. `AuditClock` distinguishes
 never-compared (due) from no-owned-kind (not scheduled), because counted as
 due the latter is a backlog that can never drain.
 
+**The download half must finish before the band is verified.** The missing
+ids were fetched with `fetchAll`, which returns a bare list, so an idle
+timeout, a `CLOSED` or a refusal read exactly like a complete answer, and the
+band recorded `reconciledThrough` over ids that never arrived. The by-id ask
+now goes through `fetchAllWithHooks` (`RetractionReads.fetchIds`) and counts
+only an EOSE as answered; one unanswered chunk leaves the band unverified, so
+the next audit compares again. The delete half is unaffected: its licence is
+the completed reconcile, not the download.
+
 **No size guard on the delete.** A provider that retracts a subject usually
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer

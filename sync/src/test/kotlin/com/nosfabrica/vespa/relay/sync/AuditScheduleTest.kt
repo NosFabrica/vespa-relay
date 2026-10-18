@@ -83,7 +83,7 @@ class AuditScheduleTest {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
         return RetractionAudit(
-            client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+            reads = ClientRetractionReads(NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)),
             store = store,
             bands = bands,
             ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1), null, null, scope, null, null),
