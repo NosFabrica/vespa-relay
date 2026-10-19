@@ -54,4 +54,15 @@ class StoreTopologyTest {
         assertFailsWith<IllegalStateException> { providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to "9223372036854775")) }
         assertEquals(MAX_PROVIDER_REFRESH_SECONDS, providerRefreshSeconds(mapOf(PROVIDER_REFRESH_ENV to MAX_PROVIDER_REFRESH_SECONDS.toString())))
     }
+
+    @Test
+    fun `the feed batch is checked before the store reads it`() {
+        assertEquals(null, feedBatch(emptyMap()), "unset: the store's own default")
+        assertEquals(100, feedBatch(mapOf(FEED_BATCH_ENV to "100")))
+        assertEquals(0, feedBatch(mapOf(FEED_BATCH_ENV to "0")), "0 is off, not an error")
+        // The store would read these as off, silently.
+        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to "1OO")) }
+        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to "-1")) }
+        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to (MAX_FEED_BATCH + 1).toString())) }
+    }
 }

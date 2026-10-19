@@ -300,6 +300,45 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+907e9d847ad0 = vespa-eventstore main @ 2026-10-19, the merge of PR #170 (over d37c1fb2eea3, the #168 merge
+below, through #169):
+  - #169, #170: benchmark/README.md's "The fixed cost of a put, on a warm engine" and "More than
+    one document per request" (documentation);
+  - #170: a batch feed handler. A container bundle (the store's new :bundle module) packed into
+    the application package under components/ and bound at /eventstore/v1/feed: one request
+    carries many /document/v1-shaped puts, dispatched through the container's own document API,
+    answered once every one is. VespaEventIndex.putAll uses it when VESPA_FEED_BATCH > 1, re-puts
+    anything not confirmed through the feed client, and falls back to /document/v1 for good on a
+    404. 100 per request: 28-31% less Vespa CPU per live-relay event, 40-60% more docs/s on three
+    cores; stored fields and every store query's hits, relevance and rank features identical.
+    docker-compose.yml turns it on at 100 for both processes; the boot checks the value
+    (feedBatch, StoreTopology.kt), since the store reads it leniently.
+  git merge-base --is-ancestor d37c1fb2eea3 907e9d847ad0   # verified
+
+DEPLOY: both processes deploy the bundled application package at every boot (AUTO_DEPLOY), so the
+  handler reaches Vespa with the restart that brings this pin. Until it serves, the store gets 404
+  and writes one per request. No reindex, no re-feed: nothing stored changes.
+
+GATED, the store at 73e71a1 (the #170 head; the merge's tree is the same): its unit build and the
+  full integration suite against a real Vespa in Docker (25 tests, StagingCorpusIT skipped by
+  design, 0 failures), run locally, every IT deploying the package with the bundle. This relay's
+  own gate is in the commit that set this line.
+
+END TO END, this relay on this pin (relay/tools/ingest-bench/bench.sh, the first 20,000 events of a
+  live-relay slice, a fresh store per arm, one host): VESPA_FEED_BATCH=0 published 269 ev/s at 9,000
+  us of Vespa CPU and 3,350 us of relay CPU per event; VESPA_FEED_BATCH=100 published 391 ev/s at
+  6,650 and 1,750, with the p99 OK 20.8 s -> 9.4 s. Both arms accepted 19,999 and refused one (an
+  expired event). Vespa's access log counted 0 requests to /eventstore/v1/feed in the first arm and
+  464 in the second. Short runs on fresh engines: the ratios carry, the absolutes do not.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  907e9d847ad0, the store's pom names engine at it and quartz-jvm at 99d05ee122, and the engine jar's
+  vespa-app.zip carries components/eventstore-bundle.jar and the handler in services.xml (checked).
+
+NO ARROW expected: nothing else in the graph names the store.
+
+Prev d37c1fb2eea3:
+
 d37c1fb2eea3 = vespa-eventstore main @ 2026-10-18, the merge of PR #168: five commits over store
 main 0aed31fda8 (below), and no change over its head 7d635159d7fe (git diff is empty):
   - the feed body written into a char array (JsonChars): the relay's CPU per published kind 3

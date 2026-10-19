@@ -43,6 +43,7 @@ import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.sync.PressurePoller
@@ -122,6 +123,10 @@ fun main() {
 
     // Parsed before the schema deploy and its retries, so a bad value refuses the boot at once.
     val providerRefresh = providerRefreshSeconds(env)
+    // The store reads it; checked here so a typo stops the boot instead of quietly turning batching off.
+    feedBatch(env)?.let { n ->
+        System.err.println("sync: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
+    }
 
     val identity = RelayIdentity.fromEnv { env[it] }
     if (identity != null) {
