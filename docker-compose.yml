@@ -260,6 +260,9 @@ services:
       # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
       # when VESPA_URL is across a WAN.
       VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
+      # Documents per request through the store's batch handler: 28-31% less Vespa CPU per
+      # event than one per request (docs/configuration.md). 0 writes one at a time.
+      VESPA_FEED_BATCH: ${VESPA_FEED_BATCH:-100}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
@@ -494,6 +497,9 @@ services:
       # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
       # when VESPA_URL is across a WAN.
       VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
+      # Documents per request through the store's batch handler: 28-31% less Vespa CPU per
+      # event than one per request (docs/configuration.md). 0 writes one at a time.
+      VESPA_FEED_BATCH: ${VESPA_FEED_BATCH:-100}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Same key as the relay: upstream NIP-42 AUTH and the NIP-66 monitor
       # sign as the relay this process feeds.

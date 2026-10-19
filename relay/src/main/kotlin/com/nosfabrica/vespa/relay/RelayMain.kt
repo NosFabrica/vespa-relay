@@ -88,6 +88,7 @@ import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
@@ -239,6 +240,10 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     val files = relayFilesFromEnv(env)
     val adminPubkeys = adminPubkeysFromEnv(env)
+    // The store reads it; checked here so a typo stops the boot instead of quietly turning batching off.
+    feedBatch(env)?.let { n ->
+        System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
+    }
     return Boot(
         vespaUrl = vespaUrl,
         configUrl = env["VESPA_CONFIG_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: vespaConfigUrlFor(vespaUrl),
