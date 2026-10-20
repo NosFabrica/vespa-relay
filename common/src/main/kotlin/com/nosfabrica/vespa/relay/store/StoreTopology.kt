@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.store
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
 import com.nosfabrica.vespa.relay.util.strictInt
+import java.net.URI
 
 /**
  * What this deployment tells the store about its writers at every `VespaEventStore.open()`.
@@ -79,3 +80,60 @@ const val MAX_FEED_BATCH = 4_096
  * docker-compose.yml sets 100.
  */
 fun feedBatch(env: Map<String, String>): Int? = env.strictInt(FEED_BATCH_ENV, 0..MAX_FEED_BATCH)
+
+/** The variable naming the containers that serve Vespa's document API. Read by both processes. */
+const val FEED_URLS_ENV = "VESPA_FEED_URLS"
+
+/** The variable naming the containers that serve `/search/`. Read by both processes. */
+const val QUERY_URLS_ENV = "VESPA_QUERY_URLS"
+
+/**
+ * Which Vespa containers serve each role, for a cluster that runs feed and query containers as
+ * separate clusters (vespa-eventstore's docs/scaling.md, "Feed and query containers"). Either
+ * list empty means `VESPA_URL` serves that role, which is the bundled package's one cluster.
+ *
+ * The store sends every `/document/v1` request and the batch handler's to [feed] (writes, but
+ * also the get by id and every visit), and every `/search/` request to [query]. A container
+ * listed under the wrong role makes the store throw rather than answer wrong (vespa-eventstore
+ * #171), so a mistake here is loud at the first request that meets it.
+ */
+class VespaEndpoints(
+    val feed: List<String>,
+    val query: List<String>,
+) {
+    /** Where this process sends a `/search/` of its own (the stats rollup): the first query container, else [fallback]. */
+    fun queryUrl(fallback: String): String = query.firstOrNull() ?: fallback
+
+    /** One boot-log line when either list is set, null when `VESPA_URL` serves both roles. */
+    fun describe(): String? =
+        if (feed.isEmpty() && query.isEmpty()) {
+            null
+        } else {
+            "feed through ${feed.size.takeIf { it > 0 }?.let { "$it container(s)" } ?: "VESPA_URL"}, " +
+                "queries through ${query.size.takeIf { it > 0 }?.let { "$it container(s)" } ?: "VESPA_URL"}"
+        }
+}
+
+/**
+ * [FEED_URLS_ENV] and [QUERY_URLS_ENV], comma-separated. Unset or blank is an empty list. The
+ * store would take any string and fail on its first request, minutes into a boot, so a list
+ * with an empty entry or an entry that is not an http(s) URL with a host stops the boot here.
+ */
+fun vespaEndpoints(env: Map<String, String>): VespaEndpoints = VespaEndpoints(urlList(env, FEED_URLS_ENV), urlList(env, QUERY_URLS_ENV))
+
+private fun urlList(
+    env: Map<String, String>,
+    key: String,
+): List<String> {
+    val raw = env[key]?.trim()?.takeIf { it.isNotEmpty() } ?: return emptyList()
+    return raw.split(',').map { it.trim() }.map { url ->
+        val uri = runCatching { URI(url) }.getOrNull()
+        if (uri == null || uri.scheme !in setOf("http", "https") || uri.host.isNullOrEmpty()) {
+            error(
+                "$key='$raw': '$url' is not an http(s) URL with a host. " +
+                    "List the containers comma-separated (http://feed-0:8080,http://feed-1:8080), or unset it.",
+            )
+        }
+        url.trimEnd('/')
+    }
+}

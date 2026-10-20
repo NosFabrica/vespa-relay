@@ -104,6 +104,10 @@ services:
       MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-}
       # Deploy the bundled schema on boot (default true; see AUTO_DEPLOY docs).
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # Separate feed and query containers, for a Vespa that runs them as two
+      # clusters. Unset: VESPA_URL serves both, as the bundled package does.
+      VESPA_FEED_URLS: ${VESPA_FEED_URLS:-}
+      VESPA_QUERY_URLS: ${VESPA_QUERY_URLS:-}
       # Write authorization and the NIP-86 management API. Documented in
       # docs/configuration.md; previously read by the relay but never passed
       # through, so a .env ban list was silently unenforced under compose.
@@ -342,6 +346,9 @@ services:
       # Deploy the bundled schema on boot (default true) — this process is the
       # one whose writes a drifted schema silently discards.
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # The same container lists as the relay's: both processes write and read the store.
+      VESPA_FEED_URLS: ${VESPA_FEED_URLS:-}
+      VESPA_QUERY_URLS: ${VESPA_QUERY_URLS:-}
       # The served relay's ws url — mirrored events are stored as that relay's,
       # whichever process writes them. It is also what a mirrored kind 62 is
       # judged against: a vanish request naming this url (or ALL_RELAYS) sweeps

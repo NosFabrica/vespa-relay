@@ -59,6 +59,21 @@ export function constraintOf(health) {
   return { word, text, why, tone: word === "ingest" || word === "wedged" ? "warn" : null };
 }
 
+/**
+ * The feed chip, off the store's own line. The line is quoted rather than parsed, and only two
+ * words in it are read, both vespa-eventstore's: `EXC` (the feed client's transport exceptions)
+ * and `batch PARKED` (the batch handler answered 404, so every write goes one per request until
+ * the next retry: VespaBatchFeed, store #172). Reworded upstream, either degrades to a neutral
+ * chip rather than a wrong verdict. Errors win when the line carries both.
+ */
+export function feedOf(health) {
+  const line = health?.feed;
+  if (!line) return null;
+  if (line.includes("EXC")) return { text: "feed errors", tone: "warn", line };
+  if (line.includes("batch PARKED")) return { text: "feed unbatched", tone: "warn", line };
+  return { text: "feed", tone: null, line };
+}
+
 export const STAGES_SHOWN = 4;
 
 /**

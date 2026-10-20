@@ -46,6 +46,7 @@ import com.nosfabrica.vespa.relay.store.deployBundledSchema
 import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
@@ -127,6 +128,8 @@ fun main() {
     feedBatch(env)?.let { n ->
         System.err.println("sync: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
     }
+    val vespa = vespaEndpoints(env)
+    vespa.describe()?.let { System.err.println("sync: the store sends its $it") }
 
     val identity = RelayIdentity.fromEnv { env[it] }
     if (identity != null) {
@@ -160,6 +163,8 @@ fun main() {
             }
         }
         System.err.println("schema: deployed and serving")
+    } else {
+        System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
     }
 
     // Read before the store opens: the slow-read ring is a constructor setting.
@@ -188,6 +193,8 @@ fun main() {
             relay = relayUrl,
             autoDeploy = false,
             configUrl = configUrl,
+            feedEndpoints = vespa.feed,
+            queryEndpoints = vespa.query,
             // The relay's inserts are checked against tombstones this process stores.
             writers = STORE_WRITERS,
             providerRefreshSeconds = providerRefresh,

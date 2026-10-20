@@ -300,6 +300,82 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+b3d22b54aa74 = vespa-eventstore main @ 2026-10-20, the merge of PR #172 (three commits over 3a6076d48f9d,
+the #171 merge below):
+  - a reputation update (a retraction, a cell removal) swallows only a missing document: a 404
+    in Vespa's {"pathId","id"} shape. It used to swallow any failure whose message held "404" or
+    "not found", so a container without the document API, a field the schema lacks, or any
+    error worded that way left the cell it was meant to drop. Vespa 8.763 answers an update of a
+    missing document 200, so that case never reached the check (measured);
+  - a 404 from the batch handler parks the batch path for five minutes on a monotonic clock, then
+    the next batch tries again. It used to switch batching off for the life of the process,
+    silently. feedStatus() now ends "batch N sent" or "batch PARKED (404 xN), retry in Ns", and a
+    feed.batch.parked gauge reads 1 while parked; this relay's sync card shows the parked line as
+    a "feed unbatched" warning (feedOf, web/shared/sync.js), and docs/configuration.md's
+    VESPA_FEED_BATCH row says what keeps it parked.
+  git merge-base --is-ancestor 3a6076d48f9d b3d22b54aa74   # verified
+
+DEPLOY: nothing in the application package moves (git diff of engine/app and bundle over
+  3a6076d48f9d is empty), so the boot deploy is a no-op and nothing needs a restart.
+
+GATED, the store at b3d22b54aa74: its full integration suite against a real Vespa in Docker (25
+  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+
+END TO END, this relay on this pin over a Vespa split into feed and query clusters
+  (AUTO_DEPLOY=false, one container per list, PULSE_PUBLIC on): relay/tools/nipfe-e2e.mjs passed all
+  70 checks (gzip block taken out, as for 3a6076d48f9d). 400 notes published at once on one socket
+  went through the batch handler ("batch 4 sent"); with the handler deployed away, the next 400
+  were all OK true, written one per request (feed ok 409 -> 809), and /pulse.json read "batch
+  PARKED (404 x4), retry in 300s" with feed.batch.parked at 1.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  b3d22b54aa74, and the store's pom names engine at it and quartz-jvm at 99d05ee122.
+
+NO ARROW: every quartz line reads 99d05ee122, and nothing else in the graph names the store.
+
+Prev 3a6076d48f9d:
+
+3a6076d48f9d = vespa-eventstore main @ 2026-10-20, the merge of PR #171 (two commits over 907e9d847ad0,
+the #170 merge below):
+  - feedEndpoints / queryEndpoints on VespaEventStore.open(), VespaEventIndex and
+    VespaReputationIndex: every /document/v1 request and the batch handler's (writes, the get by
+    id, every visit) to the containers serving <document-api/>, every /search/ request and the
+    metrics read to those serving <search/>. Both default to `endpoints`, empty to the url, so a
+    single-cluster deployment is unchanged. This relay sets them from VESPA_FEED_URLS /
+    VESPA_QUERY_URLS (vespaEndpoints, StoreTopology.kt), in both processes, and points the stats
+    rollup's own /search/ at the first query container;
+  - a 404 on a document get reads as "not stored" only in Vespa's missing-document shape (JSON
+    with no error-code). A container without the document API also answers 404, and both gets
+    used to read any 404 as absent: one query container in the feed list made half the gets null,
+    so a kind 5 skipped the targets it could not find. Those now throw.
+  git merge-base --is-ancestor 907e9d847ad0 3a6076d48f9d   # verified
+
+DEPLOY: nothing in the application package moves (schemas, services.xml and the bundle as at
+  907e9d847ad0), so the boot deploy is a no-op and nothing needs a restart. A cluster that runs
+  separate feed and query containers runs its own package and sets AUTO_DEPLOY=false.
+
+GATED, the store at 3a6076d48f9d: its full integration suite against a real Vespa in Docker (25
+  tests, StagingCorpusIT skipped by design, 0 failures), run locally. Before the merge, the store
+  over a split Vespa 8 (feed and query as two container clusters on one host): every request on
+  its own role's cluster by Vespa's access logs, and a mixed feed list throwing where it used to
+  read null. This relay's own gate is in the commit that set this line.
+
+END TO END, this relay on this pin over that split Vespa (AUTO_DEPLOY=false, VESPA_FEED_URLS and
+  VESPA_QUERY_URLS one container each): relay/tools/nipfe-e2e.mjs passed all 70 of its checks with
+  the gzip block taken out (an empty store answers too little to compress), EVENT's accept,
+  read-back, duplicate, forged and stale-replaceable cases among them. The access logs: the feed
+  cluster served only /document/v1 (its 9 404s the markers and new ids a fresh store does not
+  hold, read as absent), the query cluster 235 /search/ and nothing else, the stats rollup's
+  included.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  3a6076d48f9d, the store's pom names engine at it and quartz-jvm at 99d05ee122, and the engine jar's
+  vespa-app.zip still carries components/eventstore-bundle.jar and the handler (checked).
+
+NO ARROW: every quartz line reads 99d05ee122, and nothing else in the graph names the store.
+
+Prev 907e9d847ad0:
+
 907e9d847ad0 = vespa-eventstore main @ 2026-10-19, the merge of PR #170 (over d37c1fb2eea3, the #168 merge
 below, through #169):
   - #169, #170: benchmark/README.md's "The fixed cost of a put, on a warm engine" and "More than

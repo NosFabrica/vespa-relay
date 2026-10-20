@@ -3,7 +3,7 @@
 
 import { cardHead, dayOf, el, fmt, fmtDur, short } from "../shared/page.js";
 import { backgroundPanel, chip, setStages, setTerms, term } from "../shared/processors.js";
-import { STUCK_CALL_SEC, STUCK_LEG_SEC, constraintOf, heldRows, poolsOf, relayStatusOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
+import { STUCK_CALL_SEC, STUCK_LEG_SEC, constraintOf, feedOf, heldRows, poolsOf, relayStatusOf, socketsOf, storeOf, streamSections } from "../shared/sync.js";
 
 /** A cursor within this of now is drawn to the minute, older ones to the day. */
 const FINE_CURSOR_SEC = 2 * 24 * 60 * 60;
@@ -43,12 +43,9 @@ function statusRow(progress) {
     );
   }
   if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));
-  // The feed's line is machine output, so it is the tooltip. `EXC` is another repo's
-  // wording; reworded, this degrades to a neutral chip rather than a wrong verdict.
-  if (health.feed) {
-    const broken = health.feed.includes("EXC");
-    row.appendChild(chip(broken ? "feed errors" : "feed", broken ? "warn" : null, `${health.feed} — ${term("feed")}`));
-  }
+  // The feed's line is machine output, so it is the tooltip; feedOf says which words it reads.
+  const feed = feedOf(health);
+  if (feed) row.appendChild(chip(feed.text, feed.tone, `${feed.line} — ${term("feed")}`));
   return row;
 }
 
