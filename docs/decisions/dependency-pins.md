@@ -300,6 +300,26 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+f1e54d544b4c = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-20, one commit over
+b3d22b54aa74 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
+  - open(readOnly = true): a store for a process that only reads. Every write the port, the
+    facade and the trust maintenance offer throws ("refused: this store was opened read-only"),
+    no trust drainer and no keying migration start, and SINGLE_WRITER with it is refused. The
+    sync opens its store this way when SYNC_INGEST=relay, since the relay then writes for it.
+  git merge-base --is-ancestor b3d22b54aa74 f1e54d544b4c   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at f1e54d544b4c: its full integration suite against a real Vespa in Docker (25
+  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+
+SPELLED WITH 12 HEX DIGITS, which built first time on JitPack (com.github.NosFabrica serves store
+  and engine at f1e54d544b4c).
+
+NO ARROW: every quartz line reads 99d05ee122, and nothing else in the graph names the store.
+
+Prev b3d22b54aa74:
+
 b3d22b54aa74 = vespa-eventstore main @ 2026-10-20, the merge of PR #172 (three commits over 3a6076d48f9d,
 the #171 merge below):
   - a reputation update (a retraction, a cell removal) swallows only a missing document: a 404
