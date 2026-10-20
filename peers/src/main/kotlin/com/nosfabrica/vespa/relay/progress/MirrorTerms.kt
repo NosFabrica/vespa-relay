@@ -632,7 +632,13 @@ internal val MIRROR_TERMS: JsonObject =
                 "in-flight window, per-request latency, and transport exceptions. It separates the two readings " +
                 "no other number here can — a big in-flight window with high latency is the ENGINE pushing " +
                 "back, a tiny window with low latency is the CLIENT not pushing — and every question about " +
-                "absorbing a burst faster forks on exactly that.",
+                "absorbing a burst faster forks on exactly that. With VESPA_FEED_BATCH on, the line ends with the " +
+                "batch path: `batch N sent`, or `batch PARKED` (drawn as \"feed unbatched\"). PARKED means the " +
+                "store's batch handler answered 404, so every document is going one request at a time — correct, " +
+                "but about 30% more of Vespa's CPU per event than batches of 100 — and the store tries the handler " +
+                "again after five minutes on its own. The container answering 404 serves no batch handler: a " +
+                "package without the store's bundle (an operator-owned one missing components/ and the handler), " +
+                "a container still binding its handlers after a restart, or a query container in VESPA_FEED_URLS.",
         )
         term(
             "eventsPerSec",

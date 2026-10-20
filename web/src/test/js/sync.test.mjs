@@ -6,7 +6,7 @@ import {
   IN_FLIGHT_SHOWN, MEASURING, POOL_NEGENTROPY, POOL_BETWEEN, POOL_CATCHING_UP,
   POOL_LIVE, POOL_ORDER, POOL_REFETCHING, ROTATING, STUCK_LEG_SEC, constraintOf,
   JOB_VISITING, POOL_LABELS, funnelOf, heldOf, legsOf, limitsOf, measuringOf,
-  STARTING, STAGES_SHOWN, STUCK_CALL_SEC, CALLS_SHOWN, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
+  STARTING, STAGES_SHOWN, STUCK_CALL_SEC, CALLS_SHOWN, feedOf, jobsOf, poolsOf, probeProgress, rotationOf, scheduleOf, socketsOf,
   stageDeltas, storeOf, streamSections, relayStatusOf, SYNC_STATUSES, FRESHNESS,
 } from "../../main/resources/web/shared/sync.js";
 
@@ -37,6 +37,31 @@ const leg = (n, quiet, over = {}) => ({
     assert.ok(POOL_LABELS[word], `the router publishes pool word "${word}" and this page has no label for it`);
   }
   ok("the four pool words are the router's own, read out of its source");
+}
+
+// ── the store's feed line ───────────────────────────────────────────────────
+{
+  // The lines as vespa-eventstore writes them (VespaFeed.statusLine, then VespaBatchFeed's),
+  // copied from a real store over a real Vespa.
+  const batching = "feed ok 500 inflight 0 lat 137ms batch 5 sent";
+  const parked = "feed ok 500 inflight 0 lat 137ms batch PARKED (404 x5), retry in 299s";
+  const broken = "feed ok 12 inflight 3 lat 40ms retry 2 EXC 4";
+
+  assert.equal(feedOf({ feed: batching }).tone, null, "batching normally is the healthy line");
+  assert.equal(feedOf({ feed: "feed ok 12 inflight 0 lat 3ms" }).tone, null, "and so is a store with batching off");
+  const unbatched = feedOf({ feed: parked });
+  assert.equal(unbatched.tone, "warn", "a parked batch path costs ~30% of Vespa's CPU per event and must not read as healthy");
+  assert.equal(unbatched.text, "feed unbatched");
+  assert.equal(unbatched.line, parked, "the store's own line stays the tooltip");
+  assert.equal(feedOf({ feed: broken }).text, "feed errors");
+  assert.equal(feedOf({ feed: `${broken} batch PARKED (404 x1), retry in 10s` }).text, "feed errors", "errors outrank a parked batch path");
+  assert.equal(feedOf({}), null, "no line, no chip");
+
+  // The tooltip is the line plus the router's `feed` term, which has to explain the warning.
+  const terms = readFileSync(new URL("../../../../peers/src/main/kotlin/com/nosfabrica/vespa/relay/progress/MirrorTerms.kt", import.meta.url), "utf8");
+  const feedTerm = terms.slice(terms.indexOf('"feed",'), terms.indexOf("term(", terms.indexOf('"feed",')));
+  assert.ok(feedTerm.includes("PARKED") && feedTerm.includes("feed unbatched"), "MirrorTerms' feed term no longer explains the parked chip");
+  ok("a parked batch path is a warning, errors outrank it, and both explain themselves");
 }
 
 // ── the socket budget ───────────────────────────────────────────────────────
