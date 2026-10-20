@@ -101,6 +101,8 @@ class NostrRelayServer(
     // Published events one store write may take; see ingestBatchFromEnv.
     ingestBatch: Int = IngestQueue.DEFAULT_MAX_BATCH,
     ingest: EventIngest? = null,
+    // The sync process's lane: what a connection signed in as this relay's own key publishes.
+    private val mirrorLane: MirrorLane? = null,
 ) : RelayServerBase(
         // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
@@ -113,6 +115,8 @@ class NostrRelayServer(
                     if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
+                    // Last: a tag must mean every other policy accepted the event.
+                    mirrorLane?.policy(),
                 ).toTypedArray<IRelayPolicy>(),
             )
         },
@@ -135,7 +139,7 @@ class NostrRelayServer(
             )
         }
 
-    private val ingest: EventIngest = ingest ?: ownQueue!!
+    private val ingest: EventIngest = (ingest ?: ownQueue!!).let { clients -> mirrorLane?.over(clients) ?: clients }
 
     private val searchGate = SearchGate(searchConcurrencyPerConnection)
 

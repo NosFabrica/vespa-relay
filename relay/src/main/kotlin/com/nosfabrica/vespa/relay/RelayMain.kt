@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
@@ -48,6 +49,7 @@ import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.HttpRelay
+import com.nosfabrica.vespa.relay.server.MirrorLane
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
@@ -68,6 +70,7 @@ import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpFromWs
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.maintenanceSwitchesFromEnv
+import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
 import com.nosfabrica.vespa.relay.server.config.openRankingFromEnv
@@ -97,6 +100,7 @@ import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
+import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
@@ -132,11 +136,12 @@ fun main() {
     startMaintenance(boot, store, maintenance)
     val statsSnapshot = startStats(boot, maintenance)
     val profile = startProfile(boot, store, maintenance)
-    val servingPressure = ServingPressure()
+    val servingPressure = ServingPressure(thresholdMs = boot.pressureThresholdMs)
     // Its own scope: shutdown stops the writers after the connections, never before.
     val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val ingest = startIngest(boot, store, ingestScope)
-    val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance), ingest)
+    val mirror = startMirrorLane(boot, store, ingestScope, servingPressure)
+    val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance), ingest, mirror)
     val sweeper = ExpirationSweeper(store, boot.expirationSweepSeconds).start()
     applyQuartzLogLevel(env)
     val pulseSite = startPulseSite(boot, store, storeOpenedAt)
@@ -150,8 +155,10 @@ fun main() {
             sweeper.close()
             relay.close()
             ingest?.closeIntake()
+            mirror?.closeIntake()
             ingestScope.cancel()
             ingest?.close()
+            mirror?.close()
             store.close()
         },
     )
@@ -190,6 +197,9 @@ private class Boot(
     val kindDeny: Set<Int>,
     val searchConcurrency: Int,
     val ingest: RelayIngest,
+    val mirrorIngest: IngestTuning,
+    /** Where the mirror lane starts yielding to client reads; the sync process reads the same setting. */
+    val pressureThresholdMs: Long,
     val expirationSweepSeconds: Long,
     val pulse: Pulse,
 )
@@ -281,6 +291,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         kindDeny = denyKindsFromEnv(env),
         searchConcurrency = searchConcurrencyPerConnectionFromEnv(env),
         ingest = relayIngestFromEnv(env),
+        mirrorIngest = mirrorIngestFromEnv(env),
+        pressureThresholdMs = env.strictLong("SERVING_PRESSURE_THRESHOLD_MS", 100L..Long.MAX_VALUE) ?: ServingPressure.DEFAULT_THRESHOLD_MS,
         expirationSweepSeconds = expirationSweepSecondsFromEnv(env),
         pulse = pulseFromEnv(env, adminPubkeys),
     )
@@ -408,6 +420,7 @@ private fun buildRelay(
     pressure: ServingPressure,
     trustNotice: TrustNotice,
     ingest: IngestPipeline?,
+    mirror: IngestPipeline?,
 ): NostrRelayServer =
     NostrRelayServer(
         store = store,
@@ -428,7 +441,28 @@ private fun buildRelay(
         searchConcurrencyPerConnection = boot.searchConcurrency,
         ingestBatch = boot.ingest.batch,
         ingest = ingest,
+        mirrorLane = mirror?.let { pipeline -> boot.identity?.let { MirrorLane(it.pubKey, pipeline) } },
     )
+
+/**
+ * The sync process's write lane ([MirrorLane]): its own pipeline, yielding to the clients' reads.
+ * Only with an identity, since the lane is chosen by a connection signing in as it; without one a
+ * sync forwarding here takes the publish lane, which is correct and only shares its queue.
+ */
+private fun startMirrorLane(
+    boot: Boot,
+    store: VespaEventStore,
+    scope: CoroutineScope,
+    pressure: ServingPressure,
+): IngestPipeline? {
+    if (boot.identity == null) {
+        println("relay: no RELAY_NSEC, so no mirror lane — a sync forwarding here (SYNC_INGEST=relay) shares the publishes' queue")
+        return null
+    }
+    val tuning = boot.mirrorIngest
+    println("relay: the mirror lane writes what the sync forwards, ${tuning.concurrency} worker(s) of up to ${tuning.batch} event(s)")
+    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure).also(IngestPipeline::start)
+}
 
 /** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
 private fun startIngest(
