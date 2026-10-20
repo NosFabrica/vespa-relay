@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.ingest
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthSnapshot
@@ -68,6 +69,8 @@ class RelayWriter(
     private val authWaitMs: Long = AUTH_WAIT_MS,
     /** How long the relay may stay silent with events outstanding before they are failed. */
     private val idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
+    /** EVENTs a batch keeps unanswered at once. */
+    private val maxInFlight: Int = DEFAULT_STREAM_IN_FLIGHT,
 ) : StoreWriter {
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
@@ -112,7 +115,7 @@ class RelayWriter(
         val slots = HashMap<String, ArrayDeque<Int>>(events.size)
         events.forEachIndexed { i, e -> slots.getOrPut(e.id) { ArrayDeque(1) }.addLast(i) }
         val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
-        client.publishStream(dial, events.asFlow(), idleTimeoutMs = idleTimeoutMs) { event, result ->
+        client.publishStream(dial, events.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs) { event, result ->
             synchronized(outcomes) {
                 slots[event.id]?.removeFirstOrNull()?.let { outcomes[it] = outcomeOf(result) }
             }

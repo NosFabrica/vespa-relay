@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -42,7 +43,7 @@ import kotlin.test.Test
  * Asserts nothing; prints one `CORPUS-BENCH` line. Skipped unless `BENCH_VESPA_URL` and
  * `BENCH_CORPUS` are set. `BENCH_TAKE`, `BENCH_SKIP`, `BENCH_CONCURRENCY`, `BENCH_BATCH`,
  * `BENCH_PROBES=0`, `BENCH_PASSES` (a second pass is all duplicates). `BENCH_RELAY_URL` with
- * `BENCH_NSEC` (the relay's own `RELAY_NSEC`) is `SYNC_INGEST=relay`: the store opened read-only
+ * `BENCH_NSEC` (the relay's own `RELAY_NSEC`) is `SYNC_INGEST=relay`, `BENCH_RELAY_INFLIGHT` its window: the store opened read-only
  * for the probes, every batch forwarded through [RelayWriter] to the relay there.
  */
 class CorpusIngestBench {
@@ -68,7 +69,8 @@ class CorpusIngestBench {
         VespaEventStore.open(url, relay = relayUrl, autoDeploy = forwardTo == null, readOnly = forwardTo != null).use { store ->
             repeat(env["BENCH_PASSES"]?.toInt() ?: 1) { pass ->
                 val scope = CoroutineScope(Job())
-                val writer = forwardTo?.let { RelayWriter(it, it, signer!!, scope) } ?: StoreWriter.local(store)
+                val inFlight = env["BENCH_RELAY_INFLIGHT"]?.toInt() ?: DEFAULT_STREAM_IN_FLIGHT
+                val writer = forwardTo?.let { RelayWriter(it, it, signer!!, scope, maxInFlight = inFlight) } ?: StoreWriter.local(store)
                 run(store, events.map { it.first }, bytes, tuning, probes, "pass ${pass + 1}", writer)
                 writer.close()
                 scope.cancel()
