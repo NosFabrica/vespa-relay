@@ -300,21 +300,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-f1e54d544b4c = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-20, one commit over
-b3d22b54aa74 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
+3e68ee1cbb37 = vespa-eventstore main @ 2026-10-20, the merge of PR #173 (one commit over b3d22b54aa74,
+the #172 merge below):
   - open(readOnly = true): a store for a process that only reads. Every write the port, the
     facade and the trust maintenance offer throws ("refused: this store was opened read-only"),
     no trust drainer and no keying migration start, and SINGLE_WRITER with it is refused. The
     sync opens its store this way when SYNC_INGEST=relay, since the relay then writes for it.
-  git merge-base --is-ancestor b3d22b54aa74 f1e54d544b4c   # verified
+  git merge-base --is-ancestor b3d22b54aa74 3e68ee1cbb37   # verified
 
 DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
 
-GATED, the store at f1e54d544b4c: its full integration suite against a real Vespa in Docker (25
-  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+GATED, the store at f1e54d544b4c, the PR's head: its full integration suite against a real Vespa in
+  Docker (25 tests, StagingCorpusIT skipped by design, 0 failures), run locally. The merge's tree
+  is identical to that commit's (git rev-parse 3e68ee1cbb37^{tree} == f1e54d544b4c^{tree}), so the
+  gate is this pin's.
 
-SPELLED WITH 12 HEX DIGITS, which built first time on JitPack (com.github.NosFabrica serves store
-  and engine at f1e54d544b4c).
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  3e68ee1cbb37, and the store's pom names engine at it and quartz-jvm at 99d05ee122.
 
 NO ARROW: every quartz line reads 99d05ee122, and nothing else in the graph names the store.
 
