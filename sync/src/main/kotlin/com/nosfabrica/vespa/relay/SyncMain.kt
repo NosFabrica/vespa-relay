@@ -160,6 +160,8 @@ fun main() {
             }
         }
         System.err.println("schema: deployed and serving")
+    } else {
+        System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
     }
 
     // Read before the store opens: the slow-read ring is a constructor setting.

@@ -2,7 +2,10 @@
 
 Most store bumps need nothing here. `AUTO_DEPLOY` posts the bundled package on
 every boot, a no-change deploy is a cheap no-op, and a fresh cluster is always
-correct by construction.
+correct by construction. A cluster running its own application package (several
+nodes, separate feed and query containers) has `AUTO_DEPLOY=false`, so there the
+deploy below is always the operator's, with the new store's schemas copied into
+that package ([configuration.md](configuration.md), `AUTO_DEPLOY`).
 
 A cluster that already holds events is the case this file is about. Some schema
 changes cannot be applied by the deploy alone, and **the deploy will not fail —

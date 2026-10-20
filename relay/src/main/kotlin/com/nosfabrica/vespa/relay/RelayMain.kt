@@ -299,7 +299,10 @@ private fun pulseFromEnv(
 }
 
 private fun deploySchema(boot: Boot) {
-    if (!boot.autoDeploy) return
+    if (!boot.autoDeploy) {
+        System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
+        return
+    }
     System.err.println("schema: deploying the bundled application package to ${boot.configUrl}")
     deployBundledSchema(boot.vespaUrl, boot.configUrl)
     System.err.println("schema: deployed and serving")
