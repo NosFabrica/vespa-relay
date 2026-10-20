@@ -25,6 +25,8 @@ import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
+import com.nosfabrica.vespa.relay.ingest.RelayWriter
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.knownIdsProbe
 import com.nosfabrica.vespa.relay.ingest.newestVersionsProbe
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
@@ -48,10 +50,13 @@ import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.PressurePoller
+import com.nosfabrica.vespa.relay.sync.SYNC_INGEST_ENV
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
+import com.nosfabrica.vespa.relay.sync.ingestTargetFromEnv
+import com.nosfabrica.vespa.relay.sync.relaySelfPubkey
 import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -64,7 +69,11 @@ import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 // Enough attempts to outlast the relay's own boot deploy.
 private const val DEPLOY_ATTEMPTS = 5
@@ -88,6 +97,38 @@ private fun statusInterval(env: Map<String, String>): Long = env.strictLong("SYN
 private fun statusPage(resource: String = "/stats.html"): String =
     SyncStatus::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
         ?: error("$resource is missing from the :web jar — no page can be served.")
+
+/** How long the boot waits for the relay to state its key: compose starts both at once. */
+private const val SELF_KEY_ATTEMPTS = 12
+private const val SELF_KEY_RETRY_SECONDS = 5L
+
+/**
+ * Stops the boot when the relay at [dial] states a key other than [ours]. A relay that never
+ * answers is only a warning: the writer fails its batches until it does, and those withhold
+ * their bands, so nothing is lost by starting.
+ */
+private fun refuseAnotherRelayKey(
+    dial: NormalizedRelayUrl,
+    ours: String,
+) {
+    repeat(SELF_KEY_ATTEMPTS) { attempt ->
+        val self = relaySelfPubkey(dial)
+        if (self != null) {
+            if (self != ours) {
+                error(
+                    "the relay at ${dial.url} is $self, but this process's RELAY_NSEC is $ours. The relay writes a socket's " +
+                        "events as the mirror's only when it signs in as the relay's key, so both processes need the same RELAY_NSEC.",
+                )
+            }
+            return
+        }
+        if (attempt < SELF_KEY_ATTEMPTS - 1) Thread.sleep(SELF_KEY_RETRY_SECONDS * 1_000)
+    }
+    System.err.println(
+        "sync: the relay at ${dial.url} did not state its key (NIP-11 `self`) after ${SELF_KEY_ATTEMPTS * SELF_KEY_RETRY_SECONDS}s; " +
+            "starting anyway — writes fail, and their bands wait, until it answers",
+    )
+}
 
 /**
  * Run the sync engine as its own process against the Vespa the serving relay uses, so the
@@ -139,6 +180,19 @@ fun main() {
             "sync identity: none (RELAY_NSEC unset) — upstream NIP-42 challenges go unanswered, so relays that " +
                 "gate reads behind AUTH will serve nothing and read as empty",
         )
+    }
+
+    // Before the store opens, which it does read-only when the relay is the writer.
+    val target = ingestTargetFromEnv(env, relayUrl)
+    target.dial?.let { dial ->
+        if (identity == null) {
+            error(
+                "$SYNC_INGEST_ENV=relay needs RELAY_NSEC, the relay's own key: the relay takes a socket's writes as the " +
+                    "mirror's only when it signs in as that key. Set it, or unset $SYNC_INGEST_ENV to write the store from here.",
+            )
+        }
+        refuseAnotherRelayKey(dial, identity.pubKey)
+        System.err.println("sync: writes go to the relay at ${dial.url} ($SYNC_INGEST_ENV=relay); the store is opened read-only")
     }
 
     // This is the process whose writes a drifted schema silently discards, so it deploys too.
@@ -199,7 +253,13 @@ fun main() {
             writers = STORE_WRITERS,
             providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
+            readOnly = target.viaRelay,
         )
+    val writer =
+        target.dial?.let { dial ->
+            // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
+            RelayWriter(dial, relayUrl, identity!!, CoroutineScope(Dispatchers.IO + SupervisorJob()))
+        } ?: StoreWriter.local(store)
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -259,6 +319,7 @@ fun main() {
             storeCalls = storeCalls,
             knownIds = store.knownIdsProbe(),
             newestVersions = store.newestVersionsProbe(),
+            writer = writer,
         )
     // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
     // exactly the state they exist to show.

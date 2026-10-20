@@ -399,6 +399,11 @@ services:
       # read latency on GET /pressure and this process throttles ingest on it.
       # Unset it to mirror at full speed regardless of readers.
       SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
+      # Where every write goes: `local` writes the store from here; `relay`
+      # forwards them to the relay container over a socket signed in with
+      # RELAY_NSEC, so the relay is the index's only writer (docs/configuration.md).
+      SYNC_INGEST: ${SYNC_INGEST:-local}
+      SYNC_INGEST_URL: ${SYNC_INGEST_URL:-ws://relay:7777}
       # Mean read latency (ms) above which ingest starts yielding.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       # How often (seconds) up/both streams re-reconcile to push new local events.

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -43,6 +44,8 @@ class RelayVerdictRecord(
     private val store: IEventStore,
     private val signer: NostrSigner?,
     private val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
+    /** Where a record is written; [store] is still where it is read back from. */
+    private val writer: StoreWriter = StoreWriter.local(store),
 ) {
     /** What this monitor has decided and still stands behind. */
     data class Verdicts(
@@ -425,7 +428,7 @@ class RelayVerdictRecord(
                 }
             try {
                 storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_INSERT, "kind ${template.kind}, 1 event") {
-                    store.insert(event)
+                    writer.insert(event)
                 }
                 event
             } catch (e: CancellationException) {

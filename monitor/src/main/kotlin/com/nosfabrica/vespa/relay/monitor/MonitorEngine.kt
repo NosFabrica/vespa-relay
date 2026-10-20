@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
@@ -71,6 +72,8 @@ class MonitorEngine(
     /** The relays the mirror holds live; never dialled twice, never closed by a pass. */
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
+    /** Where a verdict is written; [store] is still where it is read back from. */
+    private val writer: StoreWriter = StoreWriter.local(store),
 ) {
     private val client = peers.client
     private val tor = peers.tor
@@ -91,7 +94,7 @@ class MonitorEngine(
     /** Of [urls], those carrying a fitness grade of ours taken within the last sweep period. */
     private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> {
         val s = signer ?: return emptySet()
-        return StreamWorld.gradedSince(RelayVerdictRecord(store, s), urls, nowSeconds() - sweepSeconds)
+        return StreamWorld.gradedSince(RelayVerdictRecord(store, s, writer = writer), urls, nowSeconds() - sweepSeconds)
     }
 
     /** Of [urls], those fitness is still backing off from after a deferral. */
@@ -108,7 +111,7 @@ class MonitorEngine(
         signer?.let {
             AliasFolding(
                 aliases = RelayAliases(),
-                record = RelayVerdictRecord(store, it),
+                record = RelayVerdictRecord(store, it, writer = writer),
                 // The idle budget is per url: a `.onion` on the clearnet budget times out mid-circuit.
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
@@ -125,7 +128,7 @@ class MonitorEngine(
         signer?.let {
             ConsistencyPass(
                 consistency = consistency,
-                record = RelayVerdictRecord(store, it),
+                record = RelayVerdictRecord(store, it, writer = writer),
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
@@ -171,7 +174,7 @@ class MonitorEngine(
     private val fitness =
         signer?.let { s ->
             FitnessPass(
-                record = RelayVerdictRecord(store, s),
+                record = RelayVerdictRecord(store, s, writer = writer),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
                 // The fold and the stability gate are read off the pass's one load of the record.
@@ -292,7 +295,7 @@ class MonitorEngine(
      */
     private suspend fun retireOwnStaleVerdicts() {
         signer?.let { s ->
-            val record = RelayVerdictRecord(store, s)
+            val record = RelayVerdictRecord(store, s, writer = writer)
             // On the fitness row, since every pass waits on it and a long one otherwise reads as `starting`;
             // never on a row that is `off`, which this runs beside.
             val row = fitness?.progress?.takeIf { hasSources }

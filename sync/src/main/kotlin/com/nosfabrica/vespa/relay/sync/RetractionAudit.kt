@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestAcks
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.progress.StoreCalls
@@ -96,6 +97,8 @@ internal class RetractionAudit(
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val refusedIds: RefusedIds,
+    /** Where the deletes go: the store, or the serving relay as signed `MirrorDelete` requests. */
+    private val writer: StoreWriter = StoreWriter.local(store),
 ) {
     /** Records dropped because their owning upstream stopped serving them. */
     val deleted = AtomicLong()
@@ -299,7 +302,7 @@ internal class RetractionAudit(
         // By id and inside the ask, so a delete never reaches past what this reconcile compared.
         for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
             storeCall(StoreCalls.CALLER_AUDIT_RETRACTION, StoreCalls.OP_DELETE, StoreCalls.ids(chunk.size)) {
-                store.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))
+                writer.delete(ownedAsk.copy(ids = chunk, since = null, until = null, limit = null))
             }
         }
         deleted.addAndGet(diff.haveIds.size.toLong())
