@@ -163,3 +163,13 @@ they come back, so a day costs the day the window gained at the top.
 **Retraction audits are counted apart from sweeps.** They ride the sweeps'
 clock and pool, but summed into `negentropyRuns` they made seven finished
 sweeps read as thirty-seven; `retractionRuns` carries them.
+
+**A band is recorded only once the store has answered every event the walk read.** A walk handed
+its events to ingest's queue and recorded its band as soon as the relay had sent the page, so for as
+long as the events sat in the queue the band claimed ground the store did not hold. A process that
+stopped then lost them for good: the band said covered, and nothing walked it again. Each walk now
+tracks its submissions (`IngestAcks`) and waits for their outcomes before `record`, `recordCut` or
+`recordAudit`; the retraction audit does the same before its `record`. A walk with any event the
+store failed to take records nothing and counts in `bandsWithheld`, and the next visit walks it
+again. The wait is one ingest round trip per chunk, since a chunk records once at its end, not per
+page. `VisitPoolAckGateTest` pins both directions, and fails on the old order.

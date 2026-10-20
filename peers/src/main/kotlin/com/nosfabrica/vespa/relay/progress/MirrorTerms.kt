@@ -789,6 +789,15 @@ internal val MIRROR_TERMS: JsonObject =
                 "the rotation rate, not beside `roster`.",
         )
         term(
+            "bandsWithheld",
+            "Walks that read their ground and did NOT record it as covered, because at least one of their " +
+                "events failed to reach the store (the store erred, or the process was shutting down). A band " +
+                "is recorded only once the store has answered every event the walk handed it, so ground whose " +
+                "events were lost is walked again at the next visit instead of reading as covered. Climbing " +
+                "means the store is failing writes: the ingest processor's lost count and the store's own line " +
+                "say why.",
+        )
+        term(
             "visitsHeldByIngest",
             "Visits the pool declined to dial because the ingest queue was full at the moment the unit " +
                 "came up — read beside the ingest processor's `queued` against its `capacity`. A download into " +

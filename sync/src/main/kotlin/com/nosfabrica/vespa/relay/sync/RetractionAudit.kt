@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.DeleteMissing
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.ingest.IngestAcks
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
@@ -190,8 +191,16 @@ internal class RetractionAudit(
         val observed = mirrorNeeded(stream, url, ownedAsk, diff.needIds, onEvent)
 
         // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records;
-        // a by-id answer that stalled or was refused leaves ids unfetched, so it claims nothing.
-        if (compared && observed.drained) {
+        // a by-id answer that stalled or was refused leaves ids unfetched, so it claims nothing, and
+        // neither does one whose events did not all reach the store ([IngestAcks]).
+        val stored = observed.acks.await()
+        if (compared && observed.drained && !stored) {
+            System.err.println(
+                "router: ${stream.name} ${url.url} — ${observed.acks.failures} recovered event(s) did not reach the store; " +
+                    "the band stays unverified and the next audit fetches them again",
+            )
+        }
+        if (compared && observed.drained && stored) {
             bands.record(
                 stream.name,
                 url,
@@ -227,6 +236,9 @@ internal class RetractionAudit(
         var max: Long? = null
         val byKind = mutableMapOf<Int, SyncCoverage.Span>()
         var drained = true
+
+        /** The store's answers to what this download handed ingest. */
+        val acks = IngestAcks()
     }
 
     /**
@@ -258,7 +270,7 @@ internal class RetractionAudit(
                             observed.max = maxOf(observed.max ?: event.createdAt, event.createdAt)
                         }
                         SyncCoverage.observe(observed.byKind, event.kind, event.createdAt)
-                        ingest.submit(event, stream.trusted, origin)
+                        ingest.submit(event, stream.trusted, origin, observed.acks.track())
                     }
                 }
             if (!answered) observed.drained = false
