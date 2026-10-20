@@ -95,6 +95,13 @@ class RelayWriter(
         client.connect()
     }
 
+    /**
+     * Events still waiting on an answer from the relay. Between batches it should be zero: an OK,
+     * true or false, takes an event out (Quartz 98089642eb), so only what a dropped socket lost
+     * stays, to be re-sent on reconnect.
+     */
+    fun pendingInOutbox(): Int = client.activeOutboxCache(dial).size
+
     /** Whether the socket is signed in right now. */
     fun signedIn(): Boolean = authenticator.authSnapshot(dial).phase == RelayAuthSnapshot.Phase.AUTHENTICATED
 

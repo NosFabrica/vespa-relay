@@ -45,6 +45,31 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+98089642eb = amethyst main @ 2026-10-20, the merge of vitorpamplona/amethyst#4589. 42 commits over
+99d05ee122 (below) touching quartz/. What this relay reaches:
+
+  AN OK, TRUE OR FALSE, ENDS AN EVENT'S DELIVERY TO THAT RELAY (#4589). The client outbox kept an
+    OK-false event that was not invalid:/pow:/replaced:/deleted: until three refusals piled up,
+    which only reconnects produce, so a publisher on a long-lived socket held every refused event
+    for the life of the socket. RelayWriter (SYNC_INGEST=relay) is that publisher: 50 events the
+    relay refused as a denied kind were all still in its outbox after their batch returned.
+    auth-required: and a rate-limited: that states its back-off still stay pending.
+  RELAY URLS ARE INTERNED AND NORMALIZE IDEMPOTENTLY (#4578): one NormalizedRelayUrl
+    object per relay, which the pool, the bands and the roster all key on; equality is unchanged.
+  THE PARSER STOPS INTERNING (#4583): ids, pubkeys and tag values parse as plain strings; Amethyst's
+    cache interns what it keeps. Nothing here relied on identity.
+  Also: Event.shareStrings (unused here), VerifyAndInsert checks for cancellation, in-house
+  SHA-2/HMAC/AES for the native targets (JVM ids still hash through MessageDigest).
+  SEARCH DERIVATION, through the store: none. nip50Search, relay.filters and tags have no diff in
+  the range.
+
+NO ARROW: the store at a40d97620920 (below) names 98089642eb too.
+
+DIRECTION: 99d05ee122 is a strict ancestor of this.
+  git merge-base --is-ancestor 99d05ee122 98089642eb   # verified
+
+Prev 99d05ee122:
+
 99d05ee122 = amethyst main @ 2026-10-17, the merge of vitorpamplona/amethyst#4522. 38 commits over
 e5bdf1bd37 (below), 12 of them touching quartz/, all in the relay client and its OkHttp socket
 (#4517, #4521, #4522). What this relay reaches, through peers (NostrClient over
@@ -300,6 +325,24 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+a40d97620920 = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-20, two commits over
+3e68ee1cbb37 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
+  - Quartz 99d05ee122 -> 98089642eb (the quartz entry above): nothing the store calls extracts or
+    matches differently, so no reindex; the second commit corrects a PR number in the note.
+  git merge-base --is-ancestor 3e68ee1cbb37 a40d97620920   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at a40d97620920: its full integration suite against a real Vespa in Docker (25
+  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+
+AND HERE: RelayWriterTest's outbox case fails on quartz 99d05ee122 (50 refused events still pending)
+  and passes on 98089642eb.
+
+SPELLED WITH 12 HEX DIGITS (com.github.NosFabrica serves store and engine at a40d97620920).
+
+Prev 3e68ee1cbb37:
+
 3e68ee1cbb37 = vespa-eventstore main @ 2026-10-20, the merge of PR #173 (one commit over b3d22b54aa74,
 the #172 merge below):
   - open(readOnly = true): a store for a process that only reads. Every write the port, the

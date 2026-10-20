@@ -125,6 +125,15 @@ class RelayWriterTest {
     }
 
     @Test
+    fun `a refused event leaves the writer's outbox, so a long-lived socket holds nothing it was answered`() {
+        // Quartz used to keep an OK-false event pending until three refusals, which only reconnects produce.
+        val reactions = (1..50).map { someone.sign<Event>(1_700_000_000L + it, 7, emptyArray(), "+") }
+        val outcomes = runBlocking { writer.batchInsert(reactions) }
+        assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Rejected }, "all refused: $outcomes")
+        assertEquals(0, writer.pendingInOutbox())
+    }
+
+    @Test
     fun `a delete goes as a signed request and the relay purges exactly its ids`() {
         val notes = (1..3).map(::note)
         runBlocking { writer.batchInsert(notes) }
