@@ -10,8 +10,9 @@ There are two processes. The **relay** (`vespa-relay`, `RelayMain`) serves; the
 relays into the same store, as its own container so it can be restarted or
 retuned without the relay dropping a client. The sections below say which
 process reads what: Core and everything through Admin is the relay (the sync
-process also reads `VESPA_URL`, `RELAY_URL`, `RELAY_NSEC`, `AUTO_DEPLOY`,
-`VESPA_CONFIG_URL`, `VESPA_QUERY_FANOUT` and `JAVA_TOOL_OPTIONS`); the Router
+process also reads `VESPA_URL`, `VESPA_FEED_URLS`, `VESPA_QUERY_URLS`, `RELAY_URL`,
+`RELAY_NSEC`, `AUTO_DEPLOY`, `VESPA_CONFIG_URL`, `VESPA_QUERY_FANOUT` and
+`JAVA_TOOL_OPTIONS`); the Router
 section and the parse audit are the sync process. Aiming `SYNC_CONFIG`/`SYNC_CONFIG_FILE` at the
 relay fails its boot on purpose — the setting would once have started the
 mirror there, and accepting-but-ignoring it is the silent inertness this
@@ -31,6 +32,8 @@ the exact word `true` deletes and every other value is a dry run.
 |---|---|---|
 | `RELAY_URL` | this relay's own ws url — its NIP-42 identity and NIP-62 vanish scope | **required** |
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
+| `VESPA_FEED_URLS` | for a Vespa that runs its feed and query containers as separate clusters (vespa-eventstore's `docs/scaling.md`, "Feed and query containers"): the containers serving `<document-api />`, comma-separated (`http://feed-0:8080,http://feed-1:8080`). The store sends them every `/document/v1` request and the batch handler's: every write, but also the get by id and every visit, which are reads through the document API. Read by both processes; set it the same on both. Such a cluster runs its own application package, so it also wants `AUTO_DEPLOY=false`. A container listed here that serves no document API makes the store throw on the first request that reaches it, never answer "not stored". An entry that is not an `http(s)` URL with a host stops the boot | unset: `VESPA_URL` |
+| `VESPA_QUERY_URLS` | the other half: the containers serving `<search />`, comma-separated. Every `/search/` request goes to them: client reads, counts, and the writer's own dedup and deletion checks. The relay's stats rollup queries the first one. Read by both processes; set it the same on both | unset: `VESPA_URL` |
 | `RELAY_PORT` | port to listen on | `7777` |
 | `FTS_CURSOR_FILE` | where the reindex saves its position, so a restart resumes rather than redoing the corpus | `/var/lib/vespa-relay/fts-cursor.txt` |
 | `REINDEX_FTS_ON_START` | re-derive every event's search fields once, in the background. Needed after a store upgrade that changes `SearchExtractors` or adds *fed* search fields — a Vespa reindex cannot produce those, only a re-put can. Walks the whole corpus, so leave it off except for the boot that performs the migration. **It is the wrong tool for a *derived* column, and the failure is silent**: a field Vespa builds at index time rather than one we feed — `search_text_gram`, the body's partial-word reach, added in store `e3be81564d` — is left empty on the whole back catalogue by the deploy that adds it, and this walk does not repair it. The store's drift check sees identical columns, re-puts nothing, and the run reports success having fixed nothing while whole-word search keeps working normally. That case needs a **Vespa reindex** or a genuine full re-feed, and the POST that requests one only queues it — a redeploy is what dispatches it. Procedure: [migrations.md](migrations.md) | `false` |
@@ -750,6 +753,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `RELAY_INGEST_BATCH` | relay | `1`–`8192` |
 | `VESPA_FEED_COMPRESSION` | both | `auto`, `gzip` or `none` |
 | `VESPA_FEED_BATCH` | both | `0`–`4096` |
+| `VESPA_FEED_URLS` / `VESPA_QUERY_URLS` | both | comma-separated `http(s)` URLs with a host, no empty entry |
 | `SYNC_INGEST_CONCURRENCY` | sync | `1`–`64` |
 | `SYNC_INGEST_BATCH` | sync | `1`–`20000` |
 | `SYNC_NEG_PAGE_TARGET` / `SYNC_NEG_PAGE_SLACK_SECONDS` | sync | `0` or more |

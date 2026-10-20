@@ -87,10 +87,12 @@ import com.nosfabrica.vespa.relay.server.config.syncSettingsIgnored
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
+import com.nosfabrica.vespa.relay.store.VespaEndpoints
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
 import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -159,6 +161,7 @@ fun main() {
 /** Everything the process reads from its environment, parsed before anything touches the network. */
 private class Boot(
     val vespaUrl: String,
+    val vespa: VespaEndpoints,
     val configUrl: String,
     val autoDeploy: Boolean,
     val port: Int,
@@ -208,6 +211,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         System.err.println("relay: ${it.joinToString()} — read by the sync process, not the relay; set them on that service or they do nothing")
     }
     val vespaUrl = env["VESPA_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: "http://localhost:8080"
+    val vespa = vespaEndpoints(env)
+    vespa.describe()?.let { System.err.println("relay: the store sends its $it") }
     val endpoint = relayEndpointFromEnv(env)
     // Read first so a malformed key stops the boot here. Unset is an anonymous relay.
     val identity = RelayIdentity.fromEnv { env[it] }
@@ -246,6 +251,7 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     return Boot(
         vespaUrl = vespaUrl,
+        vespa = vespa,
         configUrl = env["VESPA_CONFIG_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: vespaConfigUrlFor(vespaUrl),
         autoDeploy = env.strictFlag("AUTO_DEPLOY") ?: true,
         port = env.strictInt("RELAY_PORT", 1..65_535) ?: 7777,
@@ -313,6 +319,8 @@ private fun openStore(boot: Boot): VespaEventStore =
         boot.vespaUrl,
         relay = boot.endpoint.ws,
         autoDeploy = false,
+        feedEndpoints = boot.vespa.feed,
+        queryEndpoints = boot.vespa.query,
         configUrl = boot.configUrl,
         writers = STORE_WRITERS,
         providerRefreshSeconds = boot.providerRefreshSeconds,
@@ -352,7 +360,7 @@ private fun startStats(
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
         return snapshot
     }
-    val rollup = StatsRollup(StatsVespa(boot.vespaUrl), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
+    val rollup = StatsRollup(StatsVespa(boot.vespa.queryUrl(boot.vespaUrl)), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
     if (counters > 0) {
         launchStatsRollup(scope, rollup, snapshot, StatsTier.COUNTERS, counters)
     } else {
