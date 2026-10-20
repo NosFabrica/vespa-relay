@@ -49,6 +49,7 @@ import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.HttpRelay
+import com.nosfabrica.vespa.relay.server.MirrorDeleteHandler
 import com.nosfabrica.vespa.relay.server.MirrorLane
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
@@ -142,6 +143,8 @@ fun main() {
     val ingest = startIngest(boot, store, ingestScope)
     val mirror = startMirrorLane(boot, store, ingestScope, servingPressure)
     val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance), ingest, mirror)
+    // The retraction audit's deletes, from a sync that forwards here; see MirrorDelete.
+    boot.identity?.let { relay.eventCommandHandler = MirrorDeleteHandler(it.pubKey, purge = { filter -> store.delete(filter) }) }
     val sweeper = ExpirationSweeper(store, boot.expirationSweepSeconds).start()
     applyQuartzLogLevel(env)
     val pulseSite = startPulseSite(boot, store, storeOpenedAt)
