@@ -468,8 +468,7 @@ than quietly changing who writes. What only local mode needed went with it: the 
 get by id and visits still read through `VESPA_FEED_URLS`), and the switch that let its ingest
 yield to `/pressure`. `StoreWriter.local` stays, because the relay's own pipelines write through
 it. Measured before the switch, on 200k production events, forwarding cost 20-26% of a fresh
-backfill's throughput, almost all of it the mirror lane's small batches (about 43-71 events per
-store write against about 1,000 locally); filling them is the open lever.
+backfill's throughput; see "The writer sends a whole batch at once" below for where it goes.
 
 **Only the writer deploys, and the key is watched past the boot.** With the sync read-only, its
 boot deploy (`AUTO_DEPLOY`) lost its reason, which was that its writes were the ones a drifted
@@ -482,3 +481,15 @@ takes the mirror lane, so a relay that came up afterwards with another key took 
 publishers' lane with `signedIn` true and nothing flagged (reproduced against a real socket). The
 boot now leaves a watch behind (`watchRelayKey`, every 30s until the relay answers once) that stops
 the process with the boot's own refusal.
+
+**The writer sends a whole batch at once.** Measured on the 200k slice with a batch-size histogram,
+the mirror lane's writes averaged about 290 events, not the 43 an earlier reading of the store's
+`BatchInsert` activity counter suggested: that counter counts work inside the store (about 398k
+documents for 200k events), not the batches handed to it. Batches under 16 events, where the store
+leaves its bulk path, carried 0.3% of events. What held batches at 290 was the writer's window:
+`publishStream`'s window is per `batchInsert` call, each sync worker writes one batch per call, so
+Quartz's default 512 kept two workers to about 1,000 in flight. `RelayWriter.IN_FLIGHT` is 2,000,
+which at the default 1,000-event batch sends the whole batch: lane batches average about 550, and
+the backfill ran 11% faster (177 s to 157 s, alternated A/B on fresh volumes) on 5% less CPU. The
+same runs' profile put the forwarding hop itself (websocket framing and parsing the EVENTs) at about
+12% of the relay's CPU; the rest is building and sending Vespa documents, which local writes paid too.

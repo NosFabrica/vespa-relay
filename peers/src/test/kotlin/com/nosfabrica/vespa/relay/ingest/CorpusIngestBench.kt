@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -69,7 +68,7 @@ class CorpusIngestBench {
         VespaEventStore.open(url, relay = relayUrl, autoDeploy = forwardTo == null, readOnly = forwardTo != null).use { store ->
             repeat(env["BENCH_PASSES"]?.toInt() ?: 1) { pass ->
                 val scope = CoroutineScope(Job())
-                val inFlight = env["BENCH_RELAY_INFLIGHT"]?.toInt() ?: DEFAULT_STREAM_IN_FLIGHT
+                val inFlight = env["BENCH_RELAY_INFLIGHT"]?.toInt() ?: RelayWriter.IN_FLIGHT
                 val writer = forwardTo?.let { RelayWriter(it, it, signer!!, scope, maxInFlight = inFlight) } ?: StoreWriter.local(store)
                 run(store, events.map { it.first }, bytes, tuning, probes, "pass ${pass + 1}", writer)
                 writer.close()
