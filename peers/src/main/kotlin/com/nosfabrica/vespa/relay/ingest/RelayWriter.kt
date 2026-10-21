@@ -55,10 +55,11 @@ import java.util.concurrent.atomic.AtomicLong
  * The AUTH is signed for [relay] whatever [dial] says, so an internal address needs no change on
  * the relay side.
  *
- * The socket is held open by a subscription that matches nothing: Quartz drops a relay from its
- * pool as soon as nothing wants it, and every redial is a fresh challenge whose first events could
- * land before the AUTH does. Those still get written, through the publishers' lane under the same
- * rules, so this costs lane accounting and not correctness; [unsignedBatches] counts it.
+ * The socket is held with `keepConnected`: Quartz drops a relay from its pool as soon as nothing
+ * wants it, and every redial is a fresh challenge whose first events could land before the AUTH
+ * does. Those still get written, through the publishers' lane under the same rules, so a redial
+ * costs lane accounting and not correctness; [unsignedBatches] counts it. On the open socket each
+ * batch's window opens at once (`publishStream` sends no lone first event there).
  */
 class RelayWriter(
     private val dial: NormalizedRelayUrl,
@@ -91,7 +92,7 @@ class RelayWriter(
     override val description = "to the relay at ${dial.url}, signed in as ${signer.pubKey.take(12)}…"
 
     init {
-        client.subscribe(KEEP_OPEN, mapOf(dial to listOf(Filter(ids = listOf(NO_SUCH_ID)))))
+        client.keepConnected(dial)
         client.connect()
     }
 
@@ -168,7 +169,7 @@ class RelayWriter(
     }
 
     override fun close() {
-        runCatching { client.unsubscribe(KEEP_OPEN) }
+        runCatching { client.releaseConnection(dial) }
         runCatching { authenticator.destroy() }
         runCatching { client.close() }
         runCatching {
@@ -186,11 +187,6 @@ class RelayWriter(
 
         /** Past a pipeline batch's own write time on a loaded relay, so a slow commit is not a lost one. */
         const val IDLE_TIMEOUT_MS = 120_000L
-
-        private const val KEEP_OPEN = "vespa-sync-writer"
-
-        /** An id no event can have: hashing to all zeros is not a thing that happens. */
-        private const val NO_SUCH_ID = "0000000000000000000000000000000000000000000000000000000000000000"
 
         private val NOT_SENT = IEventStore.InsertOutcome.Failed("error: the relay went silent before this event was sent")
 

@@ -134,6 +134,18 @@ class RelayWriterTest {
     }
 
     @Test
+    fun `the socket outlives the quiet between two batches, so the next one needs no new sign-in`() {
+        runBlocking { writer.batchInsert(listOf(note(1))) }
+        assertTrue(writer.signedIn())
+        // Well past Quartz's 300ms pool sample, which drops a relay nothing holds; a redial would
+        // reset the NIP-42 state with the socket.
+        Thread.sleep(1_500)
+        assertTrue(writer.signedIn(), "still the same signed-in socket")
+        runBlocking { writer.batchInsert(listOf(note(2))) }
+        assertEquals(0L, writer.unsignedBatches.get())
+    }
+
+    @Test
     fun `a delete goes as a signed request and the relay purges exactly its ids`() {
         val notes = (1..3).map(::note)
         runBlocking { writer.batchInsert(notes) }

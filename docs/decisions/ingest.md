@@ -404,9 +404,9 @@ write would still be stored, through the publishers' lane, and nothing would say
 **The AUTH is signed for `RELAY_URL`, whatever the socket dials.** Compose dials
 `ws://relay:7777`, and the relay's NIP-42 check reads the AUTH's `relay` tag against its own
 addresses. Rewriting the tag on the signing side (`signedFor`) keeps an internal address a sync
-setting only. The socket is held open by a subscription that matches no event: Quartz drops a
-relay from its pool once nothing wants it, and each redial is a new challenge whose first events
-could beat the AUTH. Those are still written, on the publishers' lane under the same rules, and
+setting only. The socket is held open with Quartz's `keepConnected` (amethyst #4591, which replaced a
+subscription that matched no event): Quartz drops a relay from its pool once nothing wants it, and
+each redial is a new challenge whose first events could beat the AUTH. Those are still written, on the publishers' lane under the same rules, and
 counted as `unsignedBatches`.
 
 **OKs read back as the store's own outcomes.** The relay answers a store rejection in the

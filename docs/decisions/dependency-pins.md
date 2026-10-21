@@ -45,6 +45,26 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+e7f23068e0 = amethyst main @ 2026-10-21, the merge of vitorpamplona/amethyst#4591, whose two commits
+are the only ones over 98089642eb (below) touching quartz/. What this relay reaches:
+
+  NostrClient.keepConnected / releaseConnection: a relay held connected between bursts. RelayWriter
+    holds its relay with it, in place of a subscription that matched no event; RelayWriterTest
+    shows the socket surviving a 1.5s quiet signed in, and losing it without the hold.
+  AN auth-required: NOBODY CAN ANSWER ENDS DELIVERY: it kept the event, and reset its retry budget,
+    forever. Now only while an AUTH can land, and at most 10 times.
+  publishStream OPENS ITS WINDOW AT ONCE ON AN OPEN SOCKET: no lone first event and its round trip
+    per batch, which RelayWriter paid on every one.
+  SEARCH DERIVATION, through the store: none; quartz/build.gradle.kts and amethyst's catalog are
+  unchanged.
+
+NO ARROW: the store at 2076493e0823 (below) names e7f23068e0 too.
+
+DIRECTION: 98089642eb is a strict ancestor of this.
+  git merge-base --is-ancestor 98089642eb e7f23068e0   # verified
+
+Prev 98089642eb:
+
 98089642eb = amethyst main @ 2026-10-20, the merge of vitorpamplona/amethyst#4589. 42 commits over
 99d05ee122 (below) touching quartz/. What this relay reaches:
 
@@ -325,6 +345,21 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+2076493e0823 = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-21, one commit over
+a40d97620920 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
+  - Quartz 98089642eb -> e7f23068e0 (the quartz entry above); the store imports nothing from
+    relay.client, so nothing it calls moves.
+  git merge-base --is-ancestor a40d97620920 2076493e0823   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at 2076493e0823: its full integration suite against a real Vespa in Docker (25
+  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+
+SPELLED WITH 12 HEX DIGITS (com.github.NosFabrica serves store and engine at 2076493e0823).
+
+Prev a40d97620920:
+
 a40d97620920 = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-20, two commits over
 3e68ee1cbb37 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
   - Quartz 99d05ee122 -> 98089642eb (the quartz entry above): nothing the store calls extracts or
