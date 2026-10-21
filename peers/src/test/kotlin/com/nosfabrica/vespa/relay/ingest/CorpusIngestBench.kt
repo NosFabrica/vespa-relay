@@ -43,7 +43,7 @@ import kotlin.test.Test
  * Asserts nothing; prints one `CORPUS-BENCH` line. Skipped unless `BENCH_VESPA_URL` and
  * `BENCH_CORPUS` are set. `BENCH_TAKE`, `BENCH_SKIP`, `BENCH_CONCURRENCY`, `BENCH_BATCH`,
  * `BENCH_PROBES=0`, `BENCH_PASSES` (a second pass is all duplicates). `BENCH_RELAY_URL` with
- * `BENCH_NSEC` (the relay's own `RELAY_NSEC`) is `SYNC_INGEST=relay`, `BENCH_RELAY_INFLIGHT` its window: the store opened read-only
+ * `BENCH_NSEC` (the relay's own `RELAY_NSEC`) is the sync's write path, `BENCH_RELAY_INFLIGHT` its window: the store opened read-only
  * for the probes, every batch forwarded through [RelayWriter] to the relay there.
  */
 class CorpusIngestBench {

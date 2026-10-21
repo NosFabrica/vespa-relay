@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
-import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.knownIdsProbe
 import com.nosfabrica.vespa.relay.ingest.newestVersionsProbe
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
@@ -45,18 +44,16 @@ import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
-import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.RelaySelf
-import com.nosfabrica.vespa.relay.sync.SYNC_INGEST_ENV
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
-import com.nosfabrica.vespa.relay.sync.ingestTargetFromEnv
+import com.nosfabrica.vespa.relay.sync.ingestDialFromEnv
 import com.nosfabrica.vespa.relay.sync.relaySelf
 import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
@@ -128,7 +125,7 @@ private fun refuseAnotherRelayKey(
             RelaySelf.NoKey -> {
                 error(
                     "the relay at ${dial.url} states no key (NIP-11 `self`): it has no RELAY_NSEC, so it runs no mirror lane and no " +
-                        "delete hook. Give it the same RELAY_NSEC as this process, or unset $SYNC_INGEST_ENV to write the store from here.",
+                        "delete hook. Give it the same RELAY_NSEC as this process.",
                 )
             }
 
@@ -178,37 +175,25 @@ fun main() {
 
     // Parsed before the schema deploy and its retries, so a bad value refuses the boot at once.
     val providerRefresh = providerRefreshSeconds(env)
-    // The store reads it; checked here so a typo stops the boot instead of quietly turning batching off.
-    feedBatch(env)?.let { n ->
-        System.err.println("sync: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
-    }
     val vespa = vespaEndpoints(env)
     vespa.describe()?.let { System.err.println("sync: the store sends its $it") }
 
-    val identity = RelayIdentity.fromEnv { env[it] }
-    if (identity != null) {
-        System.err.println("sync identity: ${identity.pubKey.take(12)}… (NIP-42 auth, NIP-66 monitor)")
-    } else {
-        System.err.println(
-            "sync identity: none (RELAY_NSEC unset) — upstream NIP-42 challenges go unanswered, so relays that " +
-                "gate reads behind AUTH will serve nothing and read as empty",
-        )
-    }
-
-    // Before the store opens, which it does read-only when the relay is the writer.
-    val target = ingestTargetFromEnv(env, relayUrl)
-    target.dial?.let { dial ->
-        if (identity == null) {
-            error(
-                "$SYNC_INGEST_ENV=relay needs RELAY_NSEC, the relay's own key: the relay takes a socket's writes as the " +
-                    "mirror's only when it signs in as that key. Set it, or unset $SYNC_INGEST_ENV to write the store from here.",
+    // Every write goes to the relay, signed in as its key: without one this process cannot write at all.
+    val identity =
+        RelayIdentity.fromEnv { env[it] }
+            ?: error(
+                "RELAY_NSEC is required — the relay's own key. Every write this process makes goes to the relay, which takes a " +
+                    "socket's writes as the mirror's only when it signs in as that key; it also answers upstream NIP-42 challenges.",
             )
-        }
-        refuseAnotherRelayKey(dial, identity.pubKey)
-        System.err.println("sync: writes go to the relay at ${dial.url} ($SYNC_INGEST_ENV=relay); the store is opened read-only")
-    }
+    System.err.println("sync identity: ${identity.pubKey.take(12)}… (NIP-42 auth, NIP-66 monitor, the relay's writer)")
 
-    // This is the process whose writes a drifted schema silently discards, so it deploys too.
+    // Before the store opens, read-only: the relay is the index's only writer.
+    val dial = ingestDialFromEnv(env, relayUrl)
+    refuseAnotherRelayKey(dial, identity.pubKey)
+    System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
+
+    // The relay deploys the same package at its boot; deploying here too means a sync that comes up
+    // first reads the bundled schema rather than none. Compose starts both together, hence the retries.
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
     if (env.strictFlag("AUTO_DEPLOY") != false) {
         System.err.println("schema: deploying the bundled application package to $configUrl")
@@ -262,17 +247,14 @@ fun main() {
             configUrl = configUrl,
             feedEndpoints = vespa.feed,
             queryEndpoints = vespa.query,
-            // The relay's inserts are checked against tombstones this process stores.
+            // Read-only, so this names the deployment's topology for the store, and writes nothing under it.
             writers = STORE_WRITERS,
             providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
-            readOnly = target.viaRelay,
+            readOnly = true,
         )
-    val writer =
-        target.dial?.let { dial ->
-            // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
-            RelayWriter(dial, relayUrl, identity!!, CoroutineScope(Dispatchers.IO + SupervisorJob()))
-        } ?: StoreWriter.local(store)
+    // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
+    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -313,7 +295,7 @@ fun main() {
         }
     val poller = servingPressure?.let { PressurePoller(pressureUrl, it).start() }
     if (poller == null) {
-        System.err.println("router: SYNC_PRESSURE_URL unset — ingest will not yield to relay reads")
+        System.err.println("router: SYNC_PRESSURE_URL unset — repairs will not yield to relay reads")
     }
 
     val engine =
@@ -327,7 +309,6 @@ fun main() {
             signer = identity,
             wireLogMode = env.strictChoice("SYNC_WIRE_LOG", setOf("sent", "full")) ?: "",
             servingPressure = servingPressure,
-            ingestPressure = target.ingestPressure(servingPressure),
             torSettings = torSettings,
             progress = progress,
             storeCalls = storeCalls,

@@ -378,7 +378,7 @@ limit each, and a publisher's own window already buffers what it sends; the
 mirror's depth rides out download bursts the relay does not have. At the
 defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.
 
-## One writer: the sync forwards to the relay (`SYNC_INGEST=relay`)
+## One writer: the sync forwards to the relay
 
 **The relay is the only writer, and the sync reaches it as a client.** With both processes
 writing one index, every admission check the store makes (dedup, supersession, the NIP-09 and
@@ -458,3 +458,15 @@ ahead of the genuine one would otherwise be forwarded, refused, and take the gen
 as its duplicate) or the older genuine version (answered `replaced:`, and suppressed) with it.
 `StoreWriter.checksSignatures` carries the switch; the local writer says no, since the store holds
 unsigned rumors by design. Local mode is unchanged.
+
+**Forwarding is the only mode.** `SYNC_INGEST=local` stayed the default while relay mode proved
+itself, which left the race above open on every deployment that did not opt in. It is gone: the
+sync always opens its store read-only and writes through `RelayWriter`, `RELAY_NSEC` is required
+there, and a deployment still setting `SYNC_INGEST=local` stops at boot with the reason rather
+than quietly changing who writes. What only local mode needed went with it: the sync's own strict
+`VESPA_FEED_BATCH` read, its feed compression and batching in compose (it sends no documents; its
+get by id and visits still read through `VESPA_FEED_URLS`), and the switch that let its ingest
+yield to `/pressure`. `StoreWriter.local` stays, because the relay's own pipelines write through
+it. Measured before the switch, on 200k production events, forwarding cost 20-26% of a fresh
+backfill's throughput, almost all of it the mirror lane's small batches (about 43-71 events per
+store write against about 1,000 locally); filling them is the open lever.

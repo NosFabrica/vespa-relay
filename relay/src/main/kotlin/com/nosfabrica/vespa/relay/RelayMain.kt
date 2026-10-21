@@ -449,8 +449,8 @@ private fun buildRelay(
 
 /**
  * The sync process's write lane ([MirrorLane]): its own pipeline, yielding to the clients' reads.
- * Only with an identity, since the lane is chosen by a connection signing in as it; without one a
- * sync forwarding here takes the publish lane, which is correct and only shares its queue.
+ * Only with an identity, since the lane is chosen by a connection signing in as it. Without one
+ * the relay runs no lane and no delete hook, and a sync refuses to boot against it.
  */
 private fun startMirrorLane(
     boot: Boot,
@@ -459,7 +459,7 @@ private fun startMirrorLane(
     pressure: ServingPressure,
 ): IngestPipeline? {
     if (boot.identity == null) {
-        println("relay: no RELAY_NSEC, so no mirror lane — a sync forwarding here (SYNC_INGEST=relay) shares the publishes' queue")
+        println("relay: no RELAY_NSEC, so no mirror lane and no delete hook — a sync cannot write through this relay")
         return null
     }
     val tuning = boot.mirrorIngest

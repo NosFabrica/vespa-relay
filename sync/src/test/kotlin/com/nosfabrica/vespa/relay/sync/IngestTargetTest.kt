@@ -20,49 +20,40 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.sun.net.httpserver.HttpServer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-/** `SYNC_INGEST` and its url, read strictly, and the relay's key read off its NIP-11 document. */
+/** Where the writes go, read strictly, and the relay's key read off its NIP-11 document. */
 class IngestTargetTest {
     private val relayUrl = RelayUrlNormalizer.normalize("wss://relay.example.com/")
 
     @Test
-    fun `local is the default and ignores the url compose always sets`() {
-        assertFalse(ingestTargetFromEnv(emptyMap(), relayUrl).viaRelay)
-        assertNull(ingestTargetFromEnv(mapOf(SYNC_INGEST_URL_ENV to "ws://relay:7777"), relayUrl).dial)
+    fun `the writes dial the url compose sets, or RELAY_URL without one`() {
+        assertEquals(RelayUrlNormalizer.normalize("ws://relay:7777"), ingestDialFromEnv(mapOf(SYNC_INGEST_URL_ENV to "ws://relay:7777"), relayUrl))
+        assertEquals(relayUrl, ingestDialFromEnv(emptyMap(), relayUrl))
+        assertEquals(relayUrl, ingestDialFromEnv(mapOf(SYNC_INGEST_URL_ENV to " "), relayUrl))
     }
 
     @Test
-    fun `relay dials the url, or RELAY_URL without one`() {
-        val compose = ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "relay", SYNC_INGEST_URL_ENV to "ws://relay:7777"), relayUrl)
-        assertEquals(RelayUrlNormalizer.normalize("ws://relay:7777"), compose.dial)
-        assertEquals(relayUrl, ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "Relay"), relayUrl).dial)
+    fun `a leftover SYNC_INGEST=relay is the only mode, and accepted`() {
+        assertEquals(relayUrl, ingestDialFromEnv(mapOf(SYNC_INGEST_ENV to "Relay"), relayUrl))
     }
 
     @Test
-    fun `forwarding, ingest leaves the yield to the relay's lane`() {
-        val pressure = ServingPressure(thresholdMs = 2_000)
-        assertSame(pressure, ingestTargetFromEnv(emptyMap(), relayUrl).ingestPressure(pressure))
-        assertNull(ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "relay"), relayUrl).ingestPressure(pressure))
+    fun `SYNC_INGEST=local stops the boot and says why, rather than quietly writing through the relay`() {
+        val local = assertFailsWith<IllegalStateException> { ingestDialFromEnv(mapOf(SYNC_INGEST_ENV to "local"), relayUrl) }
+        assertTrue("removed" in local.message.orEmpty() && "RELAY_NSEC" in local.message.orEmpty(), local.message)
+        assertFailsWith<IllegalStateException> { ingestDialFromEnv(mapOf(SYNC_INGEST_ENV to "store"), relayUrl) }
     }
 
     @Test
-    fun `a mode or a url that does not parse stops the boot`() {
-        val mode = assertFailsWith<IllegalStateException> { ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "store"), relayUrl) }
-        assertTrue("local, relay" in mode.message.orEmpty(), mode.message)
-        assertFailsWith<IllegalStateException> {
-            ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "relay", SYNC_INGEST_URL_ENV to "not a url"), relayUrl)
-        }
+    fun `a url that does not parse stops the boot`() {
+        assertFailsWith<IllegalStateException> { ingestDialFromEnv(mapOf(SYNC_INGEST_URL_ENV to "not a url"), relayUrl) }
     }
 
     @Test

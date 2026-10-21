@@ -91,10 +91,12 @@ class SyncEngine(
     private val signer: NostrSigner? = null,
     /** "" (errors only), "sent" or "full". */
     wireLogMode: String = "",
-    /** Ingest yields when client reads slow down; null mirrors at full speed. */
+    /**
+     * The relay's client-read latency: the healer yields to it, and the status page reports it.
+     * Ingest does not, since the relay's mirror lane already pauses when client reads slow down,
+     * and pausing here too paid the same back-off twice per batch.
+     */
     servingPressure: ServingPressure? = null,
-    /** What ingest alone yields to, when that differs ([IngestTarget.ingestPressure]); the rest keeps [servingPressure]. */
-    ingestPressure: ServingPressure? = servingPressure,
     /** The proxy .onion upstreams are dialled through; null drops .onion urls at discovery. */
     torSettings: TorSettings? = null,
     /** Which of these ids the store already holds, so a duplicate is dropped before it is verified. */
@@ -146,7 +148,7 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible, forwarded = writer is RelayWriter)
-    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, ingestPressure, scope, knownIds, newestVersions, refusals, writer = writer)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure = null, scope, knownIds, newestVersions, refusals, writer = writer)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */

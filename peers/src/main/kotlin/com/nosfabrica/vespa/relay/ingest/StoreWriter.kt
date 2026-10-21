@@ -25,11 +25,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
 /**
- * Where the sync process's writes go: every write it makes, and only those, so a single switch
- * (`SYNC_INGEST`) moves them all. [local] is the store itself, the shape every deployment had
- * before; [RelayWriter] forwards them to the serving relay, which then is the only process that
- * writes the index. Reads never go through here: the probes, the band clocks and the audits keep
- * reading the store directly in either mode.
+ * Where a pipeline's, a monitor's or an audit's writes go. The sync process's go to the serving
+ * relay through [RelayWriter], so the relay is the only process that writes the index; the relay's
+ * own pipelines write through [local], the store itself. Reads never go through here: the probes,
+ * the band clocks and the audits read the store directly.
  */
 interface StoreWriter : AutoCloseable {
     /** One line for the boot log: where the writes go. */

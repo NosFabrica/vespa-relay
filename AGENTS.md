@@ -7,7 +7,8 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
 - `:sync` — the mirror, and the process that hosts the monitor beside it, so
-  the pair restarts without the relay or Vespa noticing. `SyncMain` builds both
+  the pair restarts without the relay or Vespa noticing. It writes nothing
+  itself: the store opens read-only, and every write goes to the relay. `SyncMain` builds both
   engines over one `PeerClient`. Operators know the subsystem as the router
   (`sync.conf` + `monitor.conf`, the `router:` log prefix).
 - `:monitor` — the measuring plane: the alias fold, the consistency gate and
@@ -156,8 +157,8 @@ peers/…/relay/
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
-  ingest/, progress/          IngestPipeline (the write path of both processes: the mirror's downloads and, as
-                              quartz's EventIngest, the relay's publishes), StoreProbes, BisectingInsert, ProbeGate,
+  ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
+                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
                               ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/

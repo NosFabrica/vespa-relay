@@ -199,9 +199,9 @@ services:
       # reconcile is run some other way.
       TRUST_RECONCILE_ON_START: ${TRUST_RECONCILE_ON_START:-}
       # How often this process re-reads the stored kind-10040s (default 60 s)
-      # — the cache every observer's rank lens and Trusted List gate read. The
-      # sync process writes most of them, and this is how they reach searches
-      # here. Set on BOTH services; 0 turns it off.
+      # — the cache every observer's rank lens and Trusted List gate read. Most
+      # arrive from the sync process, through the mirror lane, and this is how
+      # they reach searches here. Set on BOTH services; 0 turns it off.
       TRUST_PROVIDER_REFRESH_SECONDS: ${TRUST_PROVIDER_REFRESH_SECONDS:-}
       # Re-derive every event's search fields once, in the background. Needed
       # after a store upgrade that changes which kinds are searchable, how they
@@ -272,7 +272,7 @@ services:
       RELAY_INGEST: ${RELAY_INGEST:-}
       RELAY_INGEST_CONCURRENCY: ${RELAY_INGEST_CONCURRENCY:-}
       RELAY_INGEST_BATCH: ${RELAY_INGEST_BATCH:-}
-      # The mirror lane, for a sync that forwards here (SYNC_INGEST=relay).
+      # The mirror lane: every write the sync process makes arrives here.
       RELAY_MIRROR_INGEST_CONCURRENCY: ${RELAY_MIRROR_INGEST_CONCURRENCY:-}
       RELAY_MIRROR_INGEST_BATCH: ${RELAY_MIRROR_INGEST_BATCH:-}
       RELAY_MIRROR_INGEST_QUEUE_MB: ${RELAY_MIRROR_INGEST_QUEUE_MB:-}
@@ -290,7 +290,9 @@ services:
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
       # gets the same key, so upstream AUTH and the NIP-66 monitor speak as
-      # the relay they feed. nsec1… only. Unset ⇒ anonymous. See .env.example.
+      # the relay they feed, and the sync writes through this relay only when it
+      # signs in as it. nsec1… only. Unset ⇒ anonymous, and the sync service
+      # refuses to start. See .env.example.
       RELAY_NSEC: ${RELAY_NSEC:-}
     ports:
       - "${RELAY_PORT:-7777}:7777"
@@ -362,14 +364,15 @@ services:
       # sizing story belongs to.
       JAVA_TOOL_OPTIONS: ${SYNC_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
-      # Deploy the bundled schema on boot (default true) — this process is the
-      # one whose writes a drifted schema silently discards.
+      # Deploy the bundled schema on boot (default true), as the relay does, so
+      # whichever process comes up first reads the bundled schema.
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
-      # The same container lists as the relay's: both processes write and read the store.
+      # The same container lists as the relay's. This process opens the store
+      # read-only and writes through the relay, but the store's get by id and
+      # visits still read through the document API the feed list names.
       VESPA_FEED_URLS: ${VESPA_FEED_URLS:-}
       VESPA_QUERY_URLS: ${VESPA_QUERY_URLS:-}
-      # The served relay's ws url — mirrored events are stored as that relay's,
-      # whichever process writes them. It is also what a mirrored kind 62 is
+      # The served relay's ws url — mirrored events are stored as that relay's. It is also what a mirrored kind 62 is
       # judged against: a vanish request naming this url (or ALL_RELAYS) sweeps
       # its author's history here, one naming some other relay is stored inert.
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
@@ -409,13 +412,13 @@ services:
       # their relays refuses to boot and says how to opt in.
       MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-${MONITOR_CONFIG_LOCAL:+/etc/vespa-relay/monitor.conf}}
       # Clients first, across the process boundary: the relay serves its mean
-      # read latency on GET /pressure and this process throttles ingest on it.
-      # Unset it to mirror at full speed regardless of readers.
+      # read latency on GET /pressure; this process's repairs yield to it and its
+      # status page reports it. Ingest does not: the relay's mirror lane already
+      # yields. Unset it to repair at full speed regardless of readers.
       SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
-      # Where every write goes: `local` writes the store from here; `relay`
-      # forwards them to the relay container over a socket signed in with
-      # RELAY_NSEC, so the relay is the index's only writer (docs/configuration.md).
-      SYNC_INGEST: ${SYNC_INGEST:-local}
+      # Where every write goes: the relay container, over one socket signed in
+      # with RELAY_NSEC, so the relay is the index's only writer
+      # (docs/configuration.md).
       SYNC_INGEST_URL: ${SYNC_INGEST_URL:-ws://relay:7777}
       # Mean read latency (ms) above which ingest starts yielding.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
@@ -524,16 +527,10 @@ services:
       # ingest is dedup-bound.
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
       VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
-      # The store's feed transport: none here, where Vespa is a container on
-      # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
-      # when VESPA_URL is across a WAN.
-      VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
-      # Documents per request through the store's batch handler: 28-31% less Vespa CPU per
-      # event than one per request (docs/configuration.md). 0 writes one at a time.
-      VESPA_FEED_BATCH: ${VESPA_FEED_BATCH:-100}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
-      # Same key as the relay: upstream NIP-42 AUTH and the NIP-66 monitor
-      # sign as the relay this process feeds.
+      # Same key as the relay, and required: every write goes to the relay
+      # signed in as it, and upstream NIP-42 AUTH and the NIP-66 monitor sign as
+      # the relay this process feeds.
       RELAY_NSEC: ${RELAY_NSEC:-}
       # Opt-in parse audit — it rides ingest, so it lives on this side of the
       # split. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay, which the
