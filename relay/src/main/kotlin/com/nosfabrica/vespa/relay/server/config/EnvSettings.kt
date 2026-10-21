@@ -190,6 +190,22 @@ fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
         }
     }
 
+/**
+ * The mirror lane's pipeline ([com.nosfabrica.vespa.relay.server.MirrorLane]), which writes what
+ * the sync process forwards: `RELAY_MIRROR_INGEST_CONCURRENCY` workers (`1`-`64`) of
+ * `RELAY_MIRROR_INGEST_BATCH` events (`1`-`20000`), holding at most `RELAY_MIRROR_INGEST_QUEUE_MB`
+ * (`16`-`65536`) of parsed events. The defaults are the sync's own write shape (`SYNC_INGEST_*`), so
+ * moving the write here changes where it runs, not its shape. Queue depth is one batch per worker,
+ * as for publishes: the sync's forwarding window is its own backpressure.
+ */
+fun mirrorIngestFromEnv(env: Map<String, String>): IngestTuning {
+    val batch = env.strictInt("RELAY_MIRROR_INGEST_BATCH", 1..20_000) ?: DEFAULT_PIPELINE_BATCH
+    val concurrency = env.strictInt("RELAY_MIRROR_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
+    val queueMb = env.strictInt("RELAY_MIRROR_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
+    val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
+    return IngestTuning(concurrency, batch, dedupChunk = dedupChunk, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L)
+}
+
 /** The mirror's own defaults (`RouterConfig`), so one store sees one write shape. */
 private const val DEFAULT_PIPELINE_BATCH = 1_000
 private const val DEFAULT_PIPELINE_CONCURRENCY = 2

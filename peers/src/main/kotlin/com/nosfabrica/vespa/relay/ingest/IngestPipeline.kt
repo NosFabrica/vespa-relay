@@ -78,6 +78,8 @@ class IngestPipeline(
     private val refusals: RefusalSink = RefusalSink.None,
     /** How long a batch pass runs before the pipeline reads as wedged rather than backpressured. */
     private val wedgeAfterMs: Long = WEDGE_AFTER_MS,
+    /** Where a batch is written: the store, or the serving relay ([RelayWriter]). The probes read [store] either way. */
+    private val writer: StoreWriter = StoreWriter.local(store),
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -494,7 +496,7 @@ class IngestPipeline(
         insertBisecting(
             events = events,
             // Booked apart from the probes: this waits on the writer mutex, they wait on the query path.
-            write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { store.batchInsert(batch) } },
+            write = { batch -> storeCall(StoreCalls.CALLER_INGEST_WRITE, StoreCalls.OP_BATCH_INSERT, StoreCalls.events(batch.size)) { writer.batchInsert(batch) } },
             onOutcomes = { written, outcomes ->
                 owed = outcomes.size
                 // A misattributed rejection would suppress a wanted id, so only attribution is withheld.

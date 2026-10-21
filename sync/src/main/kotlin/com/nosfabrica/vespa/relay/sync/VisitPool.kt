@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.config.SyncTier
+import com.nosfabrica.vespa.relay.ingest.IngestAcks
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.peers.Sockets
@@ -519,6 +520,24 @@ internal class VisitPool(
     }
 
     /**
+     * Whether every event a walk handed to ingest reached the store. A band is recorded only when
+     * they all did ([IngestAcks]); otherwise the ground is walked again at the next visit.
+     */
+    private suspend fun storedAll(
+        acks: IngestAcks,
+        stream: String,
+        url: NormalizedRelayUrl,
+    ): Boolean {
+        if (acks.await()) return true
+        counters.bandsWithheld.incrementAndGet()
+        System.err.println(
+            "router: $stream ${url.url} — ${acks.failures} event(s) of this walk did not reach the store; " +
+                "its band is not recorded, and the next visit walks the ground again",
+        )
+        return false
+    }
+
+    /**
      * Walks one leg as the REQs the relay will take: itself, or its kinds in chunks. Returns
      * the first refused chunk, or null. Each chunk records its own band, which is safe because
      * bands are per kind and chunking splits on kinds and nothing else.
@@ -539,6 +558,8 @@ internal class VisitPool(
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             // Per chunk: the depth only decreases, so a stale value would hide a shallower walk.
             ongoingVisit.pagingUntil = null
+            // The band waits for the store: see [IngestAcks].
+            val acks = IngestAcks()
             val onEvent: suspend (Event) -> Unit = { event ->
                 arrived(url, ongoingVisit)
                 // The walk is newest-first, so the oldest event seen is the cursor's depth.
@@ -551,7 +572,7 @@ internal class VisitPool(
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track())
                 }
             }
             // Stamped before the REQ goes out: a complaint older than this belongs to an earlier ask.
@@ -574,7 +595,10 @@ internal class VisitPool(
                     ours = stalledByUs(walked.end) && heldByUs(url),
                 )
             }
-            if (readToTheEnd(walked)) {
+            if (!storedAll(acks, stream.name, url)) {
+                // Read to the end or not, ground whose events did not reach the store is not covered.
+                ongoingVisit.lastActivityMs = System.currentTimeMillis()
+            } else if (readToTheEnd(walked)) {
                 // An answered ask is the relay responding, whether or not it had anything to send.
                 ongoingVisit.lastActivityMs = System.currentTimeMillis()
                 bands.record(
@@ -656,6 +680,7 @@ internal class VisitPool(
         var received = 0
         ongoingVisit.stage = NEGENTROPY
         val window = ask.filter.windowed(olderEdge, newerEdge, now)
+        val acks = IngestAcks()
         val outcome =
             pager.sweep(
                 // The cursor's identity. Band-qualified, or every band of a stream would resume
@@ -676,7 +701,7 @@ internal class VisitPool(
                 received++
                 arrived(url, ongoingVisit)
                 if (ask.filter.match(event)) {
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track())
                 }
             }
         counters.auditsRun.incrementAndGet()
@@ -699,7 +724,7 @@ internal class VisitPool(
             // A window did reconcile, so the band is ordinary work again whatever it looked like before.
             bands.clearCannotReconcile(stream.name, url, ask.filter, band)
         }
-        if (outcome.complete) {
+        if (outcome.complete && storedAll(acks, stream.name, url)) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
             bands.recordAudit(
                 stream.name,

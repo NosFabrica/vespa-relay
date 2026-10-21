@@ -26,6 +26,8 @@ import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
+import com.nosfabrica.vespa.relay.ingest.RelayWriter
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
 import com.nosfabrica.vespa.relay.monitor.MonitorStatus
@@ -91,6 +93,8 @@ class SyncEngine(
     wireLogMode: String = "",
     /** Ingest yields when client reads slow down; null mirrors at full speed. */
     servingPressure: ServingPressure? = null,
+    /** What ingest alone yields to, when that differs ([IngestTarget.ingestPressure]); the rest keeps [servingPressure]. */
+    ingestPressure: ServingPressure? = servingPressure,
     /** The proxy .onion upstreams are dialled through; null drops .onion urls at discovery. */
     torSettings: TorSettings? = null,
     /** Which of these ids the store already holds, so a duplicate is dropped before it is verified. */
@@ -100,6 +104,11 @@ class SyncEngine(
     private val progress: SyncProgress = SyncProgress(),
     /** Installed on this engine's scope, so every store call made from a coroutine of ours books itself. */
     private val storeCalls: StoreCalls = StoreCalls(),
+    /**
+     * Where every write this engine makes goes: ingest's batches, the monitor's verdicts, the
+     * retraction audit's deletes. [store] stays the read side in either mode. Closed with the engine.
+     */
+    private val writer: StoreWriter = StoreWriter.local(store),
 ) : AutoCloseable {
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
@@ -136,8 +145,8 @@ class SyncEngine(
 
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
-    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure, scope, knownIds, newestVersions, refusals)
+    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible, forwarded = writer is RelayWriter)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, ingestPressure, scope, knownIds, newestVersions, refusals, writer = writer)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */
@@ -186,10 +195,11 @@ class SyncEngine(
             },
             pinnedUrls = pinnedUrls,
             scope = scope,
+            writer = writer,
         )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
-    private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds)
+    private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds, writer)
 
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
@@ -482,6 +492,8 @@ class SyncEngine(
         shutdownStep("close ingest's intake") { ingest.closeIntake() }
         // After the scope, so a worker mid-batch is cancelled rather than stranded.
         shutdownStep("close ingest") { ingest.close() }
+        // Last: ingest's final batch may still be on its way to the relay.
+        shutdownStep("close the writer") { writer.close() }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +

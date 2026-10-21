@@ -63,7 +63,10 @@ class RouterRefusalSinkTest {
         val refused = RefusedIds(dir, 90L * 24 * 60 * 60, 10_000)
         val queue = HealQueue()
 
-        fun sink(suppression: Boolean = true) = RouterRefusalSink(refused, queue, suppression)
+        fun sink(
+            suppression: Boolean = true,
+            forwarded: Boolean = false,
+        ) = RouterRefusalSink(refused, queue, suppression, forwarded = forwarded)
     }
 
     private fun origin(
@@ -218,5 +221,40 @@ class RouterRefusalSinkTest {
         sink.onRefused(event(13), origin(), RejectionReason.REPLACED)
         assertFalse(h.refused.suppressed(event(13).id, event(13).createdAt))
         assertEquals(1, h.queue.size(), "repairs are still discovered")
+    }
+
+    // ---- forwarding to the serving relay -------------------------------------
+
+    @Test
+    fun `forwarded, the relay's own limits and lists suppress the event, and never queue a repair`() {
+        val h = Harness()
+        listOf("invalid: too many tags (max 2000)", "restricted: pubkey not allowed", "blocked: kind 7 is denied").forEachIndexed { i, reason ->
+            val e = event(20 + i)
+            h.sink(forwarded = true).onRefused(e, origin(), reason)
+            h.sink(forwarded = true).onRefused(e, origin(), reason)
+            assertTrue(h.refused.suppressed(e.id, e.createdAt), "'$reason' refused twice by the relay")
+        }
+        assertEquals(0, h.queue.size(), "a relay's rules are not something an upstream can repair")
+    }
+
+    @Test
+    fun `forwarded, a bad signature, a clock check and unstorable text stay retryable`() {
+        val h = Harness()
+        listOf("invalid: bad signature or id", "invalid: created_at is too far from the current time", "blocked: text carries a code point the engine cannot store")
+            .forEachIndexed { i, reason ->
+                val e = event(30 + i)
+                h.sink(forwarded = true).onRefused(e, origin(), reason)
+                h.sink(forwarded = true).onRefused(e, origin(), reason)
+                assertFalse(h.refused.suppressed(e.id, e.createdAt), "'$reason' is not for good")
+            }
+    }
+
+    @Test
+    fun `writing locally, a policy refusal is not the store's and records nothing`() {
+        val h = Harness()
+        val e = event(40)
+        h.sink().onRefused(e, origin(), "invalid: too many tags (max 2000)")
+        h.sink().onRefused(e, origin(), "invalid: too many tags (max 2000)")
+        assertFalse(h.refused.suppressed(e.id, e.createdAt))
     }
 }

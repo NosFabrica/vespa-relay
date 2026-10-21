@@ -36,6 +36,21 @@ object PermanentRefusals {
             reason == RejectionReason.VANISHED ||
             reason == RejectionReason.EXPIRED
 
+    /**
+     * The serving relay's refusal of an event the sync forwarded to it (`SYNC_INGEST=relay`) that
+     * holds for that event: its size and tag limits, its bans, its allow and deny lists. Asking the
+     * upstream for it again only draws the same refusal on every re-fetch and reconcile. Not
+     * healable: nothing an upstream could be handed changes the relay's rules. Left out: a bad
+     * signature (the same id can arrive correctly signed), a clock check (`created_at` too far
+     * ahead today is not tomorrow), text the engine cannot store (as for a local write), and the
+     * pipeline's own suppression answer.
+     */
+    fun isRelayPolicy(reason: String): Boolean = RELAY_POLICY.any { reason.startsWith(it) } && NOT_FOR_GOOD.none { it in reason }
+
+    private val RELAY_POLICY = listOf("invalid:", "blocked:", "restricted:", "pow:")
+
+    private val NOT_FOR_GOOD = listOf("bad signature", "created_at is too far", "cannot store", "refused twice before")
+
     /** The subset a repair could plausibly fix by handing the relay something newer. */
     fun isHealable(reason: String): Boolean =
         reason.startsWith(RejectionReason.PREFIX_REPLACED) ||

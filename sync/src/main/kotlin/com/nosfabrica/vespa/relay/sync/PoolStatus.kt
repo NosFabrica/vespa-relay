@@ -71,6 +71,9 @@ internal class PoolCounters {
 
     /** Retraction audits: the sweeps' clock and pool, counted apart because they are not sweeps. */
     val retractionsRun = AtomicLong()
+
+    /** Walks that read their ground but did not record it, because an event of theirs failed to reach the store. */
+    val bandsWithheld = AtomicLong()
 }
 
 /**
@@ -264,6 +267,7 @@ internal class PoolStatus(
             Processors.Count("liveHeld", tails.size.toLong()),
             Processors.Count("visitsRun", counters.visitsRun.get()),
             Processors.Count("visitsHeldByIngest", counters.visitsHeldByIngest.get()),
+            Processors.Count("bandsWithheld", counters.bandsWithheld.get()),
             Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == VisitPool.POOL_NEGENTROPY }.toLong()),
             Processors.Count("negentropyRuns", counters.auditsRun.get()),
             Processors.Count("negentropySkipped", counters.auditsSkipped.get()),

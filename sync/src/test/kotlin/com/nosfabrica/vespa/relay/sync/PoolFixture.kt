@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.SyncDirection
 import com.nosfabrica.vespa.relay.config.SyncStream
@@ -56,8 +57,10 @@ internal class PoolFixture(
     val bands: SyncBands = SyncBands(null),
     /** Answers each walk knowing the relay; when set, it replaces [answer]. */
     val answerAt: (suspend (NormalizedRelayUrl, Filter, suspend (Event) -> Unit) -> PagedFetchResult)? = null,
+    /** The engine under the store; a test wraps it to make writes fail or wait. */
+    index: EventIndex = InMemoryEventIndex(),
 ) : RelayReads {
-    val store = NostrSemanticsStore(InMemoryEventIndex())
+    val store = NostrSemanticsStore(index)
     val processors = Processors()
     val tails = ConcurrentHashMap<String, List<Filter>>()
     val asked = java.util.concurrent.CopyOnWriteArrayList<Filter>()

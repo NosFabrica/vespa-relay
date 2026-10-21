@@ -153,7 +153,8 @@ fun refuseSyncConfig(env: Map<String, String>) {
 fun syncSettingsIgnored(env: Map<String, String>): List<String> =
     env.keys
         .filter { key ->
-            (key.startsWith("SYNC_") || key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS") &&
+            // SERVING_PRESSURE_THRESHOLD_MS is read here too, since the mirror lane yields on it.
+            (key.startsWith("SYNC_") || key.startsWith("PARSE_AUDIT_")) &&
                 key != "SYNC_MANIFEST_FILE" &&
                 env.text(key) != null
         }.sorted()

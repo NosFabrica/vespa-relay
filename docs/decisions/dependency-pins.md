@@ -45,6 +45,51 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+e7f23068e0 = amethyst main @ 2026-10-21, the merge of vitorpamplona/amethyst#4591, whose two commits
+are the only ones over 98089642eb (below) touching quartz/. What this relay reaches:
+
+  NostrClient.keepConnected / releaseConnection: a relay held connected between bursts. RelayWriter
+    holds its relay with it, in place of a subscription that matched no event; RelayWriterTest
+    shows the socket surviving a 1.5s quiet signed in, and losing it without the hold.
+  AN auth-required: NOBODY CAN ANSWER ENDS DELIVERY: it kept the event, and reset its retry budget,
+    forever. Now only while an AUTH can land, and at most 10 times.
+  publishStream OPENS ITS WINDOW AT ONCE ON AN OPEN SOCKET: no lone first event and its round trip
+    per batch, which RelayWriter paid on every one.
+  SEARCH DERIVATION, through the store: none; quartz/build.gradle.kts and amethyst's catalog are
+  unchanged.
+
+NO ARROW: the store at b42e78695a8a (below) names e7f23068e0 too.
+
+DIRECTION: 98089642eb is a strict ancestor of this.
+  git merge-base --is-ancestor 98089642eb e7f23068e0   # verified
+
+Prev 98089642eb:
+
+98089642eb = amethyst main @ 2026-10-20, the merge of vitorpamplona/amethyst#4589. 42 commits over
+99d05ee122 (below) touching quartz/. What this relay reaches:
+
+  AN OK, TRUE OR FALSE, ENDS AN EVENT'S DELIVERY TO THAT RELAY (#4589). The client outbox kept an
+    OK-false event that was not invalid:/pow:/replaced:/deleted: until three refusals piled up,
+    which only reconnects produce, so a publisher on a long-lived socket held every refused event
+    for the life of the socket. RelayWriter (SYNC_INGEST=relay) is that publisher: 50 events the
+    relay refused as a denied kind were all still in its outbox after their batch returned.
+    auth-required: and a rate-limited: that states its back-off still stay pending.
+  RELAY URLS ARE INTERNED AND NORMALIZE IDEMPOTENTLY (#4578): one NormalizedRelayUrl
+    object per relay, which the pool, the bands and the roster all key on; equality is unchanged.
+  THE PARSER STOPS INTERNING (#4583): ids, pubkeys and tag values parse as plain strings; Amethyst's
+    cache interns what it keeps. Nothing here relied on identity.
+  Also: Event.shareStrings (unused here), VerifyAndInsert checks for cancellation, in-house
+  SHA-2/HMAC/AES for the native targets (JVM ids still hash through MessageDigest).
+  SEARCH DERIVATION, through the store: none. nip50Search, relay.filters and tags have no diff in
+  the range.
+
+NO ARROW: the store then pinned, a40d97620920 (now inside b42e78695a8a, below), named 98089642eb too.
+
+DIRECTION: 99d05ee122 is a strict ancestor of this.
+  git merge-base --is-ancestor 99d05ee122 98089642eb   # verified
+
+Prev 99d05ee122:
+
 99d05ee122 = amethyst main @ 2026-10-17, the merge of vitorpamplona/amethyst#4522. 38 commits over
 e5bdf1bd37 (below), 12 of them touching quartz/, all in the relay client and its OkHttp socket
 (#4517, #4521, #4522). What this relay reaches, through peers (NostrClient over
@@ -300,6 +345,48 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+b42e78695a8a = vespa-eventstore main @ 2026-10-21, the merge of PR #174 (three commits over 3e68ee1cbb37,
+the #173 merge below), only Quartz moving:
+  - Quartz 99d05ee122 -> 98089642eb (amethyst #4589: an OK ends an event's delivery), with a
+    corrected PR number in that note;
+  - Quartz 98089642eb -> e7f23068e0 (amethyst #4591: keepConnected, auth-required: bounded,
+    publishStream's window on an open socket). Nothing the store calls moves in either: no kind
+    extracts or matches differently, no reindex.
+  git merge-base --is-ancestor 3e68ee1cbb37 b42e78695a8a   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at 2076493e0823 (25 tests, StagingCorpusIT skipped by design, 0 failures) and at
+  a40d97620920 before it, run locally. The merge's tree is identical to 2076493e0823's
+  (git rev-parse b42e78695a8a^{tree} == 2076493e0823^{tree}), so the gate is this pin's.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  b42e78695a8a, and the store's pom names engine at it and quartz-jvm at e7f23068e0.
+
+Prev 3e68ee1cbb37:
+
+3e68ee1cbb37 = vespa-eventstore main @ 2026-10-20, the merge of PR #173 (one commit over b3d22b54aa74,
+the #172 merge below):
+  - open(readOnly = true): a store for a process that only reads. Every write the port, the
+    facade and the trust maintenance offer throws ("refused: this store was opened read-only"),
+    no trust drainer and no keying migration start, and SINGLE_WRITER with it is refused. The
+    sync opens its store this way when SYNC_INGEST=relay, since the relay then writes for it.
+  git merge-base --is-ancestor b3d22b54aa74 3e68ee1cbb37   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at f1e54d544b4c, the PR's head: its full integration suite against a real Vespa in
+  Docker (25 tests, StagingCorpusIT skipped by design, 0 failures), run locally. The merge's tree
+  is identical to that commit's (git rev-parse 3e68ee1cbb37^{tree} == f1e54d544b4c^{tree}), so the
+  gate is this pin's.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  3e68ee1cbb37, and the store's pom names engine at it and quartz-jvm at 99d05ee122.
+
+NO ARROW: every quartz line reads 99d05ee122, and nothing else in the graph names the store.
+
+Prev b3d22b54aa74:
+
 b3d22b54aa74 = vespa-eventstore main @ 2026-10-20, the merge of PR #172 (three commits over 3a6076d48f9d,
 the #171 merge below):
   - a reputation update (a retraction, a cell removal) swallows only a missing document: a 404

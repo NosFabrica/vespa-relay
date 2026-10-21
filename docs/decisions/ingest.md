@@ -377,3 +377,71 @@ waiting publish is a parsed event in the heap, up to the relay's 256 KiB frame
 limit each, and a publisher's own window already buffers what it sends; the
 mirror's depth rides out download bursts the relay does not have. At the
 defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.
+
+## One writer: the sync forwards to the relay (`SYNC_INGEST=relay`)
+
+**The relay is the only writer, and the sync reaches it as a client.** With both processes
+writing one index, every admission check the store makes (dedup, supersession, the NIP-09 and
+NIP-62 guards) is query-then-write inside one process's writer lock, and nothing orders the
+relay's writes against the sync's: a replaceable published to the relay and the same address
+mirrored by the sync can both pass their version check, and a kind 5 stored by one can miss
+the event the other is admitting (vespa-eventstore `docs/multi-node-consistency.md`, "Multiple
+WRITERS are the threat"). The sync also paid an ingest stack of
+its own (feed client, batch handler, trust drainer, keying migration) that the relay already
+runs. So the sync keeps everything that only reads (the dedup and version probes, the band
+clocks, the audits) and sends its writes over a plain NIP-01 socket (`RelayWriter`). A Nostr
+EVENT, rather than a private RPC, so the relay's rules, signature check and live fan-out apply
+to mirrored events exactly as to anyone's publish, with no second path to keep in step.
+
+**The mirror lane is chosen by who signed in, not by a port or a header.** `MirrorLane`
+tags an event when its connection authenticated (NIP-42) as the relay's own key, which only a
+process holding `RELAY_NSEC` can do; the tagger runs last in the policy stack, so a refused
+event leaves no tag. Tagged events go to a pipeline of their own, so a backfill filling its
+queue never makes a client's publish wait. Both processes need the same `RELAY_NSEC`, and the
+sync boot reads the relay's NIP-11 `self` and stops on a mismatch: with the wrong key every
+write would still be stored, through the publishers' lane, and nothing would say so.
+
+**The AUTH is signed for `RELAY_URL`, whatever the socket dials.** Compose dials
+`ws://relay:7777`, and the relay's NIP-42 check reads the AUTH's `relay` tag against its own
+addresses. Rewriting the tag on the signing side (`signedFor`) keeps an internal address a sync
+setting only. The socket is held open with Quartz's `keepConnected` (amethyst #4591, which replaced a
+subscription that matched no event): Quartz drops a relay from its pool once nothing wants it, and
+each redial is a new challenge whose first events could beat the AUTH. Those are still written, on the publishers' lane under the same rules, and
+counted as `unsignedBatches`.
+
+**OKs read back as the store's own outcomes.** The relay answers a store rejection in the
+store's words and a duplicate `OK true duplicate:`, so `outcomeOf` maps them back and the
+pipeline, the refusal filter and the band gate read a forwarded write as they read a local one.
+What may succeed later (`error:`, a `rate-limited:` the stream already waited out,
+`auth-required:`, no answer) is `Failed`, never `Rejected`: a `Rejected` id can end up
+suppressed, and a `Failed` one only withholds the band, so the walk retries it.
+
+**Deletes go as a signed ephemeral request** (`MirrorDelete`, kind 29391), because the
+retraction audit's delete-by-id has no Nostr command: it removes what an upstream stopped
+serving, without the authors' kind 5. The relay answers it in its event-command hook, ahead of
+the policies, and only for its own key, a fresh `created_at`, and explicit ids (at most 1,000),
+so a request can never stand for the corpus. Ephemeral, so nothing stores it.
+
+**Not `WriterTopology.SINGLE_WRITER`.** With one writer the store's guard-owner cache would be
+exact, but the store measured what it buys (vespa-eventstore `benchmark/README.md` §2bb): no
+difference on `batchInsert`, −4.5% on per-event inserts, and a one-time exhaustive guard-set
+scan before the first insert that grows with the corpus, which at 211M events is a stall, not a
+saving. The correctness the single writer brings (one lock ordering every write) comes from the
+forwarding alone, so the relay stays on `SHARED_STRICT`.
+
+**A delete counts only when the hook answers it.** A relay that runs no `MirrorDelete` hook (no
+`RELAY_NSEC`, or a build before the hook) takes the request for an ordinary ephemeral event and
+answers `OK true`, having deleted nothing; the audit used to log the delete as done. The hook now
+answers `mirror-delete: N id(s) purged` and the writer accepts nothing else, and the sync refuses
+to boot against a relay whose NIP-11 states no `self`.
+
+**The relay's final policy refusals suppress the id, forwarded only.** The refusal filter counted
+only the store's permanent answers, so an event over the relay's tag or size limit, or outside its
+allow lists, was fetched and forwarded again on every re-fetch and reconcile (1 in 200,000 of the
+production slice, all of a write-restricted relay's foreign events). In relay mode those count too
+(`PermanentRefusals.isRelayPolicy`), never as a repair; a bad signature, a clock check and
+unstorable text stay retryable. Suppression itself stays opt-in (`SYNC_REFUSED_DIR`).
+
+**One back-off, not two.** Forwarding, the sync's ingest no longer yields to `SYNC_PRESSURE_URL`:
+the relay's mirror lane yields to the same client reads, measured in-process, and both pausing put
+the back-off twice on every batch.
