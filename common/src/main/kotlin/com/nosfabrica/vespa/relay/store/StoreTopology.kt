@@ -26,8 +26,10 @@ import com.nosfabrica.vespa.relay.util.strictInt
 import java.net.URI
 
 /**
- * What this deployment tells the store about its writers at every `VespaEventStore.open()`.
- * Strict is the only exact answer when the relay and the sync process write the same authors.
+ * What this deployment tells the store about its writers at every `VespaEventStore.open()`. The
+ * relay is the only writer (the sync forwards to it), but `SINGLE_WRITER` buys nothing measurable
+ * on `batchInsert` and costs a whole-corpus scan before the first insert (docs/decisions/ingest.md,
+ * "One writer"), so the relay stays on strict.
  */
 val STORE_WRITERS: WriterTopology = WriterTopology.SHARED_STRICT
 

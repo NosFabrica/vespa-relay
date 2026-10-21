@@ -258,8 +258,9 @@ until the reconcile lands. `TRUST_RECONCILE_ON_START=false` skips it entirely.
 If a start still looks slow, check that before blaming Vespa's transaction-log
 replay — that wrong attribution is already in this file's history.
 
-Both processes **deploy the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
-default true), so the cluster always matches the code talking to it. A no-change
+The relay **deploys the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
+default true), so the cluster always matches the code writing to it; the sync
+never deploys, and waits until an application serves. A no-change
 deploy is a cheap no-op. This is not decoration: when the schema drifted, Vespa
 answered every write with `Status 400 ... Field 'name_parts' is not defined` and
 the router counted, dropped and carried on — 2,336,288 good events lost in one

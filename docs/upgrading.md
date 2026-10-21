@@ -4,6 +4,45 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The relay is the only writer (October 2026)
+
+The sync process no longer writes the store. Every write it makes (ingest's
+batches, the monitor's NIP-66 records, the retraction audit's deletes) goes to
+the relay over one socket signed in as the relay's key, and the relay writes it
+through its mirror lane under the same policies and signature check as any
+publish ([configuration.md](configuration.md), `SYNC_INGEST_URL`).
+
+### Do before the first boot
+
+- **Give both services the same `RELAY_NSEC`.** The sync refuses to boot
+  without one, and against a relay that states another key or none in its
+  NIP-11 `self`. A deployment that ran the sync anonymously must now create a
+  key (any `nsec1…`; it becomes the relay's public identity, see
+  `.env.example`).
+- **Remove `SYNC_INGEST`.** `local` stops the boot with the reason; a leftover
+  `relay` is accepted and does nothing.
+- **Mind the relay's write rules.** Mirrored events now meet them as anyone's
+  publish does: with `ALLOW_PUBKEYS` or `ALLOW_KINDS` set, the relay stores only
+  what they allow, and its tag and size limits refuse what they refuse for any
+  client.
+
+### What you will see
+
+- A fresh backfill runs about 20-26% slower than local writes did (200k
+  production events, 3 cores), and the relay takes the CPU the sync used to.
+  Steady-state mirroring is paced by the upstreams and does not notice.
+- Live subscribers whose filters match receive backfilled history.
+- The sync's ingest no longer yields to `SYNC_PRESSURE_URL`; the relay's mirror
+  lane does. The sync's repairs still yield to it.
+- The sync no longer deploys the schema. It waits, up to 10 minutes, until an
+  application serves at `VESPA_URL`, which on a fresh Vespa is the relay's boot
+  deploy, and logs `schema: AUTO_DEPLOY is the relay's alone` if `AUTO_DEPLOY`
+  is set in its environment.
+- If the relay is not answering when the sync boots, the sync starts after a
+  minute and keeps reading the relay's key every 30s; when the relay answers
+  with another key, or none, the sync stops with the same reason the boot
+  would have given.
+
 ## The hardening release (module audit, October 2026)
 
 ### Do before the first boot

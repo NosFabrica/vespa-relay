@@ -33,7 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The relay's second write lane, for what the sync process forwards (`SYNC_INGEST=relay`).
+ * The relay's second write lane, for what the sync process forwards: every write it makes.
  *
  * The sync process signs in over NIP-42 with `RELAY_NSEC`, the relay's own key, and publishes
  * what it mirrors as ordinary EVENTs. They pass the same policy stack as any client's, by design:

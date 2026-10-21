@@ -7,8 +7,9 @@
 # MODE=relay (the default) boots this repo's relay with the VAR=value pairs as its environment and
 # publishes the slice to it with `amy publish --file`: the wire, the policies, the writer, the store.
 # MODE=sync runs the same slice through the mirror's IngestPipeline (CorpusIngestBench), with the
-# pairs as that probe's BENCH_* settings: the writer and the store, no socket.
-# MODE=forward is SYNC_INGEST=relay: the relay booted as in MODE=relay with RELAY_NSEC=$NSEC, and
+# pairs as that probe's BENCH_* settings: the writer and the store, no socket (the path the relay's
+# own lanes take; the sync no longer writes this way).
+# MODE=forward is how the sync writes: the relay booted as in MODE=relay with RELAY_NSEC=$NSEC, and
 # the same CorpusIngestBench pipeline forwarding every batch to it (RelayWriter), so the relay's
 # mirror lane writes the store. The pairs reach both processes; each ignores the other's.
 #

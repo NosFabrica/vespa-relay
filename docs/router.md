@@ -1,7 +1,8 @@
 # The router: mirror from upstream relays
 
-The router is its own process — `vespa-sync`, the `:sync` module — writing
-into the same Vespa store the relay serves. The split is the point: restart it
+The router is its own process — `vespa-sync`, the `:sync` module — mirroring
+into the Vespa store the relay serves: it reads the store directly and sends
+every write through the relay, the store's only writer (`SYNC_INGEST_URL`). The split is the point: restart it
 with a new config, retune it, or lose it to an OOM and the relay never drops a
 client, Vespa never replays a transaction log, and the id snapshots a
 reconcile holds live in a heap the serving side does not share.
@@ -743,21 +744,16 @@ Two consequences worth knowing before you add them to a running stream:
   so the first cycle after the edit re-walks every relay in the fan-out from
   scratch instead of resuming. That is the intended way to force a re-walk, but
   on a wide dynamic stream it is a long cycle.
-- **Both processes check every insert, and it is stated in code, not configured.**
-  The store's fast path keeps a per-instance set of the authors known to have a
-  stored kind 5/62 and skips the guard queries for everyone else — exact for one
-  writer, wrong for this deployment's two: tombstones the *sync* process mirrors
-  never reach the *relay* process's copy of that set, and deletions clients
-  publish to the relay never reach the router's, so each would re-admit what the
-  other erased. Both entrypoints therefore open the store with
-  `writers = SHARED_STRICT` (`STORE_WRITERS` in `:common`, where the reasoning
-  lives), which is the store's own default and the only mode that needs no
-  assertion to be correct. `SHARED` would bound the exposure to a refresh
-  interval rather than remove it, and its rebuild is a corpus-wide visit — hours
-  on ours — so the window would be set by the rebuild, not by the interval. The
-  measured cost of being strict is −4.5% on per-event inserts with p50 unchanged
-  and nothing measurable on `batchInsert`; the router's share shows up as the
-  `guards` stage on the `router: ingest …` line.
+- **The relay writes every insert, and checks each one strictly.** The sync
+  process opens the store read-only and forwards every write to the relay
+  (`SYNC_INGEST_URL`), so the relay is the store's one writer; it used to be
+  two, and tombstones one process mirrored never reached the other's guard
+  cache. One writer would make `SINGLE_WRITER`'s fast path exact, but it buys
+  nothing measurable on `batchInsert` and costs a corpus-wide scan before the
+  first insert, so the relay stays on `writers = SHARED_STRICT` (`STORE_WRITERS`
+  in `:common`, where the reasoning lives; docs/decisions/ingest.md, "One
+  writer"). The measured cost of being strict is −4.5% on per-event inserts with
+  p50 unchanged and nothing measurable on `batchInsert`.
 
 ## Deleting what an upstream retracted
 

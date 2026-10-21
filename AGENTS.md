@@ -7,7 +7,8 @@ store. Six Gradle modules, JVM only (toolchain 21), two processes:
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
 - `:sync` — the mirror, and the process that hosts the monitor beside it, so
-  the pair restarts without the relay or Vespa noticing. `SyncMain` builds both
+  the pair restarts without the relay or Vespa noticing. It writes nothing
+  itself: the store opens read-only, and every write goes to the relay. `SyncMain` builds both
   engines over one `PeerClient`. Operators know the subsystem as the router
   (`sync.conf` + `monitor.conf`, the `router:` log prefix).
 - `:monitor` — the measuring plane: the alias fold, the consistency gate and
@@ -156,8 +157,8 @@ peers/…/relay/
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
-  ingest/, progress/          IngestPipeline (the write path of both processes: the mirror's downloads and, as
-                              quartz's EventIngest, the relay's publishes), StoreProbes, BisectingInsert, ProbeGate,
+  ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
+                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
                               ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
@@ -386,8 +387,8 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 
 `docker-compose.yml` runs Vespa, the relay, (`--profile sync`) the sync process
 and a client-only Tor, and (`--profile onion`) a second Tor that is the relay's
-own hidden service; one store throughout. Both processes deploy the bundled
-Vespa schema on every boot (`AUTO_DEPLOY`). Two levers delete data,
+own hidden service; one store throughout. The relay deploys the bundled Vespa
+schema on every boot (`AUTO_DEPLOY`); the sync waits for it and never deploys. Two levers delete data,
 `SWEEP_ORPHAN_SCORES_ON_START` and a stream's `deleteMissing`; both default to
 a dry run. `https://search.brainstorm.world/` runs this code against a
 real corpus with the router on and answers anonymously: reach for it before
