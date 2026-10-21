@@ -43,19 +43,21 @@ import com.nosfabrica.vespa.relay.status.StatusRollup
 import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
-import com.nosfabrica.vespa.relay.store.deployBundledSchema
+import com.nosfabrica.vespa.relay.store.awaitServedSchema
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
+import com.nosfabrica.vespa.relay.sync.KeyVerdict
 import com.nosfabrica.vespa.relay.sync.PressurePoller
-import com.nosfabrica.vespa.relay.sync.RelaySelf
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
 import com.nosfabrica.vespa.relay.sync.ingestDialFromEnv
+import com.nosfabrica.vespa.relay.sync.keyVerdict
 import com.nosfabrica.vespa.relay.sync.relaySelf
 import com.nosfabrica.vespa.relay.sync.shutdownStep
+import com.nosfabrica.vespa.relay.sync.watchRelayKey
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -72,10 +74,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-
-// Enough attempts to outlast the relay's own boot deploy.
-private const val DEPLOY_ATTEMPTS = 5
-private const val DEPLOY_RETRY_SECONDS = 5L
+import kotlin.system.exitProcess
 
 /** One past the relay's 7777, so the pair is guessable from either end. */
 private const val DEFAULT_STATUS_PORT = 7778
@@ -100,43 +99,48 @@ private fun statusPage(resource: String = "/stats.html"): String =
 private const val SELF_KEY_ATTEMPTS = 12
 private const val SELF_KEY_RETRY_SECONDS = 5L
 
+/** How often [watchRelayKey] asks again once the boot has given up waiting. */
+private const val SELF_KEY_WATCH_SECONDS = 30L
+
 /**
- * Stops the boot when the relay at [dial] states a key other than [ours], or none: a relay without
- * `RELAY_NSEC` runs no mirror lane and no `MirrorDelete` hook, so the audit's deletes would be
- * answered OK and do nothing. A relay that never answers is only a warning: the writer fails its
- * batches until it does, and those withhold their bands, so nothing is lost by starting.
+ * Stops the boot when the relay at [dial] states a key other than [ours], or none ([keyVerdict]).
+ * A relay that never answers is not refused: the writer fails its batches until it does, and those
+ * withhold their bands, so nothing is lost by starting. It is watched instead ([watchRelayKey]),
+ * and the process stops the moment it answers with the wrong key, as the boot would have.
  */
 private fun refuseAnotherRelayKey(
     dial: NormalizedRelayUrl,
     ours: String,
 ) {
     repeat(SELF_KEY_ATTEMPTS) { attempt ->
-        when (val self = relaySelf(dial)) {
-            is RelaySelf.Key -> {
-                if (self.pubkey != ours) {
-                    error(
-                        "the relay at ${dial.url} is ${self.pubkey}, but this process's RELAY_NSEC is $ours. The relay writes a socket's " +
-                            "events as the mirror's only when it signs in as the relay's key, so both processes need the same RELAY_NSEC.",
-                    )
-                }
+        when (val verdict = keyVerdict(relaySelf(dial), dial, ours)) {
+            KeyVerdict.Ours -> {
                 return
             }
 
-            RelaySelf.NoKey -> {
-                error(
-                    "the relay at ${dial.url} states no key (NIP-11 `self`): it has no RELAY_NSEC, so it runs no mirror lane and no " +
-                        "delete hook. Give it the same RELAY_NSEC as this process.",
-                )
+            is KeyVerdict.Refused -> {
+                error(verdict.reason)
             }
 
-            RelaySelf.Unreachable -> {
+            KeyVerdict.Pending -> {
                 if (attempt < SELF_KEY_ATTEMPTS - 1) Thread.sleep(SELF_KEY_RETRY_SECONDS * 1_000)
             }
         }
     }
     System.err.println(
         "sync: the relay at ${dial.url} did not answer its NIP-11 document after ${SELF_KEY_ATTEMPTS * SELF_KEY_RETRY_SECONDS}s; " +
-            "starting anyway — writes fail, and their bands wait, until it answers",
+            "starting anyway — writes fail, and their bands wait, until it answers; its key is checked every ${SELF_KEY_WATCH_SECONDS}s until then",
+    )
+    watchRelayKey(
+        dial,
+        ours,
+        pollMillis = SELF_KEY_WATCH_SECONDS * 1_000,
+        onVerified = { System.err.println("sync: the relay at ${dial.url} now answers, and states this process's key") },
+        onRefused = { reason ->
+            // What the boot would have refused, reached late: stop, so a supervisor restarts into that refusal.
+            System.err.println("sync: STOPPING — $reason")
+            exitProcess(1)
+        },
     )
 }
 
@@ -192,32 +196,11 @@ fun main() {
     refuseAnotherRelayKey(dial, identity.pubKey)
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
-    // The relay deploys the same package at its boot; deploying here too means a sync that comes up
-    // first reads the bundled schema rather than none. Compose starts both together, hence the retries.
+    // The relay owns the schema: this process waits for it rather than deploying one (awaitServedSchema).
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
-    if (env.strictFlag("AUTO_DEPLOY") != false) {
-        System.err.println("schema: deploying the bundled application package to $configUrl")
-        // Compose starts both processes together, so two deploys can race one config server
-        // session; the loser retries.
-        var attempt = 1
-        while (true) {
-            try {
-                deployBundledSchema(vespaUrl, configUrl)
-                break
-            } catch (e: Exception) {
-                if (attempt >= DEPLOY_ATTEMPTS) throw e
-                System.err.println(
-                    "schema: deploy attempt $attempt/$DEPLOY_ATTEMPTS failed (${e.message?.take(160)}); " +
-                        "retrying in ${DEPLOY_RETRY_SECONDS}s — likely racing the relay's own boot deploy",
-                )
-                Thread.sleep(DEPLOY_RETRY_SECONDS * 1_000)
-                attempt++
-            }
-        }
-        System.err.println("schema: deployed and serving")
-    } else {
-        System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
-    }
+    // Read only to say it is the relay's: a shared .env sets it for both services.
+    if (env["AUTO_DEPLOY"] != null) System.err.println("schema: AUTO_DEPLOY is the relay's alone; this process never deploys")
+    awaitServedSchema(vespaUrl)
 
     // Read before the store opens: the slow-read ring is a constructor setting.
     val pulseClientDetail = env.strictFlag("SYNC_PULSE_CLIENT_DETAIL") ?: false

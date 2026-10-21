@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.store
 
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import java.net.URI
+import java.time.Duration
 
 /**
  * Deploys the bundled Vespa application package on every boot and waits until Vespa serves it.
@@ -37,13 +38,39 @@ fun deployBundledSchema(
         deployer.deploy()
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
-        // "schema:", not "relay:": both processes deploy.
+        // "schema:", the prefix every line about the application package carries.
         System.err.println(
             "schema: deploy to $configUrl failed (${e.message?.take(200)}); " +
                 "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",
         )
     }
     deployer.awaitServing(vespaUrl)
+}
+
+/**
+ * Waits until an application serves at [vespaUrl], for a process that never deploys one: the
+ * sync, since the relay is the only writer and owns the schema. A package deploys whole, so a sync
+ * of another build deploying its own would replace the relay's, and the relay's writes carrying
+ * fields that package lacks would be refused until the relay's next boot. Checks `/ApplicationStatus`
+ * on the query endpoint, so it needs no config server; throws after [timeout].
+ */
+fun awaitServedSchema(
+    vespaUrl: String,
+    timeout: Duration = Duration.ofMinutes(10),
+    poll: Duration = Duration.ofSeconds(5),
+    isServing: (String) -> Boolean = SchemaDeployer(vespaConfigUrlFor(vespaUrl))::isServing,
+) {
+    if (isServing(vespaUrl)) return
+    System.err.println("schema: nothing serves at $vespaUrl yet — waiting for the relay's deploy (up to ${timeout.toMinutes()} min)")
+    val deadline = System.nanoTime() + timeout.toNanos()
+    while (!isServing(vespaUrl)) {
+        check(System.nanoTime() < deadline) {
+            "no application served at $vespaUrl within ${timeout.toMinutes()} min. The relay deploys the schema at its boot " +
+                "(AUTO_DEPLOY); start it, or deploy your own package, and this process will find it."
+        }
+        Thread.sleep(poll.toMillis())
+    }
+    System.err.println("schema: an application serves at $vespaUrl")
 }
 
 /** The config server sits on :19071 by convention, on the same host as the query endpoint. */

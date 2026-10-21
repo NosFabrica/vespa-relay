@@ -34,6 +34,14 @@ publish ([configuration.md](configuration.md), `SYNC_INGEST_URL`).
 - Live subscribers whose filters match receive backfilled history.
 - The sync's ingest no longer yields to `SYNC_PRESSURE_URL`; the relay's mirror
   lane does. The sync's repairs still yield to it.
+- The sync no longer deploys the schema. It waits, up to 10 minutes, until an
+  application serves at `VESPA_URL`, which on a fresh Vespa is the relay's boot
+  deploy, and logs `schema: AUTO_DEPLOY is the relay's alone` if `AUTO_DEPLOY`
+  is set in its environment.
+- If the relay is not answering when the sync boots, the sync starts after a
+  minute and keeps reading the relay's key every 30s; when the relay answers
+  with another key, or none, the sync stops with the same reason the boot
+  would have given.
 
 ## The hardening release (module audit, October 2026)
 

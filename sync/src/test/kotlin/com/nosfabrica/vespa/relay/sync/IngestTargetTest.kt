@@ -21,11 +21,16 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.sun.net.httpserver.HttpServer
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.net.InetSocketAddress
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Where the writes go, read strictly, and the relay's key read off its NIP-11 document. */
@@ -54,6 +59,46 @@ class IngestTargetTest {
     @Test
     fun `a url that does not parse stops the boot`() {
         assertFailsWith<IllegalStateException> { ingestDialFromEnv(mapOf(SYNC_INGEST_URL_ENV to "not a url"), relayUrl) }
+    }
+
+    @Test
+    fun `only the relay's own key passes, another key or none is refused, and silence is not yet known`() {
+        val ours = "a".repeat(64)
+        assertEquals(KeyVerdict.Ours, keyVerdict(RelaySelf.Key(ours), relayUrl, ours))
+        assertEquals(KeyVerdict.Pending, keyVerdict(RelaySelf.Unreachable, relayUrl, ours))
+        val other = keyVerdict(RelaySelf.Key("b".repeat(64)), relayUrl, ours)
+        assertTrue(other is KeyVerdict.Refused && "same RELAY_NSEC" in other.reason, "$other")
+        val none = keyVerdict(RelaySelf.NoKey, relayUrl, ours)
+        assertTrue(none is KeyVerdict.Refused && "states no key" in none.reason, "$none")
+    }
+
+    /** [answers] in turn, the last one repeated: a relay that is down, then comes up. */
+    private fun relayAnswering(vararg answers: RelaySelf): (NormalizedRelayUrl) -> RelaySelf {
+        val next = AtomicInteger()
+        return { answers[minOf(next.getAndIncrement(), answers.size - 1)] }
+    }
+
+    @Test
+    fun `a relay that comes up after the boot gave up, with another key, is still caught`() {
+        val refused = CompletableFuture<String>()
+        val read = relayAnswering(RelaySelf.Unreachable, RelaySelf.Unreachable, RelaySelf.Key("b".repeat(64)))
+        watchRelayKey(relayUrl, "a".repeat(64), pollMillis = 1, read = read, onVerified = { refused.complete("verified") }, onRefused = refused::complete)
+        val reason = refused.get(5, TimeUnit.SECONDS)
+        assertTrue("same RELAY_NSEC" in reason, reason)
+    }
+
+    @Test
+    fun `a relay that comes up with no key is caught too, and one with ours ends the watch quietly`() {
+        val none = CompletableFuture<String>()
+        watchRelayKey(relayUrl, "a".repeat(64), pollMillis = 1, read = relayAnswering(RelaySelf.Unreachable, RelaySelf.NoKey), onVerified = { none.complete("verified") }, onRefused = none::complete)
+        assertTrue("states no key" in none.get(5, TimeUnit.SECONDS))
+
+        val ours = CompletableFuture<String>()
+        val watch = watchRelayKey(relayUrl, "a".repeat(64), pollMillis = 1, read = relayAnswering(RelaySelf.Unreachable, RelaySelf.Key("a".repeat(64))), onVerified = { ours.complete("verified") }, onRefused = ours::complete)
+        assertEquals("verified", ours.get(5, TimeUnit.SECONDS))
+        watch.join(5_000)
+        assertFalse(watch.isAlive, "the watch stops once the relay has answered")
+        assertTrue(watch.isDaemon, "it never holds the process up")
     }
 
     @Test

@@ -3,9 +3,10 @@
 #   docker compose up --build                  # serve only
 #   docker compose --profile sync up --build   # …plus the mirror (see below)
 #
-# Both processes deploy the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
+# The relay deploys the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
 # first run and schema upgrades alike — then serves the NIP-50 websocket, the
-# NIP-11 doc, and the web UI on RELAY_PORT.
+# NIP-11 doc, and the web UI on RELAY_PORT. The sync never deploys: it waits
+# for the relay's.
 #
 # Mirroring upstream relays into the same store is the `sync` service — the
 # router — its own process so it can be restarted with a new sync.conf,
@@ -364,9 +365,9 @@ services:
       # sizing story belongs to.
       JAVA_TOOL_OPTIONS: ${SYNC_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
-      # Deploy the bundled schema on boot (default true), as the relay does, so
-      # whichever process comes up first reads the bundled schema.
-      AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # No AUTO_DEPLOY: this process never deploys. The relay owns the schema, and
+      # a package deploys whole, so a sync of another build would replace it; the
+      # sync waits until an application serves at VESPA_URL instead.
       # The same container lists as the relay's. This process opens the store
       # read-only and writes through the relay, but the store's get by id and
       # visits still read through the document API the feed list names.

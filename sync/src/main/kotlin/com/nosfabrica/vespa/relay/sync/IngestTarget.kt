@@ -118,3 +118,93 @@ fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
     } catch (_: Exception) {
         RelaySelf.Unreachable
     }
+
+/** What the relay's stated key means for this process, which holds the relay's `RELAY_NSEC`. */
+sealed interface KeyVerdict {
+    /** The relay is not answering: nothing is known yet. */
+    data object Pending : KeyVerdict
+
+    /** The relay states this process's key: its writes take the mirror lane. */
+    data object Ours : KeyVerdict
+
+    /** The relay states another key or none: this process must not run against it. */
+    data class Refused(
+        val reason: String,
+    ) : KeyVerdict
+}
+
+/**
+ * [self], the relay at [dial]'s stated key, judged against [ours]. Another key: every write would
+ * still be stored, through the publishers' lane, and nothing would say so, since the relay signs
+ * in any key and only its own takes the mirror lane. No key: no lane and no `MirrorDelete` hook, so
+ * the audit's deletes would be answered OK and do nothing.
+ */
+fun keyVerdict(
+    self: RelaySelf,
+    dial: NormalizedRelayUrl,
+    ours: String,
+): KeyVerdict =
+    when (self) {
+        RelaySelf.Unreachable -> {
+            KeyVerdict.Pending
+        }
+
+        RelaySelf.NoKey -> {
+            KeyVerdict.Refused(
+                "the relay at ${dial.url} states no key (NIP-11 `self`): it has no RELAY_NSEC, so it runs no mirror lane and no " +
+                    "delete hook. Give it the same RELAY_NSEC as this process.",
+            )
+        }
+
+        is RelaySelf.Key -> {
+            if (self.pubkey == ours) {
+                KeyVerdict.Ours
+            } else {
+                KeyVerdict.Refused(
+                    "the relay at ${dial.url} is ${self.pubkey}, but this process's RELAY_NSEC is $ours. The relay writes a socket's " +
+                        "events as the mirror's only when it signs in as the relay's key, so both processes need the same RELAY_NSEC.",
+                )
+            }
+        }
+    }
+
+/**
+ * Keeps reading [dial]'s key after a boot that could not, until the relay answers once: the boot
+ * check gives up after a minute so a relay that is down does not hold the mirror's reads, and
+ * without this a relay that then came up with another key, or none, would never be caught. Calls
+ * [onVerified] or [onRefused] once and stops. A daemon thread: it must never hold the process up.
+ */
+fun watchRelayKey(
+    dial: NormalizedRelayUrl,
+    ours: String,
+    pollMillis: Long,
+    read: (NormalizedRelayUrl) -> RelaySelf = ::relaySelf,
+    onVerified: () -> Unit,
+    onRefused: (String) -> Unit,
+): Thread =
+    Thread({
+        try {
+            while (true) {
+                when (val verdict = keyVerdict(read(dial), dial, ours)) {
+                    KeyVerdict.Pending -> {
+                        Thread.sleep(pollMillis)
+                    }
+
+                    KeyVerdict.Ours -> {
+                        onVerified()
+                        return@Thread
+                    }
+
+                    is KeyVerdict.Refused -> {
+                        onRefused(verdict.reason)
+                        return@Thread
+                    }
+                }
+            }
+        } catch (_: InterruptedException) {
+            // Shutdown: nothing left to check.
+        }
+    }, "relay-key-watch").apply {
+        isDaemon = true
+        start()
+    }

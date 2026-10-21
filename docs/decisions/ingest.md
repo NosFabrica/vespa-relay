@@ -470,3 +470,15 @@ yield to `/pressure`. `StoreWriter.local` stays, because the relay's own pipelin
 it. Measured before the switch, on 200k production events, forwarding cost 20-26% of a fresh
 backfill's throughput, almost all of it the mirror lane's small batches (about 43-71 events per
 store write against about 1,000 locally); filling them is the open lever.
+
+**Only the writer deploys, and the key is watched past the boot.** With the sync read-only, its
+boot deploy (`AUTO_DEPLOY`) lost its reason, which was that its writes were the ones a drifted
+schema dropped, and kept a hazard: a package deploys whole, so a sync of another build would
+replace the relay's schema and the relay's writes would be refused until its next boot. The sync
+now waits for an application to serve (`awaitServedSchema`, `/ApplicationStatus` on the query
+endpoint, up to 10 minutes) and never deploys. Its key check gave up after a minute so a relay
+that is down does not hold the mirror's reads; but the relay signs in any key and only its own
+takes the mirror lane, so a relay that came up afterwards with another key took every write on the
+publishers' lane with `signedIn` true and nothing flagged (reproduced against a real socket). The
+boot now leaves a watch behind (`watchRelayKey`, every 30s until the relay answers once) that stops
+the process with the boot's own refusal.

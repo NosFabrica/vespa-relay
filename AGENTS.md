@@ -387,8 +387,8 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 
 `docker-compose.yml` runs Vespa, the relay, (`--profile sync`) the sync process
 and a client-only Tor, and (`--profile onion`) a second Tor that is the relay's
-own hidden service; one store throughout. Both processes deploy the bundled
-Vespa schema on every boot (`AUTO_DEPLOY`). Two levers delete data,
+own hidden service; one store throughout. The relay deploys the bundled Vespa
+schema on every boot (`AUTO_DEPLOY`); the sync waits for it and never deploys. Two levers delete data,
 `SWEEP_ORPHAN_SCORES_ON_START` and a stream's `deleteMissing`; both default to
 a dry run. `https://search.brainstorm.world/` runs this code against a
 real corpus with the router on and answers anonymously: reach for it before
