@@ -58,7 +58,7 @@ are the only ones over 98089642eb (below) touching quartz/. What this relay reac
   SEARCH DERIVATION, through the store: none; quartz/build.gradle.kts and amethyst's catalog are
   unchanged.
 
-NO ARROW: the store at 2076493e0823 (below) names e7f23068e0 too.
+NO ARROW: the store at b42e78695a8a (below) names e7f23068e0 too.
 
 DIRECTION: 98089642eb is a strict ancestor of this.
   git merge-base --is-ancestor 98089642eb e7f23068e0   # verified
@@ -83,7 +83,7 @@ Prev 98089642eb:
   SEARCH DERIVATION, through the store: none. nip50Search, relay.filters and tags have no diff in
   the range.
 
-NO ARROW: the store at a40d97620920 (below) names 98089642eb too.
+NO ARROW: the store then pinned, a40d97620920 (now inside b42e78695a8a, below), named 98089642eb too.
 
 DIRECTION: 99d05ee122 is a strict ancestor of this.
   git merge-base --is-ancestor 99d05ee122 98089642eb   # verified
@@ -345,36 +345,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-2076493e0823 = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-21, one commit over
-a40d97620920 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
-  - Quartz 98089642eb -> e7f23068e0 (the quartz entry above); the store imports nothing from
-    relay.client, so nothing it calls moves.
-  git merge-base --is-ancestor a40d97620920 2076493e0823   # verified
+b42e78695a8a = vespa-eventstore main @ 2026-10-21, the merge of PR #174 (three commits over 3e68ee1cbb37,
+the #173 merge below), only Quartz moving:
+  - Quartz 99d05ee122 -> 98089642eb (amethyst #4589: an OK ends an event's delivery), with a
+    corrected PR number in that note;
+  - Quartz 98089642eb -> e7f23068e0 (amethyst #4591: keepConnected, auth-required: bounded,
+    publishStream's window on an open socket). Nothing the store calls moves in either: no kind
+    extracts or matches differently, no reindex.
+  git merge-base --is-ancestor 3e68ee1cbb37 b42e78695a8a   # verified
 
 DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
 
-GATED, the store at 2076493e0823: its full integration suite against a real Vespa in Docker (25
-  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
+GATED, the store at 2076493e0823 (25 tests, StagingCorpusIT skipped by design, 0 failures) and at
+  a40d97620920 before it, run locally. The merge's tree is identical to 2076493e0823's
+  (git rev-parse b42e78695a8a^{tree} == 2076493e0823^{tree}), so the gate is this pin's.
 
-SPELLED WITH 12 HEX DIGITS (com.github.NosFabrica serves store and engine at 2076493e0823).
-
-Prev a40d97620920:
-
-a40d97620920 = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-20, two commits over
-3e68ee1cbb37 (below), NOT YET ON MAIN: re-pin to the merge commit once that PR lands.
-  - Quartz 99d05ee122 -> 98089642eb (the quartz entry above): nothing the store calls extracts or
-    matches differently, so no reindex; the second commit corrects a PR number in the note.
-  git merge-base --is-ancestor 3e68ee1cbb37 a40d97620920   # verified
-
-DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
-
-GATED, the store at a40d97620920: its full integration suite against a real Vespa in Docker (25
-  tests, StagingCorpusIT skipped by design, 0 failures), run locally.
-
-AND HERE: RelayWriterTest's outbox case fails on quartz 99d05ee122 (50 refused events still pending)
-  and passes on 98089642eb.
-
-SPELLED WITH 12 HEX DIGITS (com.github.NosFabrica serves store and engine at a40d97620920).
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  b42e78695a8a, and the store's pom names engine at it and quartz-jvm at e7f23068e0.
 
 Prev 3e68ee1cbb37:
 
