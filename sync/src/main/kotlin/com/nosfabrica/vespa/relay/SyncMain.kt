@@ -50,13 +50,14 @@ import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.PressurePoller
+import com.nosfabrica.vespa.relay.sync.RelaySelf
 import com.nosfabrica.vespa.relay.sync.SYNC_INGEST_ENV
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
 import com.nosfabrica.vespa.relay.sync.SyncManifest
 import com.nosfabrica.vespa.relay.sync.ingestTargetFromEnv
-import com.nosfabrica.vespa.relay.sync.relaySelfPubkey
+import com.nosfabrica.vespa.relay.sync.relaySelf
 import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -103,29 +104,41 @@ private const val SELF_KEY_ATTEMPTS = 12
 private const val SELF_KEY_RETRY_SECONDS = 5L
 
 /**
- * Stops the boot when the relay at [dial] states a key other than [ours]. A relay that never
- * answers is only a warning: the writer fails its batches until it does, and those withhold
- * their bands, so nothing is lost by starting.
+ * Stops the boot when the relay at [dial] states a key other than [ours], or none: a relay without
+ * `RELAY_NSEC` runs no mirror lane and no `MirrorDelete` hook, so the audit's deletes would be
+ * answered OK and do nothing. A relay that never answers is only a warning: the writer fails its
+ * batches until it does, and those withhold their bands, so nothing is lost by starting.
  */
 private fun refuseAnotherRelayKey(
     dial: NormalizedRelayUrl,
     ours: String,
 ) {
     repeat(SELF_KEY_ATTEMPTS) { attempt ->
-        val self = relaySelfPubkey(dial)
-        if (self != null) {
-            if (self != ours) {
+        when (val self = relaySelf(dial)) {
+            is RelaySelf.Key -> {
+                if (self.pubkey != ours) {
+                    error(
+                        "the relay at ${dial.url} is ${self.pubkey}, but this process's RELAY_NSEC is $ours. The relay writes a socket's " +
+                            "events as the mirror's only when it signs in as the relay's key, so both processes need the same RELAY_NSEC.",
+                    )
+                }
+                return
+            }
+
+            RelaySelf.NoKey -> {
                 error(
-                    "the relay at ${dial.url} is $self, but this process's RELAY_NSEC is $ours. The relay writes a socket's " +
-                        "events as the mirror's only when it signs in as the relay's key, so both processes need the same RELAY_NSEC.",
+                    "the relay at ${dial.url} states no key (NIP-11 `self`): it has no RELAY_NSEC, so it runs no mirror lane and no " +
+                        "delete hook. Give it the same RELAY_NSEC as this process, or unset $SYNC_INGEST_ENV to write the store from here.",
                 )
             }
-            return
+
+            RelaySelf.Unreachable -> {
+                if (attempt < SELF_KEY_ATTEMPTS - 1) Thread.sleep(SELF_KEY_RETRY_SECONDS * 1_000)
+            }
         }
-        if (attempt < SELF_KEY_ATTEMPTS - 1) Thread.sleep(SELF_KEY_RETRY_SECONDS * 1_000)
     }
     System.err.println(
-        "sync: the relay at ${dial.url} did not state its key (NIP-11 `self`) after ${SELF_KEY_ATTEMPTS * SELF_KEY_RETRY_SECONDS}s; " +
+        "sync: the relay at ${dial.url} did not answer its NIP-11 document after ${SELF_KEY_ATTEMPTS * SELF_KEY_RETRY_SECONDS}s; " +
             "starting anyway — writes fail, and their bands wait, until it answers",
     )
 }
@@ -314,6 +327,7 @@ fun main() {
             signer = identity,
             wireLogMode = env.strictChoice("SYNC_WIRE_LOG", setOf("sent", "full")) ?: "",
             servingPressure = servingPressure,
+            ingestPressure = target.ingestPressure(servingPressure),
             torSettings = torSettings,
             progress = progress,
             storeCalls = storeCalls,

@@ -46,6 +46,7 @@ class MirrorDeleteHandler(
         if (event.kind != MirrorDelete.KIND) return null
         val filter = MirrorDelete.parse(event, relayPubkey, nowSeconds()).getOrElse { return OkMessage(event.id, false, "restricted: ${it.message}") }
         purge(filter)
-        return OkMessage(event.id, true, "")
+        // Not "": an empty OK true is what a relay without this hook answers too.
+        return OkMessage(event.id, true, MirrorDelete.answer(filter))
     }
 }

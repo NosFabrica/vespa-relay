@@ -154,6 +154,17 @@ class RelayWriterTest {
     }
 
     @Test
+    fun `a relay without the delete hook fails the delete instead of answering it done`() {
+        // It takes the request for an ordinary ephemeral event and answers OK true, deleting nothing.
+        relay.eventCommandHandler = null
+        val notes = (1..2).map(::note)
+        runBlocking { writer.batchInsert(notes) }
+        val failure = assertFailsWith<IllegalStateException> { runBlocking { writer.delete(Filter(ids = listOf(notes[0].id))) } }
+        assertTrue("deleted nothing" in failure.message.orEmpty(), failure.message)
+        assertEquals(notes.map { it.id }.toSet(), stored())
+    }
+
+    @Test
     fun `a relay that does not answer fails the batch rather than refusing it`() {
         val closed = ServerSocket(0).use { it.localPort }
         val dead = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$closed"), relayUrl, relayKey, scope, authWaitMs = 100, idleTimeoutMs = 1_000)

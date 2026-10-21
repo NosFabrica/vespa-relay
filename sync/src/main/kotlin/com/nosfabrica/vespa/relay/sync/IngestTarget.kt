@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -48,6 +49,13 @@ class IngestTarget(
     val dial: NormalizedRelayUrl?,
 ) {
     val viaRelay: Boolean get() = dial != null
+
+    /**
+     * What this process's ingest yields to. Forwarding, nothing: the relay's mirror lane already
+     * pauses between batches when client reads slow down, and a sync pausing too would pay the
+     * same back-off twice per batch, once before sending it and once before the relay writes it.
+     */
+    fun ingestPressure(pressure: ServingPressure?): ServingPressure? = if (viaRelay) null else pressure
 }
 
 /**
@@ -70,13 +78,26 @@ fun ingestTargetFromEnv(
     return IngestTarget(dial)
 }
 
+/** What the relay's NIP-11 document says about its own key. */
+sealed interface RelaySelf {
+    /** No document: the relay is down or still booting. */
+    data object Unreachable : RelaySelf
+
+    /** A document with no `self`: a relay with no `RELAY_NSEC`, so no mirror lane and no delete hook. */
+    data object NoKey : RelaySelf
+
+    data class Key(
+        val pubkey: String,
+    ) : RelaySelf
+}
+
 /**
  * The relay's own pubkey as its NIP-11 document states it (`self`), read over the http(s) twin of
- * [dial]; null when the relay does not answer or states none. The relay puts a socket on its
- * mirror lane only when it signs in as this key, so a sync holding a different `RELAY_NSEC`
- * would write everything through the publishers' lane and never know.
+ * [dial]. The relay puts a socket on its mirror lane only when it signs in as this key, so a sync
+ * holding a different `RELAY_NSEC` would write everything through the publishers' lane and never
+ * know; and a relay that states no key runs no lane and no `MirrorDelete` hook at all.
  */
-fun relaySelfPubkey(dial: NormalizedRelayUrl): String? =
+fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
     try {
         val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
         val request =
@@ -88,7 +109,7 @@ fun relaySelfPubkey(dial: NormalizedRelayUrl): String? =
                 .build()
         val response = http.send(request, HttpResponse.BodyHandlers.ofString())
         if (response.statusCode() != 200) {
-            null
+            RelaySelf.Unreachable
         } else {
             Json
                 .parseToJsonElement(response.body())
@@ -96,10 +117,11 @@ fun relaySelfPubkey(dial: NormalizedRelayUrl): String? =
                 ?.jsonPrimitive
                 ?.content
                 ?.lowercase()
+                ?.let { RelaySelf.Key(it) } ?: RelaySelf.NoKey
         }
     } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
-        null
+        RelaySelf.Unreachable
     } catch (_: Exception) {
-        null
+        RelaySelf.Unreachable
     }

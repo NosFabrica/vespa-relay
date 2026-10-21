@@ -51,6 +51,16 @@ object MirrorDelete {
     /** How far a request's clock may stand from the relay's, as NIP-98 allows its tokens. */
     const val FRESH_SECONDS = 60L
 
+    /**
+     * How the relay's `OK true` to a request it ran begins. A relay that does not run the hook
+     * (no `RELAY_NSEC`, or a build before it) takes the request for an ordinary ephemeral event and
+     * answers it `OK true` too, having deleted nothing, so only this answer counts as a delete.
+     */
+    const val ANSWER_PREFIX = "mirror-delete:"
+
+    /** The `OK` message for a request that deleted what [filter] names. */
+    fun answer(filter: Filter): String = "$ANSWER_PREFIX ${filter.ids?.size ?: 0} id(s) purged"
+
     /** The unsigned request for [filter], stamped [createdAt]. */
     fun template(
         filter: Filter,

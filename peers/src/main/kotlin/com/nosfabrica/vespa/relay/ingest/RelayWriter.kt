@@ -155,7 +155,10 @@ class RelayWriter(
         }
     }
 
-    /** Sent as signed [MirrorDelete] requests, at most [MirrorDelete.MAX_IDS] ids each; throws unless every one is answered OK. */
+    /**
+     * Sent as signed [MirrorDelete] requests, at most [MirrorDelete.MAX_IDS] ids each; throws unless
+     * every one is answered with the hook's own `OK` ([MirrorDelete.ANSWER_PREFIX]).
+     */
     override suspend fun delete(filter: Filter) {
         val ids = filter.ids
         require(!ids.isNullOrEmpty()) { "the relay deletes only by id" }
@@ -165,6 +168,11 @@ class RelayWriter(
             client.publishStream(dial, listOf(request).asFlow(), idleTimeoutMs = idleTimeoutMs) { _, result -> answer = result }
             val result = answer
             check(result != null && result.accepted) { "the relay did not delete ${chunk.size} id(s): ${result?.message ?: "no answer"}" }
+            // An OK true without the hook's answer is a relay that stored nothing and deleted nothing.
+            check(result.message.startsWith(MirrorDelete.ANSWER_PREFIX)) {
+                "the relay at ${dial.url} took the delete request for an ordinary event and deleted nothing: it runs no " +
+                    "MirrorDelete hook (RELAY_NSEC unset there, or a relay build that predates it)"
+            }
         }
     }
 

@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
+import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
@@ -92,6 +93,8 @@ class SyncEngine(
     wireLogMode: String = "",
     /** Ingest yields when client reads slow down; null mirrors at full speed. */
     servingPressure: ServingPressure? = null,
+    /** What ingest alone yields to, when that differs ([IngestTarget.ingestPressure]); the rest keeps [servingPressure]. */
+    ingestPressure: ServingPressure? = servingPressure,
     /** The proxy .onion upstreams are dialled through; null drops .onion urls at discovery. */
     torSettings: TorSettings? = null,
     /** Which of these ids the store already holds, so a duplicate is dropped before it is verified. */
@@ -142,8 +145,8 @@ class SyncEngine(
 
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
-    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
-    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure, scope, knownIds, newestVersions, refusals, writer = writer)
+    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible, forwarded = writer is RelayWriter)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, ingestPressure, scope, knownIds, newestVersions, refusals, writer = writer)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */

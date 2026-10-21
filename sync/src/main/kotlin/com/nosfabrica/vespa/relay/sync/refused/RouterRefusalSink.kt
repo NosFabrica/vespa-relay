@@ -45,6 +45,8 @@ class RouterRefusalSink(
     private val suppressionEnabled: Boolean,
     /** Whether any configured stream may heal; if none, the pipeline need not carry origins. */
     healingPossible: Boolean = true,
+    /** Writes go to the serving relay, whose final policy refusals then count too ([PermanentRefusals.isRelayPolicy]). */
+    private val forwarded: Boolean = false,
 ) : RefusalSink {
     override val tracksOrigins: Boolean = healingPossible
 
@@ -55,7 +57,7 @@ class RouterRefusalSink(
         origin: IngestOrigin,
         reason: String,
     ) {
-        if (!PermanentRefusals.isPermanent(reason)) return
+        if (!PermanentRefusals.isPermanent(reason) && !(forwarded && PermanentRefusals.isRelayPolicy(reason))) return
 
         // A local, not a smart cast: `origin` is another module's type.
         val from = origin.url

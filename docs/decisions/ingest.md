@@ -428,3 +428,20 @@ difference on `batchInsert`, −4.5% on per-event inserts, and a one-time exhaus
 scan before the first insert that grows with the corpus, which at 211M events is a stall, not a
 saving. The correctness the single writer brings (one lock ordering every write) comes from the
 forwarding alone, so the relay stays on `SHARED_STRICT`.
+
+**A delete counts only when the hook answers it.** A relay that runs no `MirrorDelete` hook (no
+`RELAY_NSEC`, or a build before the hook) takes the request for an ordinary ephemeral event and
+answers `OK true`, having deleted nothing; the audit used to log the delete as done. The hook now
+answers `mirror-delete: N id(s) purged` and the writer accepts nothing else, and the sync refuses
+to boot against a relay whose NIP-11 states no `self`.
+
+**The relay's final policy refusals suppress the id, forwarded only.** The refusal filter counted
+only the store's permanent answers, so an event over the relay's tag or size limit, or outside its
+allow lists, was fetched and forwarded again on every re-fetch and reconcile (1 in 200,000 of the
+production slice, all of a write-restricted relay's foreign events). In relay mode those count too
+(`PermanentRefusals.isRelayPolicy`), never as a repair; a bad signature, a clock check and
+unstorable text stay retryable. Suppression itself stays opt-in (`SYNC_REFUSED_DIR`).
+
+**One back-off, not two.** Forwarding, the sync's ingest no longer yields to `SYNC_PRESSURE_URL`:
+the relay's mirror lane yields to the same client reads, measured in-process, and both pausing put
+the back-off twice on every batch.

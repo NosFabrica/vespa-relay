@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.sun.net.httpserver.HttpServer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.net.InetSocketAddress
@@ -28,6 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** `SYNC_INGEST` and its url, read strictly, and the relay's key read off its NIP-11 document. */
@@ -48,6 +50,13 @@ class IngestTargetTest {
     }
 
     @Test
+    fun `forwarding, ingest leaves the yield to the relay's lane`() {
+        val pressure = ServingPressure(thresholdMs = 2_000)
+        assertSame(pressure, ingestTargetFromEnv(emptyMap(), relayUrl).ingestPressure(pressure))
+        assertNull(ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "relay"), relayUrl).ingestPressure(pressure))
+    }
+
+    @Test
     fun `a mode or a url that does not parse stops the boot`() {
         val mode = assertFailsWith<IllegalStateException> { ingestTargetFromEnv(mapOf(SYNC_INGEST_ENV to "store"), relayUrl) }
         assertTrue("local, relay" in mode.message.orEmpty(), mode.message)
@@ -57,23 +66,30 @@ class IngestTargetTest {
     }
 
     @Test
-    fun `the relay's key is its NIP-11 self, and a relay that does not answer states none`() {
+    fun `the relay's key is its NIP-11 self, a relay without one states none, and a silent one is unreachable`() {
         val key = "a".repeat(64)
-        val server =
+
+        fun serving(document: String): HttpServer =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
                     val asked = exchange.requestHeaders.getFirst("Accept")
-                    val body = (if (asked == "application/nostr+json") """{"name":"r","self":"${key.uppercase()}"}""" else "<html/>").toByteArray()
+                    val body = (if (asked == "application/nostr+json") document else "<html/>").toByteArray()
                     exchange.sendResponseHeaders(200, body.size.toLong())
                     exchange.responseBody.use { it.write(body) }
                 }
                 start()
             }
+
+        fun at(server: HttpServer) = RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.address.port}")
+        val keyed = serving("""{"name":"r","self":"${key.uppercase()}"}""")
+        val keyless = serving("""{"name":"r"}""")
         try {
-            assertEquals(key, relaySelfPubkey(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.address.port}")))
+            assertEquals(RelaySelf.Key(key), relaySelf(at(keyed)))
+            assertEquals(RelaySelf.NoKey, relaySelf(at(keyless)))
         } finally {
-            server.stop(0)
+            keyed.stop(0)
+            keyless.stop(0)
         }
-        assertNull(relaySelfPubkey(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.address.port}")))
+        assertEquals(RelaySelf.Unreachable, relaySelf(at(keyed)))
     }
 }
