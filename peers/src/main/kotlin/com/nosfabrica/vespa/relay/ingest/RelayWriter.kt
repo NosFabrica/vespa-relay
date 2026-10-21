@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.ingest
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthSnapshot
@@ -70,8 +69,8 @@ class RelayWriter(
     private val authWaitMs: Long = AUTH_WAIT_MS,
     /** How long the relay may stay silent with events outstanding before they are failed. */
     private val idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
-    /** EVENTs a batch keeps unanswered at once. */
-    private val maxInFlight: Int = DEFAULT_STREAM_IN_FLIGHT,
+    /** EVENTs a batch keeps unanswered at once; see [IN_FLIGHT]. */
+    private val maxInFlight: Int = IN_FLIGHT,
 ) : StoreWriter {
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
@@ -199,6 +198,18 @@ class RelayWriter(
 
         /** Past a pipeline batch's own write time on a loaded relay, so a slow commit is not a lost one. */
         const val IDLE_TIMEOUT_MS = 120_000L
+
+        /**
+         * EVENTs one [batchInsert] keeps unanswered, which at the sync's default batch (1,000) is the
+         * whole batch at once. The window is per call, and each sync worker writes one batch per call,
+         * so Quartz's default 512 held two workers to about 1,000 in flight between them, and the
+         * relay's two mirror-lane workers wrote batches of about 290 (where a local write commits
+         * about 1,000); every batch pays the store's admission reads once. At 2,000 they average about
+         * 550, 95% of events in batches of 512 or more, and a 200k production backfill ran 11% faster
+         * (177 s to 157 s, two alternated runs each on a fresh Vespa) on 5% less CPU. The lane's queue
+         * holds 4,096, so the relay keeps reading the socket.
+         */
+        const val IN_FLIGHT = 2_000
 
         private val NOT_SENT = IEventStore.InsertOutcome.Failed("error: the relay went silent before this event was sent")
 
