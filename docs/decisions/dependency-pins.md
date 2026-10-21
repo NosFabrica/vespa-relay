@@ -58,7 +58,7 @@ are the only ones over 98089642eb (below) touching quartz/. What this relay reac
   SEARCH DERIVATION, through the store: none; quartz/build.gradle.kts and amethyst's catalog are
   unchanged.
 
-NO ARROW: the store at b42e78695a8a (below) names e7f23068e0 too.
+NO ARROW: the store at 46131c23b8e8 (below) names e7f23068e0 too.
 
 DIRECTION: 98089642eb is a strict ancestor of this.
   git merge-base --is-ancestor 98089642eb e7f23068e0   # verified
@@ -345,6 +345,34 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+46131c23b8e8 = vespa-eventstore main @ 2026-10-21, the merge of PR #175 (two commits over
+b42e78695a8a, the #174 merge below):
+  - LIVE GATE: A LENSED SUBSCRIPTION FOLLOWS ITS OBSERVER'S 10040. The LiveGate was compiled with
+    the rank service the observer's list named when the REQ arrived, so a REQ opened before its
+    observer had a list (a new user, or a relay still backfilling the list) trusted nobody for as
+    long as it stayed open, and one whose observer moved providers kept the old one. Found by the
+    fan-out test here: 100 lensed REQs open through a 200k production backfill received 0 live
+    events; a lensed REQ opened before its observer's 10040 and cards were published got 0 of 300
+    notes, one opened after got 300. The gate now looks the lens up per event, off the newest
+    provider pass (a volatile read; one shared rebuild after a 10040 write).
+  - The live read keeps lists through a refresh that reads none, as the cache does.
+  Quartz unchanged (e7f23068e0). Nothing else the relay calls moves.
+  git merge-base --is-ancestor b42e78695a8a 46131c23b8e8   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at 712e45ee (PR #175's head): CI's integration job, the full suite against a real
+  Vespa (success), plus ./gradlew build (838 tests) locally. The merge's tree is identical to the
+  head's (git rev-parse 46131c23b8e8^{tree} == 712e45e^{tree}), so the gate is this pin's. End to
+  end, the relay built against a548a3116ecc (the first commit) in compose: the REQ opened before
+  the 10040 got 300 of 300, and the lensed REQs of the 200-subscriber backfill received live
+  events, at no change in backfill time or relay CPU.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  46131c23b8e8, and the store's pom names engine at it and quartz-jvm at e7f23068e0.
+
+Prev b42e78695a8a:
+
 b42e78695a8a = vespa-eventstore main @ 2026-10-21, the merge of PR #174 (three commits over 3e68ee1cbb37,
 the #173 merge below), only Quartz moving:
   - Quartz 99d05ee122 -> 98089642eb (amethyst #4589: an OK ends an event's delivery), with a
