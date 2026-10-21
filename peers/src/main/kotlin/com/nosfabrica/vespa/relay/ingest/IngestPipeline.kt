@@ -347,6 +347,10 @@ class IngestPipeline(
         var duplicates = 0
         IngestStats.timed("verify") {
             for (versions in contests) {
+                // One version, one copy: nothing for a check to choose between. A writer whose far
+                // side verifies (the relay) refuses a bad one itself, and nothing here is shadowed
+                // by it. A contest still verifies, since only a verified candidate may beat another.
+                val unchecked = writer.checksSignatures && versions.size == 1 && versions[0].size == 1
                 var won = false
                 for (copies in versions) {
                     if (won) {
@@ -364,7 +368,7 @@ class IngestPipeline(
                             }
 
                             // The leader's id is already checked against its content; the rest are not.
-                            msg.skipVerify ||
+                            msg.skipVerify || unchecked ||
                                 runCatching { if (n == 0) msg.event.verifySignature() else msg.event.verify() }.getOrDefault(false) -> {
                                 winners.add(i)
                                 won = true
@@ -513,6 +517,8 @@ class IngestPipeline(
 
                         is IEventStore.InsertOutcome.Rejected -> {
                             rejected.incrementAndGet()
+                            // The relay's verdict on an event left to its check, in the pipeline's own words.
+                            if (outcome.reason == BAD_SIGNATURE.reason) badSignatures.incrementAndGet()
                             noteRejection(outcome.reason.take(48), 1L)
                             // Only the Rejected branch reports: a Failed outcome is the store's fault.
                             if (aligned) {

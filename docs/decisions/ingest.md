@@ -445,3 +445,16 @@ unstorable text stay retryable. Suppression itself stays opt-in (`SYNC_REFUSED_D
 **One back-off, not two.** Forwarding, the sync's ingest no longer yields to `SYNC_PRESSURE_URL`:
 the relay's mirror lane yields to the same client reads, measured in-process, and both pausing put
 the back-off twice on every batch.
+
+**The relay checks the signatures, the sync only chooses between copies.** Forwarding, the sync
+checked every signature and the relay's ingest checked it again (`RelaySession` submits each EVENT
+with `skipVerify = false`, on either lane), so a fresh backfill paid each schnorr check twice. Now an
+event that nothing else in its batch contests (one version, one copy) goes to the relay with only
+its id checked against its content, and the relay's `invalid: bad signature or id` is what the
+pipeline hears, tallies as a bad signature and leaves retryable. A contest, two copies of one id or
+two versions of one replaceable address, still verifies here: only a verified candidate may beat
+another, and the relay cannot choose for us, since it sees only the copy we send. A forged copy
+ahead of the genuine one would otherwise be forwarded, refused, and take the genuine copy (answered
+as its duplicate) or the older genuine version (answered `replaced:`, and suppressed) with it.
+`StoreWriter.checksSignatures` carries the switch; the local writer says no, since the store holds
+unsigned rumors by design. Local mode is unchanged.

@@ -27,9 +27,11 @@ import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -72,6 +74,7 @@ class IngestDedupTest {
         offer: List<Event>,
         probe: Boolean = true,
         refusals: RefusalSink = RefusalSink.None,
+        writer: ((NostrSemanticsStore) -> StoreWriter)? = null,
     ): Triple<IngestPipeline, NostrSemanticsStore, Long> =
         runBlocking {
             val index = InMemoryEventIndex()
@@ -103,6 +106,7 @@ class IngestDedupTest {
                             }
                         },
                     refusals = refusals,
+                    writer = writer?.invoke(store) ?: StoreWriter.local(store),
                 )
             // Queued before the workers start, so the whole offer drains as one batch.
             offer.forEach { pipeline.submit(it, skipVerify = false) }
@@ -352,6 +356,68 @@ class IngestDedupTest {
         assertEquals(genuine, kept, pipeline.rejectionBreakdown())
         val blamed = synchronized(sink.ids) { sink.ids.toList() }
         assertTrue(blamed.none { (id, _) -> id in genuine }, "a genuine event was reported refused: $blamed")
+    }
+
+    /** The serving relay as the sync's writer sees it: it verifies what it is handed, and remembers it. */
+    private class VerifyingRelay(
+        private val store: NostrSemanticsStore,
+    ) : StoreWriter {
+        val handed: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+        override val description = "a relay that verifies"
+        override val checksSignatures = true
+
+        override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+            events.forEach { handed += it.id }
+            val good = events.filter { it.verify() }
+            val outcomes = store.batchInsert(good).iterator()
+            return events.map { if (it.verify()) outcomes.next() else IEventStore.InsertOutcome.Rejected("invalid: bad signature or id") }
+        }
+
+        override suspend fun insert(event: Event) = error("not on this path")
+
+        override suspend fun delete(filter: Filter) = error("not on this path")
+    }
+
+    @Test
+    fun `forwarding, a lone event goes to the relay unchecked and the relay's refusal is what is heard`() {
+        val fresh = (0 until 150).map { note(it) }
+        var relay: VerifyingRelay? = null
+        val (pipeline, _, stored) = ingest(preload = emptyList(), offer = fresh.map { forge(it) }, writer = { VerifyingRelay(it).also { r -> relay = r } })
+
+        assertEquals(fresh.map { it.id }.toSet(), relay!!.handed.toSet(), "the sync checked a signature nothing contested")
+        assertEquals(0, stored)
+        assertEquals(0, pipeline.accepted.get())
+        assertTrue(pipeline.rejectionBreakdown().contains("bad signature"), pipeline.rejectionBreakdown())
+    }
+
+    @Test
+    fun `forwarding, a forged copy ahead of the genuine one still loses before the relay sees either`() {
+        val real = (0 until 150).map { note(it) }
+        var relay: VerifyingRelay? = null
+        val (pipeline, store, stored) =
+            ingest(preload = emptyList(), offer = real.map { forge(it) } + real, writer = { VerifyingRelay(it).also { r -> relay = r } })
+
+        assertEquals(150, stored, pipeline.rejectionBreakdown())
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(1))) }
+        assertEquals(real.map { it.sig }.toSet(), kept.map { it.sig }.toSet(), "a forged copy was stored")
+        assertEquals(150, relay!!.handed.size, "one copy per event, the genuine one")
+    }
+
+    @Test
+    fun `forwarding, a forged newer version still cannot displace the genuine one`() {
+        val people = (0 until 3).map { NostrSignerSync() }
+        val genuine = people.map { profile(it, 1_700_000_000L) }
+        val forged = people.map { forge(profile(it, 1_800_000_000L)) }
+        val offer = genuine.zip(forged).flatMapIndexed { i, (g, f) -> if (i % 2 == 0) listOf(g, f) else listOf(f, g) }
+        val sink = Refusals()
+
+        val (pipeline, store, _) = ingest(preload = emptyList(), offer = offer, refusals = sink, writer = ::VerifyingRelay)
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0))) }
+        assertEquals(genuine.map { it.id }.toSet(), kept.map { it.id }.toSet(), pipeline.rejectionBreakdown())
+        val blamed = synchronized(sink.ids) { sink.ids.toList() }
+        assertTrue(blamed.none { (id, _) -> id in genuine.map { it.id } }, "a genuine version was reported refused: $blamed")
     }
 
     private companion object {

@@ -91,6 +91,10 @@ class RelayWriter(
 
     override val description = "to the relay at ${dial.url}, signed in as ${signer.pubKey.take(12)}…"
 
+    // The relay's ingest verifies every EVENT a connection sends, on either lane, and answers a
+    // bad one `invalid: bad signature or id`: a second check here would only repeat it.
+    override val checksSignatures = true
+
     init {
         client.keepConnected(dial)
         client.connect()

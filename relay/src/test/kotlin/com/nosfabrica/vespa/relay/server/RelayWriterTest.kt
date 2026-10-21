@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.IngestPipeline
+import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -112,6 +114,42 @@ class RelayWriterTest {
 
         val again = runBlocking { writer.batchInsert(notes) }
         assertTrue(again.all { it is IEventStore.InsertOutcome.Rejected && it.reason.startsWith("duplicate:") }, "a resend: $again")
+    }
+
+    @Test
+    fun `the relay's mirror lane checks the signature the sync left to it`() {
+        // The lane as RelayMain builds it, a verifying pipeline, rather than this class's recorder.
+        val laneStore = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+        val laneScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val lane = IngestPipeline(laneStore, IngestTuning(concurrency = 1, batch = 100), audit = null, servingPressure = null, scope = laneScope).also(IngestPipeline::start)
+        val verifying = NostrRelayServer(laneStore, relayUrl, mirrorLane = MirrorLane(relayKey.pubKey, lane))
+        val laneServer = serveRelay(relay = verifying, port = 0, nip11 = Nip11Info(), wait = false)
+        val lanePort =
+            runBlocking {
+                laneServer.engine
+                    .resolvedConnectors()
+                    .first()
+                    .port
+            }
+        val toLane = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$lanePort"), relayUrl, relayKey, scope)
+        try {
+            val good = note(1)
+            val signed = note(2)
+            // Same id, junk signature: what the sync now forwards without a check of its own.
+            val forged = Event(signed.id, signed.pubKey, signed.createdAt, signed.kind, signed.tags, signed.content, "f".repeat(128))
+            val outcomes = runBlocking { toLane.batchInsert(listOf(good, forged)) }
+            assertEquals(IEventStore.InsertOutcome.Accepted, outcomes[0])
+            assertEquals(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"), outcomes[1])
+            assertTrue(toLane.signedIn(), "on the mirror lane, signed in")
+            assertEquals(1L to 1L, lane.accepted.get() to lane.rejected.get(), "both through the lane's pipeline")
+            assertEquals(setOf(good.id), runBlocking { laneStore.query<Event>(Filter(kinds = listOf(1))).map { it.id }.toSet() })
+        } finally {
+            toLane.close()
+            laneServer.stop(0, 0)
+            verifying.close()
+            lane.close()
+            laneScope.cancel()
+        }
     }
 
     @Test

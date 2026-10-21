@@ -44,6 +44,13 @@ interface StoreWriter : AutoCloseable {
     /** [IEventStore.delete] for a filter that names its ids, the only delete the sync makes. */
     suspend fun delete(filter: Filter)
 
+    /**
+     * Whether the far side checks every signature it is handed and refuses a bad one, so the
+     * pipeline need not check an event nothing else in its batch contests. The store does not: it
+     * deliberately holds unsigned rumors, so a local writer leaves the check to the pipeline.
+     */
+    val checksSignatures: Boolean get() = false
+
     override fun close() = Unit
 
     companion object {
