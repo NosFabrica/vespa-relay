@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.util
 
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -32,13 +33,34 @@ import java.util.concurrent.ConcurrentHashMap
  * sign-in): it prints on the first call and costs a set lookup after.
  */
 object BootClock {
-    private val startedAt: Long =
+    private val startedAt: Long = System.currentTimeMillis() - (procAgeMs() ?: processHandleAgeMs())
+
+    /**
+     * This process's age from the kernel's own clock: the system's uptime less the tick the process
+     * started on, both counted from boot, so 10 ms resolution. Not [ProcessHandle]'s start instant,
+     * which adds that tick to `/proc/stat`'s boot time, kept in whole seconds: measured, every boot
+     * line read ~0.9 s late on one host, by an amount that changes when the host reboots.
+     */
+    private fun procAgeMs(): Long? =
+        runCatching {
+            // Fields after the parenthesised command name, which may itself hold spaces; the
+            // start time is field 22 of stat(5), the 20th of these.
+            val fields = File("/proc/self/stat").readText().substringAfterLast(") ").split(' ')
+            val startTicks = fields[19].toLong()
+            val uptimeSeconds = File("/proc/uptime").readText().substringBefore(' ').toDouble()
+            (uptimeSeconds * 1000).toLong() - startTicks * 1000 / CLOCK_TICKS_PER_SECOND
+        }.getOrNull()?.takeIf { it >= 0 }
+
+    private fun processHandleAgeMs(): Long =
         ProcessHandle
             .current()
             .info()
             .startInstant()
-            .map { it.toEpochMilli() }
-            .orElse(System.currentTimeMillis())
+            .map { System.currentTimeMillis() - it.toEpochMilli() }
+            .orElse(0L)
+
+    /** USER_HZ, which Linux fixes at 100 for /proc whatever the kernel's own tick rate. */
+    private const val CLOCK_TICKS_PER_SECOND = 100L
 
     private val seen = ConcurrentHashMap.newKeySet<String>()
 
