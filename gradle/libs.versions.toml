@@ -4,9 +4,9 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # JitPack hashes have no order: every module forces quartz (build-logic), and a bump is
 # checked with `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->`.
-quartz = "e7f23068e0"
+quartz = "dfe281430a"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "46131c23b8e8"
+vespaEventStore = "5f2dd9182c1a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -16,7 +16,7 @@ spotless = "8.8.0"
 ktlint = "1.8.0"
 
 [libraries]
-quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "quartz" }
+quartz = { module = "com.github.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 # JitPack caches per group spelling (NosFabrica / nosfabrica): try both, then a longer hash.
 vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
