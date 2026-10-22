@@ -59,6 +59,8 @@ import com.nosfabrica.vespa.relay.sync.relaySelf
 import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.sync.watchRelayKey
 import com.nosfabrica.vespa.relay.util.BootClock
+import com.nosfabrica.vespa.relay.util.BootTask
+import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -96,9 +98,13 @@ private fun statusPage(resource: String = "/stats.html"): String =
     SyncStatus::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
         ?: error("$resource is missing from the :web jar — no page can be served.")
 
-/** How long the boot waits for the relay to state its key: compose starts both at once. */
-private const val SELF_KEY_ATTEMPTS = 12
-private const val SELF_KEY_RETRY_SECONDS = 5L
+/**
+ * How long the boot waits for the relay to state its key (compose starts both at once), and how
+ * often it asks meanwhile. Often, because the ask is one local HTTP request and everything that
+ * writes waits on the answer: at 5 s apart, the sync heard its relay up to 5 s after it was ready.
+ */
+private const val SELF_KEY_WAIT_SECONDS = 60L
+private const val SELF_KEY_POLL_MILLIS = 250L
 
 /** How often [watchRelayKey] asks again once the boot has given up waiting. */
 private const val SELF_KEY_WATCH_SECONDS = 30L
@@ -113,7 +119,8 @@ private fun refuseAnotherRelayKey(
     dial: NormalizedRelayUrl,
     ours: String,
 ) {
-    repeat(SELF_KEY_ATTEMPTS) { attempt ->
+    val deadline = System.nanoTime() + SELF_KEY_WAIT_SECONDS * 1_000_000_000
+    while (true) {
         when (val verdict = keyVerdict(relaySelf(dial), dial, ours)) {
             KeyVerdict.Ours -> {
                 return
@@ -124,12 +131,13 @@ private fun refuseAnotherRelayKey(
             }
 
             KeyVerdict.Pending -> {
-                if (attempt < SELF_KEY_ATTEMPTS - 1) Thread.sleep(SELF_KEY_RETRY_SECONDS * 1_000)
+                if (System.nanoTime() >= deadline) break
+                Thread.sleep(SELF_KEY_POLL_MILLIS)
             }
         }
     }
     System.err.println(
-        "sync: the relay at ${dial.url} did not answer its NIP-11 document after ${SELF_KEY_ATTEMPTS * SELF_KEY_RETRY_SECONDS}s; " +
+        "sync: the relay at ${dial.url} did not answer its NIP-11 document after ${SELF_KEY_WAIT_SECONDS}s; " +
             "starting anyway — writes fail, and their bands wait, until it answers; its key is checked every ${SELF_KEY_WATCH_SECONDS}s until then",
     )
     watchRelayKey(
@@ -151,7 +159,8 @@ private fun refuseAnotherRelayKey(
  * entirely from the environment; `docs/configuration.md` documents every variable.
  */
 fun main() {
-    BootClock.mark("sync: main")
+    cacheDnsBriefly()
+    BootClock.main("sync")
     exitOnBootFailure()
     val env = System.getenv()
 
@@ -195,9 +204,38 @@ fun main() {
 
     // Before the store opens, read-only: the relay is the index's only writer.
     val dial = ingestDialFromEnv(env, relayUrl)
+    val statusPort = env.strictInt("SYNC_STATUS_PORT", 0..65_535) ?: DEFAULT_STATUS_PORT
+    // The monitor's page has its own port: a different question on a different clock.
+    val monitorPort = env.strictInt("MONITOR_STATUS_PORT", 0..65_535) ?: DEFAULT_MONITOR_STATUS_PORT
+    val statusEverySeconds = statusInterval(env)
+    val icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() }
     BootClock.mark("sync: settings read")
-    refuseAnotherRelayKey(dial, identity.pubKey)
-    BootClock.mark("sync: the relay's key checked")
+
+    // Beside the boot, and awaited before the writer, the first thing that dials the relay as its
+    // key, which is what the check is for. Compose starts the relay with this process, so the
+    // answer is the relay's whole boot away, and nothing up to the writer needs it: this process
+    // waited it out before opening its store, then bound its pages after both. A refusal still
+    // stops the boot the moment it is heard (BootTask).
+    val keyChecked =
+        BootTask("relay key check") {
+            refuseAnotherRelayKey(dial, identity.pubKey)
+            BootClock.mark("sync: the relay's key checked")
+        }
+    // The pages bind beside the boot too, so a boot that stalls anywhere past here is on them. Until
+    // the engine exists to publish, they serve the previous run's documents from their state files,
+    // or "not computed yet" without one.
+    val statusSnapshot = if (statusPort > 0) StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }).also { it.loadFromFile() } else null
+    val monitorSnapshot = if (monitorPort > 0) StatsSnapshot(env["MONITOR_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }).also { it.loadFromFile() } else null
+    val pagesBound =
+        BootTask("status pages") {
+            val servers =
+                Pair(
+                    statusSnapshot?.let { serveStatusSite(port = statusPort, page = statusPage(), snapshot = it, icon = icon) },
+                    monitorSnapshot?.let { serveStatusSite(port = monitorPort, page = statusPage(), snapshot = it, icon = icon) },
+                )
+            BootClock.mark("sync: status pages bound")
+            servers
+        }
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
     // The relay owns the schema: this process waits for it rather than deploying one (awaitServedSchema).
@@ -242,8 +280,6 @@ fun main() {
             readOnly = true,
         )
     BootClock.mark("sync: store open (read-only)")
-    // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
-    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -287,6 +323,9 @@ fun main() {
         System.err.println("router: SYNC_PRESSURE_URL unset — repairs will not yield to relay reads")
     }
 
+    keyChecked.await()
+    // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
+    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
     val engine =
         SyncEngine(
             store,
@@ -305,59 +344,40 @@ fun main() {
             newestVersions = store.newestVersionsProbe(),
             writer = writer,
         )
-    // Not started yet: both status sites bind first, so a boot that stalls in `start()` is
-    // exactly the state they exist to show.
-
-    val statusPort = env.strictInt("SYNC_STATUS_PORT", 0..65_535) ?: DEFAULT_STATUS_PORT
-    // The monitor's page has its own port: a different question on a different clock.
-    val monitorPort = env.strictInt("MONITOR_STATUS_PORT", 0..65_535) ?: DEFAULT_MONITOR_STATUS_PORT
-    val statusSite =
-        if (statusPort <= 0) {
-            System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
-            null
-        } else {
-            val statusSnapshot = StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
-            val everySeconds = statusInterval(env)
-            // `engine::primeUnits`, not a copy: the pool rebuilds the roster on the discovery clock.
-            val status = SyncStatus(bands, sweepState, progress, statusSnapshot, everySeconds, engine::primeUnits)
-            // Once before the server binds, so the first request gets a document, not a 503.
-            status.publish()
-            StatusRollup("sync", everySeconds, status::publish).start() to
-                serveStatusSite(
-                    port = statusPort,
-                    page = statusPage(),
-                    snapshot = statusSnapshot,
-                    icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
-                )
-        }
-    if (statusSite != null) {
-        println("vespa-sync status page on http://localhost:$statusPort/ (refreshed every ${statusInterval(env)}s)")
+    // Not started yet: the pages get their first documents, and are bound, first, so a boot that
+    // stalls in `start()` is exactly the state they exist to show.
+    if (statusPort <= 0) {
+        System.err.println("router: SYNC_STATUS_PORT=$statusPort — no status page; what this mirror is doing will be visible only in this log")
     }
-
-    val monitorSite =
-        if (monitorPort <= 0) {
-            System.err.println("router: MONITOR_STATUS_PORT=$monitorPort — no monitor page; what this router has decided about each relay url will be visible only in the signed records")
-            null
-        } else {
-            val monitorSnapshot = StatsSnapshot(env["MONITOR_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() })
-            val everySeconds = statusInterval(env)
-            val monitorStatus = engine.monitorStatus(everySeconds, relayUrl.url)
-
-            fun publish() = monitorSnapshot.publish(monitorStatus.document())
-            publish()
-            StatusRollup("monitor", everySeconds, ::publish).start() to
-                serveStatusSite(
-                    port = monitorPort,
-                    page = statusPage(),
-                    snapshot = monitorSnapshot,
-                    icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
-                )
+    if (monitorPort <= 0) {
+        System.err.println("router: MONITOR_STATUS_PORT=$monitorPort — no monitor page; what this router has decided about each relay url will be visible only in the signed records")
+    }
+    val statusRollup =
+        statusSnapshot?.let { snapshot ->
+            // `engine::primeUnits`, not a copy: the pool rebuilds the roster on the discovery clock.
+            val status = SyncStatus(bands, sweepState, progress, snapshot, statusEverySeconds, engine::primeUnits)
+            status.publish()
+            StatusRollup("sync", statusEverySeconds, status::publish).start()
         }
+    val monitorRollup =
+        monitorSnapshot?.let { snapshot ->
+            val monitorStatus = engine.monitorStatus(statusEverySeconds, relayUrl.url)
+
+            fun publish() = snapshot.publish(monitorStatus.document())
+            publish()
+            StatusRollup("monitor", statusEverySeconds, ::publish).start()
+        }
+    val (statusServer, monitorServer) = pagesBound.await()
+    val statusSite = statusRollup?.let { rollup -> statusServer?.let { rollup to it } }
+    val monitorSite = monitorRollup?.let { rollup -> monitorServer?.let { rollup to it } }
+    if (statusSite != null) {
+        println("vespa-sync status page on http://localhost:$statusPort/ (refreshed every ${statusEverySeconds}s)")
+    }
     if (monitorSite != null) {
         println("vespa-sync monitor page on http://localhost:$monitorPort/")
     }
 
-    BootClock.mark("sync: status pages bound, starting the engine")
+    BootClock.mark("sync: status pages published, starting the engine")
     engine.start()
     BootClock.mark("sync: engine started (streams, visits, monitor launched)")
 
@@ -383,7 +403,7 @@ fun main() {
                         scope = "The mirror's own store: what ingest costs, what it admitted, and what the write path is waiting behind.",
                         clientDerived = pulseClientDetail,
                     ),
-                icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
+                icon = icon,
             )
         }
     if (pulseSite != null) {

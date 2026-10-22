@@ -14,6 +14,23 @@ FROM eclipse-temurin:21.0.12.1_1-jre-noble
 WORKDIR /app
 COPY --from=build /src/relay/build/install/vespa-relay /app/relay
 COPY --from=build /src/sync/build/install/vespa-sync /app/sync
+# A class-data archive per process (AppCDS), built here from the classes a real boot loads
+# (`<app>/cds.classlist`, tools/record-cds-classlists.sh): the JVM maps them instead of loading,
+# verifying and linking them, and the relay accepted connections 2.5-2.7 s after its process
+# started instead of 4.2 s. Built with the image, so it matches it, the first boot of a new image
+# included, and nothing is written at run time. A class the list lacks is loaded the slow way; one
+# the code no longer has is skipped. -cp is the start script's own classpath: an archive is used
+# only under the classpath it was dumped with, and only under compressed oops, so a heap over 32 GB
+# or ZGC boots without it (and without the JDK's own); the `boot: … main` line says so. -Xmx1g pins
+# the dump to compressed oops: sized from a build host with 128 GB, it would dump without them, an
+# archive no compose-sized heap could map.
+COPY relay/cds.classlist /app/relay/cds.classlist
+COPY sync/cds.classlist /app/sync/cds.classlist
+RUN for app in relay sync; do \
+      cp=$(sed -n "/^CLASSPATH=/{s/^CLASSPATH=//;s#\$APP_HOME#/app/$app#g;p}" "/app/$app/bin/vespa-$app"); \
+      java -Xshare:dump -Xmx1g -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
+        -Xlog:cds=error -cp "$cp" > /tmp/$app-cds.log 2>&1 || { cat /tmp/$app-cds.log; exit 1; }; \
+    done && rm -f /tmp/*-cds.log
 # Both processes face the network, so neither runs as root. The state directory is theirs; a
 # bind mount over it must be writable by this uid (docs/operations.md).
 RUN groupadd --system --gid 10001 relay \
@@ -21,6 +38,9 @@ RUN groupadd --system --gid 10001 relay \
     && mkdir -p /var/lib/vespa-relay \
     && chown relay:relay /var/lib/vespa-relay
 USER relay
+# Errors only: a mapped archive is silent, and one that does not match is skipped, not fatal.
+ENV VESPA_RELAY_OPTS="-XX:SharedArchiveFile=/app/relay/relay.jsa -Xlog:cds=error" \
+    VESPA_SYNC_OPTS="-XX:SharedArchiveFile=/app/sync/sync.jsa -Xlog:cds=error"
 # The NIP-50 websocket + NIP-11 + web UI (RELAY_PORT, default 7777).
 EXPOSE 7777
 # The serving relay is the default; /app/sync/bin/vespa-sync is the mirror.

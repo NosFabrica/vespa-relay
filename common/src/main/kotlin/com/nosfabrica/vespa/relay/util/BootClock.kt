@@ -52,4 +52,14 @@ object BootClock {
     fun once(step: String) {
         if (seen.add(step)) mark(step)
     }
+
+    /**
+     * [mark] for a process's `main`, saying so when the JVM maps no class-data archive: the image's
+     * AppCDS archive is ~1.5 s of a boot, and the JVM drops it without a word when its flags no longer
+     * match the ones it was dumped with, a heap over 32 GB or ZGC among them (no compressed oops).
+     */
+    fun main(process: String) {
+        val vm = System.getProperty("java.vm.info").orEmpty()
+        mark("$process: main" + if ("sharing" in vm) "" else " (class-data sharing OFF: every class loads from its jar; java.vm.info=\"$vm\")")
+    }
 }

@@ -21,21 +21,40 @@
 package com.nosfabrica.vespa.relay.store
 
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.relay.util.BootTask
 import java.net.URI
 import java.time.Duration
 
 /**
- * Deploys the bundled Vespa application package on every boot and waits until Vespa serves it.
- * Against a Vespa already serving, a failed deploy keeps the process up on the schema Vespa has;
- * on a fresh Vespa it rethrows.
+ * Deploys the bundled Vespa application package unless Vespa already has it active, and returns
+ * once every Vespa service runs it. Against a Vespa already serving, a failed deploy keeps the
+ * process up on the schema Vespa has; on a fresh Vespa it rethrows.
+ *
+ * Unchanged is the common case, every restart that is not an upgrade, and it used to redeploy
+ * anyway: 2-3 s of the relay's boot, and a new config generation every Vespa service reloaded.
+ * Changed waits for the services, not just the container: activation returns before the content
+ * nodes run the new generation, and a write carrying a field the old one lacks is refused there.
+ *
+ * Unchanged still owes that wait when a deploy has not settled: a relay killed while waiting for
+ * its own deploy finds the package active on its next boot, with the services still converging.
+ * That check runs beside the caller's next steps and is returned to be awaited before anything
+ * writes; one `serviceconverge` read when they have settled, the common case.
  */
 fun deployBundledSchema(
     vespaUrl: String,
     configUrl: String,
-) {
+): BootTask<Boolean>? {
     val deployer = SchemaDeployer(configUrl)
+    val zip = VespaApp.zipBytes()
+    if (deployer.isServing(vespaUrl) && deployer.serves(zip)) {
+        System.err.println("schema: Vespa already runs this build's application package; not redeploying")
+        return BootTask("schema convergence") { deployer.awaitConverged(null, UNCHANGED_CONVERGE_WAIT) }
+    }
+    System.err.println("schema: deploying the bundled application package to $configUrl")
     try {
-        deployer.deploy()
+        val generation = SchemaDeployer.generationOf(deployer.deploy(zip))
+        if (deployer.awaitConverged(generation)) System.err.println("schema: every Vespa service runs config generation ${generation ?: "(the one wanted)"}")
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
         // "schema:", the prefix every line about the application package carries.
@@ -44,8 +63,15 @@ fun deployBundledSchema(
                 "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",
         )
     }
-    deployer.awaitServing(vespaUrl)
+    deployer.awaitServing(vespaUrl, poll = Duration.ofMillis(250))
+    return null
 }
+
+/**
+ * How long an unchanged package waits for services still converging. Shorter than a deploy's own
+ * wait: what it covers is the tail of a deploy an earlier boot already waited on.
+ */
+private val UNCHANGED_CONVERGE_WAIT = Duration.ofSeconds(30)
 
 /**
  * Waits until an application serves at [vespaUrl], for a process that never deploys one: the
@@ -57,7 +83,7 @@ fun deployBundledSchema(
 fun awaitServedSchema(
     vespaUrl: String,
     timeout: Duration = Duration.ofMinutes(10),
-    poll: Duration = Duration.ofSeconds(5),
+    poll: Duration = Duration.ofMillis(250),
     isServing: (String) -> Boolean = SchemaDeployer(vespaConfigUrlFor(vespaUrl))::isServing,
 ) {
     if (isServing(vespaUrl)) return

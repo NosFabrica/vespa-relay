@@ -80,9 +80,9 @@ docker compose up --build
 # relay + web UI on ws://localhost:7777
 ```
 
-On every start the relay deploys the bundled Vespa schema — so a fresh Vespa
-becomes queryable and an upgraded relay carries its schema changes with it — then
-serves. The sync process waits for that deploy rather than making its own. Open `http://localhost:7777` for the search UI, or connect a Nostr
+On every start the relay deploys the bundled Vespa schema unless Vespa already runs
+it — so a fresh Vespa becomes queryable and an upgraded relay carries its schema
+changes with it — then serves. The sync process waits for that deploy rather than making its own. Open `http://localhost:7777` for the search UI, or connect a Nostr
 client to the websocket.
 
 To run against an existing Vespa, without Docker:

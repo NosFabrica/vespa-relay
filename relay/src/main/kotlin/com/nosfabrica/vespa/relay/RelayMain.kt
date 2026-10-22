@@ -98,7 +98,9 @@ import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
+import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
@@ -126,15 +128,18 @@ import java.util.concurrent.atomic.AtomicReference
  * is required. Mirroring into the same store is the sync process's job.
  */
 fun main() {
-    BootClock.mark("relay: main")
+    cacheDnsBriefly()
+    BootClock.main("relay")
     exitOnBootFailure()
     val env = System.getenv()
     val boot = readSettings(env)
     BootClock.mark("relay: settings read")
-    deploySchema(boot)
+    val converging = deploySchema(boot)
     BootClock.mark("relay: Vespa serves the application")
     val store = openStore(boot)
     BootClock.mark("relay: store open")
+    // Before the first write, the maintenance's included: see deployBundledSchema.
+    converging?.await()
     // The pulse page states its totals over this window, which opens with the store, not the process.
     val storeOpenedAt = System.currentTimeMillis()
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
@@ -326,14 +331,13 @@ private fun pulseFromEnv(
     )
 }
 
-private fun deploySchema(boot: Boot) {
+/** The convergence check still running for an unchanged package, if any; see [deployBundledSchema]. */
+private fun deploySchema(boot: Boot): BootTask<Boolean>? {
     if (!boot.autoDeploy) {
         System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
-        return
+        return null
     }
-    System.err.println("schema: deploying the bundled application package to ${boot.configUrl}")
-    deployBundledSchema(boot.vespaUrl, boot.configUrl)
-    System.err.println("schema: deployed and serving")
+    return deployBundledSchema(boot.vespaUrl, boot.configUrl)
 }
 
 private fun openStore(boot: Boot): VespaEventStore =

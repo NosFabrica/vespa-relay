@@ -17,6 +17,14 @@ Reach for it first.
   that has stopped answering and for a fan-out that has gone quiet. The `in`
   half (`arrivingPerSec` on the page, `IngestPipeline.submitted` differenced)
   is what tells them apart.
+- **`boot:` lines** (stderr, both processes) — `boot: +NNNms <step>`, the
+  milliseconds since the OS started the process, at every step a boot waits
+  on: settings read, Vespa serving the schema, store open, the relay accepting
+  connections, the sync hearing its relay's key, its pages bound, its engine and
+  the monitor started, and each ingest lane's first event submitted and stored.
+  The two processes share the clock's origin rule, so `docker logs -t` of both
+  interleave into one timeline. A restart that is slow names its slow step here;
+  `docs/operations.md`, "Boot", has what each one measured.
 - **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because

@@ -201,6 +201,7 @@ web/src/test/js/              the plain-node suite (run.mjs); web/src/test/brows
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
+tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives
 ```
 
 `docs/configuration.md` documents every environment variable (`.env.example`
@@ -272,6 +273,8 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md); what each
 operator page shows and why is
 [docs/operator-pages.md](docs/operator-pages.md).
 
+- `boot: +NNNms <step>` lines on stderr, both processes: where a restart's
+  seconds went, from settings read to the first event stored.
 - The health line, once a minute: heap, ingest queue depth against capacity,
   ev/s in and out, relays transferring, fatals, events lost to store errors,
   `wedged` with the oldest batch's age.
@@ -388,7 +391,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 `docker-compose.yml` runs Vespa, the relay, (`--profile sync`) the sync process
 and a client-only Tor, and (`--profile onion`) a second Tor that is the relay's
 own hidden service; one store throughout. The relay deploys the bundled Vespa
-schema on every boot (`AUTO_DEPLOY`); the sync waits for it and never deploys. Two levers delete data,
+schema at boot when it differs from what Vespa runs (`AUTO_DEPLOY`), and waits for every Vespa service to run it; the sync waits for it and never deploys. Two levers delete data,
 `SWEEP_ORPHAN_SCORES_ON_START` and a stream's `deleteMissing`; both default to
 a dry run. `https://search.brainstorm.world/` runs this code against a
 real corpus with the router on and answers anonymously: reach for it before
