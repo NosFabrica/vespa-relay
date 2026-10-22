@@ -262,7 +262,8 @@ function processorFact(p) {
     if (p.accepted != null) add(`${short(p.accepted)} stored`, "accepted");
     // Mostly the same event offered once per relay holding it, so never a failure on its own.
     if (p.rejected != null) add(`${short(p.rejected)} refused, mostly duplicates`, "rejected");
-    if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
+    // Loud, but not a loss: walks fetch these again; one that keeps climbing is a store to chase.
+    if (p.lostToStore) add(`${fmt(p.lostToStore)} FAILED TO REACH THE STORE`, "lostToStore", true);
     return cell;
   }
   if (p.prime != null) {
