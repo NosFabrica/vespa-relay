@@ -20,12 +20,17 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.nosfabrica.vespa.relay.util.BootClock
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthSnapshot
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
+import com.vitorpamplona.quartz.nip01Core.relay.client.listeners.RelayConnectionListener
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.IRelayClient
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
@@ -106,6 +111,26 @@ class RelayWriter(
     override val checksSignatures = true
 
     init {
+        // The two moments the sync can first write: the socket, then the mirror lane (BootClock).
+        client.addConnectionListener(
+            object : RelayConnectionListener {
+                override fun onConnected(
+                    relay: IRelayClient,
+                    pingMillis: Int,
+                    compressed: Boolean,
+                ) {
+                    if (relay.url == dial) BootClock.once("sync: relay writer connected")
+                }
+
+                override suspend fun onIncomingMessage(
+                    relay: IRelayClient,
+                    msgStr: String,
+                    msg: Message,
+                ) {
+                    if (msg is OkMessage && relay.url == dial && signedIn()) BootClock.once("sync: relay writer signed in (mirror lane)")
+                }
+            },
+        )
         client.keepConnected(dial)
         client.connect()
     }

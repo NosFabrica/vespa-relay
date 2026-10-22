@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -278,13 +279,16 @@ class MonitorEngine(
             folding?.progress?.phase(Processors.OFF)
             consistencyPass?.progress?.phase(Processors.OFF)
             fitness?.progress?.phase(Processors.OFF)
+            BootClock.mark("monitor: off (no sources)")
             return false
         }
         System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
         // The passes sign on what they read, so they start after the retraction.
+        BootClock.mark("monitor: retiring its own stale verdicts before the passes")
         scope.launch {
             retired.await()
             aliasMonitor?.start()
+            BootClock.mark("monitor: passes started")
         }
         return true
     }

@@ -97,6 +97,7 @@ import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
+import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -125,11 +126,15 @@ import java.util.concurrent.atomic.AtomicReference
  * is required. Mirroring into the same store is the sync process's job.
  */
 fun main() {
+    BootClock.mark("relay: main")
     exitOnBootFailure()
     val env = System.getenv()
     val boot = readSettings(env)
+    BootClock.mark("relay: settings read")
     deploySchema(boot)
+    BootClock.mark("relay: Vespa serves the application")
     val store = openStore(boot)
+    BootClock.mark("relay: store open")
     // The pulse page states its totals over this window, which opens with the store, not the process.
     val storeOpenedAt = System.currentTimeMillis()
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
@@ -142,6 +147,7 @@ fun main() {
     val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val ingest = startIngest(boot, store, ingestScope)
     val mirror = startMirrorLane(boot, store, ingestScope, servingPressure)
+    BootClock.mark("relay: ingest started (publishes, mirror lane)")
     val relay = buildRelay(boot, store, servingPressure, TrustNotice(store, maintenance), ingest, mirror)
     // The retraction audit's deletes, from a sync that forwards here; see MirrorDelete.
     boot.identity?.let { relay.eventCommandHandler = MirrorDeleteHandler(it.pubKey, purge = { filter -> store.delete(filter) }) }
@@ -165,6 +171,7 @@ fun main() {
             store.close()
         },
     )
+    BootClock.mark("relay: built, starting the server")
     serve(boot, relay, store, servingPressure, statsSnapshot, profile)
 }
 
@@ -359,6 +366,7 @@ private fun startMaintenance(
             val startedMs = System.currentTimeMillis()
             reconcileTrustWithRetry(store)
             println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+            BootClock.mark("relay: trust reconciled (ranked search complete)")
         }
     }
 }
@@ -464,7 +472,7 @@ private fun startMirrorLane(
     }
     val tuning = boot.mirrorIngest
     println("relay: the mirror lane writes what the sync forwards, ${tuning.concurrency} worker(s) of up to ${tuning.batch} event(s)")
-    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure).also(IngestPipeline::start)
+    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane").also(IngestPipeline::start)
 }
 
 /** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
@@ -478,7 +486,7 @@ private fun startIngest(
         "relay: publishes write through " +
             (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
-    return tuning?.let { probedIngestPipeline(store, it, scope).also(IngestPipeline::start) }
+    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
 }
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
@@ -530,10 +538,6 @@ private fun serve(
                 purge = { filter -> store.delete(filter) },
             )
         }
-    println(
-        "vespa-relay listening on :${boot.port}  (vespa ${boot.vespaUrl}, relay ${boot.endpoint.ws})" +
-            (if (admin != null) "  [NIP-86 admin: ${boot.adminPubkeys.size} key(s)]" else ""),
-    )
     serveRelay(
         relay = relay,
         port = boot.port,
@@ -555,6 +559,15 @@ private fun serve(
         statsJson = statsSnapshot,
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
+        // Once the port is bound: printed before the server started, this line claimed a port that
+        // refused connections for another second or more.
+        onReady = {
+            BootClock.mark("relay: accepting connections (REQ, EVENT, NIP-11)")
+            println(
+                "vespa-relay listening on :${boot.port}  (vespa ${boot.vespaUrl}, relay ${boot.endpoint.ws})" +
+                    (if (admin != null) "  [NIP-86 admin: ${boot.adminPubkeys.size} key(s)]" else ""),
+            )
+        },
     )
 }
 

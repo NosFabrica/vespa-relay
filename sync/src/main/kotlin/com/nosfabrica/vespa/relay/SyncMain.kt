@@ -58,6 +58,7 @@ import com.nosfabrica.vespa.relay.sync.keyVerdict
 import com.nosfabrica.vespa.relay.sync.relaySelf
 import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.sync.watchRelayKey
+import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -150,6 +151,7 @@ private fun refuseAnotherRelayKey(
  * entirely from the environment; `docs/configuration.md` documents every variable.
  */
 fun main() {
+    BootClock.mark("sync: main")
     exitOnBootFailure()
     val env = System.getenv()
 
@@ -193,7 +195,9 @@ fun main() {
 
     // Before the store opens, read-only: the relay is the index's only writer.
     val dial = ingestDialFromEnv(env, relayUrl)
+    BootClock.mark("sync: settings read")
     refuseAnotherRelayKey(dial, identity.pubKey)
+    BootClock.mark("sync: the relay's key checked")
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
     // The relay owns the schema: this process waits for it rather than deploying one (awaitServedSchema).
@@ -201,6 +205,7 @@ fun main() {
     // Read only to say it is the relay's: a shared .env sets it for both services.
     if (env["AUTO_DEPLOY"] != null) System.err.println("schema: AUTO_DEPLOY is the relay's alone; this process never deploys")
     awaitServedSchema(vespaUrl)
+    BootClock.mark("sync: Vespa serves the schema")
 
     // Read before the store opens: the slow-read ring is a constructor setting.
     val pulseClientDetail = env.strictFlag("SYNC_PULSE_CLIENT_DETAIL") ?: false
@@ -236,6 +241,7 @@ fun main() {
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
             readOnly = true,
         )
+    BootClock.mark("sync: store open (read-only)")
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
     val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
     // When the counters start; the page states every total as cumulative over this window.
@@ -351,7 +357,9 @@ fun main() {
         println("vespa-sync monitor page on http://localhost:$monitorPort/")
     }
 
+    BootClock.mark("sync: status pages bound, starting the engine")
     engine.start()
+    BootClock.mark("sync: engine started (streams, visits, monitor launched)")
 
     // Both processes log this, so load can be attributed to a role without scaling one to zero.
     StoreMetricsLog.startLogging("sync", store, env.strictInt("STORE_METRICS_LOG_SECONDS") ?: 300)
