@@ -38,12 +38,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import okhttp3.Dns
+import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.UnknownHostException
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -203,13 +209,54 @@ class RelayWriterTest {
     }
 
     @Test
+    fun `a relay that comes back is signed in again within seconds, though its name did not resolve while it was down`() {
+        // Compose's DNS forgets a stopped container, and Quartz reads a name that does not resolve as a
+        // lapsed domain: its next dial goes five minutes out.
+        val down = AtomicBoolean(false)
+        val unresolved = AtomicInteger()
+        val dns =
+            Dns { host ->
+                if (down.get()) {
+                    unresolved.incrementAndGet()
+                    throw UnknownHostException(host)
+                }
+                listOf(InetAddress.getLoopbackAddress())
+            }
+        val quick = RelayWriter(RelayUrlNormalizer.normalize("ws://relay.test:$port"), relayUrl, relayKey, scope, redialMs = 200, dns = dns)
+        try {
+            runBlocking { quick.batchInsert(listOf(note(1))) }
+            assertTrue(quick.signedIn())
+            down.set(true)
+            server.stop(0, 0)
+            // Until a redial has met the missing name, which is what sends Quartz's next one five minutes out.
+            val gone = System.nanoTime()
+            while (unresolved.get() == 0 && System.nanoTime() - gone < 20_000_000_000L) Thread.sleep(50)
+            assertTrue(unresolved.get() > 0, "a dial met the missing name")
+            assertFalse(quick.signedIn())
+            down.set(false)
+            val again = serveRelay(relay = relay, port = port, nip11 = Nip11Info(), wait = false)
+            try {
+                val back = System.nanoTime()
+                while (!quick.signedIn() && System.nanoTime() - back < 3_000_000_000L) Thread.sleep(50)
+                assertTrue(quick.signedIn(), "signed in again within 3 s of the relay listening, not five minutes")
+                runBlocking { quick.batchInsert(listOf(note(2))) }
+                assertTrue(note(2).id in mirrored, "and the next batch goes through the mirror lane")
+            } finally {
+                again.stop(0, 0)
+            }
+        } finally {
+            quick.close()
+        }
+    }
+
+    @Test
     fun `a relay that does not answer fails the batch rather than refusing it`() {
         val closed = ServerSocket(0).use { it.localPort }
         val dead = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$closed"), relayUrl, relayKey, scope, authWaitMs = 100, idleTimeoutMs = 1_000)
         try {
             val outcomes = runBlocking { dead.batchInsert(listOf(note(1), note(2))) }
             assertTrue(outcomes.all { it is IEventStore.InsertOutcome.Failed }, "a down relay is a failure, which withholds the band: $outcomes")
-            assertEquals(1L, dead.unsignedBatches.get())
+            assertEquals(0L, dead.unsignedBatches.get(), "nothing went out on the publishers' lane: nothing went out at all")
         } finally {
             dead.close()
         }

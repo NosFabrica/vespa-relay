@@ -34,9 +34,12 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.launch
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
@@ -59,6 +62,9 @@ import java.util.concurrent.atomic.AtomicLong
  * does. Those still get written, through the publishers' lane under the same rules, so a redial
  * costs lane accounting and not correctness; [unsignedBatches] counts it. On the open socket each
  * batch's window opens at once (`publishStream` sends no lone first event there).
+ *
+ * While the relay is down the socket is redialled every [redialMs], past the client's back-off
+ * ([redial]): that back-off is written for relays on the internet, and this one is ours.
  */
 class RelayWriter(
     private val dial: NormalizedRelayUrl,
@@ -71,6 +77,10 @@ class RelayWriter(
     private val idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
     /** EVENTs a batch keeps unanswered at once; see [IN_FLIGHT]. */
     private val maxInFlight: Int = IN_FLIGHT,
+    /** How often a relay that is down is dialled again; see [redial]. */
+    private val redialMs: Long = REDIAL_MS,
+    /** How [dial]'s host is resolved; a test stands in for compose's, which forgets a stopped container. */
+    dns: Dns = Dns.SYSTEM,
 ) : StoreWriter {
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
@@ -78,6 +88,7 @@ class RelayWriter(
             .Builder()
             .pingInterval(Duration.ofSeconds(30))
             .connectTimeout(Duration.ofSeconds(10))
+            .dns(dns)
             .build()
 
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
@@ -97,6 +108,37 @@ class RelayWriter(
     init {
         client.keepConnected(dial)
         client.connect()
+    }
+
+    private val redialing = scope.launch { redial() }
+
+    /**
+     * Dials the relay again every [redialMs] while it is down, whatever the client's back-off says.
+     * That back-off doubles to five minutes, and a host name that does not resolve goes there at
+     * once, as a lapsed domain would. On compose the relay's name stops resolving whenever its
+     * container is down, so a relay that came back after a few minutes was left unreached for up
+     * to five more: measured with the relay down 3.5 minutes, the last failed dial was an
+     * `UnknownHostException` and the next came 301 s later, more than a minute after the relay was
+     * listening, while every batch waited. A dial while it is down costs a name lookup or a
+     * refused connect; one already in flight is left to finish.
+     */
+    private suspend fun redial() {
+        while (true) {
+            delay(redialMs)
+            // A dial that throws must not end the loop, nor reach the scope it runs in.
+            try {
+                val socket = client.getOrCreateRelay(dial)
+                if (!socket.isConnected()) {
+                    // So the client's own redial after the next failure starts from a second, too.
+                    socket.resetBackoff()
+                    socket.connectAndSyncFiltersIfDisconnected(ignoreRetryDelays = true)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                System.err.println("sync: redialling the relay at ${dial.url} failed: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -121,7 +163,9 @@ class RelayWriter(
 
     override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
         if (events.isEmpty()) return emptyList()
-        if (!awaitSignedIn()) unsigned()
+        // Unsigned only on an open socket: with the relay down nothing goes out on either lane, and
+        // the batch fails (and withholds its band) on its own.
+        if (!awaitSignedIn() && client.getOrCreateRelay(dial).isConnected()) unsigned()
         // Copies of one id share the relay's one verdict, so each id keeps the slots it fills, in order.
         val slots = HashMap<String, ArrayDeque<Int>>(events.size)
         events.forEachIndexed { i, e -> slots.getOrPut(e.id) { ArrayDeque(1) }.addLast(i) }
@@ -180,6 +224,7 @@ class RelayWriter(
     }
 
     override fun close() {
+        redialing.cancel()
         runCatching { client.releaseConnection(dial) }
         runCatching { authenticator.destroy() }
         runCatching { client.close() }
@@ -195,6 +240,9 @@ class RelayWriter(
         private const val AUTH_POLL_MS = 50L
 
         private const val UNSIGNED_LOG_MS = 60_000L
+
+        /** A dial every two seconds while the relay is down; see [redial]. */
+        const val REDIAL_MS = 2_000L
 
         /** Past a pipeline batch's own write time on a loaded relay, so a slow commit is not a lost one. */
         const val IDLE_TIMEOUT_MS = 120_000L
