@@ -21,12 +21,14 @@ COPY --from=build /src/sync/build/install/vespa-sync /app/sync
 # included, and nothing is written at run time. A class the list lacks is loaded the slow way; one
 # the code no longer has is skipped. -cp is the start script's own classpath: an archive is used
 # only under the classpath it was dumped with, and only under compressed oops, so a heap over 32 GB
-# or ZGC boots without it (and without the JDK's own); the `boot: … main` line says so.
+# or ZGC boots without it (and without the JDK's own); the `boot: … main` line says so. -Xmx1g pins
+# the dump to compressed oops: sized from a build host with 128 GB, it would dump without them, an
+# archive no compose-sized heap could map.
 COPY relay/cds.classlist /app/relay/cds.classlist
 COPY sync/cds.classlist /app/sync/cds.classlist
 RUN for app in relay sync; do \
       cp=$(sed -n "/^CLASSPATH=/{s/^CLASSPATH=//;s#\$APP_HOME#/app/$app#g;p}" "/app/$app/bin/vespa-$app"); \
-      java -Xshare:dump -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
+      java -Xshare:dump -Xmx1g -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
         -Xlog:cds=error -cp "$cp" > /tmp/$app-cds.log 2>&1 || { cat /tmp/$app-cds.log; exit 1; }; \
     done && rm -f /tmp/*-cds.log
 # Both processes face the network, so neither runs as root. The state directory is theirs; a

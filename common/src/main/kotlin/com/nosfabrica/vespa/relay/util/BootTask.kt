@@ -49,8 +49,10 @@ class BootTask<T>(
             try {
                 result.complete(work())
             } catch (e: Throwable) {
-                result.completeExceptionally(e)
+                // The handler first: when it stops the process, a caller already in [await] never
+                // also wakes to report the same failure.
                 onFailure(e)
+                result.completeExceptionally(e)
             }
         }
     }

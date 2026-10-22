@@ -188,7 +188,8 @@ its first event at ~3.5 s. What keeps it there, each step on a `boot:` line
   active application package with the one it carries (~80 ms) and deploys only
   on a difference, then waits until every Vespa service runs the new generation:
   a deploy returns before the content nodes do, and a write carrying a field the
-  old generation lacks is refused there.
+  old generation lacks is refused there. An unchanged package still waits, beside
+  the store's open, for services an interrupted deploy left converging.
 - *The sync does not wait for its relay before it has to.* It opens its store
   and binds its pages while the relay starts, and waits for the relay's key
   (asked four times a second) only before its writer dials the relay as that key.
@@ -200,12 +201,14 @@ its first event at ~3.5 s. What keeps it there, each step on a `boot:` line
   list only loads more classes the slow way. The JVM drops the archive silently
   when its flags no longer match the dump's — a heap over 32 GB or ZGC, which turn
   off compressed oops — and `boot: … main` then says `class-data sharing OFF`.
-- *Host names are cached for 5 s, failures not at all* (`cacheDnsBriefly`). The
+- *Host names are cached for 5 s, failures for 1 s* (`cacheDnsBriefly`). The
   JDK's default kept a failed lookup for 10 s, so a recreated relay or Vespa was
   unreachable by name for that long after it was back.
 
 A cold boot is Vespa's own: ~50 s here before it serves, which the relay's
-`service_healthy` wait follows within a second (`start_interval`).
+`service_healthy` wait follows within one healthcheck interval (5 s; a 1 s
+`start_interval` would make it 1 s, but Compose v2.24 refuses the stack on a
+Docker Engine older than 25).
 
 **The Vespa image is pinned** in `docker-compose.yml`. Bumping it is a
 deliberate change: run the store's integration gate against the new engine

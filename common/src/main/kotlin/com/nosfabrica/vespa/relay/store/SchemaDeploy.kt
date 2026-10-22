@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.store
 
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
+import com.nosfabrica.vespa.relay.util.BootTask
 import java.net.URI
 import java.time.Duration
 
@@ -34,16 +35,21 @@ import java.time.Duration
  * anyway: 2-3 s of the relay's boot, and a new config generation every Vespa service reloaded.
  * Changed waits for the services, not just the container: activation returns before the content
  * nodes run the new generation, and a write carrying a field the old one lacks is refused there.
+ *
+ * Unchanged still owes that wait when a deploy has not settled: a relay killed while waiting for
+ * its own deploy finds the package active on its next boot, with the services still converging.
+ * That check runs beside the caller's next steps and is returned to be awaited before anything
+ * writes; one `serviceconverge` read when they have settled, the common case.
  */
 fun deployBundledSchema(
     vespaUrl: String,
     configUrl: String,
-) {
+): BootTask<Boolean>? {
     val deployer = SchemaDeployer(configUrl)
     val zip = VespaApp.zipBytes()
     if (deployer.isServing(vespaUrl) && deployer.serves(zip)) {
         System.err.println("schema: Vespa already runs this build's application package; not redeploying")
-        return
+        return BootTask("schema convergence") { deployer.awaitConverged(null, UNCHANGED_CONVERGE_WAIT) }
     }
     System.err.println("schema: deploying the bundled application package to $configUrl")
     try {
@@ -58,7 +64,14 @@ fun deployBundledSchema(
         )
     }
     deployer.awaitServing(vespaUrl, poll = Duration.ofMillis(250))
+    return null
 }
+
+/**
+ * How long an unchanged package waits for services still converging. Shorter than a deploy's own
+ * wait: what it covers is the tail of a deploy an earlier boot already waited on.
+ */
+private val UNCHANGED_CONVERGE_WAIT = Duration.ofSeconds(30)
 
 /**
  * Waits until an application serves at [vespaUrl], for a process that never deploys one: the

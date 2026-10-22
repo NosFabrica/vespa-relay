@@ -30,14 +30,17 @@ import java.security.Security
  * The JDK's defaults are the trap: a FAILED lookup is remembered for 10 s
  * (`networkaddress.cache.negative.ttl` in `java.security`), so a relay that restarted was
  * unreachable to the sync's writer for up to 10 s after its name resolved again, and a good one for
- * 30 s. Docker's resolver answers locally in well under a millisecond, so asking again costs nothing.
+ * 30 s. Docker's resolver answers a compose name locally; it forwards every other name, uncached,
+ * and the sync resolves many (every upstream, every relay the monitor probes, dead domains among
+ * them), so a failure is still remembered for a second: what a burst of dials to one dead name
+ * asks for, and short of the writer's 2 s redial.
  *
  * Security properties, read once when the JDK first resolves a name: call this before anything
  * does, first thing in `main`.
  */
 fun cacheDnsBriefly() {
     Security.setProperty("networkaddress.cache.ttl", DNS_TTL_SECONDS.toString())
-    Security.setProperty("networkaddress.cache.negative.ttl", "0")
+    Security.setProperty("networkaddress.cache.negative.ttl", "1")
 }
 
 /** Seconds a successful lookup is reused: a reconnect storm resolves once, a recreated peer is found within this. */

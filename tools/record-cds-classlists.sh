@@ -14,7 +14,7 @@ SECS=${1:-90}
 STATE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/vespa-relay"}}{{.Source}}{{end}}{{end}}' vespa-relay)
 [ -n "$STATE" ] || { echo "no running vespa-relay container with a /var/lib/vespa-relay mount" >&2; exit 1; }
 OVR=$(mktemp --suffix=.yml)
-trap 'rm -f "$OVR"' EXIT
+trap 'rm -f "$OVR"' EXIT  # replaced by restore once the stack is touched
 # Recording replaces the archive: classes mapped from one would be missing from the list.
 cat > "$OVR" <<YML
 services:
@@ -27,11 +27,18 @@ services:
 YML
 BASE=${COMPOSE:-docker compose -f docker-compose.yml}
 DC="$BASE -f $OVR --profile sync"
+# Back to the stack as configured however this ends: a failed step must not leave it recording.
+restore() {
+  rm -f "$OVR"
+  $BASE --profile sync up -d --no-deps --force-recreate relay sync
+}
+trap restore EXIT
 $DC up -d --no-deps --force-recreate relay sync
 echo "recording for ${SECS}s"
 sleep "$SECS"
 $DC stop relay sync
 for app in relay sync; do
+  [ -s "$STATE/$app.classlist" ] || { echo "no $STATE/$app.classlist: nothing recorded" >&2; exit 1; }
   {
     echo "# Classes a $app boot loads, recorded from a running stack by tools/record-cds-classlists.sh and"
     echo "# archived when the image is built (Dockerfile). Regenerate after a dependency bump; a stale"
@@ -41,5 +48,3 @@ for app in relay sync; do
   } > "$app/cds.classlist"
   echo "$app/cds.classlist: $(grep -vc '^#' "$app/cds.classlist") entries"
 done
-# Back to the stack as configured.
-$BASE --profile sync up -d --no-deps --force-recreate relay sync
