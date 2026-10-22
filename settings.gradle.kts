@@ -18,7 +18,7 @@ dependencyResolutionManagement {
             forRepository { maven { url = uri("https://jitpack.io") } }
             filter {
                 includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
-                includeGroupByRegex("""com\.github\.vitorpamplona\.amethyst""")
+                includeGroupByRegex("""com\.github\.vitorpamplona\.quartz""")
             }
         }
     }

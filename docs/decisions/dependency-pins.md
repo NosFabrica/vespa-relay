@@ -45,7 +45,33 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-e7f23068e0 = amethyst main @ 2026-10-21, the merge of vitorpamplona/amethyst#4591, whose two commits
+dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
+that day, so the coordinates move from com.github.vitorpamplona.amethyst:quartz to
+com.github.vitorpamplona.quartz:quartz, and settings.gradle.kts's JitPack filter names the new group.
+It is the first commit of vitorpamplona/quartz#6 (on main since its merge, 4a0fb57, whose only later change
+is a test rename), over vitorpamplona/quartz#3. What this relay reaches:
+
+  A FAILED CONNECTION NO LONGER DROPS THE OUTBOX (quartz#3). PoolEventOutbox.onCannotConnect answered
+    every pending event as a refusal, and since amethyst#4589 any OK ends delivery, so a relay that
+    restarted under RelayWriter lost its whole 2,000-event window: the fault test here (relay
+    SIGKILLed mid-backfill, back in 5 s) stalled the mirror about 100 s, until those events failed
+    "no response within timeout" and were re-fetched upstream (278 s to parity against 142 s with
+    no fault). Now the events stay pending, are re-sent on the next connection, and are given up
+    (onEventGaveUp, which publishStream settles as DISCONNECTED) only after two minutes unreachable.
+  JITPACK BUILDS QUARTZ AGAIN (quartz#6). JitPack's builders point Maven Central at a Google mirror
+    ($MAVEN_CENTRAL_MIRROR) that lags by days and had no crypto-kmp or mls-kmp 1.0.0, so no Quartz
+    commit after the crypto split built there; its jitpack.yml now runs Gradle without the variable.
+  EVERYTHING ELSE the relay or the store imports changed only its imports: the crypto primitives
+    moved to crypto-kmp, MLS to mls-kmp, the chess engine to Amethyst (a tree diff of quartz/src
+    between the pins, recorded with the store's pin).
+  RUNTIME CLASSPATH (:relay): + com.vitorpamplona.crypto:crypto and com.vitorpamplona.mls:mls 1.0.0
+    (MIT, Maven Central); - kchesslib, kotlinx-datetime. No new `->`: the ones on the graph
+    (kotlin-stdlib -> 2.4.20, okhttp 5.4.0 -> 5.5.0, annotations) were there before.
+
+SPELLED WITH 10 HEX DIGITS, as JitPack built it: com.github.vitorpamplona.quartz serves quartz and
+  quartz-jvm at dfe281430a.
+
+Prev e7f23068e0 = amethyst main @ 2026-10-21, the merge of vitorpamplona/amethyst#4591, whose two commits
 are the only ones over 98089642eb (below) touching quartz/. What this relay reaches:
 
   NostrClient.keepConnected / releaseConnection: a relay held connected between bursts. RelayWriter
@@ -345,7 +371,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-46131c23b8e8 = vespa-eventstore main @ 2026-10-21, the merge of PR #175 (two commits over
+5f2dd9182c1a = vespa-eventstore main @ 2026-10-22, the merge of PR #176 (two commits over 46131c23b8e8,
+the #175 merge below): Quartz from its own repo.
+  - QUARTZ dfe281430a (see `quartz` above), its pin moved with this relay's, so the store's pom and
+    this catalog name the same coordinates; the old com.github.vitorpamplona.amethyst:quartz would
+    sit beside the new one on the classpath, not be forced over by it.
+  - JITPACK: the store's jitpack.yml runs Gradle without $MAVEN_CENTRAL_MIRROR, for the same two
+    artifacts; without it JitPack could not build the store against the new Quartz.
+  Nothing else the relay calls moves.
+  git merge-base --is-ancestor 46131c23b8e8 5f2dd9182c1a   # verified
+
+DEPLOY: nothing in the application package moves, so the boot deploy is a no-op.
+
+GATED, the store at 59a181e1b926 (PR #176's head): CI's integration job, the full suite against a real
+  Vespa (success), plus ./gradlew build (838 tests) locally. The merge's tree is identical to the
+  head's (git rev-parse 5f2dd9182c1a^{tree} == 59a181e1b926^{tree}), so the gate is this pin's. Here,
+  ./gradlew build: 1,613 tests against it and dfe281430a.
+
+SPELLED WITH 12 HEX DIGITS, which built first time: com.github.NosFabrica serves store and engine at
+  5f2dd9182c1a.
+
+Prev 46131c23b8e8 = vespa-eventstore main @ 2026-10-21, the merge of PR #175 (two commits over
 b42e78695a8a, the #174 merge below):
   - LIVE GATE: A LENSED SUBSCRIPTION FOLLOWS ITS OBSERVER'S 10040. The LiveGate was compiled with
     the rank service the observer's list named when the REQ arrived, so a REQ opened before its
