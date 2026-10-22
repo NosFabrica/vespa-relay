@@ -371,8 +371,8 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-e6d348a26b0d = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-22, one commit over
-5f2dd9182c1a (below): a store opens without needless deploys and feed clients. NOT YET ON MAIN: re-pin
+e4290cb5f1ba = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-22 (PR #177), two
+commits over 5f2dd9182c1a (below): a store opens without needless deploys and feed clients. NOT YET ON MAIN: re-pin
 to the merge once the store's PR lands (same tree, so the gate carries over).
   - SCHEMA: SchemaDeployer.serves / generationOf / awaitConverged, which this relay's
     deployBundledSchema now uses: deploy only when the active package differs, then wait for every
@@ -380,11 +380,14 @@ to the merge once the store's PR lands (same tree, so the gate carries over).
   - FEED CLIENT: an inert SSLContext for http endpoints (its own builder loaded BouncyCastle, ~1 s of
     a store open), none built for a read-only store (the sync), and the reputations' built on its
     first write.
-  git merge-base --is-ancestor 5f2dd9182c1a e6d348a26b0d   # verified
+  - The second commit reads the active package by path, so a config server behind a proxy or a
+    config url with a trailing slash no longer reads as changed on every boot.
+  git merge-base --is-ancestor 5f2dd9182c1a e4290cb5f1ba   # verified
 
 DEPLOY: nothing in the application package moves, so the boot finds it unchanged and does not deploy.
 
-GATED, at e6d348a26b0d: the store's integration suite against a real Vespa (./gradlew :benchmark:test
+GATED, at e6d348a26b0d (the first commit; the second touches only SchemaDeployer.serves, which no
+  integration test calls, and is covered by SchemaDeployerTest): the store's integration suite against a real Vespa (./gradlew :benchmark:test
   -Pintegration: 22 classes, 25 tests, 0 failures; StagingCorpusIT skips without its corpus) and its
   ./gradlew build. Here, ./gradlew build against it and dfe281430a, and boots of the image on a
   compose stack, measured in docs/operations.md, "Boot".

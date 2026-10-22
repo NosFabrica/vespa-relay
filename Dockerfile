@@ -20,7 +20,8 @@ COPY --from=build /src/sync/build/install/vespa-sync /app/sync
 # started instead of 4.2 s. Built with the image, so it matches it, the first boot of a new image
 # included, and nothing is written at run time. A class the list lacks is loaded the slow way; one
 # the code no longer has is skipped. -cp is the start script's own classpath: an archive is used
-# only under the classpath it was dumped with.
+# only under the classpath it was dumped with, and only under compressed oops, so a heap over 32 GB
+# or ZGC boots without it (and without the JDK's own); the `boot: … main` line says so.
 COPY relay/cds.classlist /app/relay/cds.classlist
 COPY sync/cds.classlist /app/sync/cds.classlist
 RUN for app in relay sync; do \

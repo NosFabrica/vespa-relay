@@ -48,7 +48,7 @@ fun deployBundledSchema(
     System.err.println("schema: deploying the bundled application package to $configUrl")
     try {
         val generation = SchemaDeployer.generationOf(deployer.deploy(zip))
-        if (deployer.awaitConverged(generation)) System.err.println("schema: every Vespa service runs config generation $generation")
+        if (deployer.awaitConverged(generation)) System.err.println("schema: every Vespa service runs config generation ${generation ?: "(the one wanted)"}")
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
         // "schema:", the prefix every line about the application package carries.

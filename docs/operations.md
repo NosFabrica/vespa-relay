@@ -197,7 +197,9 @@ its first event at ~3.5 s. What keeps it there, each step on a `boot:` line
   and set by the image's `VESPA_RELAY_OPTS` and `VESPA_SYNC_OPTS`: ~1.5 s sooner
   to the relay's first answer, the first boot of a new image included. Re-record
   the lists with `tools/record-cds-classlists.sh` after a dependency bump; a stale
-  list only loads more classes the slow way.
+  list only loads more classes the slow way. The JVM drops the archive silently
+  when its flags no longer match the dump's — a heap over 32 GB or ZGC, which turn
+  off compressed oops — and `boot: … main` then says `class-data sharing OFF`.
 - *Host names are cached for 5 s, failures not at all* (`cacheDnsBriefly`). The
   JDK's default kept a failed lookup for 10 s, so a recreated relay or Vespa was
   unreachable by name for that long after it was back.

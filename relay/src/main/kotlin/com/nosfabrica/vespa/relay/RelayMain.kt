@@ -128,7 +128,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 fun main() {
     cacheDnsBriefly()
-    BootClock.mark("relay: main")
+    BootClock.main("relay")
     exitOnBootFailure()
     val env = System.getenv()
     val boot = readSettings(env)

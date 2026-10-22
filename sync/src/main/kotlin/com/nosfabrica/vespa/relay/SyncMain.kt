@@ -160,7 +160,7 @@ private fun refuseAnotherRelayKey(
  */
 fun main() {
     cacheDnsBriefly()
-    BootClock.mark("sync: main")
+    BootClock.main("sync")
     exitOnBootFailure()
     val env = System.getenv()
 
