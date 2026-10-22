@@ -417,9 +417,12 @@ internal val MIRROR_TERMS: JsonObject =
         )
         term(
             "lostToStore",
-            "THE ONLY COUNTER HERE THAT MEANS DATA LOSS. Events that passed every check — new, verified, wanted — " +
-                "and could not be written: good events, gone. Anything above zero is a store problem to chase " +
-                "(most often a schema the events no longer fit), not a mirror one.",
+            "GOOD EVENTS THE STORE FAILED TO WRITE. Each passed every check — new, verified, wanted — and the " +
+                "write failed: the store was down or blocking writes, or the event no longer fits the schema. Not " +
+                "lost by itself: a walk or retraction audit whose events did not all reach the store records no " +
+                "band, so they are fetched again (`bandsWithheld`). A count that keeps climbing is a store that " +
+                "keeps failing, and a mirror that cannot move forward until it is fixed: chase the store (most " +
+                "often a schema the events no longer fit), not the mirror.",
         )
         term(
             "store",

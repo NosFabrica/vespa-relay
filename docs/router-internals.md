@@ -707,9 +707,10 @@ live leg knows its own yield.
 **Three facts about the PROCESS, not about a stream.** `fatals` is published
 including zero — a `VirtualMachineError` kills whichever thread allocates next
 and is caught by nobody, so the router carries on looking merely quiet, and four
-once passed unnoticed. `lostToStore` is the only counter in this system that
-means data loss (events that passed every check and could not be written), so
-the card draws it alone, loud, and only when non-zero. And `rejections` splits
+once passed unnoticed. `lostToStore` counts events that passed every check and
+could not be written; walks fetch them again (their band is not recorded), so it
+means a failing store rather than lost data, but a count that keeps climbing
+stalls the mirror, so the card draws it alone, loud, and only when non-zero. And `rejections` splits
 the largest number here into the reasons that make it readable: 20M rejected
 against 1.6M accepted looks like damage and is a mirror being offered the same
 event once per relay holding it.

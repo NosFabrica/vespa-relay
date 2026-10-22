@@ -144,6 +144,10 @@ loss blended into the duplicates. The same run showed that store throws embed
 per-event content (a Vespa 400 quotes the document), so an uncapped reason map
 would have retained 2.3M distinct strings during the one incident where heap
 was already the thing to protect; `poisonSeen` is capped for the same reason.
+Since bands wait on the store's answers, those 2.3M would now be fetched again
+rather than lost, and the same drift would show as a mirror that stops moving
+forward (`bandsWithheld` climbing); the counter stays loud for that, and its words
+say "failed to reach the store", not "lost".
 
 **`wedged` is defined by the workers, not by the queue.** Issue 167 presented
 as a full queue with every ingest thread apparently idle, because a suspended

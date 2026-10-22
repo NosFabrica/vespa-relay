@@ -76,7 +76,14 @@ internal fun healthLine(r: HealthReading): String =
         (if (r.retracted > 0) ", ${r.retracted} record(s) DELETED as retracted upstream" else "") +
         (r.pressure?.let { ", $it" } ?: "") +
         stoppedWorkersClause(r) +
-        (if (r.lostToStore > 0) ", ${r.lostToStore} event(s) LOST to store errors (good events, gone — check the schema)" else "")
+        (
+            if (r.lostToStore > 0) {
+                ", ${r.lostToStore} event(s) FAILED to reach the store (walks fetch them again, see bandsWithheld; " +
+                    "a count that keeps climbing is a store that keeps failing — check the schema)"
+            } else {
+                ""
+            }
+        )
 
 /** What the queue's depth means, by [HealthReading.bottleneck]. */
 private fun queueClause(r: HealthReading): String =

@@ -267,8 +267,15 @@ the router counted, dropped and carried on — 2,336,288 good events lost in one
 run, unrecoverable, while every status line read healthy.
 
 Structural rejections are surfaced separately from ordinary ones on the health
-line (`N event(s) LOST to store errors`), because a bad signature is the event's
-fault and dropping it is correct, whereas a batch failing structurally is ours.
+line (`N event(s) FAILED to reach the store`), because a bad signature is the
+event's fault and dropping it is correct, whereas a batch failing structurally is
+ours. Since a walk records its band only once the store has answered every event
+it read, a failed write is no longer lost: the next visit fetches it again
+(`bandsWithheld` counts those walks). Measured with Vespa refusing writes for
+three minutes, and with the relay down for three and a half: the line counted
+5,009 and 3,997 events, and every one was stored afterwards. A count that keeps
+climbing means the store keeps failing, and the mirror cannot move forward until
+it is fixed.
 
 **Two levers delete data.** Both default to a dry run that reports and removes
 nothing; run that first, and read the number before believing it.

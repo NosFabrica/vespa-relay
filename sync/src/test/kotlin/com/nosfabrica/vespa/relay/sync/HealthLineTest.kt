@@ -70,7 +70,7 @@ class HealthLineTest {
             healthLine(
                 calm.copy(heapUsedMb = 3_900, fatals = 1, retracted = 7, ingestWorkersRunning = 1, lostToStore = 3, pressure = "relay reads 140ms"),
             )
-        for (said in listOf("AT THE CEILING", "1 FATAL error(s)", "7 record(s) DELETED", "1 of 2 ingest worker(s) HAVE STOPPED", "3 event(s) LOST", "relay reads 140ms")) {
+        for (said in listOf("AT THE CEILING", "1 FATAL error(s)", "7 record(s) DELETED", "1 of 2 ingest worker(s) HAVE STOPPED", "3 event(s) FAILED to reach the store", "relay reads 140ms")) {
             assertTrue(said in line, "missing '$said': $line")
         }
     }

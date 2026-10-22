@@ -130,7 +130,11 @@ class IngestPipeline(
     /** Events handed to the queue since boot, the arrival side of [accepted] + [rejected]. */
     val submitted = AtomicLong()
 
-    /** Good events the store refused for structural reasons, which nothing will re-offer. */
+    /**
+     * Good events the store failed to write: a store error, not a refusal. Not a loss by itself in
+     * the sync, where a walk or retraction audit that has one records no band ([IngestAcks]) and
+     * fetches its events again; a count that keeps climbing is a store that keeps failing.
+     */
     val lostToStore = AtomicLong()
 
     private val badSignatures = AtomicLong()
