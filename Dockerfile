@@ -25,7 +25,7 @@ COPY --from=build /src/sync/build/install/vespa-sync /app/sync
 COPY relay/cds.classlist /app/relay/cds.classlist
 COPY sync/cds.classlist /app/sync/cds.classlist
 RUN for app in relay sync; do \
-      cp=$(sed -n 's/^CLASSPATH=//p' /app/$app/bin/vespa-$app | sed "s#\$APP_HOME#/app/$app#g"); \
+      cp=$(sed -n "/^CLASSPATH=/{s/^CLASSPATH=//;s#\$APP_HOME#/app/$app#g;p}" "/app/$app/bin/vespa-$app"); \
       java -Xshare:dump -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
         -Xlog:cds=error -cp "$cp" > /tmp/$app-cds.log 2>&1 || { cat /tmp/$app-cds.log; exit 1; }; \
     done && rm -f /tmp/*-cds.log
