@@ -411,7 +411,16 @@ addresses. Rewriting the tag on the signing side (`signedFor`) keeps an internal
 setting only. The socket is held open with Quartz's `keepConnected` (amethyst #4591, which replaced a
 subscription that matched no event): Quartz drops a relay from its pool once nothing wants it, and
 each redial is a new challenge whose first events could beat the AUTH. Those are still written, on the publishers' lane under the same rules, and
-counted as `unsignedBatches`.
+counted as `unsignedBatches` — only on an open socket: a batch that finds the relay down sends
+nothing on either lane, fails, and withholds its band, so counting it as unsigned (as the writer
+once did) reported a lane problem that was an outage.
+
+**A relay that is down is redialled every two seconds, past Quartz's back-off.** That back-off
+doubles to five minutes, and a host name that does not resolve goes there at once, as a lapsed
+domain would. On compose the relay's name stops resolving while its container is down, so a
+relay down for 3.5 minutes was redialled 301 s after the last failed dial, more than a minute
+after it was listening again. `RelayWriter.redial` resets the back-off and dials while the
+socket is down; the relay is ours, and a dial to it costs a name lookup or a refused connect.
 
 **OKs read back as the store's own outcomes.** The relay answers a store rejection in the
 store's words and a duplicate `OK true duplicate:`, so `outcomeOf` maps them back and the
