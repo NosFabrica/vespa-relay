@@ -371,7 +371,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-5f2dd9182c1a = vespa-eventstore main @ 2026-10-22, the merge of PR #176 (two commits over 46131c23b8e8,
+e6d348a26b0d = vespa-eventstore branch claude/laughing-galileo-3p017w @ 2026-10-22, one commit over
+5f2dd9182c1a (below): a store opens without needless deploys and feed clients. NOT YET ON MAIN: re-pin
+to the merge once the store's PR lands (same tree, so the gate carries over).
+  - SCHEMA: SchemaDeployer.serves / generationOf / awaitConverged, which this relay's
+    deployBundledSchema now uses: deploy only when the active package differs, then wait for every
+    Vespa service to run it. deployIfAbsent and open() are unchanged.
+  - FEED CLIENT: an inert SSLContext for http endpoints (its own builder loaded BouncyCastle, ~1 s of
+    a store open), none built for a read-only store (the sync), and the reputations' built on its
+    first write.
+  git merge-base --is-ancestor 5f2dd9182c1a e6d348a26b0d   # verified
+
+DEPLOY: nothing in the application package moves, so the boot finds it unchanged and does not deploy.
+
+GATED, at e6d348a26b0d: the store's integration suite against a real Vespa (./gradlew :benchmark:test
+  -Pintegration: 22 classes, 25 tests, 0 failures; StagingCorpusIT skips without its corpus) and its
+  ./gradlew build. Here, ./gradlew build against it and dfe281430a, and boots of the image on a
+  compose stack, measured in docs/operations.md, "Boot".
+
+SPELLED WITH 12 HEX DIGITS, which built first time.
+
+Prev 5f2dd9182c1a = vespa-eventstore main @ 2026-10-22, the merge of PR #176 (two commits over 46131c23b8e8,
 the #175 merge below): Quartz from its own repo.
   - QUARTZ dfe281430a (see `quartz` above), its pin moved with this relay's, so the store's pom and
     this catalog name the same coordinates; the old com.github.vitorpamplona.amethyst:quartz would

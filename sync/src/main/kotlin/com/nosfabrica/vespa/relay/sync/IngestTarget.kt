@@ -92,7 +92,6 @@ sealed interface RelaySelf {
  */
 fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
     try {
-        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
         val request =
             HttpRequest
                 .newBuilder(URI.create(dial.url.replaceFirst("ws", "http")))
@@ -100,7 +99,7 @@ fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
                 .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build()
-        val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+        val response = nip11Http.send(request, HttpResponse.BodyHandlers.ofString())
         if (response.statusCode() != 200) {
             RelaySelf.Unreachable
         } else {
@@ -118,6 +117,9 @@ fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
     } catch (_: Exception) {
         RelaySelf.Unreachable
     }
+
+/** One client for every [relaySelf]: the boot asks four times a second while its relay starts, and each client is a selector thread. */
+private val nip11Http: HttpClient by lazy { HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build() }
 
 /** What the relay's stated key means for this process, which holds the relay's `RELAY_NSEC`. */
 sealed interface KeyVerdict {

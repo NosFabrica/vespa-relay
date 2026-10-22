@@ -82,6 +82,10 @@ services:
       # relay that starts anyway would only find an empty store.
       retries: 180
       start_period: 120s
+      # Checked every second while it starts (Docker Engine 25+): the relay
+      # waits on the first passing check, and at 5 s apart it started up to 5 s
+      # after Vespa could serve it, 1.75 s on a measured cold boot.
+      start_interval: 1s
     restart: unless-stopped
 
   relay:

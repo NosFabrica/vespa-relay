@@ -179,6 +179,32 @@ for that user, so a named volume works as is; a bind mount over it (compose's
 sweeps, the FTS cursor, the ban lists) fails to save and says so on stderr.
 A Kubernetes deployment sets `fsGroup: 10001` on the pod instead.
 
+**Boot.** A restart over a running Vespa (measured on a 4-CPU host, from the
+relay's container start): the relay answers a REQ at ~3 s and the sync stores
+its first event at ~3.5 s. What keeps it there, each step on a `boot:` line
+(`docs/instrumentation.md`):
+
+- *The schema is deployed only when it changed.* The relay compares Vespa's
+  active application package with the one it carries (~80 ms) and deploys only
+  on a difference, then waits until every Vespa service runs the new generation:
+  a deploy returns before the content nodes do, and a write carrying a field the
+  old generation lacks is refused there.
+- *The sync does not wait for its relay before it has to.* It opens its store
+  and binds its pages while the relay starts, and waits for the relay's key
+  (asked four times a second) only before its writer dials the relay as that key.
+- *Each process maps a class-data archive* (AppCDS) built into the image from
+  the classes a real boot loads (`relay/cds.classlist`, `sync/cds.classlist`),
+  and set by the image's `VESPA_RELAY_OPTS` and `VESPA_SYNC_OPTS`: ~1.5 s sooner
+  to the relay's first answer, the first boot of a new image included. Re-record
+  the lists with `tools/record-cds-classlists.sh` after a dependency bump; a stale
+  list only loads more classes the slow way.
+- *Host names are cached for 5 s, failures not at all* (`cacheDnsBriefly`). The
+  JDK's default kept a failed lookup for 10 s, so a recreated relay or Vespa was
+  unreachable by name for that long after it was back.
+
+A cold boot is Vespa's own: ~50 s here before it serves, which the relay's
+`service_healthy` wait follows within a second (`start_interval`).
+
 **The Vespa image is pinned** in `docker-compose.yml`. Bumping it is a
 deliberate change: run the store's integration gate against the new engine
 first (see AGENTS.md, Commands), and read `docs/migrations.md`.
@@ -258,10 +284,12 @@ until the reconcile lands. `TRUST_RECONCILE_ON_START=false` skips it entirely.
 If a start still looks slow, check that before blaming Vespa's transaction-log
 replay — that wrong attribution is already in this file's history.
 
-The relay **deploys the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
-default true), so the cluster always matches the code writing to it; the sync
-never deploys, and waits until an application serves. A no-change
-deploy is a cheap no-op. This is not decoration: when the schema drifted, Vespa
+The relay **makes Vespa run the bundled Vespa schema at every boot** (`AUTO_DEPLOY`,
+default true), so the cluster always matches the code writing to it: it deploys
+when the active package differs from its own, file for file, and then waits until
+every Vespa service runs the new generation; the sync never deploys, and waits
+until an application serves. An unchanged package is not redeployed: that cost
+2-3 s of every restart and a new config generation for every service to reload. This is not decoration: when the schema drifted, Vespa
 answered every write with `Status 400 ... Field 'name_parts' is not defined` and
 the router counted, dropped and carried on — 2,336,288 good events lost in one
 run, unrecoverable, while every status line read healthy.

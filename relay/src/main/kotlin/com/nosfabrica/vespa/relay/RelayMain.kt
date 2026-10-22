@@ -99,6 +99,7 @@ import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
+import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
@@ -126,6 +127,7 @@ import java.util.concurrent.atomic.AtomicReference
  * is required. Mirroring into the same store is the sync process's job.
  */
 fun main() {
+    cacheDnsBriefly()
     BootClock.mark("relay: main")
     exitOnBootFailure()
     val env = System.getenv()
@@ -331,9 +333,7 @@ private fun deploySchema(boot: Boot) {
         System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
         return
     }
-    System.err.println("schema: deploying the bundled application package to ${boot.configUrl}")
     deployBundledSchema(boot.vespaUrl, boot.configUrl)
-    System.err.println("schema: deployed and serving")
 }
 
 private fun openStore(boot: Boot): VespaEventStore =
