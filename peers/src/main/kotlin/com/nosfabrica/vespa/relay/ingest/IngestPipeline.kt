@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
+import com.nosfabrica.vespa.relay.util.BootClock
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
@@ -80,6 +81,8 @@ class IngestPipeline(
     private val wedgeAfterMs: Long = WEDGE_AFTER_MS,
     /** Where a batch is written: the store, or the serving relay ([RelayWriter]). The probes read [store] either way. */
     private val writer: StoreWriter = StoreWriter.local(store),
+    /** Names the first event submitted and the first stored as `boot:` lines ([BootClock]); null prints neither. */
+    private val bootName: String? = null,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -223,6 +226,7 @@ class IngestPipeline(
                 }
             }
             submitted.incrementAndGet()
+            bootName?.let { BootClock.once("$it: first event submitted") }
         } catch (_: ClosedSendChannelException) {
             // Shutdown raced this event in. A publish still hears once, as quartz's own queue
             // answers it: EventIngest owes every submission exactly one callback.
@@ -517,6 +521,7 @@ class IngestPipeline(
                     when (outcome) {
                         is IEventStore.InsertOutcome.Accepted -> {
                             accepted.incrementAndGet()
+                            bootName?.let { BootClock.once("$it: first event stored") }
                         }
 
                         is IEventStore.InsertOutcome.Rejected -> {

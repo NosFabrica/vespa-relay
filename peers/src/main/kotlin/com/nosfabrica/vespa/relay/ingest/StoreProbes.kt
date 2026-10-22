@@ -49,4 +49,5 @@ fun probedIngestPipeline(
     audit: ParseAudit? = null,
     servingPressure: ServingPressure? = null,
     refusals: RefusalSink = RefusalSink.None,
-): IngestPipeline = IngestPipeline(store, tuning, audit, servingPressure, scope, store.knownIdsProbe(), store.newestVersionsProbe(), refusals)
+    bootName: String? = null,
+): IngestPipeline = IngestPipeline(store, tuning, audit, servingPressure, scope, store.knownIdsProbe(), store.newestVersionsProbe(), refusals, bootName = bootName)

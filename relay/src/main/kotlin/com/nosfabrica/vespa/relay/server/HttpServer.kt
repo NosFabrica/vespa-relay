@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ServerReady
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
@@ -105,6 +106,8 @@ fun serveRelay(
     selfIconUrl: String? = null,
     // When set, a POST to the relay's URL answers one command frame without a socket (NIP-FE).
     httpRelay: HttpRelay? = null,
+    // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
+    onReady: () -> Unit = {},
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
@@ -124,6 +127,7 @@ fun serveRelay(
         }
 
     return embeddedServer(Netty, port = port) {
+        monitor.subscribe(ServerReady) { onReady() }
         installPageDefaults()
 
         // A response hook, not a route: clients record Onion-Location off any response,

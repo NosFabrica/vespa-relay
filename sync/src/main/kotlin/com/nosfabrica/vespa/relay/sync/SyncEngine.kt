@@ -148,7 +148,7 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible, forwarded = writer is RelayWriter)
-    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure = null, scope, knownIds, newestVersions, refusals, writer = writer)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure = null, scope, knownIds, newestVersions, refusals, writer = writer, bootName = "sync: ingest")
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */
