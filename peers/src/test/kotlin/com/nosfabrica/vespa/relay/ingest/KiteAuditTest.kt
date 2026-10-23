@@ -77,6 +77,9 @@ class KiteAuditTest {
         extra: String = "",
     ) = """["EVENT","s",${event.toJson().dropLast(1)}$extra}]"""
 
+    /** A signed event whose content Kite refuses as a number and Jackson reads back as the signed "5". */
+    private fun coerced(): String = frame(note("5")).replace("\"content\":\"5\"", "\"content\":5")
+
     private fun read(audit: KiteAudit): JsonObject {
         audit.writeReport()
         return Json.parseToJsonElement(report.readText()).jsonObject
@@ -89,7 +92,7 @@ class KiteAuditTest {
     @Test
     fun `a frame Kite rejects and Jackson reads is kept and handed on as Jackson's`() {
         val audit = KiteAudit(report)
-        val text = frame(note()).replace("\"content\":\"hello\"", "\"content\":5")
+        val text = coerced()
         val msg = audit.decoder().decode(text)
         assertEquals("5", assertIs<EventMessage>(msg).event.content)
         val finding = read(audit).findings(KiteAudit.KITE_THREW).single()
@@ -106,11 +109,22 @@ class KiteAuditTest {
     @Test
     fun `one event on many subscriptions is one sample and many counts`() {
         val audit = KiteAudit(report)
-        val text = frame(note()).replace("\"content\":\"hello\"", "\"content\":5")
+        val text = coerced()
         listOf("a", "b", "c").forEach { sub -> audit.decoder().decode(text.replace("[\"EVENT\",\"s\"", "[\"EVENT\",\"$sub\"")) }
         val finding = read(audit).findings(KiteAudit.KITE_THREW).single()
         assertEquals(3, finding.count("count"))
         assertEquals(1, finding["samples"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `Kite's strictness on an event that is bad anyway is counted, not kept`() {
+        val audit = KiteAudit(report)
+        // Signed as "hello": Jackson's coerced "5" does not verify, so Kite refusing it is no bug.
+        val msg = audit.decoder().decode(frame(note()).replace("\"content\":\"hello\"", "\"content\":5"))
+        assertEquals("5", assertIs<EventMessage>(msg).event.content)
+        val doc = read(audit)
+        assertEquals(1, doc.count("kiteStricterOnBadEvents"))
+        assertTrue(doc["findings"]!!.jsonArray.isEmpty())
     }
 
     @Test
@@ -150,17 +164,58 @@ class KiteAuditTest {
     }
 
     @Test
-    fun `a refused event whose frame has aged out is counted as unchecked`() {
+    fun `each copy of an event is judged on the frame it came in`() {
+        val audit = KiteAudit(report)
+        val decoder = audit.decoder()
+        val signed = note()
+        val misread = assertIs<EventMessage>(decoder.decode(frame(signed, ",\"comment\":\"spoof\""))).event
+        // The same event from another relay, read right, arrives after the misread copy.
+        decoder.decode(frame(signed))
+        audit.onBadEvent(misread)
+        assertEquals(
+            "content",
+            read(audit)
+                .findings(KiteAudit.KITE_MISREAD)
+                .single()["key"]!!
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `a refused event whose frame verifies is kept as a failure past the frame`() {
+        val audit = KiteAudit(report)
+        val text = frame(note())
+        audit.onBadEvent(assertIs<EventMessage>(audit.decoder().decode(text)).event)
+        val finding = read(audit).findings(KiteAudit.REFUSED_VERIFIES).single()
+        assertEquals(
+            text,
+            finding["samples"]!!
+                .jsonArray
+                .single()
+                .jsonObject["frame"]!!
+                .jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `quartz's age-out tick drops no frame, only the budget does`() {
         val audit = KiteAudit(report)
         val decoder = audit.decoder()
         val misread = assertIs<EventMessage>(decoder.decode(frame(note(), ",\"comment\":\"spoof\""))).event
-        // An entry survives at most two of quartz's age-out ticks.
-        decoder.ageOutCache()
-        decoder.ageOutCache()
+        repeat(3) { decoder.ageOutCache() }
         audit.onBadEvent(misread)
-        val doc = read(audit)
-        assertEquals(1, doc.count("badEventsFrameNotHeld"))
-        assertTrue(doc.findings(KiteAudit.KITE_MISREAD).isEmpty())
+        assertEquals(1, read(audit).findings(KiteAudit.KITE_MISREAD).size)
+    }
+
+    @Test
+    fun `Jackson's reading is checked with Jackson's id preimage, whatever the engine`() {
+        val tricky = listOf("plain", "emoji \uD83D\uDE00", "controls \u0001\u000b\u001f", "line sep \u2028", "lone \uD83D surrogate", "quote \" back \\ slash")
+        JsonEngine.current = JsonEngine.DEFAULT
+        val events = tricky.map { signer.sign<Event>(1_700_000_000L, 1, arrayOf(arrayOf("t", it)), it) }
+        JsonEngine.current = JsonEngine.KITE
+        events.forEach { assertTrue(KiteAudit.jacksonIdMatches(it), it.content) }
+        val tampered = events.first().let { Event(it.id, it.pubKey, it.createdAt, it.kind, it.tags, it.content + " ", it.sig) }
+        assertTrue(!KiteAudit.jacksonIdMatches(tampered))
     }
 
     @Test
