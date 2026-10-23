@@ -83,7 +83,8 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
   config/                 RouterConfig + its HOCON loader — one file configures
                           both planes, so it sits under both
   ingest/                 IngestPipeline (on an IngestTuning, not the whole
-                          config), ParseAudit, the refusal filters, ProbeGate.
+                          config), ParseAudit, KiteAudit (the Kite trial's
+                          test cases), the refusal filters, ProbeGate.
                           The one write path for both processes: the mirror's
                           downloads and the relay's publishes (it is quartz's
                           EventIngest), with StoreProbes wiring the two drop-

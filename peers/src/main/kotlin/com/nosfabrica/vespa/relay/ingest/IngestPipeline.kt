@@ -83,6 +83,8 @@ class IngestPipeline(
     private val writer: StoreWriter = StoreWriter.local(store),
     /** Names the first event submitted and the first stored as `boot:` lines ([BootClock]); null prints neither. */
     private val bootName: String? = null,
+    /** Shown every event refused as a bad id or signature, while the JSON engine is Kite. */
+    private val kiteAudit: KiteAudit? = null,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -877,11 +879,21 @@ class IngestPipeline(
         fun answer(
             i: Int,
             outcome: IEventStore.InsertOutcome,
+        ) = answer(i, outcome, followed = false)
+
+        private fun answer(
+            i: Int,
+            outcome: IEventStore.InsertOutcome,
+            followed: Boolean,
         ) {
             if (answered[i]) return
             answered[i] = true
+            // A follower shares its leader's id, so its leader's check stands for it.
+            if (!followed && outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == BAD_SIGNATURE.reason) {
+                kiteAudit?.onBadEvent(batch[i].event)
+            }
             batch[i].onOutcome?.let { deliver(it, outcome) }
-            followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome) }
+            followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome, followed = true) }
         }
 
         fun rest(outcome: IEventStore.InsertOutcome) {

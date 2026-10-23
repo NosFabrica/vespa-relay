@@ -160,7 +160,7 @@ peers/…/relay/
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
                               the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
-                              ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
+                              ProbeTrouble, ParseAudit, KiteAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json

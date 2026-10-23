@@ -548,6 +548,9 @@ services:
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
+      # The Kite audit's report, written only while QUARTZ_JSON_ENGINE=kite (docs/configuration.md).
+      KITE_AUDIT_FILE: ${KITE_AUDIT_FILE:-/var/lib/vespa-relay/kite-audit.json}
+      KITE_AUDIT_FRAMES_MB: ${KITE_AUDIT_FRAMES_MB:-}
       # Where .onion upstreams are dialled. Defaults to the `tor` service
       # below, which the same profile starts — a .onion relay is unreachable
       # without it, and the router refuses to boot on one it cannot dial
