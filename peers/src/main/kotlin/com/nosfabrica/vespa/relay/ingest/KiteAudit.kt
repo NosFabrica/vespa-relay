@@ -20,23 +20,29 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.fasterxml.jackson.core.JsonEncoding
+import com.fasterxml.jackson.core.JsonGenerator
 import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.util.writeDurably
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.JsonEngine
 import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
-import com.vitorpamplona.quartz.nip01Core.crypto.verify
+import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
+import com.vitorpamplona.quartz.nip01Core.crypto.verifySignature
 import com.vitorpamplona.quartz.nip01Core.jackson.JacksonMapper
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EventMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
+import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -50,10 +56,11 @@ class KiteAudit(
     private val frameBudgetBytes: Long = DEFAULT_FRAMES_MB * MB,
     private val maxSamplesPerFinding: Int = MAX_SAMPLES,
 ) : AutoCloseable {
-    // Two generations, rotated on quartz's age-out tick or once the newer holds half the budget.
-    @Volatile private var current = ConcurrentHashMap<String, String>()
+    // By instance, not id: each copy of an event is judged on the frame it came in. Two generations,
+    // turned over only by the budget, so a frame waits out a backlogged queue as long as memory allows.
+    @Volatile private var current = ConcurrentHashMap<Event, String>()
 
-    @Volatile private var previous = ConcurrentHashMap<String, String>()
+    @Volatile private var previous = ConcurrentHashMap<Event, String>()
     private val currentBytes = AtomicLong()
 
     private val findings = ConcurrentHashMap<String, Finding>()
@@ -61,10 +68,10 @@ class KiteAudit(
 
     private val eventFrames = AtomicLong()
     private val badFrames = AtomicLong()
+    private val kiteStricter = AtomicLong()
     private val badEvents = AtomicLong()
     private val genuinelyBad = AtomicLong()
     private val notHeld = AtomicLong()
-    private val notReproduced = AtomicLong()
 
     @Volatile private var flusher: Thread? = null
 
@@ -78,19 +85,19 @@ class KiteAudit(
                     } catch (kiteError: Exception) {
                         return rescue(text, kiteError)
                     }
-                if (msg is EventMessage) hold(msg.event.id, text)
+                if (msg is EventMessage) hold(msg.event, text)
                 return msg
             }
 
-            override fun ageOutCache() {
-                delegate.ageOutCache()
-                ageOut()
-            }
+            override fun ageOutCache() = delegate.ageOutCache()
 
             override fun clearCache() {
                 delegate.clearCache()
-                ageOut()
-                ageOut()
+                synchronized(this@KiteAudit) {
+                    current = ConcurrentHashMap()
+                    previous = ConcurrentHashMap()
+                    currentBytes.set(0)
+                }
             }
         }
 
@@ -105,27 +112,33 @@ class KiteAudit(
                 badFrames.incrementAndGet()
                 throw kiteError
             }
-        val eventId = (jackson as? EventMessage)?.event?.id
-        record(KITE_THREW, normalize("${kiteError.javaClass.simpleName}: ${kiteError.message}"), Sample(text, eventId, kiteError.message, null, null))
+        val event = (jackson as? EventMessage)?.event
+        if (event != null) {
+            hold(event, text)
+            // Kite's documented strictness on an event that is bad anyway is not a quartz test case.
+            if (!verifiesUnderJackson(event)) {
+                kiteStricter.incrementAndGet()
+                return jackson
+            }
+        }
+        record(KITE_THREW, normalize("${kiteError.javaClass.simpleName}: ${kiteError.message}"), Sample.of(text, event?.id, kiteError.message, null, null))
         return jackson
     }
 
     private fun hold(
-        id: String,
+        event: Event,
         frame: String,
     ) {
         eventFrames.incrementAndGet()
-        current[id] = frame
-        if (currentBytes.addAndGet(frame.length * 2L) > frameBudgetBytes / 2) rotateIfFull()
+        val replaced = current.put(event, frame)
+        // UTF-16 chars, twice: the frame, and the event the map keeps alive beside it.
+        val grown = (frame.length - (replaced?.length ?: 0)) * BYTES_PER_HELD_CHAR
+        if (currentBytes.addAndGet(grown) > frameBudgetBytes / 2) rotateIfFull()
     }
 
     @Synchronized
     private fun rotateIfFull() {
-        if (currentBytes.get() > frameBudgetBytes / 2) ageOut()
-    }
-
-    @Synchronized
-    private fun ageOut() {
+        if (currentBytes.get() <= frameBudgetBytes / 2) return
         previous = current
         current = ConcurrentHashMap()
         currentBytes.set(0)
@@ -138,20 +151,31 @@ class KiteAudit(
     fun onBadEvent(event: Event) {
         try {
             badEvents.incrementAndGet()
-            val frame = current.remove(event.id) ?: previous.remove(event.id)
+            val frame = current.remove(event) ?: previous.remove(event)
             if (frame == null) {
                 notHeld.incrementAndGet()
                 return
             }
-            val kite = eventIn(frame) { OptimizedJsonMapper.fromJsonToMessage(it) }
             val jackson = eventIn(frame) { JacksonMapper.fromJsonToMessage(it) }
+            if (jackson == null || !verifiesUnderJackson(jackson)) {
+                genuinelyBad.incrementAndGet()
+                return
+            }
+            val kite = eventIn(frame) { OptimizedJsonMapper.fromJsonToMessage(it) }
+            val differ = fieldsThatDiffer(kite, jackson)
             when {
-                jackson == null || !jackson.verify() -> genuinelyBad.incrementAndGet()
-                kite != null && kite.verify() -> notReproduced.incrementAndGet()
-                else -> record(KITE_MISREAD, fieldsThatDiffer(kite, jackson), Sample(frame, jackson.id, null, kite?.toJson(), jackson.toJson()))
+                differ != null -> record(KITE_MISREAD, differ, Sample.of(frame, jackson.id, null, kite?.toJson(), JacksonMapper.toJson(jackson)))
+
+                // The engine is Kite, so this hashes Kite's preimage of the same fields.
+                kite == null || !kite.verifyId() -> record(KITE_MISREAD, "id preimage", Sample.of(frame, jackson.id, null, kite?.toJson(), JacksonMapper.toJson(jackson)))
+
+                // Read alike and verified: refused past this frame, on the hop to the relay.
+                else -> record(REFUSED_VERIFIES, "both readings verify", Sample.of(frame, jackson.id, null, kite.toJson(), null))
             }
         } catch (e: Exception) {
             System.err.println("kite audit: could not check event ${event.id} (${e.javaClass.simpleName}: ${e.message})")
+        } catch (e: StackOverflowError) {
+            System.err.println("kite audit: could not check event ${event.id} (${e.javaClass.simpleName})")
         }
     }
 
@@ -183,31 +207,48 @@ class KiteAudit(
 
     /** A one-line summary for the periodic log. */
     fun summary(): String =
-        "kite audit: ${count(KITE_THREW)} frame(s) Kite rejected and Jackson read, ${count(KITE_MISREAD)} event(s) Kite misread; " +
+        "kite audit: ${count(KITE_THREW)} frame(s) Kite rejected and Jackson read, ${count(KITE_MISREAD)} event(s) Kite misread, " +
+            "${count(REFUSED_VERIFIES)} refused event(s) whose frame verifies; " +
             "both engines refused ${badFrames.get()} frame(s) and ${genuinelyBad.get()} event(s); " +
             "${notHeld.get()} refused event(s) unchecked (frame no longer held), of ${eventFrames.get()} EVENT frame(s)"
 
     private fun count(kind: String): Long = findings.values.filter { it.kind == kind }.sumOf { it.count.get() }
 
+    // Everything but the frame count, which moves with all traffic: unchanged, the report is not rewritten.
+    private fun state(): List<Long> =
+        listOf(badFrames.get(), kiteStricter.get(), badEvents.get(), genuinelyBad.get(), notHeld.get(), overflow.get()) +
+            findings.values.map { it.count.get() }
+
+    private var writtenState: List<Long>? = null
+    private var writtenAtMs = 0L
+
     /** Write the report durably. Synchronized: the flusher and [close] share the temp path. */
     @Synchronized
-    fun writeReport() {
+    fun writeReport(force: Boolean = true) {
         val file = outFile ?: return
+        val now = System.currentTimeMillis()
+        val state = state()
+        if (!force && state == writtenState && now - writtenAtMs < REWRITE_ANYWAY_MS) return
         val report =
             buildJsonObject {
                 put("eventFrames", JsonPrimitive(eventFrames.get()))
                 put("kiteRejectedJacksonRead", JsonPrimitive(count(KITE_THREW)))
                 put("kiteMisread", JsonPrimitive(count(KITE_MISREAD)))
+                put("refusedButFrameVerifies", JsonPrimitive(count(REFUSED_VERIFIES)))
                 put("badFramesBothRefuse", JsonPrimitive(badFrames.get()))
+                put("kiteStricterOnBadEvents", JsonPrimitive(kiteStricter.get()))
                 put("badEvents", JsonPrimitive(badEvents.get()))
                 put("badEventsBothRefuse", JsonPrimitive(genuinelyBad.get()))
                 put("badEventsFrameNotHeld", JsonPrimitive(notHeld.get()))
-                put("badEventsKiteVerifies", JsonPrimitive(notReproduced.get()))
                 put("findingsPastCap", JsonPrimitive(overflow.get()))
                 put("findings", JsonArray(findings.values.sortedByDescending { it.count.get() }.map { it.toJson() }))
             }
         writeDurably(file, json.encodeToString(JsonObject.serializer(), report))
+        writtenState = state
+        writtenAtMs = now
     }
+
+    private var loggedState: List<Long>? = null
 
     /** Rewrite the report every [intervalSec] on a daemon thread, and say the summary when there is anything to say. */
     fun startPeriodicFlush(intervalSec: Long): KiteAudit {
@@ -219,8 +260,11 @@ class KiteAudit(
                     } catch (_: InterruptedException) {
                         return@Thread
                     }
-                    runCatching { writeReport() }.onFailure { System.err.println("kite audit: could not write ${outFile?.path}: ${it.message}") }
-                    if (findings.isNotEmpty() || badFrames.get() > 0 || badEvents.get() > 0) System.err.println(summary())
+                    runCatching { writeReport(force = false) }.onFailure { System.err.println("kite audit: could not write ${outFile?.path}: ${it.message}") }
+                    if (state() != loggedState) {
+                        loggedState = state()
+                        System.err.println(summary())
+                    }
                 }
             }.apply {
                 isDaemon = true
@@ -264,8 +308,8 @@ class KiteAudit(
                         synchronized(samples) { samples.toList() }.forEach { s ->
                             add(
                                 buildJsonObject {
-                                    put("frame", JsonPrimitive(s.frame.take(MAX_FRAME_CHARS)))
-                                    if (s.frame.length > MAX_FRAME_CHARS) put("frameChars", JsonPrimitive(s.frame.length))
+                                    put("frame", JsonPrimitive(s.frame))
+                                    if (s.frameChars > s.frame.length) put("frameChars", JsonPrimitive(s.frameChars))
                                     s.kiteError?.let { put("kiteError", JsonPrimitive(it.take(MAX_ERROR_CHARS))) }
                                     s.kiteEvent?.let { put("kiteRead", JsonPrimitive(it)) }
                                     s.jacksonEvent?.let { put("jacksonRead", JsonPrimitive(it)) }
@@ -277,9 +321,10 @@ class KiteAudit(
             }
     }
 
-    /** The frame verbatim, and what each engine made of it. */
+    /** The frame verbatim (cut at [MAX_FRAME_CHARS]), and what each engine made of it. */
     class Sample(
         val frame: String,
+        val frameChars: Int,
         /** Jackson's reading of the id, so one event arriving on many subscriptions is one sample. */
         val eventId: String?,
         val kiteError: String?,
@@ -287,6 +332,16 @@ class KiteAudit(
         val jacksonEvent: String?,
     ) {
         fun sameEvent(other: Sample) = if (eventId != null) eventId == other.eventId else frame == other.frame
+
+        companion object {
+            fun of(
+                frame: String,
+                eventId: String?,
+                kiteError: String?,
+                kiteEvent: String?,
+                jacksonEvent: String?,
+            ) = Sample(frame.take(MAX_FRAME_CHARS), frame.length, eventId, kiteError, kiteEvent, jacksonEvent)
+        }
     }
 
     companion object {
@@ -296,26 +351,33 @@ class KiteAudit(
         /** Kite read an event whose id or signature then failed, where Jackson's reading verifies. */
         const val KITE_MISREAD = "kite-misread"
 
+        /** A refused event whose frame both engines read alike and verify: what failed is the sync's write to the relay. */
+        const val REFUSED_VERIFIES = "refused-but-verifies"
+
         const val DEFAULT_FRAMES_MB = 64L
         private const val MB = 1024L * 1024
         private const val MAX_FINDINGS = 64
         private const val MAX_SAMPLES = 5
         private const val MAX_FRAME_CHARS = 1_000_000
+        private const val ID_HEX_CHARS = 64
+        private const val BYTES_PER_HELD_CHAR = 4L
+        private const val ID_PREIMAGE_SLACK = 256
         private const val MAX_ERROR_CHARS = 500
         private const val STDERR_FRAME_CHARS = 2_000
         private const val FLUSHER_JOIN_MS = 5_000L
         private const val FLUSH_SECONDS = 60L
+        private const val REWRITE_ANYWAY_MS = 600_000L
 
         private val json = Json { prettyPrint = true }
         private val DIGITS = Regex("""\d+""")
 
         private fun normalize(message: String): String = message.replace(DIGITS, "N").take(MAX_ERROR_CHARS)
 
-        /** Which NIP-01 fields the two readings disagree on: what a quartz fix has to change. */
+        /** Which NIP-01 fields the two readings disagree on, what a quartz fix has to change; null when none. */
         private fun fieldsThatDiffer(
             kite: Event?,
             jackson: Event,
-        ): String {
+        ): String? {
             if (kite == null) return "kite cannot re-read the frame"
             val differ =
                 listOfNotNull(
@@ -327,7 +389,36 @@ class KiteAudit(
                     "content".takeIf { kite.content != jackson.content },
                     "sig".takeIf { kite.sig != jackson.sig },
                 )
-            return if (differ.isEmpty()) "no field differs" else differ.joinToString(",")
+            return differ.takeIf { it.isNotEmpty() }?.joinToString(",")
+        }
+
+        /**
+         * Id and signature checked with Jackson's own id preimage. [Event.verify] hashes with whichever
+         * engine is on, and under Kite a Kite hashing bug would then read as a bad event.
+         */
+        internal fun verifiesUnderJackson(event: Event): Boolean = jacksonIdMatches(event) && event.verifySignature()
+
+        /** Quartz's Jackson id preimage (`EventHasherSerializer`, the engine-default branch), hashed. */
+        internal fun jacksonIdMatches(event: Event): Boolean {
+            val out = ByteArrayOutputStream(ID_PREIMAGE_SLACK + event.content.length)
+            JacksonMapper.mapper.factory.createGenerator(out, JsonEncoding.UTF8).use { g ->
+                g.enable(JsonGenerator.Feature.COMBINE_UNICODE_SURROGATES_IN_UTF8)
+                g.writeStartArray()
+                g.writeNumber(0)
+                g.writeString(event.pubKey)
+                g.writeNumber(event.createdAt)
+                g.writeNumber(event.kind)
+                g.writeStartArray()
+                for (tag in event.tags) {
+                    g.writeStartArray()
+                    for (value in tag) g.writeString(value)
+                    g.writeEndArray()
+                }
+                g.writeEndArray()
+                g.writeString(event.content)
+                g.writeEndArray()
+            }
+            return event.id.length == ID_HEX_CHARS && Hex.isEqual(event.id, MessageDigest.getInstance("SHA-256").digest(out.toByteArray()))
         }
 
         /** On exactly while the engine is Kite: `KITE_AUDIT_FILE` says where the report goes, not whether there is one. */

@@ -889,8 +889,8 @@ class IngestPipeline(
             if (answered[i]) return
             answered[i] = true
             // A follower shares its leader's id, so its leader's check stands for it.
-            if (!followed && outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == BAD_SIGNATURE.reason) {
-                kiteAudit?.onBadEvent(batch[i].event)
+            if (kiteAudit != null && !followed && outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == BAD_SIGNATURE.reason) {
+                kiteAudit.onBadEvent(batch[i].event)
             }
             batch[i].onOutcome?.let { deliver(it, outcome) }
             followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome, followed = true) }

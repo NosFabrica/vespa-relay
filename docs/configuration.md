@@ -730,27 +730,34 @@ costs one extra parse per mirrored event. See `ParseAudit`.
 On by itself in the **sync process** whenever `QUARTZ_JSON_ENGINE=kite`, to collect
 test cases for quartz while Kite is on trial. Two checks, both run only on a
 failure, so valid traffic pays only for holding each `EVENT` frame until its id has
-been checked:
+been checked, and a refused event costs at most one more signature check:
 
-- **Kite throws on a frame:** it is re-read with Jackson. If Jackson reads it, the
-  frame is kept (`kite-threw`) and Jackson's reading is what the mirror gets, so
-  the event is not lost. If Jackson refuses it too, it is a bad frame, counted only.
+- **Kite throws on a frame:** it is re-read with Jackson, and Jackson's reading is
+  what the mirror gets, so the event is not lost. The frame is kept (`kite-threw`)
+  when Jackson's reading verifies; when it does not, Kite only refused a bad event
+  more strictly than Jackson, which is counted (`kiteStricterOnBadEvents`). A frame
+  Jackson refuses too is a bad frame, counted only.
 - **An event is refused as `invalid: bad signature or id`**, by the sync's own check
-  or by the relay: its raw frame is read again with both engines. If Jackson's
-  reading verifies and Kite's does not, the frame is kept with both readings
-  (`kite-misread`, keyed by the fields they disagree on). If neither verifies, it
-  is a bad event, counted only. A misread event is still refused, as it was.
+  or by the relay: the frame that copy came in on is read again with both engines.
+  Jackson's reading is checked against Jackson's own id preimage, never Kite's, so a
+  Kite hashing bug cannot pass for bad input. If it does not verify, the event was
+  bad, counted only. If it does, the frame is kept: as `kite-misread`, keyed by the
+  fields the two readings disagree on (or `id preimage` when they agree and only
+  Kite's hash fails), or as `refused-but-verifies` when both readings agree and
+  verify, which points past the frame, at the sync's write to the relay. A refused
+  event stays refused.
 
-Frames are held for 30 to 60 s, on quartz's own age-out clock, and within
-`KITE_AUDIT_FRAMES_MB`. A refusal that arrives later (a backlogged ingest queue) is
-counted as `badEventsFrameNotHeld` rather than checked, so that number is the
-audit's blind spot. The relay process has no such audit: its client frames are
+Frames are held by the event read from them, each copy on its own, until
+`KITE_AUDIT_FRAMES_MB` of newer frames has arrived; every EVENT frame the sync reads
+counts, the monitor's included. A refusal that arrives later (a backlogged ingest
+queue) is counted as `badEventsFrameNotHeld` rather than checked, so that number is
+the audit's blind spot. The relay process has no such audit: its client frames are
 parsed inside quartz's server.
 
 | var | meaning | default |
 |---|---|---|
 | `KITE_AUDIT_FILE` | where the JSON report goes: counts, and up to 5 whole frames per finding with Kite's error or both engines' readings. Unset, each new finding is one stderr line with the frame's first 2,000 characters. Ignored unless the engine is Kite | compose: `/var/lib/vespa-relay/kite-audit.json` (on the host under `PARSE_AUDIT_LOCAL_DIR`); bare: unset |
-| `KITE_AUDIT_FRAMES_MB` | memory for the frames held for the id check | `64` |
+| `KITE_AUDIT_FRAMES_MB` | memory for the frames held for the id check, and the events read from them | `64` |
 
 ## Ranges the boot enforces
 
