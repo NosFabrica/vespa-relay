@@ -20,6 +20,8 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
                             process adopt()s the polled mean and yields on it
   util/QuartzLogLevel.kt    QUARTZ_LOG_LEVEL, split from ParseAudit — the one
                             piece of it both processes read
+  util/QuartzJsonEngine.kt  QUARTZ_JSON_ENGINE, quartz's JSON engine; both
+                            processes set it before anything parses
   store/SchemaDeploy.kt     the every-boot Vespa schema deploy (both processes)
   store/StoreTopology.kt    STORE_WRITERS, the one writer topology both open
   util/Format.kt            fmtDuration — the one formatter both processes print
@@ -81,7 +83,8 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
   config/                 RouterConfig + its HOCON loader — one file configures
                           both planes, so it sits under both
   ingest/                 IngestPipeline (on an IngestTuning, not the whole
-                          config), ParseAudit, the refusal filters, ProbeGate.
+                          config), ParseAudit, KiteAudit (the Kite trial's
+                          test cases), the refusal filters, ProbeGate.
                           The one write path for both processes: the mirror's
                           downloads and the relay's publishes (it is quartz's
                           EventIngest), with StoreProbes wiring the two drop-

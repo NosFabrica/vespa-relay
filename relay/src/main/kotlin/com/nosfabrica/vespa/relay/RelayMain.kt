@@ -99,6 +99,7 @@ import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
+import com.nosfabrica.vespa.relay.util.applyQuartzJsonEngine
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
@@ -132,6 +133,8 @@ fun main() {
     BootClock.main("relay")
     exitOnBootFailure()
     val env = System.getenv()
+    // Before anything reads or writes a Nostr frame.
+    applyQuartzJsonEngine(env)
     val boot = readSettings(env)
     BootClock.mark("relay: settings read")
     val converging = deploySchema(boot)

@@ -293,6 +293,8 @@ services:
       VESPA_FEED_BATCH: ${VESPA_FEED_BATCH:-100}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # default (Jackson) or kite; the same on both services (docs/configuration.md).
+      QUARTZ_JSON_ENGINE: ${QUARTZ_JSON_ENGINE:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
       # gets the same key, so upstream AUTH and the NIP-66 monitor speak as
       # the relay they feed, and the sync writes through this relay only when it
@@ -533,6 +535,8 @@ services:
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
       VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # default (Jackson) or kite; the same on both services (docs/configuration.md).
+      QUARTZ_JSON_ENGINE: ${QUARTZ_JSON_ENGINE:-}
       # Same key as the relay, and required: every write goes to the relay
       # signed in as it, and upstream NIP-42 AUTH and the NIP-66 monitor sign as
       # the relay this process feeds.
@@ -544,6 +548,9 @@ services:
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
+      # The Kite audit's report, written only while QUARTZ_JSON_ENGINE=kite (docs/configuration.md).
+      KITE_AUDIT_FILE: ${KITE_AUDIT_FILE:-/var/lib/vespa-relay/kite-audit.json}
+      KITE_AUDIT_FRAMES_MB: ${KITE_AUDIT_FRAMES_MB:-}
       # Where .onion upstreams are dialled. Defaults to the `tor` service
       # below, which the same profile starts — a .onion relay is unreachable
       # without it, and the router refuses to boot on one it cannot dial

@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.peers
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
@@ -51,6 +52,8 @@ class PeerClient(
     wireLogMode: String = "",
     /** How long a dial may take before it is a failure. */
     connectionTimeoutSec: Long = 10,
+    /** How every upstream frame is read; [com.nosfabrica.vespa.relay.ingest.KiteAudit.decoder] during the Kite trial. */
+    decoder: MessageDecoder = MessageDecoder.Default,
 ) : AutoCloseable {
     // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.
     private val okhttp =
@@ -85,7 +88,7 @@ class PeerClient(
     /** The OkHttp client that can reach [url], for dials outside quartz's websocket path. */
     fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
 
-    val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope)
+    val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope, decoder)
 
     // NIP-42: an unanswered challenge looks exactly like an empty relay.
     private val authenticator =

@@ -45,7 +45,30 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
+4be44f71c0 = vitorpamplona/quartz main @ 2026-10-23 (the merge of quartz#15), a descendant of dfe281430a
+(below). What this relay reaches:
+
+  KITE, QUARTZ'S OWN JSON ENGINE, OPT-IN (quartz#4, #7-#13). JsonEngine.current picks the code that
+    reads and writes every frame, event, filter and id preimage; Jackson stays the default. Both
+    processes set it from QUARTZ_JSON_ENGINE (common/util/QuartzJsonEngine.kt) before anything parses.
+    Tested here before a deploy turns it on: the whole suite under each engine (1,632 tests, the same
+    results); 65,050 distinct EVENT frames off search.brainstorm.world, nos.lol, damus and primal read
+    to the same events, written to the same bytes and verified the same way by both; the relay's answers
+    to a 34-ask battery (REQ, COUNT, NIP-50, malformed frames) byte-identical over one frozen store; the
+    mirror's band file written under one engine resumed under the other with the same keys; a NIP-77
+    audit against search.brainstorm.world verified under Kite. Kite read that corpus 2.7x faster.
+    Where they differ, on malformed input only: Kite refuses a non-string `content` or `pubkey` Jackson
+    coerces, and matches an event key by its length and first and last characters, so an extra key
+    such as `comment` after `content` is read as the content and the event fails its id check where
+    Jackson ignored it (no such key in 80,929 real events).
+  JACKSON'S TAG READER IS STRICTER under either engine: tags that are not an array of arrays of
+    scalars are refused instead of read past.
+  NIP-19 REWRITTEN for speed (single-pass Bech32, in-place TLV), with fixes for TLV values over 255
+    bytes, lone surrogates and non-hex keys.
+  RUNTIME CLASSPATH (:relay, :sync): kotlin-stdlib 2.4.21, kotlinx-serialization 1.12.0, okhttp 5.5.1,
+    jackson 2.22.4. The store's own quartz pin (dfe281430a) now shows `-> 4be44f71c0`: the force, winning.
+
+Prev dfe281430a = vitorpamplona/quartz @ 2026-10-21, the first pin from Quartz's own repo: it left Amethyst
 that day, so the coordinates move from com.github.vitorpamplona.amethyst:quartz to
 com.github.vitorpamplona.quartz:quartz, and settings.gradle.kts's JitPack filter names the new group.
 It is the first commit of vitorpamplona/quartz#6 (on main since its merge, 4a0fb57, whose only later change

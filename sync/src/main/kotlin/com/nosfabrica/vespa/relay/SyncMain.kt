@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
+import com.nosfabrica.vespa.relay.ingest.KiteAudit
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.nosfabrica.vespa.relay.ingest.knownIdsProbe
@@ -60,6 +61,7 @@ import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.sync.watchRelayKey
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
+import com.nosfabrica.vespa.relay.util.applyQuartzJsonEngine
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -163,6 +165,8 @@ fun main() {
     BootClock.main("sync")
     exitOnBootFailure()
     val env = System.getenv()
+    // Before anything reads or writes a Nostr frame.
+    applyQuartzJsonEngine(env)
 
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — the served relay's own ws url; mirrored events are stored as its.")
@@ -284,6 +288,7 @@ fun main() {
     val storeOpenedAt = System.currentTimeMillis()
 
     val parseAudit = ParseAudit.installFromEnv(env)
+    val kiteAudit = KiteAudit.installFromEnv(env)
 
     // From the parsed streams too: a stream may set its own `refetchThePastSeconds`.
     val bands = SyncBands.fromEnv(env, config.streams)
@@ -331,6 +336,7 @@ fun main() {
             store,
             config,
             audit = parseAudit,
+            kiteAudit = kiteAudit,
             bands = bands,
             sweepState = sweepState,
             refusedIds = refusedIds,
@@ -426,6 +432,7 @@ fun main() {
             // report includes the last batch.
             shutdownStep("close the engine") { engine.close() }
             shutdownStep("close the parse audit") { parseAudit?.close() }
+            shutdownStep("close the kite audit") { kiteAudit?.close() }
             shutdownStep("close the refused ids") { refusedIds.close() }
             shutdownStep("close the pressure poller") { poller?.close() }
             shutdownStep("close the bands") { bands.close() }
