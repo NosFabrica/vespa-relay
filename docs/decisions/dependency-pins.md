@@ -422,8 +422,8 @@ DEPLOY: the application package MOVES. event.sd's rank profiles gain query input
 
 GATED, the store at b9f71841e4e2 (PR #179's head): its integration suite against a real Vespa
   (./gradlew :benchmark:test -Pintegration: 24 classes, 27 tests, 0 failures; StagingCorpusIT skips
-  without its corpus), plus CI's lint and build (success); CI's integration job was still running
-  at this entry. The merge's tree is the head's
+  without its corpus), and CI's integration job, the full suite against a real Vespa, plus lint and
+  build (all success). The merge's tree is the head's
   (git rev-parse b8984b0d0851^{tree} == b9f71841e4e2^{tree}), so the gate is this pin's. Here,
   ./gradlew build against it and 4be44f71c0: 1,641 tests, 0 failures; no `->` on an eventstore
   line, and quartz's dfe281430a -> 4be44f71c0 is the force, as above.
