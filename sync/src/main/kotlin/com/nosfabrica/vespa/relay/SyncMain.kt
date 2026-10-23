@@ -60,6 +60,7 @@ import com.nosfabrica.vespa.relay.sync.shutdownStep
 import com.nosfabrica.vespa.relay.sync.watchRelayKey
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
+import com.nosfabrica.vespa.relay.util.applyQuartzJsonEngine
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -163,6 +164,8 @@ fun main() {
     BootClock.main("sync")
     exitOnBootFailure()
     val env = System.getenv()
+    // Before anything reads or writes a Nostr frame.
+    applyQuartzJsonEngine(env)
 
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — the served relay's own ws url; mirrored events are stored as its.")
