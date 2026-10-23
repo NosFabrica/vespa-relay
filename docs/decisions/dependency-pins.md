@@ -371,7 +371,34 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-ff78c0838e6b = vespa-eventstore main @ 2026-10-22, the merge of PR #177 (two commits over 5f2dd9182c1a,
+9adf43c4bede = vespa-eventstore main @ 2026-10-23, the merge of PR #178 (over ff78c0838e6b, below):
+search ranking, fresher note searches and the trusted-engagement rerank.
+  - ON BY DEFAULT, NOTES RANK FRESHER: a search whose kinds are exactly [1] ranks at w_recency 30
+    (the store's NOTE_RECENCY_WEIGHT) instead of the schema's 0.1. Every other search stays at 0.1,
+    and so does every search of a REQ whose searches disagree (notes beside profiles), since their
+    scores are merged into one order. Blind-judged on 20 real note searches from this relay (the
+    store's benchmark/README.md, "Does the order make sense?"): the 0.1 pages were ~2 years old.
+  - OPT-IN, `sort:links`: a search's top 100 reranked by the observer's trusted engagement, links
+    by e / a / q, per person, zaps by their P zapper, capped at x3. EventIndex.scoreLinks is a new
+    port member with a default body, so this relay's test indexes compile unchanged.
+  - COST, measured read-only on this relay: widening a search from 20 to 100 hits costs nothing
+    measurable (bitcoin ~2.8 s, nostr ~11 s either way); a gated COUNT of the top 100's links takes
+    59-85 ms against a ~50 ms empty-COUNT floor. Only a `sort:links` search pays it.
+  Quartz unchanged (dfe281430a). Nothing else the relay calls moves.
+  git merge-base --is-ancestor ff78c0838e6b 9adf43c4bede   # verified
+
+DEPLOY: the application package MOVES. event.sd gains the rank profile link_trust and reputation.sd
+  trust_cell, both additive (no reindex), so deployBundledSchema finds the package changed on the
+  first boot, deploys it and waits for convergence; later boots find it unchanged.
+
+GATED, the store at 93cf1e155845 (PR #178's head): CI's integration job, the full suite against a
+  real Vespa (success), plus lint and build. The merge's tree is the head's (git rev-parse
+  9adf43c4bede^{tree} == 93cf1e155845^{tree}), so the gate is this pin's. Here, ./gradlew build
+  against it and dfe281430a: 1,617 tests, 0 failures; no `->` on a quartz or eventstore line.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev ff78c0838e6b = vespa-eventstore main @ 2026-10-22, the merge of PR #177 (two commits over 5f2dd9182c1a,
 below): a store opens without needless deploys and feed clients.
   - SCHEMA: SchemaDeployer.serves / generationOf / awaitConverged, which this relay's
     deployBundledSchema now uses: deploy only when the active package differs, then wait for every
