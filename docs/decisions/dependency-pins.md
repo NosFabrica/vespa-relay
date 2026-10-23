@@ -394,7 +394,43 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-9adf43c4bede = vespa-eventstore main @ 2026-10-23, the merge of PR #178 (over ff78c0838e6b, below):
+b8984b0d0851 = vespa-eventstore main @ 2026-10-23, the merge of PR #179 (over 9adf43c4bede, below):
+search ranking judged by a graded evaluation protocol, and three changes confirmed with it.
+  - ON BY DEFAULT, all in the `search` profile (an observer's NIP-50 search), each pre-registered and
+    confirmed once on held-out topics (the store's docs/search-evaluation.md, section 9):
+    - name-frequency damping: on a ONE-word query, a word common as a name (bitcoin, nostr) no
+      longer gives every profile carrying it the perfect-match rung. Read from the node's own index,
+      and off below 100 000 documents per node, so a fresh or small store ranks as before.
+    - split-coverage floor: a naming field carrying under half the typed words scores on the body
+      rung, not the split rung. This relay's `book of daniel` report (titles holding only `of`).
+    - weak body-phrase band: a body holding the typed words adjacent and in order. It needs a
+      rank-only phrase item EventYql adds to multi-word searches on that profile only.
+  - KILL SWITCH, per request and without a redeploy: query(w_phrase_pop)=0,
+    query(w_split_min_coverage)=0, query(perfect_df_hi)=0.
+  - COST, measured in the store against its prior app: within noise on its evaluation cluster, a
+    few ms per node at most on a 150k-event production sample where a common word fills the
+    1 000-document rerank window (nostr 31 -> 36 ms median). This relay's slow common-word
+    searches are seconds of matching, which no change touches.
+  Quartz unchanged (dfe281430a). Nothing the relay calls moves: the only main-source change is
+  EventYql's query text.
+  git merge-base --is-ancestor 9adf43c4bede b8984b0d0851   # verified
+
+DEPLOY: the application package MOVES. event.sd's rank profiles gain query inputs and functions
+  (no field, no indexing), so no reindex and no validation override: deployBundledSchema finds the
+  package changed on the first boot, deploys it and waits for convergence; later boots find it
+  unchanged.
+
+GATED, the store at b9f71841e4e2 (PR #179's head): its integration suite against a real Vespa
+  (./gradlew :benchmark:test -Pintegration: 24 classes, 27 tests, 0 failures; StagingCorpusIT skips
+  without its corpus), and CI's integration job, the full suite against a real Vespa, plus lint and
+  build (all success). The merge's tree is the head's
+  (git rev-parse b8984b0d0851^{tree} == b9f71841e4e2^{tree}), so the gate is this pin's. Here,
+  ./gradlew build against it and 4be44f71c0: 1,641 tests, 0 failures; no `->` on an eventstore
+  line, and quartz's dfe281430a -> 4be44f71c0 is the force, as above.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 9adf43c4bede = vespa-eventstore main @ 2026-10-23, the merge of PR #178 (over ff78c0838e6b, below):
 search ranking, fresher note searches and the trusted-engagement rerank.
   - ON BY DEFAULT, NOTES RANK FRESHER: a search whose kinds are exactly [1] ranks at w_recency 30
     (the store's NOTE_RECENCY_WEIGHT) instead of the schema's 0.1. Every other search stays at 0.1,
