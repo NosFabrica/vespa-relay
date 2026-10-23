@@ -322,8 +322,7 @@ class IngestPipeline(
         e: Throwable,
     ) {
         if (untallied > 0) {
-            rejected.addAndGet(untallied.toLong())
-            noteRejection("ingest fault: ${e.javaClass.simpleName}", untallied.toLong())
+            reject("ingest fault: ${e.javaClass.simpleName}", untallied.toLong())
         }
         val signature = "fault ${e.javaClass.name}: ${e.message?.take(200)}"
         if (poisonSeen.size < POISON_SAMPLE_LIMIT && poisonSeen.add(signature)) {
@@ -394,8 +393,7 @@ class IngestPipeline(
         }
         tallyBadSignatures(badSigs)
         if (duplicates > 0) {
-            rejected.addAndGet(duplicates.toLong())
-            noteRejection(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
+            reject(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
         }
         if (superseded.isNotEmpty()) reportSuperseded(batch, superseded, answers)
         winners.sort()
@@ -404,8 +402,9 @@ class IngestPipeline(
 
     private fun tallyBadSignatures(count: Int) {
         if (count == 0) return
-        rejected.addAndGet(count.toLong())
+        // The reason first, then the total: see [reject].
         badSignatures.addAndGet(count.toLong())
+        rejected.addAndGet(count.toLong())
     }
 
     /**
@@ -460,9 +459,8 @@ class IngestPipeline(
         if (stored != null) idGate.record(copies.size, copies.size - fresh.size)
         val dropped = copies.sumOf { it.size } - fresh.sumOf { it.size }
         if (dropped > 0) {
-            rejected.addAndGet(dropped.toLong())
             // The store's own word, so duplicates dropped here and there tally on one line.
-            noteRejection(RejectionReason.DUPLICATE.take(48), dropped.toLong())
+            reject(RejectionReason.DUPLICATE.take(48), dropped.toLong())
         }
         return fresh
     }
@@ -525,10 +523,9 @@ class IngestPipeline(
                         }
 
                         is IEventStore.InsertOutcome.Rejected -> {
-                            rejected.incrementAndGet()
                             // The relay's verdict on an event left to its check, in the pipeline's own words.
                             if (outcome.reason == BAD_SIGNATURE.reason) badSignatures.incrementAndGet()
-                            noteRejection(outcome.reason.take(48), 1L)
+                            reject(outcome.reason.take(48), 1L)
                             // Only the Rejected branch reports: a Failed outcome is the store's fault.
                             if (aligned) {
                                 written.getOrNull(i)?.let { event ->
@@ -538,8 +535,7 @@ class IngestPipeline(
                         }
 
                         is IEventStore.InsertOutcome.Failed -> {
-                            rejected.incrementAndGet()
-                            noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
+                            reject("store failed: ${outcome.reason.take(40)}", 1L)
                             lostToStore.incrementAndGet()
                         }
                     }
@@ -547,21 +543,18 @@ class IngestPipeline(
             },
             onOutcomesFailed = { _, e ->
                 if (owed > 0) {
-                    rejected.addAndGet(owed.toLong())
-                    noteRejection("ingest fault: ${e.javaClass.simpleName}", owed.toLong())
+                    reject("ingest fault: ${e.javaClass.simpleName}", owed.toLong())
                 }
                 reportBookkeepingFailure("outcome bookkeeping", e, "$owed uncounted outcome(s) tallied as lost, their refusal records lost")
             },
             onPoison = { event, e ->
-                rejected.incrementAndGet()
                 indexOf[event]?.let { answers.answer(it, IEventStore.InsertOutcome.Failed("error: the store could not take this event")) }
-                noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
+                reject("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
                 reportPoison(event, e)
             },
             onGaveUp = { lost, e ->
                 // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
-                rejected.addAndGet(lost.size.toLong())
-                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", lost.size.toLong())
+                reject("store ${e.javaClass.simpleName} (batch, unisolated)", lost.size.toLong())
                 lostToStore.addAndGet(lost.size.toLong())
             },
         )
@@ -660,8 +653,7 @@ class IngestPipeline(
     ) {
         for (copies in versions) copies.forEach { answers.answer(it, REPLACED) }
         val dropped = versions.sumOf { it.size }.toLong()
-        noteRejection(RejectionReason.REPLACED.take(48), dropped)
-        rejected.addAndGet(dropped)
+        reject(RejectionReason.REPLACED.take(48), dropped)
         for (copies in versions) {
             val msg = batch[copies[0]]
             // A trusted leader skipped the id check every other leader passed.
@@ -705,6 +697,21 @@ class IngestPipeline(
             trouble.failed(e)
             null
         }
+
+    /**
+     * Count [count] rejections under [reason]: the REASON FIRST, then the total. Whoever reads
+     * them reads the total first — [rejectionBreakdown] returns "" while it is 0, and a test or a
+     * stats line waits on [rejected] — so with the total bumped first a reader could see a
+     * rejection with no reason behind it yet. IngestDedupTest did, intermittently on a loaded
+     * machine: one rejected, an empty breakdown. The atomic's write publishes the map's.
+     */
+    private fun reject(
+        reason: String,
+        count: Long,
+    ) {
+        noteRejection(reason, count)
+        rejected.addAndGet(count)
+    }
 
     /**
      * Tally [count] rejections under [reason], keeping at most [REASON_LIMIT] distinct reasons:
