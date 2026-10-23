@@ -6,7 +6,7 @@ app = "0.1.0"
 # checked with `./gradlew :relay:dependencies --configuration runtimeClasspath` for `->`.
 quartz = "dfe281430a"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "ff78c0838e6b"
+vespaEventStore = "9adf43c4bede"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
