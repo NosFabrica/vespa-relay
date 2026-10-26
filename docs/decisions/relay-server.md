@@ -482,3 +482,11 @@ Observer (`/.well-known/nostr.json`) can never be bound to one answer, and a
 consumer keeping the answer as evidence needs to say whose view it was. They
 are unsigned, like the rest of an HTTPS answer, and Brainstorm's server
 forwards the body as is, so they reach its clients.
+
+**The relay's heap starts at half its ceiling.** With only `MaxRAMPercentage`, G1 starts small
+and grows the heap only when collection passes its time target, which a serving relay never
+does: under a 16-socket read mix its heap held near 150 MB of a 4 GB ceiling and collected about
+nine times a second. `-XX:InitialRAMPercentage=35` gives the young generation room from the
+start: on 20,000 seeded reads (`relay/tools/read-mix.mjs`), 238 collections and 2.7 s of pause
+became 23 and 0.4 s, with the same bytes allocated. The memory was already the heap's to take;
+the sync keeps the shared default until its own workload is measured.

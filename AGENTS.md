@@ -199,7 +199,8 @@ web/…/relay/web/
   resources/stats.html        the one status page (web/stats/page.js); web/relay/, web/sync/ and web/monitor/ hold each plane's cards
   resources/observer_stats.html   an operator diagnostic with its own relay client (web/observers/)
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
-relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay; nipfe-e2e.mjs
+relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay, fetch-slice.mjs
+                              one kind mix of it; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives
