@@ -32,6 +32,7 @@ const k3 = of(3, Infinity), k1 = of(1, 40000), k0 = of(0, 20000);
 if (!k3.length || !k1.length || !k0.length) throw new Error(`${dir} needs kind 0, 1 and 3 events`);
 const follows = k3.map((e) => e.tags.filter((t) => t[0] === "p" && /^[0-9a-f]{64}$/.test(t[1] || "")).map((t) => t[1])).filter((a) => a.length > 20);
 const noteIds = k1.map((e) => e.id), authors = k0.map((e) => e.pubkey);
+if (!follows.length) throw new Error(`${dir}'s kind 3s all follow 20 or fewer: the feed shape needs a longer list`);
 const words = ["bitcoin", "nostr", "coffee", "music", "art", "zap", "freedom", "lightning", "photography", "news", "jack", "vitor", "amethyst", "relay", "gm", "privacy", "meme", "cat", "dog", "food"];
 let seed = Number(process.env.SEED || 42) >>> 0;
 const rand = () => { seed = (seed + 0x6d2b79f5) >>> 0; let t = seed; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -60,8 +61,11 @@ const worker = () => new Promise((resolve) => {
     ws.send(JSON.stringify(name === "count" ? ["COUNT", id, ...filters] : ["REQ", id, ...filters]));
   };
   const done = (closed) => { const s = stat[cur.name]; s.n++; s.ev += cur.ev; s.ms += Date.now() - cur.t; if (closed) s.closed++; if (!closed && cur.name !== "count") ws.send(JSON.stringify(["CLOSE", cur.id])); go(); };
-  ws.onopen = go; ws.onerror = () => resolve();
+  ws.onopen = go; ws.onerror = () => resolve(); ws.onclose = () => resolve();
   ws.onmessage = (e) => { const m = JSON.parse(e.data);
+    // Only the current query's messages count: a closed subscription's late events, or the
+    // relay's CLOSED for one it had already ended, belong to no query.
+    if (!cur || m[1] !== cur.id) return;
     if (m[0] === "EVENT") cur.ev++; else if (m[0] === "EOSE" || m[0] === "COUNT") done(false); else if (m[0] === "CLOSED") { if (stat[cur.name].closed < 3) console.error("CLOSED", cur.name, m[2]); done(true); } };
 });
 await Promise.all(Array.from({ length: Number(socksS) }, worker));
