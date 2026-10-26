@@ -129,6 +129,9 @@ class IngestPipeline(
     /** At capacity: the next [submit] would suspend its caller, and with it that caller's socket. */
     fun isFull(): Boolean = queued.get() >= capacity
 
+    /** At most half full: room for a resumed download's page without parking its socket again. */
+    fun hasHeadroom(): Boolean = queued.get() <= capacity / 2
+
     val accepted = AtomicLong()
     val rejected = AtomicLong()
 

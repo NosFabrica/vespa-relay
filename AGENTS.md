@@ -237,7 +237,8 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   way: a rotating queue of (relay, stream) units worked by a fixed set of
   workers. A visit pages forward from the band's edge, audits the past by
   negentropy when due, drains queued heals, then leaves a live tail. One
-  unclean ask ends the visit; `VisitAborts` partitions why, `RelayComplaints`
+  unclean ask ends the visit, except a walk our full ingest queue silenced,
+  which waits for it and resumes; `VisitAborts` partitions why, `RelayComplaints`
   keeps the relay's sentence, `FilterWidths` narrows an ask refused for width.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
@@ -299,8 +300,9 @@ operator page shows and why is
 - The abort partition on the visits row (`abortedAuthRequired`, `abortedClosed`,
   `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`, `abortedGaveUp`,
   `abortedFailed`, `abortedBackpressured`) and the `visit … aborted` lines
-  beside it. Read `abortedBackpressured` and `visitsHeldByIngest` first: they
-  are about this mirror's ingest queue, not about any relay.
+  beside it. Read `abortedBackpressured`, `visitsHeldByIngest` and
+  `walksPausedByIngest` first: they are about this mirror's ingest queue, not
+  about any relay.
 - The `prime relays` table: `syncStatus` is the past, `behind` the present,
   `kindCap` and `negentropy` the terms the relay serves us on, and `unwatched`
   the pairs this mirror syncs that our own monitor grades nothing about — a

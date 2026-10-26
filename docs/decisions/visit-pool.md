@@ -90,6 +90,19 @@ the walk returns against `IngestPipeline.parkedOn`, and filed as
 `AUTH_REQUIRED` and `CANNOT_CONNECT` came through the same consumer, so it was
 not parked when they were said. See `docs/router-internals.md`.
 
+**A walk our queue stalled pauses instead of ending.** The pager's idle window
+counts the time a hook of ours sits parked in the full queue as the relay's
+silence, so a burst the store took longer than thirty seconds to absorb ended
+the walk. A cut walk keeps a band only where it touches the one already held,
+and a catch-up walks down from now toward that band, so the cut kept nothing
+and the next visit downloaded the burst again from the top, refilling the queue
+with duplicates. The walk now waits for the parked hook to clear and the queue
+to fall to half, then re-asks from the oldest second it reached (`until`,
+inclusive), and counts `walksPausedByIngest`. A queue that does not drain within
+`LEG_QUIET_GIVE_UP_MS` still ends the walk as `abortedBackpressured`. The pause
+belongs in quartz's pager, whose idle clock could stop while a hook is running;
+until then each stall costs one re-asked page.
+
 **A visit is not dialled into a full queue.** The download would park its
 first event, silence the socket, and come back `abortedBackpressured` an idle
 window later, having cost the relay a handshake and a REQ for nothing — per

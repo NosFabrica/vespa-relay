@@ -50,14 +50,16 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * A walk stalled by the mirror's own full ingest queue is filed as `abortedBackpressured`, not
- * as the relay's refusal, and a queue already full at the claim is not dialled into at all.
+ * A walk stalled by the mirror's own full ingest queue pauses and resumes from its cursor; one
+ * whose queue does not drain is filed as `abortedBackpressured`, not as the relay's refusal, and a
+ * queue already full at the claim is not dialled into at all.
  */
 class VisitPoolBackpressureTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
@@ -103,6 +105,53 @@ class VisitPoolBackpressureTest {
         }
     }
 
+    /**
+     * A burst: the first page hands [delivered] newest-first, then its next event parks in a queue
+     * filled to the brim and the page goes quiet; the queue drains a moment later. Later pages drain.
+     */
+    private class BurstRelay(
+        private val h: Harness,
+        private val delivered: List<Int>,
+        private val parked: Int,
+    ) : RelayReads {
+        val asked = CopyOnWriteArrayList<Filter>()
+        val tails = ConcurrentHashMap<String, List<Filter>>()
+
+        override suspend fun page(
+            url: NormalizedRelayUrl,
+            filter: Filter,
+            idleTimeoutMs: Long,
+            onEvent: suspend (Event) -> Unit,
+        ): PagedFetchResult {
+            asked += filter
+            if (asked.size > 1) return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
+            delivered.forEach { onEvent(event(it)) }
+            h.fillIngest()
+            h.scope.launch { onEvent(event(parked)) }
+            delay(HOOK_SETTLE_MS)
+            // The store catches up while the walk waits, as it does after a burst.
+            h.scope.launch {
+                delay(HOOK_SETTLE_MS)
+                h.ingest.start()
+            }
+            val end = if (delivered.isEmpty()) PagedFetchResult.End.UNPAGEABLE else PagedFetchResult.End.IDLE
+            return PagedFetchResult(delivered.size, end)
+        }
+
+        override suspend fun tail(
+            subId: String,
+            url: NormalizedRelayUrl,
+            filters: List<Filter>,
+            onEvent: suspend (Event) -> Unit,
+        ) {
+            tails[subId] = filters
+        }
+
+        override fun untail(subId: String) {
+            tails.remove(subId)
+        }
+    }
+
     private object NoSockets : Sockets {
         override fun claim(url: NormalizedRelayUrl) = Unit
 
@@ -116,6 +165,10 @@ class VisitPoolBackpressureTest {
         fillsDuringThePage: Boolean = true,
         /** A producer that is not the pool parks on this relay's events while the page is out. */
         parksAForeignProducer: Boolean = false,
+        /** How long a stalled walk waits for the queue; the never-draining cases keep it short. */
+        pauseLimitMs: Long = 500,
+        /** The relay the pool reads, when it is not [StalledRelay]. */
+        readsOf: ((Harness) -> RelayReads)? = null,
     ) {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
@@ -133,6 +186,8 @@ class VisitPoolBackpressureTest {
                 }
             }
 
+        val reads: RelayReads = readsOf?.invoke(this) ?: relay
+
         val streams =
             listOf(
                 SyncStream(
@@ -148,7 +203,7 @@ class VisitPoolBackpressureTest {
             val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
             val bands = SyncBands(null)
             VisitPool(
-                reads = relay,
+                reads = reads,
                 bands = bands,
                 ingest = ingest,
                 pager =
@@ -165,12 +220,13 @@ class VisitPoolBackpressureTest {
                 streams = streams,
                 progress = processors.of("visits"),
                 workers = 1,
+                pauseLimitMs = pauseLimitMs,
             )
         }
 
         /** Fill the queue to the brim, so the pool's next hand-off suspends. */
         suspend fun fillIngest() {
-            repeat(ingest.capacity) { ingest.submit(event(FILL_BASE + it), skipVerify = true) }
+            repeat(ingest.capacity - ingest.queued.get()) { ingest.submit(event(FILL_BASE + it), skipVerify = true) }
         }
 
         suspend fun countsAfterTheVisit(): Map<String, Long> = countsOnce { (it["visitsRun"] ?: 0L) >= 1L && (it["abortedVisits"] ?: 0L) >= 1L }
@@ -294,6 +350,42 @@ class VisitPoolBackpressureTest {
                 )
                 assertEquals(1L, counts["abortedBackpressured"])
                 assertEquals(0L, counts["abortedQuiet"])
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a walk our queue cut mid-page pauses and resumes from the oldest event it reached`() =
+        runBlocking {
+            // A cut walk re-asked from the top next visit would download the burst again.
+            var burst: BurstRelay? = null
+            val h = Harness(PagedFetchResult.End.IDLE, pauseLimitMs = 10_000, readsOf = { BurstRelay(it, listOf(30, 20), parked = 10).also { r -> burst = r } })
+            try {
+                h.pool.start()
+                val counts = h.countsOnce { burst!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                val asked = burst!!.asked
+                assertEquals(2, asked.size, "one REQ for the burst, one to resume it")
+                assertEquals(event(10).createdAt, asked[1].until, "resumed at the second the walk stopped in, inclusive")
+                assertEquals(0L, counts["abortedVisits"])
+                assertEquals(1L, counts["walksPausedByIngest"])
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a first page parked in a queue that drains is resumed instead of aborted`() =
+        runBlocking {
+            var burst: BurstRelay? = null
+            val h = Harness(PagedFetchResult.End.UNPAGEABLE, pauseLimitMs = 10_000, readsOf = { BurstRelay(it, emptyList(), parked = 10).also { r -> burst = r } })
+            try {
+                h.pool.start()
+                val counts = h.countsOnce { burst!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                assertEquals(2, burst!!.asked.size, "the parked page is asked again, not abandoned")
+                assertEquals(event(10).createdAt, burst!!.asked[1].until)
+                assertEquals(0L, counts["abortedVisits"])
+                assertEquals(0L, counts["abortedBackpressured"])
             } finally {
                 h.close()
             }

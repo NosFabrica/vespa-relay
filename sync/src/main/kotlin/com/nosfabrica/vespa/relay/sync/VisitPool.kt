@@ -87,6 +87,8 @@ internal class VisitPool(
     private val widths: FilterWidths = FilterWidths(),
     /** Silence between asks that ends a visit; a seam for tests. */
     private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
+    /** How long a walk our ingest queue stalled waits for it to drain before ending; a seam for tests. */
+    private val pauseLimitMs: Long = LEG_QUIET_GIVE_UP_MS,
 ) {
     /** When each stream's audits and re-fetches come due. */
     private val schedule = AuditSchedule(streams, bands, retraction)
@@ -580,7 +582,7 @@ internal class VisitPool(
             val sampling = pages.arm(url, chunk)
             val walked =
                 try {
-                    reads.page(url, chunk, NEG_IDLE_MS, onEvent)
+                    pageThroughStalls(url, chunk, ongoingVisit, onEvent)
                 } finally {
                     pages.free(sampling)
                 }
@@ -616,6 +618,45 @@ internal class VisitPool(
             }
         }
         return null
+    }
+
+    /**
+     * [RelayReads.page], paused rather than ended while our own ingest queue holds the socket:
+     * the walk waits for the queue to drain, then re-asks from the oldest second it reached, so a
+     * burst costs one page again instead of the whole walk. Ends as before after [pauseLimitMs].
+     */
+    private suspend fun pageThroughStalls(
+        url: NormalizedRelayUrl,
+        chunk: Filter,
+        ongoingVisit: OngoingVisit,
+        onEvent: suspend (Event) -> Unit,
+    ): PagedFetchResult {
+        var ask = chunk
+        var downloaded = 0
+        while (true) {
+            val walked = reads.page(url, ask, NEG_IDLE_MS, onEvent)
+            downloaded += walked.downloaded
+            // A limit'd ask is not resumed: a re-ask from the cursor would count its limit again.
+            val resumable = chunk.limit == null && stalledByUs(walked.end) && heldByUs(url)
+            if (!resumable || !awaitIngestRoom(url)) return walked.copy(downloaded = downloaded)
+            counters.walksPausedByIngest.incrementAndGet()
+            ongoingVisit.lastActivityMs = System.currentTimeMillis()
+            // Inclusive: the second the walk stopped in is asked again, and ingest drops its repeats.
+            ask = chunk.copy(until = ongoingVisit.pagingUntil ?: ask.until)
+        }
+    }
+
+    /**
+     * Waits until no hook of ours is parked on [url] and the queue has room for a page, so the
+     * re-ask does not park again at once. False when that takes longer than [pauseLimitMs].
+     */
+    private suspend fun awaitIngestRoom(url: NormalizedRelayUrl): Boolean {
+        val deadline = System.currentTimeMillis() + pauseLimitMs
+        while (heldByUs(url) || !ingest.hasHeadroom()) {
+            if (System.currentTimeMillis() >= deadline) return false
+            delay(PAUSE_POLL_MS)
+        }
+        return true
     }
 
     /**
@@ -856,6 +897,9 @@ internal class VisitPool(
         }
 
         const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
+
+        /** How often a paused walk looks at the ingest queue again. */
+        const val PAUSE_POLL_MS = 250L
 
         /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
         const val STAGE_PAGING = "catching up (paging)"

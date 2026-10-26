@@ -58,6 +58,9 @@ internal class PoolCounters {
 
     /** Visits not dialled because the ingest queue was full at the claim. */
     val visitsHeldByIngest = AtomicLong()
+
+    /** Walks our full ingest queue silenced that waited for it and resumed from their cursor. */
+    val walksPausedByIngest = AtomicLong()
     val auditsRun = AtomicLong()
 
     /** Audits not attempted because the monitor measured the relay as not answering NEG-OPEN. */
@@ -267,6 +270,7 @@ internal class PoolStatus(
             Processors.Count("liveHeld", tails.size.toLong()),
             Processors.Count("visitsRun", counters.visitsRun.get()),
             Processors.Count("visitsHeldByIngest", counters.visitsHeldByIngest.get()),
+            Processors.Count("walksPausedByIngest", counters.walksPausedByIngest.get()),
             Processors.Count("bandsWithheld", counters.bandsWithheld.get()),
             Processors.Count("negentropyRunning", ongoing.values.count { it.stage.pool == VisitPool.POOL_NEGENTROPY }.toLong()),
             Processors.Count("negentropyRuns", counters.auditsRun.get()),
