@@ -25,7 +25,6 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
-import io.ktor.websocket.readText
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -49,6 +48,15 @@ private const val STALL_CHECK_MS = 1_000L
 
 /** How long a slow consumer's close frame gets before the session is torn down anyway. */
 private const val CLOSE_GRACE_MS = 5_000L
+
+/**
+ * [Frame.Text]'s text as Ktor's `readText` reads it, malformed bytes replaced, without its copy
+ * into a packet and its growing builder: one decode into an exact-size string.
+ */
+internal fun Frame.Text.utf8Text(): String {
+    require(fin) { "Text could be only extracted from non-fragmented frame" }
+    return String(data, Charsets.UTF_8)
+}
 
 /** The relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
@@ -84,7 +92,7 @@ fun Route.nostrRelay(server: NostrRelayServer) {
                 send = { text -> if (!outQueue.offer(text)) disconnectSlowConsumer() },
                 incoming = { session ->
                     for (frame in incoming) {
-                        if (frame is Frame.Text) session.receive(frame.readText())
+                        if (frame is Frame.Text) session.receive(frame.utf8Text())
                     }
                 },
             )
