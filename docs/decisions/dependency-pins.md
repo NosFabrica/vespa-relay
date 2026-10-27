@@ -45,7 +45,59 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-4be44f71c0 = vitorpamplona/quartz main @ 2026-10-23 (the merge of quartz#15), a descendant of dfe281430a
+2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
+is tag v2.4.0 (git rev-parse v2.4.0^{commit} = c63c35ca7629), published by quartz's release workflow.
+The first quartz this relay takes from a release rather than a JitPack commit:
+
+  A RELEASE VERSION ORDERS. The note at the top of this file is about JitPack hashes; a Central
+    version is a real version, so a conflict would resolve to the higher one meaningfully. The force
+    stays anyway (build-logic), so nothing transitive can move it.
+  JITPACK'S QUARTZ GROUP IS SUBSTITUTED, NOT EXCLUDED. Central's group is com.vitorpamplona.quartz;
+    JitPack's was com.github.vitorpamplona.quartz. Different groups are different MODULES, so a
+    graph naming both holds two copies of every quartz class and no version conflict ever fires.
+    The store at 343926b68850 still named JitPack's c63c35ca76, so build-logic maps that group's
+    quartz and quartz-jvm onto Central's (dependencySubstitution); with it the graph read
+    `com.github.vitorpamplona.quartz:quartz:c63c35ca76 -> com.vitorpamplona.quartz:quartz:2.4.0`,
+    one quartz jar per process. The store at 493fe01d9ea7 (vespaEventStore) names Central's itself,
+    so the substitution now maps nothing and stays as the guard.
+  settings.gradle.kts stops routing quartz to JitPack: it serves the store alone.
+  RUNTIME CLASSPATH (:relay, :sync): identical to c63c35ca76's apart from quartz's coordinates (the
+    Central POM names the same dependency versions).
+
+Prev c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant of
+4be44f71c0 (below): 72 commits. What this relay reaches:
+
+  ONE JSON ENGINE: KITE (quartz d445157, BREAKING upstream). Jackson, JacksonMapper and JsonEngine
+    are gone; every frame, event, filter and id preimage is read and written by Kite in both
+    processes. So QUARTZ_JSON_ENGINE is removed (a value still set is ignored, configuration.md) and
+    with it the Kite audit, whose rescue and cross-check were Jackson's reading: its frames were
+    the trial's evidence, and the trial is over. A deployment that ran the old default, Jackson,
+    now runs Kite: the same events, ids, answers and cursors on valid input (the 65,050-frame
+    comparison below); on malformed input Kite refuses what Jackson coerced (the differences below).
+  CONTROL CHARACTERS IN LOWERCASE HEX (79f1802). Kite kept Jackson's uppercase `\u00XX` in the id
+    preimage, so an event whose content or tags hold, say, U+001B got an id no other client computes
+    and was refused as a bad id; the lowercase every other implementation writes is now the one
+    computed, and those events verify.
+  THE PAGER'S IDLE CLOCK STOPS WHILE OUR HOOK RUNS (quartz#32, #33). A walk whose onEvent is parked
+    on a full ingest queue is no longer ended as an idle relay, nor a reconcile whose hand-off waits
+    on a full download pipeline; the sync's pause (docs/decisions/visit-pool.md) is now the fallback
+    it was written to become. receiveWithinIdle also takes an already-queued item before arming a
+    timer (82805a9): one timeout coroutine fewer per reply on a busy stream.
+  RELAY CLIENT AND SERVER FIXES: a reconnect request debounced with others is merged rather than
+    replaced, a stale desired-relay snapshot is never emitted last, a publish retry redials only the
+    relay that hung up, ParallelEventVerifier's counters are visible across threads; the server
+    delivers an event accepted mid-replay once (RelayServerBase), and a live negentropy index that
+    outgrows its serve cap is dropped instead of held.
+  Inert here: the PressStr kinds (33953, 34609, 39731) are new searchable kinds for the store
+    (its own pin note: reindexFullTextSearch(listOf(33953, 34609, 39731))); NIP-09/17/22/46/92
+    fixes in APIs this relay does not call; Marmot and cordn moved out (mls leaves).
+  RUNTIME CLASSPATH (:relay, :sync): jackson-databind, jackson-annotations and mls 1.0.0 leave;
+    jackson-core falls from 2.22.4 to 2.22.0, the version the Vespa feed client declares, now its
+    only user; crypto-kmp 1.0.0 -> 2.1.0. With the store at b8984b0d0851 its quartz pin
+    (dfe281430a) showed `-> c63c35ca76`, the force winning; the store at 343926b68850 (below) names
+    c63c35ca76 itself, and no arrow is left. The store's integration gate ran against this commit.
+
+Prev 4be44f71c0 = vitorpamplona/quartz main @ 2026-10-23 (the merge of quartz#15), a descendant of dfe281430a
 (below). What this relay reaches:
 
   KITE, QUARTZ'S OWN JSON ENGINE, OPT-IN (quartz#4, #7-#13). JsonEngine.current picks the code that
@@ -394,7 +446,62 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-b8984b0d0851 = vespa-eventstore main @ 2026-10-23, the merge of PR #179 (over 9adf43c4bede, below):
+493fe01d9ea7 = vespa-eventstore main @ 2026-10-27, the merge of PR #182 (over 343926b68850, below):
+the store takes quartz 2.4.0 from Maven Central (com.vitorpamplona.quartz) instead of JitPack's
+c63c35ca76, the same code. Its published POMs now name a coordinate any Central consumer resolves,
+and its build reads nothing from JitPack. Nothing else changed: libs.versions.toml,
+settings.gradle.kts and docs only.
+  ONE QUARTZ GROUP IN THE GRAPH: no com.github.vitorpamplona.quartz line is left in :relay or :sync,
+    so build-logic's substitution (quartz, below) maps nothing; it stays as the guard against a
+    dependency that names JitPack's group again. Runtime classpath otherwise identical; one quartz
+    jar per process.
+  git merge-base --is-ancestor 343926b68850 493fe01d9ea7   # verified
+
+DEPLOY: nothing moves (no main-source change in the store).
+
+GATED, the store at cbc0affd30a6 (PR #182's head): its integration suite against a real Vespa
+  (48 tests, 1 skipped (StagingCorpusIT), 0 failures). The merge's tree is the head's
+  (git rev-parse 493fe01d9ea7^{tree} == cbc0affd30a6^{tree}). Here, ./gradlew build against it:
+  1,625 tests, 2 skipped, 0 failures.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 343926b68850 = vespa-eventstore main @ 2026-10-27, the merge of PR #181 (over b8984b0d0851, below,
+through the merge of PR #180):
+  - THE TRUST PROJECTION REACTS ONCE PER STORE COMMIT (#181). Every trust-gated ingest commit runs
+    inside TrustProjection.commit: its puts and removes record per card address and the commit
+    applies them in one pipelined cell write under one crash-ledger bracket. Per-call reaction
+    was the ~17 minutes this relay took to store one 150,000-card GrapeRank run (address-keyed:
+    one proj.write and three marker round trips PER CARD, the marker ones 32 deep on one
+    document). Measured in the store (benchmark/README.md, "One assistant run"; cardRunProbe, 150k
+    cards, the superseding run): address-keyed 139 -> 1,290 cards/s, default 952 -> 1,244. A
+    rejected insert is a verdict, not a failed commit; a duplicate-only trust batch now settles
+    the ledger like any trust write.
+  - LESS ALLOCATION ON EVERY READ AND WRITE (#180): responses decoded as a stream, query and feed
+    bodies streamed into the socket, one cell-add update per document (the marker write-ahead
+    never reads), merged cell updates bounded at 1,024 cells.
+  - VESPA_FEED_BATCH DEFAULTS TO 100 IN THE STORE (#180): unset or blank means 100, not off; a value
+    that is not a number means off. compose already set 100, so nothing moves under compose; a bare
+    run now batches. feedBatch's boot check is unchanged (it still refuses a bad value first).
+  - QUARTZ IS ONE PIN NOW: the store at this commit names c63c35ca76 too, so the graph has no
+    `->` on any quartz or eventstore line (./gradlew :relay:dependencies, :sync:dependencies).
+  Nothing this relay calls changed signature: ./gradlew build compiles and passes unchanged.
+  git merge-base --is-ancestor b8984b0d0851 343926b68850   # verified
+
+DEPLOY: the application package does NOT move (engine/app has no diff in the range), so
+  deployBundledSchema finds it unchanged; no reindex for the store's own change. The quartz pin
+  beside it adds three searchable kinds (docs/migrations.md, PressStr).
+
+GATED, the store at f858863d8e72 (PR #181's head): its integration suite against a real Vespa
+  (./gradlew :benchmark:test -Pintegration: 48 tests, 1 skipped (StagingCorpusIT, no corpus),
+  0 failures), and CI's run on that head (lint, build, integration: success). The merge's tree is
+  the head's (git rev-parse 343926b68850^{tree} == f858863d8e72^{tree}), so the gate is this
+  pin's. Here, ./gradlew build against it and quartz c63c35ca76: 1,625 tests, 2 skipped,
+  0 failures.
+
+SPELLED WITH 12 HEX DIGITS; JitPack serves it under both NosFabrica and nosfabrica.
+
+Prev b8984b0d0851 = vespa-eventstore main @ 2026-10-23, the merge of PR #179 (over 9adf43c4bede, below):
 search ranking judged by a graded evaluation protocol, and three changes confirmed with it.
   - ON BY DEFAULT, all in the `search` profile (an observer's NIP-50 search), each pre-registered and
     confirmed once on held-out topics (the store's docs/search-evaluation.md, section 9):

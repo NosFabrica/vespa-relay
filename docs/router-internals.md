@@ -404,7 +404,12 @@ the relay last said. Only those two endings are re-read: a `CLOSED`, an
 `AUTH_REQUIRED` or a `CANNOT_CONNECT` came through the same consumer, so the
 consumer was not parked when it was said. Nothing else about the abort changes
 — no band, no tail, the leg stays outstanding — because the walk really did not
-happen. `VisitPoolBackpressureTest` stages it against a pipeline filled to
+happen. It is the last resort: a walk that ends that way while a hook of ours is
+parked first waits for the queue to drain and re-asks from the oldest second it
+reached (`walksPausedByIngest`), and is filed as `abortedBackpressured` — the
+whole visit ending, so its permit is released — only when the queue has not
+drained within the walk's one `LEG_QUIET_GIVE_UP_MS` budget or a resume could
+not move the cursor (see docs/decisions/visit-pool.md). `VisitPoolBackpressureTest` stages it against a pipeline filled to
 capacity and never started, including a producer outside the pool.
 
 **And a visit is not dialled into a queue that cannot take it.** `visit` reads

@@ -44,6 +44,15 @@ internal class ByteBudget(
 
     val heldBytes: Long get() = held.get()
 
+    /** [acquire] without waiting: true when taken, false when the budget is spent. */
+    fun tryAcquire(bytes: Long): Boolean {
+        while (true) {
+            val now = held.get()
+            if (now >= limit) return false
+            if (held.compareAndSet(now, now + bytes)) return true
+        }
+    }
+
     suspend fun acquire(bytes: Long) {
         while (true) {
             val seen = released.value

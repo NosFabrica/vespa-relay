@@ -305,6 +305,7 @@ class StatusVocabularyTest {
                         "liveHeld" to 22,
                         "visitsRun" to 90,
                         "visitsHeldByIngest" to 0,
+                        "walksPausedByIngest" to 0,
                         "bandsWithheld" to 0,
                         "negentropyRunning" to 1,
                         "negentropyRuns" to 4,

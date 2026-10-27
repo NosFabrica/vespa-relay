@@ -78,8 +78,8 @@ const val MAX_FEED_BATCH = 4_096
  *
  * The STORE reads the variable, and leniently: a value that is not a number turns batching off
  * without a word. So each boot reads it here first, where a value that does not parse or is out of
- * range stops the boot instead. Null when unset: the store's own default (off) applies, and
- * docker-compose.yml sets 100.
+ * range stops the boot instead. Null when unset: the store's own default applies — 100 since
+ * vespa-eventstore 343926b68850 (#180), off before it — and docker-compose.yml sets 100.
  */
 fun feedBatch(env: Map<String, String>): Int? = env.strictInt(FEED_BATCH_ENV, 0..MAX_FEED_BATCH)
 
