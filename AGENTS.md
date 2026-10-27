@@ -148,8 +148,7 @@ common/…/relay/
   pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings
                               (PULSE_* parsing, the fail-closed admin check); here because both processes
                               open a store, and because :web must not depend on one
-  store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), QuartzJsonEngine
-                              (QUARTZ_JSON_ENGINE), fmtDuration
+  store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), fmtDuration
   (test) arch/                the guards that read the checkout: ModuleBoundariesTest, the browser-file
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
@@ -160,7 +159,7 @@ peers/…/relay/
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
                               the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
-                              ProbeTrouble, ParseAudit, KiteAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
+                              ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json

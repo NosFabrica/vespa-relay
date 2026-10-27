@@ -113,10 +113,10 @@ pause: by the time a pause gives up the hook may have got in, and the ending
 read then was filed as the relay's.
 
 The cause is in quartz's pager, whose idle clock ran while our hook was parked;
-vitorpamplona/quartz#32 stops it while `onEvent` runs. Once the quartz pin
-carries that, a full queue no longer ends a page at all, and this pause is the
-fallback for the stalls the pager still reports (a socket a hook outside the
-walk is parked on). Until then each stall costs one re-asked page.
+vitorpamplona/quartz#32 stops it while `onEvent` runs, and the quartz pin
+carries it since c63c35ca76 (v2.4.0): a full queue no longer ends a page at
+all, and this pause is the fallback for the stalls the pager still reports (a
+socket a hook outside the walk is parked on).
 
 **A visit is not dialled into a full queue.** The download would park its
 first event, silence the socket, and come back `abortedBackpressured` an idle

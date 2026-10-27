@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
-import com.nosfabrica.vespa.relay.ingest.KiteAudit
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
@@ -113,14 +112,12 @@ class SyncEngine(
      * retraction audit's deletes. [store] stays the read side in either mode. Closed with the engine.
      */
     private val writer: StoreWriter = StoreWriter.local(store),
-    /** Reads every upstream frame and every refused event a second time, while the JSON engine is Kite. */
-    kiteAudit: KiteAudit? = null,
 ) : AutoCloseable {
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
     /** The websocket client, socket budget, Tor and NIP-42, shared with the monitor plane. */
-    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, kiteAudit?.decoder() ?: MessageDecoder.Default)
+    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
     private val client = peers.client
     private val tor = peers.tor
 
@@ -152,7 +149,7 @@ class SyncEngine(
     /** Whether ingest has to carry per-event origins at all. */
     private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
     private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible, forwarded = writer is RelayWriter)
-    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure = null, scope, knownIds, newestVersions, refusals, writer = writer, bootName = "sync: ingest", kiteAudit = kiteAudit)
+    private val ingest = IngestPipeline(store, config.ingestTuning(), audit, servingPressure = null, scope, knownIds, newestVersions, refusals, writer = writer, bootName = "sync: ingest")
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /** What the upstreams say when they refuse. Attached to the client this engine owns, so released in [close]. */

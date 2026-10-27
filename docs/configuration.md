@@ -47,7 +47,7 @@ the exact word `true` deletes and every other value is a dry run.
 | `VESPA_FEED_COMPRESSION` | how the store's feed client sends each document: `none`, `gzip`, or `auto`, which gzips every body over 512 bytes. Read by the relay's store, the only one that writes; anything else stops the boot. On a Vespa on the same host, gzip cost the relay ~2 ms per kind 3 and Vespa the inflating, and `none` published 14-15% more events per second ([ingest-benchmark.md](ingest-benchmark.md)); across a WAN, `gzip` keeps tag-heavy bodies to ~40% | `auto` (the store's default); `none` in `docker-compose.yml` |
 | `VESPA_FEED_BATCH` | documents per HTTP request through the batch handler the store ships in its application package (deployed at every boot, as `AUTO_DEPLOY` does), instead of one per request through `/document/v1`. Measured on live-relay events, 100 per request cut Vespa's CPU per event by 28-31% and raised what three cores absorb by 40-60% (vespa-eventstore's benchmark README, "More than one document per request"); the stored documents and every search over them are identical. It pays where batches are full, so on the mirror lane above all, where the sync's backfill arrives; a publish batch holds whatever is queued, which is one event on a quiet relay and more in a burst. A container serving a package without the handler answers 404, and the store parks batching for five minutes and writes one per request meanwhile, then tries the handler again: a handler that arrives with a deploy, or a container back from a restart, is picked up without restarting this process. While parked, the store's feed line ends `batch PARKED (404 xN), retry in Ns` (the sync status card shows it as a `feed unbatched` warning) and `/pulse.json`'s `feed.batch.parked` gauge reads 1; an operator-owned package missing the store's `components/` and handler, or a query container listed in `VESPA_FEED_URLS`, keeps it there. `0` or `1` turns it off; the boot stops on anything outside `0`–`4096` | off (the store's default); `100` in `docker-compose.yml` |
 | `JAVA_TOOL_OPTIONS` / `RELAY_JAVA_TOOL_OPTIONS` / `SYNC_JAVA_TOOL_OPTIONS` | each JVM's own flags, in practice its heap. The bare name reaches **both** containers under compose; the prefixed spellings override per process — the two JVMs are sized 2× apart, so an absolute `-Xmx` tuned for the sync's reconcile heap would kill the smaller relay container. For the sync process this is what decides whether a large reconcile finishes or dies with `OutOfMemoryError`. The percentage is of the container's own mem limit, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
-| `QUARTZ_JSON_ENGINE` | which code reads and writes every Nostr frame, event, filter and event-id preimage in **both** processes: `default` (Jackson) or `kite`, quartz's own reader and writer. Set it the same on both. Both write the same bytes, so ids, the relay's answers and the mirror's persisted cursors (keyed by each filter's JSON) do not change with it, and a switch needs no migration. They differ only on malformed input: Kite refuses a non-string `content` or `pubkey` that Jackson coerces, and it recognizes an event key by its length and first and last characters, so an event carrying an extra key spelled like a NIP-01 one (`comment` beside `content`) reads that value as the field and fails its id check where Jackson ignored it. Anything else stops the boot | `default` |
+| `QUARTZ_JSON_ENGINE` | **removed** with quartz 2.4.0, which has one JSON engine: Kite, quartz's own reader and writer, for every Nostr frame, event, filter and event-id preimage in both processes. A value still set is ignored. A deployment that ran the old `default` (Jackson) gets the same events, ids, answers and persisted cursors on valid input (65,050 real frames read and written identically, see dependency-pins.md); it differs only on malformed input: Kite refuses a non-string `content` or `pubkey` that Jackson coerced, and it recognizes an event key by its length and first and last characters, so an event carrying an extra key spelled like a NIP-01 one (`comment` beside `content`) reads that value as the field and fails its id check where Jackson ignored it | — |
 | `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
 | `TRUST_PROVIDER_REFRESH_SECONDS` | how often **each** process rebuilds the store's kind-10040 provider pass — the cache every observer's rank lens and Trusted List gate read. The relay needs it so a list the router mirrored in applies to searches; the router needs it so cards it mirrors for a service first named on the relay's socket get projected. One read of every stored 10040 per tick. At most `86400`; a bad value stops the boot before the schema deploy. `0` restores the old behaviour, where a list another process stored applied only at this process's next restart or own 10040 write — see [Search: the subject travels with the pointer](#search-the-subject-travels-with-the-pointer) | `60` |
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
@@ -725,40 +725,6 @@ The audit runs each parse itself, on the ingest worker, because a `LogSink` rece
 only `(level, tag, message, throwable)` — no event. That is also why it is opt-in: it
 costs one extra parse per mirrored event. See `ParseAudit`.
 
-## Kite audit (what Kite reads differently from Jackson)
-
-On by itself in the **sync process** whenever `QUARTZ_JSON_ENGINE=kite`, to collect
-test cases for quartz while Kite is on trial. Two checks, both run only on a
-failure, so valid traffic pays only for holding each `EVENT` frame until its id has
-been checked, and a refused event costs at most one more signature check:
-
-- **Kite throws on a frame:** it is re-read with Jackson, and Jackson's reading is
-  what the mirror gets, so the event is not lost. The frame is kept (`kite-threw`)
-  when Jackson's reading verifies; when it does not, Kite only refused a bad event
-  more strictly than Jackson, which is counted (`kiteStricterOnBadEvents`). A frame
-  Jackson refuses too is a bad frame, counted only.
-- **An event is refused as `invalid: bad signature or id`**, by the sync's own check
-  or by the relay: the frame that copy came in on is read again with both engines.
-  Jackson's reading is checked against Jackson's own id preimage, never Kite's, so a
-  Kite hashing bug cannot pass for bad input. If it does not verify, the event was
-  bad, counted only. If it does, the frame is kept: as `kite-misread`, keyed by the
-  fields the two readings disagree on (or `id preimage` when they agree and only
-  Kite's hash fails), or as `refused-but-verifies` when both readings agree and
-  verify, which points past the frame, at the sync's write to the relay. A refused
-  event stays refused.
-
-Frames are held by the event read from them, each copy on its own, until
-`KITE_AUDIT_FRAMES_MB` of newer frames has arrived; every EVENT frame the sync reads
-counts, the monitor's included. A refusal that arrives later (a backlogged ingest
-queue) is counted as `badEventsFrameNotHeld` rather than checked, so that number is
-the audit's blind spot. The relay process has no such audit: its client frames are
-parsed inside quartz's server.
-
-| var | meaning | default |
-|---|---|---|
-| `KITE_AUDIT_FILE` | where the JSON report goes: counts, and up to 5 whole frames per finding with Kite's error or both engines' readings. Unset, each new finding is one stderr line with the frame's first 2,000 characters. Ignored unless the engine is Kite | compose: `/var/lib/vespa-relay/kite-audit.json` (on the host under `PARSE_AUDIT_LOCAL_DIR`); bare: unset |
-| `KITE_AUDIT_FRAMES_MB` | memory for the frames held for the id check, and the events read from them | `64` |
-
 ## Ranges the boot enforces
 
 Each of these stops its process at boot, naming the variable, when set to
@@ -806,7 +772,6 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `VESPA_DEDUP_CHUNK` | both | `1` or more |
 | `PARSE_AUDIT_SAMPLES` | sync | `1`–`100` |
 | `PARSE_AUDIT_INTERVAL_SECONDS` | sync | `5` or more |
-| `KITE_AUDIT_FRAMES_MB` | sync | `1`–`4096` |
 | `SYNC_WIRE_LOG` | sync | `sent` or `full`, in any case |
 | `AUTO_DEPLOY` | relay | a switch |
 | `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
