@@ -74,9 +74,9 @@ c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz
     fixes in APIs this relay does not call; Marmot and cordn moved out (mls leaves).
   RUNTIME CLASSPATH (:relay, :sync): jackson-databind, jackson-annotations and mls 1.0.0 leave;
     jackson-core falls from 2.22.4 to 2.22.0, the version the Vespa feed client declares, now its
-    only user; crypto-kmp 1.0.0 -> 2.1.0. The store's own quartz pin (dfe281430a) shows
-    `-> c63c35ca76`: the force, winning. The store's integration gate ran against this commit
-    (NosFabrica/vespa-eventstore claude/kind-hopper-yfuint, which pins it too).
+    only user; crypto-kmp 1.0.0 -> 2.1.0. With the store at b8984b0d0851 its quartz pin
+    (dfe281430a) showed `-> c63c35ca76`, the force winning; the store at 343926b68850 (below) names
+    c63c35ca76 itself, and no arrow is left. The store's integration gate ran against this commit.
 
 Prev 4be44f71c0 = vitorpamplona/quartz main @ 2026-10-23 (the merge of quartz#15), a descendant of dfe281430a
 (below). What this relay reaches:
@@ -427,7 +427,42 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-b8984b0d0851 = vespa-eventstore main @ 2026-10-23, the merge of PR #179 (over 9adf43c4bede, below):
+343926b68850 = vespa-eventstore main @ 2026-10-27, the merge of PR #181 (over b8984b0d0851, below,
+through the merge of PR #180):
+  - THE TRUST PROJECTION REACTS ONCE PER STORE COMMIT (#181). Every trust-gated ingest commit runs
+    inside TrustProjection.commit: its puts and removes record per card address and the commit
+    applies them in one pipelined cell write under one crash-ledger bracket. Per-call reaction
+    was the ~17 minutes this relay took to store one 150,000-card GrapeRank run (address-keyed:
+    one proj.write and three marker round trips PER CARD, the marker ones 32 deep on one
+    document). Measured in the store (benchmark/README.md, "One assistant run"; cardRunProbe, 150k
+    cards, the superseding run): address-keyed 139 -> 1,290 cards/s, default 952 -> 1,244. A
+    rejected insert is a verdict, not a failed commit; a duplicate-only trust batch now settles
+    the ledger like any trust write.
+  - LESS ALLOCATION ON EVERY READ AND WRITE (#180): responses decoded as a stream, query and feed
+    bodies streamed into the socket, one cell-add update per document (the marker write-ahead
+    never reads), merged cell updates bounded at 1,024 cells.
+  - VESPA_FEED_BATCH DEFAULTS TO 100 IN THE STORE (#180): unset or blank means 100, not off; a value
+    that is not a number means off. compose already set 100, so nothing moves under compose; a bare
+    run now batches. feedBatch's boot check is unchanged (it still refuses a bad value first).
+  - QUARTZ IS ONE PIN NOW: the store at this commit names c63c35ca76 too, so the graph has no
+    `->` on any quartz or eventstore line (./gradlew :relay:dependencies, :sync:dependencies).
+  Nothing this relay calls changed signature: ./gradlew build compiles and passes unchanged.
+  git merge-base --is-ancestor b8984b0d0851 343926b68850   # verified
+
+DEPLOY: the application package does NOT move (engine/app has no diff in the range), so
+  deployBundledSchema finds it unchanged; no reindex for the store's own change. The quartz pin
+  beside it adds three searchable kinds (docs/migrations.md, PressStr).
+
+GATED, the store at f858863d8e72 (PR #181's head): its integration suite against a real Vespa
+  (./gradlew :benchmark:test -Pintegration: 48 tests, 1 skipped (StagingCorpusIT, no corpus),
+  0 failures), and CI's run on that head (lint, build, integration: success). The merge's tree is
+  the head's (git rev-parse 343926b68850^{tree} == f858863d8e72^{tree}), so the gate is this
+  pin's. Here, ./gradlew build against it and quartz c63c35ca76: 1,625 tests, 2 skipped,
+  0 failures.
+
+SPELLED WITH 12 HEX DIGITS; JitPack serves it under both NosFabrica and nosfabrica.
+
+Prev b8984b0d0851 = vespa-eventstore main @ 2026-10-23, the merge of PR #179 (over 9adf43c4bede, below):
 search ranking judged by a graded evaluation protocol, and three changes confirmed with it.
   - ON BY DEFAULT, all in the `search` profile (an observer's NIP-50 search), each pre-registered and
     confirmed once on held-out topics (the store's docs/search-evaluation.md, section 9):
