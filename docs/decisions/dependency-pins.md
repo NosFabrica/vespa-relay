@@ -45,7 +45,27 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant of
+2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
+is tag v2.4.0 (git rev-parse v2.4.0^{commit} = c63c35ca7629), published by quartz's release workflow.
+The first quartz this relay takes from a release rather than a JitPack commit:
+
+  A RELEASE VERSION ORDERS. The note at the top of this file is about JitPack hashes; a Central
+    version is a real version, so a conflict would resolve to the higher one meaningfully. The force
+    stays anyway (build-logic), so nothing transitive can move it.
+  JITPACK'S QUARTZ GROUP IS SUBSTITUTED, NOT EXCLUDED. Central's group is com.vitorpamplona.quartz;
+    JitPack's was com.github.vitorpamplona.quartz. Different groups are different MODULES, so a
+    graph naming both holds two copies of every quartz class and no version conflict ever fires.
+    The store at 343926b68850 still names JitPack's c63c35ca76, so build-logic maps that group's
+    quartz and quartz-jvm onto Central's (dependencySubstitution). The graph reads
+    `com.github.vitorpamplona.quartz:quartz:c63c35ca76 -> com.vitorpamplona.quartz:quartz:2.4.0`,
+    and :relay and :sync each carry one quartz jar, Central's quartz-jvm. The store moves to Central
+    too (vespa-eventstore's own pin); once this relay pins a store that names it, the
+    substitution has nothing to map and stays as the guard.
+  settings.gradle.kts stops routing quartz to JitPack: it serves the store alone.
+  RUNTIME CLASSPATH (:relay, :sync): identical to c63c35ca76's apart from quartz's coordinates (the
+    Central POM names the same dependency versions).
+
+Prev c63c35ca76 = vitorpamplona/quartz v2.4.0 (main @ 2026-10-27, the merge of quartz#38), a descendant of
 4be44f71c0 (below): 72 commits. What this relay reaches:
 
   ONE JSON ENGINE: KITE (quartz d445157, BREAKING upstream). Jackson, JacksonMapper and JsonEngine
