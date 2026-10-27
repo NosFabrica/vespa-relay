@@ -55,12 +55,11 @@ The first quartz this relay takes from a release rather than a JitPack commit:
   JITPACK'S QUARTZ GROUP IS SUBSTITUTED, NOT EXCLUDED. Central's group is com.vitorpamplona.quartz;
     JitPack's was com.github.vitorpamplona.quartz. Different groups are different MODULES, so a
     graph naming both holds two copies of every quartz class and no version conflict ever fires.
-    The store at 343926b68850 still names JitPack's c63c35ca76, so build-logic maps that group's
-    quartz and quartz-jvm onto Central's (dependencySubstitution). The graph reads
+    The store at 343926b68850 still named JitPack's c63c35ca76, so build-logic maps that group's
+    quartz and quartz-jvm onto Central's (dependencySubstitution); with it the graph read
     `com.github.vitorpamplona.quartz:quartz:c63c35ca76 -> com.vitorpamplona.quartz:quartz:2.4.0`,
-    and :relay and :sync each carry one quartz jar, Central's quartz-jvm. The store moves to Central
-    too (vespa-eventstore's own pin); once this relay pins a store that names it, the
-    substitution has nothing to map and stays as the guard.
+    one quartz jar per process. The store at 493fe01d9ea7 (vespaEventStore) names Central's itself,
+    so the substitution now maps nothing and stays as the guard.
   settings.gradle.kts stops routing quartz to JitPack: it serves the store alone.
   RUNTIME CLASSPATH (:relay, :sync): identical to c63c35ca76's apart from quartz's coordinates (the
     Central POM names the same dependency versions).
@@ -447,7 +446,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-343926b68850 = vespa-eventstore main @ 2026-10-27, the merge of PR #181 (over b8984b0d0851, below,
+493fe01d9ea7 = vespa-eventstore main @ 2026-10-27, the merge of PR #182 (over 343926b68850, below):
+the store takes quartz 2.4.0 from Maven Central (com.vitorpamplona.quartz) instead of JitPack's
+c63c35ca76, the same code. Its published POMs now name a coordinate any Central consumer resolves,
+and its build reads nothing from JitPack. Nothing else changed: libs.versions.toml,
+settings.gradle.kts and docs only.
+  ONE QUARTZ GROUP IN THE GRAPH: no com.github.vitorpamplona.quartz line is left in :relay or :sync,
+    so build-logic's substitution (quartz, below) maps nothing; it stays as the guard against a
+    dependency that names JitPack's group again. Runtime classpath otherwise identical; one quartz
+    jar per process.
+  git merge-base --is-ancestor 343926b68850 493fe01d9ea7   # verified
+
+DEPLOY: nothing moves (no main-source change in the store).
+
+GATED, the store at cbc0affd30a6 (PR #182's head): its integration suite against a real Vespa
+  (48 tests, 1 skipped (StagingCorpusIT), 0 failures). The merge's tree is the head's
+  (git rev-parse 493fe01d9ea7^{tree} == cbc0affd30a6^{tree}). Here, ./gradlew build against it:
+  1,625 tests, 2 skipped, 0 failures.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 343926b68850 = vespa-eventstore main @ 2026-10-27, the merge of PR #181 (over b8984b0d0851, below,
 through the merge of PR #180):
   - THE TRUST PROJECTION REACTS ONCE PER STORE COMMIT (#181). Every trust-gated ingest commit runs
     inside TrustProjection.commit: its puts and removes record per card address and the commit
