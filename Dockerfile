@@ -6,8 +6,8 @@ FROM eclipse-temurin:21.0.12.1_1-jdk-noble AS build
 WORKDIR /src
 COPY . .
 # The cache mount keeps Gradle's dependency cache across builds — COPY . .
-# invalidates this layer on every commit, and the JitPack-built quartz and
-# vespa-eventstore artifacts are slow to re-download from scratch.
+# invalidates this layer on every commit, and the JitPack-built vespa-eventstore
+# artifacts are slow to re-download from scratch.
 RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon :relay:installDist :sync:installDist
 
 FROM eclipse-temurin:21.0.12.1_1-jre-noble

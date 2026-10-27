@@ -5,10 +5,22 @@ plugins {
 
 val libs = the<VersionCatalogsExtension>().named("libs")
 
-// JitPack pins are commit hashes and Gradle picks the lexicographically higher one, so force ours.
+// Quartz is a Maven Central release (com.vitorpamplona.quartz). Forced, so no transitive request
+// can move it; and JitPack's coordinates for it (com.github.vitorpamplona.quartz, what the store
+// at a pin built before 2.4.0 names) are SUBSTITUTED by it. They are a different group, so without
+// the substitution the graph would hold both modules — two copies of every quartz class, which no
+// version conflict resolution notices — rather than one quartz.
 configurations.all {
     resolutionStrategy {
-        force(libs.findLibrary("quartz").get())
+        val quartz = libs.findLibrary("quartz").get().get()
+        force(quartz)
+        dependencySubstitution {
+            for (artifact in listOf("quartz", "quartz-jvm")) {
+                substitute(module("com.github.vitorpamplona.quartz:$artifact"))
+                    .using(module("com.vitorpamplona.quartz:$artifact:${quartz.version}"))
+                    .because("quartz comes from Maven Central; JitPack's group is the same library")
+            }
+        }
     }
 }
 

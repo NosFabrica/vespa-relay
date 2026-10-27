@@ -522,6 +522,29 @@ If the walks above have not run yet, run every list on one boot:
 30184, 30301, 30302, 30405, 30406, 31555, 33402, 36767, 38385
 ```
 
+## Migration: PressStr kinds become searchable (quartz `c63c35ca76`, v2.4.0)
+
+The relay's quartz pin moves the derivation, as in the entries above; the store
+pin does not need to move for it. **33953** (ebooks), **34609** (magazines) and
+**39731** (magazine issues) are new event classes that quartz now parses as
+`SearchableEvent`; before it they were unrecognized events, stored and never
+indexed. No kind that was already searchable extracts differently in the range.
+Pure **recall**: until the reindex, stored events of these kinds are not found
+by a NIP-50 search.
+
+**The schema does not move.** Read `configChangeActions` anyway, per the top of
+this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below. Remove both settings once the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+33953, 34609, 39731
+```
+
 ## If a deploy is refused
 
 A validation error naming an override id means Vespa is protecting the corpus

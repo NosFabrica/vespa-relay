@@ -83,8 +83,6 @@ class IngestPipeline(
     private val writer: StoreWriter = StoreWriter.local(store),
     /** Names the first event submitted and the first stored as `boot:` lines ([BootClock]); null prints neither. */
     private val bootName: String? = null,
-    /** Shown every event refused as a bad id or signature, while the JSON engine is Kite. */
-    private val kiteAudit: KiteAudit? = null,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -128,6 +126,13 @@ class IngestPipeline(
 
     /** At capacity: the next [submit] would suspend its caller, and with it that caller's socket. */
     fun isFull(): Boolean = queued.get() >= capacity
+
+    /**
+     * At most half full, by count AND by bytes when [IngestTuning.queueBytes] bounds them: room for
+     * a resumed download's page without parking its socket again. A spent byte budget parks a
+     * submit as surely as a full channel does, before it is ever counted as queued.
+     */
+    fun hasHeadroom(): Boolean = queued.get() <= capacity / 2 && (intakeBudget?.let { it.heldBytes <= it.limit / 2 } ?: true)
 
     val accepted = AtomicLong()
     val rejected = AtomicLong()
@@ -207,8 +212,23 @@ class IngestPipeline(
             return
         }
         // Before it is counted as queued: a publish waiting here is the connection's backpressure,
-        // like a full channel, and holds nothing of the pipeline yet.
-        val weight = intakeBudget?.let { budget -> approxHeapBytes(event).also { budget.acquire(it) } } ?: 0L
+        // like a full channel, and holds nothing of the pipeline yet. Counted as PARKED while it
+        // actually waits, as a suspended send is: either way the caller's socket stops reading, and
+        // a walk that sees silence must be able to tell it was ours.
+        val weight =
+            intakeBudget?.let { budget ->
+                approxHeapBytes(event).also { bytes ->
+                    if (!budget.tryAcquire(bytes)) {
+                        val held = origin.url?.let { parked.getOrPut(it) { AtomicInteger() } }
+                        held?.incrementAndGet()
+                        try {
+                            budget.acquire(bytes)
+                        } finally {
+                            held?.decrementAndGet()
+                        }
+                    }
+                }
+            } ?: 0L
         // Counted before the send and taken back if it fails, or a fast worker decrements first.
         queued.incrementAndGet()
         var handedOff = false
@@ -879,21 +899,11 @@ class IngestPipeline(
         fun answer(
             i: Int,
             outcome: IEventStore.InsertOutcome,
-        ) = answer(i, outcome, followed = false)
-
-        private fun answer(
-            i: Int,
-            outcome: IEventStore.InsertOutcome,
-            followed: Boolean,
         ) {
             if (answered[i]) return
             answered[i] = true
-            // A follower shares its leader's id, so its leader's check stands for it.
-            if (kiteAudit != null && !followed && outcome is IEventStore.InsertOutcome.Rejected && outcome.reason == BAD_SIGNATURE.reason) {
-                kiteAudit.onBadEvent(batch[i].event)
-            }
             batch[i].onOutcome?.let { deliver(it, outcome) }
-            followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome, followed = true) }
+            followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome) }
         }
 
         fun rest(outcome: IEventStore.InsertOutcome) {

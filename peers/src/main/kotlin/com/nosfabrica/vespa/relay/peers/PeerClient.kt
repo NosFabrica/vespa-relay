@@ -52,7 +52,7 @@ class PeerClient(
     wireLogMode: String = "",
     /** How long a dial may take before it is a failure. */
     connectionTimeoutSec: Long = 10,
-    /** How every upstream frame is read; [com.nosfabrica.vespa.relay.ingest.KiteAudit.decoder] during the Kite trial. */
+    /** How every upstream frame is read. */
     decoder: MessageDecoder = MessageDecoder.Default,
 ) : AutoCloseable {
     // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.

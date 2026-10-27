@@ -87,6 +87,8 @@ internal class VisitPool(
     private val widths: FilterWidths = FilterWidths(),
     /** Silence between asks that ends a visit; a seam for tests. */
     private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
+    /** How long, in all, one walk our ingest queue stalled may wait for it to drain; a seam for tests. */
+    private val pauseLimitMs: Long = LEG_QUIET_GIVE_UP_MS,
 ) {
     /** When each stream's audits and re-fetches come due. */
     private val schedule = AuditSchedule(streams, bands, retraction)
@@ -578,22 +580,22 @@ internal class VisitPool(
             // Stamped before the REQ goes out: a complaint older than this belongs to an earlier ask.
             val askedAtMs = System.currentTimeMillis()
             val sampling = pages.arm(url, chunk)
-            val walked =
+            val paged =
                 try {
-                    reads.page(url, chunk, NEG_IDLE_MS, onEvent)
+                    pageThroughStalls(url, chunk, ongoingVisit, onEvent)
                 } finally {
                     pages.free(sampling)
                 }
-            if (refusedOutright(walked)) {
-                // No band for a refused chunk: nothing was walked. Whose refusal
-                // is decided now: the parked hook is a fact of this instant.
-                return Refusal(
-                    walked.end,
-                    chunk,
-                    askedAtMs,
-                    pages.render(sampling, walked.downloaded),
-                    ours = stalledByUs(walked.end) && heldByUs(url),
-                )
+            val walked = paged.walked
+            // OUR STALL ENDS THE VISIT, delivered events or not. The pause could not get the walk
+            // going again, so every further chunk, leg and band would park against the same queue
+            // — each another idle window and pause while holding this visit's permit and socket
+            // claim. No band for the cut either: awaiting its acks would wait on that same queue
+            // (the hook that parked is at its back), and a catch-up's cut keeps a band only where
+            // it touches the one held, which is rarely. The ground is asked again next visit.
+            if (paged.ours || refusedOutright(walked)) {
+                // No band for a refused chunk: nothing was walked.
+                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded), ours = paged.ours)
             }
             if (!storedAll(acks, stream.name, url)) {
                 // Read to the end or not, ground whose events did not reach the store is not covered.
@@ -616,6 +618,137 @@ internal class VisitPool(
             }
         }
         return null
+    }
+
+    /** A walk through [pageThroughStalls]: the pager's last answer, and whether our own queue ended it. */
+    private class Paged(
+        val walked: PagedFetchResult,
+        /**
+         * The walk stopped on a stall of OURS — a hook parked in the full ingest queue when it went
+         * quiet — that the pause could not get past. Decided when each stall is seen, before any
+         * waiting: by the time a pause gives up, the hook may have got in while the queue stayed
+         * above half, and reading `heldByUs` then filed our own stall as the relay's silence.
+         */
+        val ours: Boolean,
+    )
+
+    /**
+     * [RelayReads.page], paused rather than ended while our own ingest queue holds the socket:
+     * the walk waits for the queue to drain, then re-asks from the oldest second it reached, so a
+     * burst costs one page again instead of the whole walk.
+     *
+     * BOUNDED, both ways a resume can fail to help. Each resume must start OLDER than the last
+     * (or be the first): a burst denser in one `created_at` second than half the queue re-stalls
+     * inside that second, and a page whose events are all implausible never moves the cursor, so
+     * without the rule both re-asked the same ground forever, refilling the queue with
+     * duplicates. And every pause of ONE walk draws on the one [pauseLimitMs] budget, never a
+     * fresh one per pause. Either way the walk then ends as ours ([Paged.ours]).
+     *
+     * The count is of DISTINCT events: the resume is inclusive at the second it starts from, so
+     * the relay serves that second's delivered events again, and they are dropped here instead of
+     * being counted, credited to the relay and submitted a second time.
+     */
+    private suspend fun pageThroughStalls(
+        url: NormalizedRelayUrl,
+        chunk: Filter,
+        ongoingVisit: OngoingVisit,
+        onEvent: suspend (Event) -> Unit,
+    ): Paged {
+        val floor = BoundarySecond()
+        var resumedAt: Long? = null
+        val distinct: suspend (Event) -> Unit = { event ->
+            if (!floor.repeats(event, resumedAt)) {
+                onEvent(event)
+                floor.delivered(event)
+            }
+        }
+        var ask = chunk
+        var pausedMs = 0L
+        var paused = false
+        // The pager's own counts, summed over the asks, less the re-served copies dropped above
+        // (the pager counted them: to it they were delivered).
+        var downloaded = 0
+        while (true) {
+            val page = reads.page(url, ask, NEG_IDLE_MS, distinct)
+            downloaded += page.downloaded
+            val walked = page.copy(downloaded = downloaded - floor.dropped())
+            // A fact of this instant: whether a hook of ours holds the socket right now.
+            if (!(stalledByUs(walked.end) && heldByUs(url))) return Paged(walked, ours = false)
+            val cursor = ongoingVisit.pagingUntil
+            // A limit'd ask is not resumed: a re-ask from the cursor would count its limit again.
+            val moved = cursor != null && (resumedAt == null || cursor < resumedAt!!)
+            if (chunk.limit != null || !moved) return Paged(walked, ours = true)
+            val before = ongoingVisit.stage
+            ongoingVisit.stage = Stage(before.pool, STAGE_PAUSED)
+            val waited =
+                try {
+                    awaitIngestRoom(pauseLimitMs - pausedMs)
+                } finally {
+                    ongoingVisit.stage = before
+                }
+            // The wait was ours, not the relay's silence, whichever way it ended: left stale, the
+            // visit's next ask read it as the relay quiet past `quietGiveUpMs` (abortedGaveUp).
+            ongoingVisit.lastActivityMs = System.currentTimeMillis()
+            if (waited == null) return Paged(walked, ours = true)
+            pausedMs += waited
+            if (!paused) counters.walksPausedByIngest.incrementAndGet()
+            paused = true
+            resumedAt = cursor
+            // Inclusive: the second the walk stopped in is asked again, and [distinct] drops its repeats.
+            ask = chunk.copy(until = cursor)
+        }
+    }
+
+    /**
+     * The events a walk delivered in the OLDEST second it reached — enough to recognise a
+     * resume's re-served copies, at O(one second) of ids — and how many such copies it dropped.
+     * Only plausible seconds count, as for the walk's cursor (`pagingUntil`), so the two name the
+     * same second.
+     * Locked: a hook that was parked when its page ended returns on its own coroutine, while the
+     * resumed page delivers.
+     */
+    private class BoundarySecond {
+        private var second = Long.MAX_VALUE
+        private val ids = HashSet<String>()
+        private var dropped = 0
+
+        @Synchronized
+        fun repeats(
+            event: Event,
+            resumedAt: Long?,
+        ): Boolean {
+            val repeat = resumedAt != null && event.createdAt == resumedAt && event.createdAt == second && event.id in ids
+            if (repeat) dropped++
+            return repeat
+        }
+
+        @Synchronized
+        fun delivered(event: Event) {
+            if (!SyncCoverage.isPlausible(event.createdAt)) return
+            if (event.createdAt < second) {
+                second = event.createdAt
+                ids.clear()
+            }
+            if (event.createdAt == second) ids += event.id
+        }
+
+        /** Re-served copies dropped so far. */
+        @Synchronized
+        fun dropped(): Int = dropped
+    }
+
+    /**
+     * Waits until the queue has room for a page, so the re-ask does not park again at once — and
+     * with it the parked hook has got in, since a hook parks only on a full queue. Returns how long
+     * it waited, or null when that would take longer than [budgetMs].
+     */
+    private suspend fun awaitIngestRoom(budgetMs: Long): Long? {
+        val start = System.currentTimeMillis()
+        while (!ingest.hasHeadroom()) {
+            if (System.currentTimeMillis() - start >= budgetMs) return null
+            delay(PAUSE_POLL_MS)
+        }
+        return System.currentTimeMillis() - start
     }
 
     /**
@@ -857,6 +990,9 @@ internal class VisitPool(
 
         const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
 
+        /** How often a paused walk looks at the ingest queue again. */
+        const val PAUSE_POLL_MS = 250L
+
         /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
         const val STAGE_PAGING = "catching up (paging)"
         const val STAGE_REFETCHING = "re-fetching the past (paging)"
@@ -866,6 +1002,7 @@ internal class VisitPool(
         const val STAGE_CLAIMING = "claiming the socket"
         const val STAGE_ASKING = "checking what this ask still owes"
         const val STAGE_FINISHING = "draining queued heals, then the tail"
+        const val STAGE_PAUSED = "paused: waiting for our ingest queue to drain"
 
         /** The pool's four workloads, as the `pool` word on every published row. */
         const val POOL_LIVE = "live"
