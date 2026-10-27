@@ -59,7 +59,7 @@ internal class PoolCounters {
     /** Visits not dialled because the ingest queue was full at the claim. */
     val visitsHeldByIngest = AtomicLong()
 
-    /** Walks our full ingest queue silenced that waited for it and resumed from their cursor. */
+    /** Walks our full ingest queue silenced that waited for it and resumed from their cursor, each counted once however often it paused. */
     val walksPausedByIngest = AtomicLong()
     val auditsRun = AtomicLong()
 

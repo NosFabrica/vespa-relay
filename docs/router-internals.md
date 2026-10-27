@@ -406,8 +406,10 @@ consumer was not parked when it was said. Nothing else about the abort changes
 — no band, no tail, the leg stays outstanding — because the walk really did not
 happen. It is the last resort: a walk that ends that way while a hook of ours is
 parked first waits for the queue to drain and re-asks from the oldest second it
-reached (`walksPausedByIngest`), and is filed as `abortedBackpressured` only
-when the queue has not drained within `LEG_QUIET_GIVE_UP_MS`. `VisitPoolBackpressureTest` stages it against a pipeline filled to
+reached (`walksPausedByIngest`), and is filed as `abortedBackpressured` — the
+whole visit ending, so its permit is released — only when the queue has not
+drained within the walk's one `LEG_QUIET_GIVE_UP_MS` budget or a resume could
+not move the cursor (see docs/decisions/visit-pool.md). `VisitPoolBackpressureTest` stages it against a pipeline filled to
 capacity and never started, including a producer outside the pool.
 
 **And a visit is not dialled into a queue that cannot take it.** `visit` reads

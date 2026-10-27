@@ -97,11 +97,26 @@ the walk. A cut walk keeps a band only where it touches the one already held,
 and a catch-up walks down from now toward that band, so the cut kept nothing
 and the next visit downloaded the burst again from the top, refilling the queue
 with duplicates. The walk now waits for the parked hook to clear and the queue
-to fall to half, then re-asks from the oldest second it reached (`until`,
-inclusive), and counts `walksPausedByIngest`. A queue that does not drain within
-`LEG_QUIET_GIVE_UP_MS` still ends the walk as `abortedBackpressured`. The pause
-belongs in quartz's pager, whose idle clock could stop while a hook is running;
-until then each stall costs one re-asked page.
+to fall to half (by count, and by bytes where `queueBytes` bounds them), then
+re-asks from the oldest second it reached (`until`, inclusive, its re-served
+events dropped rather than counted twice), and counts the walk once in
+`walksPausedByIngest`. The resume is bounded both ways it could fail to help:
+each resume must start older than the last, since a burst denser in one second
+than half the queue, or a page of only implausible `created_at`s, would
+otherwise re-ask the same ground forever; and every pause of one walk draws on
+one `LEG_QUIET_GIVE_UP_MS` budget. A walk that runs out either way ends the
+VISIT as `abortedBackpressured` — delivered events or not, and without waiting
+for the cut's acks, which would wait on the same queue — so it releases its
+permit and socket claim instead of parking once more per remaining chunk, leg
+and band. Whether the stall was ours is decided when it is seen, before the
+pause: by the time a pause gives up the hook may have got in, and the ending
+read then was filed as the relay's.
+
+The cause is in quartz's pager, whose idle clock ran while our hook was parked;
+vitorpamplona/quartz#32 stops it while `onEvent` runs. Once the quartz pin
+carries that, a full queue no longer ends a page at all, and this pause is the
+fallback for the stalls the pager still reports (a socket a hook outside the
+walk is parked on). Until then each stall costs one re-asked page.
 
 **A visit is not dialled into a full queue.** The download would park its
 first event, silence the socket, and come back `abortedBackpressured` an idle

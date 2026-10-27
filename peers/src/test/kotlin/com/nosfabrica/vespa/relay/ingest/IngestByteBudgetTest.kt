@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -72,6 +73,49 @@ class IngestByteBudgetTest {
             val budget = ByteBudget(limit = 100)
             withTimeout(2_000) { budget.acquire(10_000) }
             assertEquals(10_000, budget.heldBytes)
+        }
+
+    /**
+     * A spent byte budget silences a producer's socket exactly as a full channel does: the send
+     * waits in `acquire` before it is ever queued. So it counts as no headroom, and the producer
+     * counts as parked on its relay — otherwise a walk resumed onto a full budget, or stalled by
+     * one, read as the relay going quiet.
+     */
+    @Test
+    fun `a spent byte budget is no headroom, and its waiter is parked on its relay`() =
+        runBlocking {
+            val relay = RelayUrlNormalizer.normalize("wss://source.example")
+            val real = NostrSemanticsStore(InMemoryEventIndex())
+            val gate = CompletableDeferred<Unit>()
+            val writing = CompletableDeferred<Unit>()
+            val store =
+                object : IEventStore by real {
+                    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+                        writing.complete(Unit)
+                        gate.await()
+                        return real.batchInsert(events)
+                    }
+                }
+            val scope = CoroutineScope(Job())
+            val first = note(1)
+            // A queue far from half full by count, and a budget the first event alone spends.
+            val pipeline = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1, queue = 1_024, queueBytes = approxHeapBytes(first)), null, null, scope)
+            pipeline.start()
+            pipeline.submit(first, skipVerify = true, origin = IngestOrigin(relay))
+            withTimeout(5_000) { writing.await() }
+
+            assertTrue(!pipeline.hasHeadroom(), "one event of 1,024 queued, but no byte of the budget left")
+            val waiter = scope.async { pipeline.submit(note(2), skipVerify = true, origin = IngestOrigin(relay)) }
+            withTimeout(5_000) { while (pipeline.parkedOn(relay) < 1) delay(10) }
+            assertEquals(1, pipeline.parkedOn(relay), "waiting on the budget is parked, like waiting on the channel")
+
+            gate.complete(Unit)
+            withTimeout(5_000) { waiter.await() }
+            assertEquals(0, pipeline.parkedOn(relay), "and released once it gets in")
+
+            pipeline.closeIntake()
+            scope.cancel()
+            pipeline.close()
         }
 
     @Test

@@ -129,8 +129,12 @@ class IngestPipeline(
     /** At capacity: the next [submit] would suspend its caller, and with it that caller's socket. */
     fun isFull(): Boolean = queued.get() >= capacity
 
-    /** At most half full: room for a resumed download's page without parking its socket again. */
-    fun hasHeadroom(): Boolean = queued.get() <= capacity / 2
+    /**
+     * At most half full, by count AND by bytes when [IngestTuning.queueBytes] bounds them: room for
+     * a resumed download's page without parking its socket again. A spent byte budget parks a
+     * submit as surely as a full channel does, before it is ever counted as queued.
+     */
+    fun hasHeadroom(): Boolean = queued.get() <= capacity / 2 && (intakeBudget?.let { it.heldBytes <= it.limit / 2 } ?: true)
 
     val accepted = AtomicLong()
     val rejected = AtomicLong()
@@ -210,8 +214,23 @@ class IngestPipeline(
             return
         }
         // Before it is counted as queued: a publish waiting here is the connection's backpressure,
-        // like a full channel, and holds nothing of the pipeline yet.
-        val weight = intakeBudget?.let { budget -> approxHeapBytes(event).also { budget.acquire(it) } } ?: 0L
+        // like a full channel, and holds nothing of the pipeline yet. Counted as PARKED while it
+        // actually waits, as a suspended send is: either way the caller's socket stops reading, and
+        // a walk that sees silence must be able to tell it was ours.
+        val weight =
+            intakeBudget?.let { budget ->
+                approxHeapBytes(event).also { bytes ->
+                    if (!budget.tryAcquire(bytes)) {
+                        val held = origin.url?.let { parked.getOrPut(it) { AtomicInteger() } }
+                        held?.incrementAndGet()
+                        try {
+                            budget.acquire(bytes)
+                        } finally {
+                            held?.decrementAndGet()
+                        }
+                    }
+                }
+            } ?: 0L
         // Counted before the send and taken back if it fails, or a fast worker decrements first.
         queued.incrementAndGet()
         var handedOff = false

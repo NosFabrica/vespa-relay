@@ -40,11 +40,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -113,6 +116,8 @@ class VisitPoolBackpressureTest {
         private val h: Harness,
         private val delivered: List<Int>,
         private val parked: Int,
+        /** The first page also delivers a second event in [parked]'s second, and the resume serves both again, as a real relay does. */
+        private val reServes: Boolean = false,
     ) : RelayReads {
         val asked = CopyOnWriteArrayList<Filter>()
         val tails = ConcurrentHashMap<String, List<Filter>>()
@@ -124,8 +129,16 @@ class VisitPoolBackpressureTest {
             onEvent: suspend (Event) -> Unit,
         ): PagedFetchResult {
             asked += filter
-            if (asked.size > 1) return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
+            if (asked.size > 1) {
+                if (reServes) {
+                    onEvent(event(parked + SAME_SECOND, event(parked).createdAt))
+                    onEvent(event(parked))
+                    return PagedFetchResult(2, PagedFetchResult.End.DRAINED)
+                }
+                return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
+            }
             delivered.forEach { onEvent(event(it)) }
+            if (reServes) onEvent(event(parked + SAME_SECOND, event(parked).createdAt))
             h.fillIngest()
             h.scope.launch { onEvent(event(parked)) }
             delay(HOOK_SETTLE_MS)
@@ -135,7 +148,7 @@ class VisitPoolBackpressureTest {
                 h.ingest.start()
             }
             val end = if (delivered.isEmpty()) PagedFetchResult.End.UNPAGEABLE else PagedFetchResult.End.IDLE
-            return PagedFetchResult(delivered.size, end)
+            return PagedFetchResult(delivered.size + (if (reServes) 1 else 0), end)
         }
 
         override suspend fun tail(
@@ -169,13 +182,53 @@ class VisitPoolBackpressureTest {
         pauseLimitMs: Long = 500,
         /** The relay the pool reads, when it is not [StalledRelay]. */
         readsOf: ((Harness) -> RelayReads)? = null,
+        /**
+         * Started at once over a store that writes only while [open]: the test decides when the
+         * queue drains and how far ([drainTo]), and can make it stall again afterwards.
+         */
+        gated: Boolean = false,
     ) {
         val scope = CoroutineScope(SupervisorJob())
         val store = NostrSemanticsStore(InMemoryEventIndex())
         val processors = Processors()
 
-        /** Never started, so nothing drains it and filling it parks every submit after. */
-        val ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null)
+        /** Whether the gated store is writing. */
+        val open = MutableStateFlow(false)
+
+        /** Where a [drainTo] stops: the store closes its own gate once the queue is down to it. */
+        @Volatile
+        private var drainLevel = 0
+
+        private lateinit var pipeline: IngestPipeline
+
+        private val gatedStore =
+            object : IEventStore by store {
+                override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+                    open.first { it }
+                    val written = store.batchInsert(events)
+                    // Closed from in here, after each batch: a test polling the depth from outside
+                    // overshoots by however many batches a poll interval lets through.
+                    if (pipeline.queued.get() <= drainLevel) open.value = false
+                    return written
+                }
+            }
+
+        /** Never started unless [gated], so nothing drains it and filling it parks every submit after. */
+        // Gated: a small queue, since the gated tests fill and drain it on every page.
+        val ingest =
+            IngestPipeline(if (gated) gatedStore else store, IngestTuning(concurrency = 1, batch = WORKER_BATCH, queue = if (gated) GATED_QUEUE else null), null, null, scope, null, null)
+                .also {
+                    pipeline = it
+                    if (gated) it.start()
+                }
+
+        /** Let the gated store write until the queue holds at most [level] events (one worker batch fewer at worst), then stall it again. */
+        suspend fun drainTo(level: Int) {
+            if (ingest.queued.get() <= level) return
+            drainLevel = level
+            open.value = true
+            open.first { !it }
+        }
 
         val relay =
             StalledRelay(scope, end, handsAnEvent) {
@@ -195,7 +248,9 @@ class VisitPoolBackpressureTest {
                     dir = SyncDirection.DOWN,
                     filter = Filter(kinds = listOf(KIND)),
                     urls = listOf(RelayUrlNormalizer.normalize("wss://relay.example")),
-                    trusted = false,
+                    // Trusted when gated: a started pipeline verifies an untrusted stream's events
+                    // and drops these unsigned fixtures before they ever wait on the store.
+                    trusted = gated,
                 ),
             )
 
@@ -227,6 +282,20 @@ class VisitPoolBackpressureTest {
         /** Fill the queue to the brim, so the pool's next hand-off suspends. */
         suspend fun fillIngest() {
             repeat(ingest.capacity - ingest.queued.get()) { ingest.submit(event(FILL_BASE + it), skipVerify = true) }
+        }
+
+        /**
+         * Hand [make]'s events to the walk's [onEvent] on their own coroutine until the walk's own
+         * hook parks in the full queue — the burst itself filling it, as in production — and
+         * return then. The rest of the flood goes in as the queue drains.
+         */
+        suspend fun floodUntilParked(
+            onEvent: suspend (Event) -> Unit,
+            make: (Int) -> Event,
+        ) {
+            val url = streams.single().urls.single()
+            scope.launch { repeat(ingest.capacity + FLOOD_SPARE) { onEvent(make(it)) } }
+            withTimeout(5_000) { while (ingest.parkedOn(url) < 1) delay(5) }
         }
 
         suspend fun countsAfterTheVisit(): Map<String, Long> = countsOnce { (it["visitsRun"] ?: 0L) >= 1L && (it["abortedVisits"] ?: 0L) >= 1L }
@@ -391,6 +460,197 @@ class VisitPoolBackpressureTest {
             }
         }
 
+    /**
+     * Floods every page at ONE second until the walk's hook parks, the queue draining a moment
+     * after each: a burst denser in one `created_at` second than half the queue. Each re-ask is inclusive at that second, so a
+     * resume that does not require the cursor to move re-asks the same ground forever.
+     */
+    private class DenseRelay(
+        private val h: Harness,
+        /** What every event carries: one second, or a future one the cursor ignores. */
+        private val createdAt: Long,
+    ) : RelayReads {
+        val asked = CopyOnWriteArrayList<Filter>()
+        val tails = ConcurrentHashMap<String, List<Filter>>()
+
+        override suspend fun page(
+            url: NormalizedRelayUrl,
+            filter: Filter,
+            idleTimeoutMs: Long,
+            onEvent: suspend (Event) -> Unit,
+        ): PagedFetchResult {
+            asked += filter
+            // Bounds the test, not the pool: a livelock reads as six asks and no abort.
+            if (asked.size > 5) return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
+            val n = asked.size
+            h.floodUntilParked(onEvent) { event(PAGE_BASE * n + it, createdAt) }
+            h.scope.launch {
+                delay(HOOK_SETTLE_MS)
+                h.drainTo(0)
+            }
+            return PagedFetchResult(2, PagedFetchResult.End.IDLE)
+        }
+
+        override suspend fun tail(
+            subId: String,
+            url: NormalizedRelayUrl,
+            filters: List<Filter>,
+            onEvent: suspend (Event) -> Unit,
+        ) {
+            tails[subId] = filters
+        }
+
+        override fun untail(subId: String) {
+            tails.remove(subId)
+        }
+    }
+
+    /** One page: [delivered] events, then a hook parked in a full queue; [afterTheStall] runs meanwhile. Later pages drain. */
+    private class OneStallRelay(
+        private val h: Harness,
+        private val delivered: Int,
+        private val afterTheStall: suspend () -> Unit,
+    ) : RelayReads {
+        val asked = CopyOnWriteArrayList<Filter>()
+        val tails = ConcurrentHashMap<String, List<Filter>>()
+
+        override suspend fun page(
+            url: NormalizedRelayUrl,
+            filter: Filter,
+            idleTimeoutMs: Long,
+            onEvent: suspend (Event) -> Unit,
+        ): PagedFetchResult {
+            asked += filter
+            if (asked.size > 1) return PagedFetchResult(0, PagedFetchResult.End.DRAINED)
+            repeat(delivered) { onEvent(event(40 - it)) }
+            h.floodUntilParked(onEvent) { event(PAGE_BASE + it, event(10).createdAt) }
+            h.scope.launch { afterTheStall() }
+            return PagedFetchResult(delivered, if (delivered == 0) PagedFetchResult.End.UNPAGEABLE else PagedFetchResult.End.IDLE)
+        }
+
+        override suspend fun tail(
+            subId: String,
+            url: NormalizedRelayUrl,
+            filters: List<Filter>,
+            onEvent: suspend (Event) -> Unit,
+        ) {
+            tails[subId] = filters
+        }
+
+        override fun untail(subId: String) {
+            tails.remove(subId)
+        }
+    }
+
+    @Test
+    fun `a resume that cannot move the cursor ends the walk instead of re-asking forever`() =
+        runBlocking {
+            var relay: DenseRelay? = null
+            val h = Harness(PagedFetchResult.End.IDLE, pauseLimitMs = 10_000, gated = true, readsOf = { DenseRelay(it, event(10).createdAt).also { r -> relay = r } })
+            try {
+                h.pool.start()
+                val counts = h.countsOnce { relay!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                assertEquals(2, relay!!.asked.size, "one resume into the dense second, then the walk ends: the cursor did not move")
+                assertEquals(1L, counts["abortedBackpressured"], "ended on our queue, not the relay")
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a stalled page with no plausible cursor is not resumed from the top`() =
+        runBlocking {
+            // A page of future-dated events never moves the cursor, so a resume would re-ask the whole ask.
+            var relay: DenseRelay? = null
+            val h = Harness(PagedFetchResult.End.IDLE, pauseLimitMs = 10_000, gated = true, readsOf = { DenseRelay(it, FUTURE).also { r -> relay = r } })
+            try {
+                h.pool.start()
+                val counts = h.countsOnce { relay!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                assertEquals(1, relay!!.asked.size, "nothing to resume from")
+                assertEquals(1L, counts["abortedBackpressured"])
+            } finally {
+                h.close()
+            }
+        }
+
+    @Test
+    fun `a pause that times out after the hook cleared is still our stall`() =
+        runBlocking {
+            // The hook gets in, but the queue stays above half for the whole pause: by the time the
+            // walk gives up nothing of ours is parked, and the ending must not be read then.
+            var h: Harness? = null
+            val harness =
+                Harness(
+                    PagedFetchResult.End.UNPAGEABLE,
+                    pauseLimitMs = 1_500,
+                    gated = true,
+                    readsOf = {
+                        OneStallRelay(it, delivered = 0) {
+                            delay(HOOK_SETTLE_MS)
+                            h!!.drainTo(h!!.ingest.capacity * 7 / 10)
+                        }
+                    },
+                )
+            h = harness
+            try {
+                harness.pool.start()
+                val counts = harness.countsAfterTheVisit()
+                assertEquals(1L, counts["abortedBackpressured"])
+                assertEquals(0L, counts["abortedUnpageable"], "the relay answered; our queue did not drain")
+            } finally {
+                harness.close()
+            }
+        }
+
+    @Test
+    fun `a walk whose pause ran out ends the visit while the queue is still backed up`() =
+        runBlocking {
+            // Delivered events, so the walk is a cut, not a refusal: it used to go on to the next
+            // leg and band, each parking again against the same queue while holding the permit.
+            var h: Harness? = null
+            var relay: OneStallRelay? = null
+            val harness =
+                Harness(
+                    PagedFetchResult.End.IDLE,
+                    pauseLimitMs = 500,
+                    gated = true,
+                    readsOf = {
+                        OneStallRelay(it, delivered = 2) {
+                            // After the pause ran out: enough for the walk's own events to be stored, not for headroom.
+                            delay(1_500)
+                            h!!.drainTo(h!!.ingest.capacity * 9 / 10)
+                        }.also { r -> relay = r }
+                    },
+                )
+            h = harness
+            try {
+                harness.pool.start()
+                val counts = harness.countsOnce { relay!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                assertEquals(1, relay!!.asked.size, "no further ask against a queue with no room")
+                assertEquals(1L, counts["abortedBackpressured"])
+                assertEquals(0L, counts["abortedGaveUp"], "the wait was ours, not the relay's silence")
+            } finally {
+                harness.close()
+            }
+        }
+
+    @Test
+    fun `a resume does not deliver the boundary second's events twice`() =
+        runBlocking {
+            // The re-ask is inclusive at the second the walk stopped in, so the relay serves that
+            // second's events again; handed on twice, they are counted (and submitted) twice.
+            var burst: BurstRelay? = null
+            val h = Harness(PagedFetchResult.End.IDLE, pauseLimitMs = 10_000, readsOf = { BurstRelay(it, listOf(30, 20), parked = 10, reServes = true).also { r -> burst = r } })
+            try {
+                h.pool.start()
+                val counts = h.countsOnce { burst!!.tails.isNotEmpty() || (it["abortedVisits"] ?: 0L) >= 1L }
+                assertEquals(2, burst!!.asked.size)
+                assertEquals(4L, counts["poolReceived"], "30, 20, 10 and the second's other event, each once")
+            } finally {
+                h.close()
+            }
+        }
+
     @Test
     fun `refusedOutright and stalledByUs agree on which endings are refusals at all`() {
         // Every ending a stall can be mistaken for is one that aborts; the converse is false.
@@ -412,18 +672,32 @@ class VisitPoolBackpressureTest {
         private const val HOOK_SETTLE_MS = 300L
         private const val FILL_BASE = 1_000_000
         private const val FOREIGN = 2_000_000
+        private const val PAGE_BASE = 3_000_000
+
+        /** Events a flood hands on past the queue's capacity, so it outlasts one worker batch. */
+        private const val FLOOD_SPARE = 32
+
+        private const val WORKER_BATCH = 16
+
+        private const val GATED_QUEUE = 256
+        private const val SAME_SECOND = 4_000_000
+
+        /** A `created_at` in 2100: the walk's cursor ignores it as implausible. */
+        private const val FUTURE = 4_102_444_800L
 
         private fun idOf(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("backpressure-$n".toByteArray()))
 
-        fun event(n: Int) =
-            Event(
-                id = idOf(n),
-                pubKey = "a1".repeat(32),
-                createdAt = 1_700_000_000L + n,
-                kind = KIND,
-                tags = emptyArray(),
-                content = "",
-                sig = "b2".repeat(32),
-            )
+        fun event(
+            n: Int,
+            createdAt: Long = 1_700_000_000L + n,
+        ) = Event(
+            id = idOf(n),
+            pubKey = "a1".repeat(32),
+            createdAt = createdAt,
+            kind = KIND,
+            tags = emptyArray(),
+            content = "",
+            sig = "b2".repeat(32),
+        )
     }
 }

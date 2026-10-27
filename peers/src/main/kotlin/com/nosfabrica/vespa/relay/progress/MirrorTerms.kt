@@ -814,11 +814,12 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "walksPausedByIngest",
             "Walks that went quiet because a hook of ours was parked in the full ingest queue, and that waited " +
-                "for the queue to drain instead of ending. Each resumes with one REQ from the oldest second it had " +
-                "reached, so a burst the store is slow to absorb costs a page again rather than the whole walk " +
-                "again at the next visit. Climbing is the store setting the mirror's pace, which is the intended " +
-                "reading of a full queue; `abortedBackpressured` climbing beside it means the queue did not drain " +
-                "within the pause limit, and that is the store to look at.",
+                "for the queue to drain instead of ending — each walk counted once, however often it paused. Each " +
+                "pause resumes from the oldest second the walk had reached, so a burst the store is slow to absorb " +
+                "costs a page again rather than the whole walk again at the next visit. Climbing is the store " +
+                "setting the mirror's pace, which is the intended reading of a full queue; `abortedBackpressured` " +
+                "climbing beside it means the queue did not drain within the walk's pause budget, or a resume " +
+                "could not move the cursor, and that is the store to look at.",
         )
         term(
             "negentropyRunning",
@@ -925,7 +926,8 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "abortedBackpressured",
             "Visits ended because OUR OWN ingest queue was full, a hook of ours was suspended in it when " +
-                "the walk went quiet, and the queue did not drain within the pause limit (a walk whose queue " +
+                "the walk went quiet, and the queue did not drain within the walk's pause budget or a resume could " +
+                "not move the cursor (a walk whose queue " +
                 "drains pauses and resumes instead, counted in `walksPausedByIngest`) — so the silence, or the page received and never counted as delivered, was " +
                 "manufactured on this side of the socket. quartz drains each socket through one consumer that " +
                 "awaits every listener, so one parked hook stops every subscription on that socket, and the " +
