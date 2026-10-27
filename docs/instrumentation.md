@@ -193,6 +193,18 @@ Reach for it first.
   `relay/tools/ingest-bench/bench.sh NAME [VAR=value …]`. Reach for it before changing a
   batch size, a worker count or anything on the write path; `IngestCostBench` below prices one
   event by its verdict, this prices a workload.
+- **An allocation profile** — where a process's garbage comes from, by owning frame. JFR on the
+  running JVM, `jcmd <pid> JFR.start settings=profile filename=x.jfr` and `JFR.stop`, under a
+  workload you can repeat: the ingest benchmark's slice for writes, `relay/tools/read-mix.mjs`
+  (seeded, so two builds get the same queries) for reads, a slice pulled off the live relay with
+  `relay/tools/fetch-slice.mjs`. `jfr view allocation-by-site` names the JDK frame only; group
+  `jfr print --events jdk.ObjectAllocationSample` by the first frame in our own or a library's
+  package. Total bytes come from `jdk.ThreadAllocationStatistics` differenced across the
+  recording, pauses and causes from `jdk.GarbageCollection`, and `-Xlog:gc*` on the command line
+  says the same in the log. The signature to look for first is `G1 Humongous Allocation`: one
+  array past half a G1 region (1 MiB at 2 MiB regions), a whole response or a batch body held as
+  a string, each starting a concurrent cycle. What it found on 2026-10-26, and the fixes, are in
+  vespa-eventstore's `benchmark/README.md`, "Allocation and GC on a production corpus".
 - **`IngestCostBench`** — what one arriving event costs ingest, split by the
   verdict it ends on, end to end through the real pipeline against a real
   Vespa. It lives in `:peers` with the pipeline it measures — this said

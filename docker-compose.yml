@@ -108,7 +108,10 @@ services:
       # memory the engine has already claimed. Per-process override first: the
       # two JVMs are sized 2x apart, so a bare JAVA_TOOL_OPTIONS tuned for the
       # sync's reconcile heap would silently retune the serving relay too.
-      JAVA_TOOL_OPTIONS: ${RELAY_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
+      # An initial heap on top of the shared flags, so an .env setting only those still gets it:
+      # G1 grows a heap only once collection passes its time target, so a serving heap left to
+      # grow stayed near 150 MB and collected ~9x a second. RELAY_JAVA_TOOL_OPTIONS replaces both.
+      JAVA_TOOL_OPTIONS: ${RELAY_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70} -XX:InitialRAMPercentage=35}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
       # Migration tripwires, not settings: the relay refuses to boot when a
