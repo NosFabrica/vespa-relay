@@ -45,7 +45,28 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
+2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
+What this relay reaches:
+
+  RELAY URLS ARE THE APP'S CALL (quartz c1e23a7). isLocalHost now covers 100.64.0.0/10 (CGNAT,
+    Tailscale), single-label hosts, .lan/.home/.home.arpa/.internal/.intranet/.localdomain and
+    IPv4-mapped IPv6, and quartz adds isDialableFromOthers, the policy for a url found in someone
+    else's data. RelayUrlCache.decide, which every discovery read goes through and which only ever
+    reads other people's relay lists, moves from isLocalHost to it: it also refuses documentation,
+    benchmarking and multicast literals and names that cannot be a host (`wss://wss/nos.lol`).
+    Measured on production's 49,184 relay-list urls: 305 Tailscale addresses had been dialled and
+    graded `silent`, 456 single-label and local-suffix hosts graded `dead`; none is a candidate now.
+    The urls this deployment declares itself (sync.conf `urls`) are never filtered, as before.
+  PARSERS KEEP LOCAL RELAYS; the filtered accessors (readRelaysNorm, writeRelaysNorm, the DM and
+    KeyPackage relays()) are deprecated and keep filtering until 3.0.0. Nothing here calls them:
+    discovery reads raw tags through RelayDiscovery.
+  Inert here: drss.io kinds and the kind-30054 split (the store's own pin note), FilterMatcher and
+    FilterIndex live fan-out speedups, LiveFrameSink.
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. The store at 493fe01d9ea7 still names
+    quartz 2.4.0, so the graph shows `com.vitorpamplona.quartz:quartz:2.4.0 -> 2.7.3`, the force
+    winning, until the store pin names 2.7.3 itself.
+
+Prev 2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
 is tag v2.4.0 (git rev-parse v2.4.0^{commit} = c63c35ca7629), published by quartz's release workflow.
 The first quartz this relay takes from a release rather than a JitPack commit:
 

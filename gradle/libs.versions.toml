@@ -5,7 +5,7 @@ app = "0.1.0"
 # A Maven Central release since 2.4.0. Every module forces it and maps JitPack's quartz group onto
 # it (build-logic); a bump is checked with `./gradlew :relay:dependencies --configuration
 # runtimeClasspath`: one quartz module, no `com.github.vitorpamplona.quartz` line.
-quartz = "2.4.0"
+quartz = "2.7.3"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
 vespaEventStore = "493fe01d9ea7"
 coroutines = "1.11.0"

@@ -249,3 +249,13 @@ called the store directly, so a read the store hung on showed nowhere under
 `store` on `/stats.json`. Failures are now logged with the url and the stage,
 at most once a minute, and the read goes through `storeCall` as
 `monitor.publish`.
+
+**Discovery refuses what no stranger's list can make a relay of.** `RelayUrlCache.decide`
+refused `isLocalHost`, which until quartz 2.7.3 missed Tailscale's `100.64.0.0/10`, single-label
+hosts and `.lan`-style suffixes: 305 Tailscale addresses from production's relay lists were dialled
+and graded `silent`, 456 single-label and local-suffix hosts `dead`. It now asks quartz's
+`isDialableFromOthers`, the rule for a url found in someone else's data, which also refuses
+documentation and multicast literals and names that cannot be a host (`wss://wss/nos.lol`, a scheme
+pasted twice). Every url `decide` sees comes from someone else's relay list; the urls a deployment
+declares in `sync.conf` never pass through it, so `ws://localhost:7777` still works as a stream's
+own upstream.
