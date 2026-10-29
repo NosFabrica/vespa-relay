@@ -170,8 +170,8 @@ class MonitorProfileProbe {
         }
         val passes =
             listOf(
-                entry(MonitorEngine.FOLD_PROCESSOR) { l, c, r, s -> folding.measure(l, c, { r(it) == Reach.REACHABLE }, {}, s) },
-                entry(MonitorEngine.STABILITY_PROCESSOR) { l, c, r, s -> stability.measure(l, c, { r(it) == Reach.REACHABLE }, {}, s) },
+                entry(MonitorEngine.FOLD_PROCESSOR) { l, c, r, s -> folding.measure(l, c, { MonitorEngine.foldDials(r(it)) }, {}, s) },
+                entry(MonitorEngine.STABILITY_PROCESSOR) { l, c, r, s -> stability.measure(l, c, { MonitorEngine.gateDials(r(it)) }, {}, s) },
                 entry(MonitorEngine.FITNESS_PROCESSOR) { l, c, r, s -> fitness.measure(l, c, r, {}, s) },
             )
         val monitor = AliasMonitor(passes, scope, source = world, retryEveryMs = null)

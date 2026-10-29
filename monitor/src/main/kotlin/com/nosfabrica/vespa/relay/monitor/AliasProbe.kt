@@ -47,7 +47,18 @@ class AliasProbe(
     private val maxPages: Int = DEFAULT_MAX_PAGES,
     /** How long one ask of this url may sit silent, per url because a hidden service gets its own budget. */
     private val idleMs: (NormalizedRelayUrl) -> Long = { DEFAULT_IDLE_MS },
+    /** Urls whose timed-out dial is worth a second rung: a Tor circuit is rebuilt on every attempt. */
+    private val retriesTimeouts: (NormalizedRelayUrl) -> Boolean = { false },
 ) {
+    /**
+     * Whether a ladder stops on [window], its first rung: our dial ran out of time and nothing
+     * answered, so the next rung is a fresh dial on the same clock. One rule for every pass's ladder.
+     */
+    fun endsLadder(
+        url: NormalizedRelayUrl,
+        window: Window,
+    ): Boolean = window.dialTimedOut && !retriesTimeouts(url)
+
     /**
      * The wall clock one url's work gets; quartz's idle window is not a hard cap, since a relay
      * that never stops sending never arms it. Nothing is published about a url this cuts.
@@ -90,8 +101,7 @@ class AliasProbe(
             // since a kinds walk refused beside a bare walk our transport cut is a live server.
             if (window.ids == null) silent++
             if (shape == FALLBACK_KINDS && silent == 2) return Attempt(null, spoke = false)
-            // Nothing has answered and the connect itself ran out of time: the next shape is the same dial.
-            if (window.connectTimedOut && !authRefused && silent == SHAPES.indexOf(shape) + 1) return Attempt(null, spoke = false)
+            if (shape == SHAPES.first() && !authRefused && endsLadder(url, window)) return Attempt(null, spoke = false)
         }
         return Attempt(null, spoke = true, authRefused = authRefused)
     }
@@ -155,8 +165,8 @@ class AliasProbe(
          */
         val oldestAt: Long? = null,
     ) {
-        /** Our dial ran out of time before any answer: another ask this pass waits on the same clock. */
-        val connectTimedOut: Boolean get() = ids == null && reason?.startsWith(CANNOT_CONNECT) == true && Silence.of(reason) == Silence.TIMEOUT
+        /** Our dial ran out of time before any answer, at the connect, the TLS handshake or the upgrade. */
+        val dialTimedOut: Boolean get() = ids == null && reason?.startsWith(CANNOT_CONNECT) == true && Silence.of(reason) == Silence.TIMEOUT
     }
 
     /**
@@ -376,6 +386,8 @@ class AliasProbe(
             page: Int = maxOf(target, MIN_PAGE),
             /** Hears every page with how long it took, for a probe that profiles a pass. */
             observe: ((NormalizedRelayUrl, Long, Page) -> Unit)? = null,
+            /** See [AliasProbe.retriesTimeouts]. */
+            retriesTimeouts: (NormalizedRelayUrl) -> Boolean = { false },
             idleMs: (NormalizedRelayUrl) -> Long,
         ): AliasProbe =
             AliasProbe(
@@ -405,6 +417,7 @@ class AliasProbe(
                 // Never above the page itself: a fallback bigger than what was just refused is not humbler.
                 fallbackPage = minOf(RelayAliases.FALLBACK_PROBE_PAGE, page),
                 idleMs = idleMs,
+                retriesTimeouts = retriesTimeouts,
             )
 
         /** The smallest page [over] will ask for; a one-event ask reads as a probe to some relays. */

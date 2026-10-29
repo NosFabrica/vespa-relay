@@ -424,12 +424,13 @@ second shape is a real second dial costing what the first did. Dial time fell
 from 4,808 to 1,894 permit-seconds in the fold, 6,984 to 1,773 in the gate and
 7,207 to 3,689 on fitness's ladder, with the same grades.
 
-**A connect that ran out of time ends the ladder while nothing has answered.**
-The next shape is a fresh dial on the same clock, and over Tor that clock is
-`SYNC_TOR_CONNECT_TIMEOUT_SECONDS`: a hung hidden service cost the bare shape
-a full connect timeout and the kinds shape another. `Window.connectTimedOut`
-is our dial failing on a `Silence.TIMEOUT` word before any answer; `leaderPrint`
-returns unspoken on it, fitness grades it `silent` off that one rung (the grade
-the second rung earned), and the stability gate skips its kinds pair. No url in
-the profiled sample served after a connect timeout on an earlier rung; the
-`c…e` urls there are CLOSED-then-served.
+**A clearnet dial that ran out of time on the first rung ends the ladder.**
+The next rung is a fresh dial on the same clock. `Window.dialTimedOut` is our
+dial failing on a `Silence.TIMEOUT` word before any answer, at the connect, the
+TLS handshake or the upgrade, and `AliasProbe.endsLadder` is the one rule:
+`leaderPrint` returns unspoken, fitness grades `silent` off that rung (the
+grade the second earned), and the stability gate skips its kinds pair. No url
+in the profiled sample served after a timeout on an earlier rung; the `c…e`
+urls there are CLOSED-then-served. That sample has no `.onion` urls, and a Tor
+circuit is rebuilt on every attempt, so a Tor-routed url keeps its second rung
+(`retriesTimeouts`) until a profile with Tor says otherwise.

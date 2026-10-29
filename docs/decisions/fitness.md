@@ -575,15 +575,20 @@ sample) had already timed out at the pre-probe, and was judged `REACHABLE`
 because a timeout proves nothing. `Reach.UNANSWERED` is that case, and only
 when every address was handed the whole `PROBE_TIMEOUT_MS`: a timeout beside a
 refusal, our own missing route, or a window the deadline shortened is still
-`REACHABLE`. The fold and the stability gate decline it, since neither
-publishes anything about a url that never answers; fitness still dials it,
-because `silent` is the dial's word on the dial's own window.
+`REACHABLE`, and a second address is not dialled on a window too short to
+count. The fold declines it, since it publishes nothing about a url that never
+answers. Fitness still dials it, because `silent` is the dial's word on the
+dial's own window, and so the stability gate walks it too: a few unanswered
+hosts in each profiled sweep answered the longer dial, one of them `prime`, and
+the first cut of this skipped the gate for them (`gateDials`, pinned by
+`ProbeDeadlineTest`).
 
-**A pre-probe answer no claim is signed on is reused for an hour.** All three
+**A pre-probe answer no claim is signed on is reused for up to an hour.** All three
 passes pre-probe the same hosts within a sweep, and the fold once per path, so
 an unanswered host cost five seconds of a dial permit three times over.
 `REACHABLE` and `UNANSWERED` are remembered per host and port for `REUSE_MS`,
-shorter than a sweep; both still end in a dial or in no claim. Proof is asked
+or the sweep period when that is shorter, so each sweep's fold asks afresh; both
+still end in a dial or in no claim. Proof is asked
 afresh every time, since `dead` is signed on it, and so is our own side. Fitness
 spent 619 permit-seconds pre-probing in the sample, and 81 after.
 

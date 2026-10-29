@@ -806,8 +806,7 @@ class FitnessPass(
                 silent++
                 // Two silent rungs in a row is a url that is not there.
                 if (rung == AliasProbe.FALLBACK_KINDS && silent == 2) break
-                // Nothing has answered and the connect itself ran out of time: the next rung is the same dial.
-                if (window.connectTimedOut && served == null && empty == null && refusals.isEmpty()) break
+                if (rung == AliasProbe.SHAPES.first() && probe.endsLadder(url, window)) break
                 continue
             }
             if (ids.isNotEmpty()) {

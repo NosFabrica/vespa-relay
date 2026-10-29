@@ -383,13 +383,16 @@ class AliasProbeTest {
     @Test
     fun `a connect that ran out of time is asked one shape, and a refused upgrade both general ones`() =
         runBlocking {
-            suspend fun shapesAsked(reason: String): Int {
+            suspend fun shapesAsked(
+                reason: String,
+                overTor: Boolean = false,
+            ): Int {
                 var asks = 0
                 val attempt =
                     AliasProbe(fetch = { _, _, _, _ ->
                         asks++
                         AliasProbe.Page(events = null, reason = reason)
-                    }).leaderPrint(url, BASE) {}
+                    }, retriesTimeouts = { overTor }).leaderPrint(url, BASE) {}
                 assertNull(attempt.leader)
                 assertFalse(attempt.spoke, "a url that never answered did not speak")
                 return asks
@@ -397,6 +400,8 @@ class AliasProbeTest {
 
             // The next shape would wait on the same dial's clock.
             assertEquals(1, shapesAsked("cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)"))
+            // A Tor circuit is rebuilt on every attempt, so a timed-out one is worth the second shape.
+            assertEquals(2, shapesAsked("cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)", overTor = true))
             // A refused upgrade is quick to ask again, and a second dial is how a flaky one is caught.
             assertEquals(2, shapesAsked("cannot:Server Misconfigured. Response: 503 Service Unavailable. Exception: Expected HTTP 101 response but was '503 Service Unavailable' (ProtocolException)"))
         }

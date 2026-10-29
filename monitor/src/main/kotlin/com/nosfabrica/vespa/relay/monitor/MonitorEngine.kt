@@ -140,11 +140,11 @@ class MonitorEngine(
 
     /** The three passes' probe: same transport and timeout budget, only the target depth differs. */
     private fun probeOver(target: Int) =
-        AliasProbe.over(client, target) { url ->
+        AliasProbe.over(client, target, retriesTimeouts = { tor?.routes(it) == true }) { url ->
             probeIdleMs(url, tor, connectionTimeoutMs)
         }
 
-    private val probe = ReachabilityProbe(tor, threads = monitorConcurrency)
+    private val probe = ReachabilityProbe(tor, threads = monitorConcurrency, reuseMs = minOf(ReachabilityProbe.REUSE_MS, sweepSeconds * 1000L))
 
     /** What the passes measure. */
     private val world =
@@ -210,9 +210,9 @@ class MonitorEngine(
     }
 
     /** The fold and the stability gate learn nothing from why a url was declined, only that it was. */
-    private val foldEntry = folding?.let { f -> entry(f.progress) { l, c, reach, e, s -> f.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
+    private val foldEntry = folding?.let { f -> entry(f.progress) { l, c, reach, e, s -> f.measure(l, c, { foldDials(reach(it)) }, e, s) } }
 
-    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { reach(it) == Reach.REACHABLE }, e, s) } }
+    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { gateDials(reach(it)) }, e, s) } }
 
     private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::flushPending, f::measure) }
 
@@ -331,6 +331,12 @@ class MonitorEngine(
         get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
+        /** What the fold dials: a host that took a connect, since it says nothing about one that did not. */
+        internal fun foldDials(reach: Reach): Boolean = reach == Reach.REACHABLE
+
+        /** What the stability gate walks: an unanswered host too, since fitness's longer dial may grade it `prime`. */
+        internal fun gateDials(reach: Reach): Boolean = reach == Reach.REACHABLE || reach == Reach.UNANSWERED
+
         /**
          * How often the fast lane looks, or null for a lane that is off. No `monitor` block takes
          * the default; `fastLaneSeconds = 0` inside a block is the off switch and survives.

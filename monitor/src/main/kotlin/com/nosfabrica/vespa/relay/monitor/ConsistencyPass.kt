@@ -420,7 +420,7 @@ class ConsistencyPass(
     /**
      * The bare filter, then the kinds fallback only when the first proved nothing. An auth
      * refusal ends the ladder: every later ask on that connection waits out the idle window,
-     * as a connect that ran out of time does on the next dial.
+     * as a dial that ran out of time does on the next one ([AliasProbe.endsLadder]).
      */
     private suspend fun ladder(
         url: NormalizedRelayUrl,
@@ -429,8 +429,7 @@ class ConsistencyPass(
     ): Ladder {
         val bare = walkPair(url, anchor, null, onEvent)
         val decided = consistency.decide(bare.first.ids, bare.second.ids) != RelayConsistency.Verdict.UNMEASURABLE
-        // A connect that ran out of time under both walks would run out again under the kinds pair.
-        val timedOut = bare.first.connectTimedOut && bare.second.connectTimedOut
+        val timedOut = probe.endsLadder(url, bare.first) && probe.endsLadder(url, bare.second)
         if (decided || bare.authRefused || timedOut) return Ladder(bare, null)
         return Ladder(bare, walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent))
     }

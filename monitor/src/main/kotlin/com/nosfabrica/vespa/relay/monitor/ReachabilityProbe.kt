@@ -90,6 +90,8 @@ internal class ReachabilityProbe(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Our default trust; the dial's client trusts the same roots. */
     private val tlsFactory: SSLSocketFactory = SSLContext.getDefault().socketFactory,
+    /** How long a [REUSABLE] answer stands; no longer than a sweep, so each sweep's fold asks afresh. */
+    private val reuseMs: Long = REUSE_MS,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
 
@@ -99,20 +101,27 @@ internal class ReachabilityProbe(
     /**
      * Whether to dial, and when not, whose side the reason is on. One fresh lookup and connect:
      * the JVM caches a failed lookup without its reason, so a second attempt could not tell our
-     * resolver failing from a name that does not exist. Only [REUSABLE] answers are reused, for [REUSE_MS].
+     * resolver failing from a name that does not exist. Only [REUSABLE] answers are reused, for [reuseMs].
      */
     suspend fun reach(url: NormalizedRelayUrl): Reach {
         if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
         if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
         val target = Target.of(url) ?: return Reach.REACHABLE
         val key = "${target.host}:${target.port}"
-        lately[key]?.let { (answer, atMs) -> if (clock() - atMs < REUSE_MS) return answer }
-        return probe(target).also { answer ->
-            if (answer in REUSABLE) {
-                if (lately.size >= MAX_REMEMBERED) lately.entries.removeIf { clock() - it.value.second >= REUSE_MS }
-                lately[key] = answer to clock()
-            }
+        lately[key]?.let { (answer, atMs) -> if (clock() - atMs < reuseMs) return answer }
+        return probe(target).also { answer -> if (answer in REUSABLE) remember(key, answer) }
+    }
+
+    /** Past [MAX_REMEMBERED] the lapsed answers go, and all of them if none had: a forgotten host is only asked again. */
+    private fun remember(
+        key: String,
+        answer: Reach,
+    ) {
+        if (lately.size >= MAX_REMEMBERED) {
+            lately.entries.removeIf { clock() - it.value.second >= reuseMs }
+            if (lately.size >= MAX_REMEMBERED) lately.clear()
         }
+        lately[key] = answer to clock()
     }
 
     /** One lookup and connect, on the probe's own threads. */
@@ -209,6 +218,10 @@ internal class ReachabilityProbe(
         for (address in addresses) {
             val left = deadline - clock()
             if (left <= 0) return Attempt(null, failures, complete = false)
+            // A shortened window cannot make the timeouts so far `UNANSWERED`, so it is not spent on them.
+            if (left < PROBE_TIMEOUT_MS && failures.isNotEmpty() && failures.all { it is SocketTimeoutException }) {
+                return Attempt(null, failures, complete = false)
+            }
             val window = minOf(PROBE_TIMEOUT_MS.toLong(), left).toInt()
             if (window < PROBE_TIMEOUT_MS) fullWindows = false
             try {
@@ -230,7 +243,7 @@ internal class ReachabilityProbe(
          */
         private val REUSABLE = setOf(Reach.REACHABLE, Reach.UNANSWERED)
 
-        /** Shorter than a sweep, so each sweep asks every host afresh. */
+        /** The longest a [REUSABLE] answer stands, whatever the sweep. */
         internal const val REUSE_MS = 60L * 60 * 1000
 
         /** Hosts held at once; past it, the lapsed answers are dropped. */

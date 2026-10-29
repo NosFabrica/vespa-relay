@@ -109,17 +109,26 @@ class ReachabilityProbeTest {
 
     @Test
     fun `a host no address answered within its whole window is unanswered and never proved gone`() {
-        assertEquals(Reach.UNANSWERED, reach(listOf(v4), mapOf(v4 to timedOut)))
-        assertEquals(Reach.UNANSWERED, reach(listOf(v4, v6), mapOf(v4 to timedOut, v6 to timedOut)))
-        // Beside a refusal or our own missing route, a timeout leaves the host to the dial.
-        assertEquals(Reach.REACHABLE, reach(listOf(v4, v6), mapOf(v4 to timedOut, v6 to unreachableNet)))
-        // A window the deadline shortened is not the window the claim is about.
+        // Each connect spends the whole window it is handed, as a host that never answers makes it.
         var now = 0L
-        val shortened =
+        val handed = mutableListOf<Int>()
+
+        fun timing(addresses: List<InetAddress>) =
             runBlocking {
-                probe(listOf(v4, v6), mapOf(v4 to timedOut, v6 to timedOut), clock = { now }) { _, timeoutMs -> now += timeoutMs }.reach(url)
+                handed.clear()
+                probe(addresses, addresses.associateWith { timedOut }, clock = { now }) { _, timeoutMs ->
+                    handed += timeoutMs
+                    now += timeoutMs
+                }.reach(url)
             }
-        assertEquals(Reach.REACHABLE, shortened)
+
+        assertEquals(Reach.UNANSWERED, timing(listOf(v4)))
+        // A second address could only be handed a shortened window, which is not the window the claim is about,
+        // so it is not dialled for nothing: the host costs the one window it did before.
+        assertEquals(Reach.REACHABLE, timing(listOf(v4, v6)))
+        assertEquals(listOf(5_000), handed)
+        // Beside a refusal or our own missing route, a timeout leaves the host to the dial.
+        assertEquals(Reach.REACHABLE, reach(listOf(v6, v4), mapOf(v6 to unreachableNet, v4 to timedOut)))
     }
 
     @Test

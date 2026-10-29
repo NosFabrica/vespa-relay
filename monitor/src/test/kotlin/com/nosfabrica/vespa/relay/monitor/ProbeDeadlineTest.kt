@@ -265,6 +265,27 @@ class ProbeDeadlineTest {
         }
 
     @Test
+    fun `the stability gate walks every url fitness dials`() =
+        runBlocking {
+            // A url fitness dials can come back `prime`, and none may get there past the gate.
+            for (reach in Reach.entries) {
+                val url = RelayUrlNormalizer.normalize("wss://${reach.name.lowercase()}.example")
+                var dialled = false
+                FitnessPass(
+                    record = RelayVerdictRecord(newStore(), signer),
+                    probe =
+                        probe { at, want, until, _ ->
+                            if (at == url) dialled = true
+                            paged(corpus(), want, until)
+                        },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure("one", listOf(url, answering), reach = { if (it == url) reach else Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                if (dialled) assertTrue(MonitorEngine.gateDials(reach), "fitness dials a url the pre-probe called $reach and the gate does not")
+            }
+        }
+
+    @Test
     fun `a connect that ran out of time is graded silent on one rung`() =
         runBlocking {
             val url = RelayUrlNormalizer.normalize("wss://hung.example")
