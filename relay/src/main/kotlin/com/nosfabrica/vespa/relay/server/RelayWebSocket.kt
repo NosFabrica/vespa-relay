@@ -58,13 +58,16 @@ internal fun Frame.Text.utf8Text(): String {
     return String(data, Charsets.UTF_8)
 }
 
+/** Encoded by the JDK's String.getBytes; Ktor's Frame.Text(String) runs a CharsetEncoder a character at a time. */
+internal fun textFrame(text: String): Frame.Text = Frame.Text(true, text.toByteArray(Charsets.UTF_8))
+
 /** The relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
         // One writer drains a bounded queue; a slow consumer is disconnected rather than having frames
         // dropped, which would break NIP-01.
         val outQueue = OutboundQueue()
-        val writer = launch { outQueue.drain { text -> outgoing.send(Frame.Text(text)) } }
+        val writer = launch { outQueue.drain { text -> outgoing.send(textFrame(text)) } }
         val disconnecting = AtomicBoolean()
 
         fun disconnectSlowConsumer() {

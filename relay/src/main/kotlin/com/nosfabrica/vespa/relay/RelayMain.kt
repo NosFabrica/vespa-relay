@@ -198,6 +198,7 @@ private class Boot(
     val requireReadLens: Boolean,
     val openRanking: OpenRankingConfig?,
     val httpRelay: HttpRelay?,
+    val nativeWebSocket: Boolean,
     val searchExpansion: SearchExpansionLimits,
     val nip11: Nip11Info,
     val adminPubkeys: Set<String>,
@@ -291,6 +292,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
+        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: false,
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,
@@ -563,6 +565,7 @@ private fun serve(
         statsJson = statsSnapshot,
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
+        nativeWebSocket = boot.nativeWebSocket,
         // Once the port is bound: printed before the server started, this line claimed a port that
         // refused connections for another second or more.
         onReady = {

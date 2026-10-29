@@ -152,6 +152,7 @@ async function main() {
     const signed = next(publisher, "signed"); publisher.send({ op: "sign", n }); await signed;
     const windowed = await Promise.all(children.map((c) => { const p = next(c, "windowed"); c.send({ op: "window" }); return p; }));
     const liveFeeds = windowed.reduce((a, w) => a + w.feeds, 0);
+    console.error(`  ${feeds} feeds open, publishing for ${hold}s`);
     const t0 = performance.now(), c0 = cpuTicks();
     const published = next(publisher, "published"); publisher.send({ op: "go", rate }); const pub = await published;
     const secs = (performance.now() - t0) / 1000, c1 = cpuTicks();
