@@ -599,18 +599,33 @@ ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
 url's stage reads `nip-11 document` only while the dial has finished and the
 document has not.
 
-**A url waiting on the fold behind a `prime` stand-in is asked once.** The fold
+**A url waiting on the fold on a server that answered HTTP is asked once.** The fold
 fingerprints what a path serves, so a path its server will not upgrade (a 404,
 a 410, a web page answering 200) gives it nothing to compare and is never
 decided; it waited behind its server's stand-in forever, ungraded and
 re-dialled by every fold pass. Production's records held 3,413 such urls on
 179 servers with another url graded, and its fold dialled 3,642 urls in a pass
-that decided 2. Fitness now asks each one once, beside the stand-in's standing
-grade only when that is `prime` (a server down at its stand-in answered 503 at
-all 87 of its paths), and grades it `dead` only when the refusal earns `dead`
+that decided 2. Fitness now asks each one once, when some url on its server
+stands graded as having answered HTTP (`prime`, `restricted`, `auth-refused`,
+`noncompliant`, `unpageable`, or `dead` for a refused upgrade; a server down at
+its stand-in answered 503 at all 87 of its paths), and grades it `dead` only when the refusal earns `dead`
 under the existing rules; any answer, a 5xx, a wall or a rate limit leaves it
 waiting with nothing written, and a cut one stays outside the batch guard. In
 the profiled sample it graded 135 such paths (`relay.ngit.dev` 45 of 46,
 `pyramid.fiatjaf.com` 57) for 350 permit-seconds, with fitness's wall clock
 unchanged; checking only beside a stand-in graded in the same batch took a
-second dial phase and 27 seconds more, for the same paths a sweep later.
+second dial phase and 27 seconds more, for the same paths a sweep later. The
+first cut keyed on the stand-in being `prime`, which missed every server whose
+graded urls were walls or refused upgrades (550 stuck urls on 30 servers in
+production): a stand-in is by construction ungraded or `prime`, since a refusal
+moves the role on, so the server's other grades are what say it is up.
+
+**A held url inherits its stand-in's proof about the socket.** The pre-probe and
+our own TLS handshake test a host and port, which every path on them shares, but
+only the stand-in was dialled, so a dead server's paths were graded one per
+sweep as each took the role: `haven.almostmachines.dev`'s 113 at four sweeps a
+day is four weeks. A held url on the stand-in's socket (`socketOf`, the scheme's
+port where none is written, so `ws://` and `wss://` on one host stay apart) now
+takes that `dead` with its evidence, after the TLS and dark-network guards, so
+it inherits only proof that survived them. Production held 597 urls on 39
+servers this way.

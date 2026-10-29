@@ -374,8 +374,9 @@ class FitnessPass(
             val heldBack = AliasFolding.heldAmong(held, graded, mates)
             batch.backingOff += backingOff(graded.filter { it !in heldBack })
             val toDial = graded.filter { it !in heldBack && it !in batch.backingOff }
-            // Only beside a stand-in standing `prime`: a server down at its stand-in is down at its paths.
-            val toCheck = heldBack.filterValues { standIn -> held.fitness[standIn]?.value == Verdict.PRIME.value }.keys
+            // Only on a server some url of which answered HTTP last time: one down there is down at every path.
+            val answering = answeringServers(held)
+            val toCheck = heldBack.keys.filterTo(HashSet()) { RelayAliases.authorityOf(it.url) in answering }
             // The free refusals are outside this count: they cost no socket.
             progress.measuring(toDial.size + toCheck.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
@@ -384,8 +385,6 @@ class FitnessPass(
             dialEach(toDial + toCheck, gate, probe::deadlineMs, progress, cut = { url -> if (url !in toCheck) batch.cut(url) }) { url ->
                 if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, reach, sockets, batch, onEvent)
             }
-            // A held path its server refused to upgrade is graded and no longer waits; every other one still does.
-            val waiting = heldBack.filterKeys { !batch.outcomes.containsKey(it) }
             // Before the guard: a refused batch still heard each relay ask us to come back later.
             backOff(batch)
 
@@ -396,6 +395,10 @@ class FitnessPass(
             val stale = if (sweep) staleWhileDeferring(held, batch.deferring()) else emptySet()
             withholdTlsDead(label, toDial, batch)
             withholdUnspoken(label, toDial, batch)
+            // After the guards, so a held url inherits only the proof that survived them.
+            inheritSocketProof(heldBack, batch)
+            // A held path graded here no longer waits; every other one still does.
+            val waiting = heldBack.filterKeys { !batch.outcomes.containsKey(it) }
             val written = write(label, held, waiting, stale, batch)
             if (sweep) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
@@ -679,9 +682,35 @@ class FitnessPass(
     }
 
     /**
-     * A url waiting on the fold behind a `prime` stand-in, asked once: the fold cannot fingerprint a path
-     * its server will not upgrade, so that path would wait forever. Graded only when the refusal earns
-     * `dead`; an answer of any other kind, or none, leaves it waiting and writes nothing.
+     * The servers, by [RelayAliases.authorityOf], with a url whose standing grade says the server
+     * answered HTTP: it spoke NIP-01, or refused the websocket upgrade in so many words.
+     */
+    private fun answeringServers(held: RelayVerdictRecord.Verdicts): Set<String> =
+        held.fitness.entries
+            .filter { (_, grade) -> grade.value in ANSWERED_GRADES || (grade.value == Verdict.DEAD.value && grade.evidence?.startsWith(Silence.UPGRADE.reason) == true) }
+            .mapTo(HashSet()) { RelayAliases.authorityOf(it.key.url) }
+
+    /**
+     * Held urls on the socket a stand-in's pre-probe or handshake proof is about inherit it, since
+     * both test the host and port, which every path on them shares. A dead server's paths were
+     * otherwise graded one per sweep, each in its turn as the stand-in.
+     */
+    private fun inheritSocketProof(
+        heldBack: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        batch: Batch,
+    ) {
+        for ((url, standIn) in heldBack) {
+            if (batch.outcomes.containsKey(url)) continue
+            val proof = batch.outcomes[standIn]?.takeIf { it.verdict == Verdict.DEAD && (it.preProbe || it.tls) } ?: continue
+            val socket = socketOf(url) ?: continue
+            if (socket == socketOf(standIn)) batch.outcomes[url] = proof
+        }
+    }
+
+    /**
+     * A url waiting on the fold on a server that answered HTTP, asked once: the fold cannot fingerprint
+     * a path its server will not upgrade, so that path would wait forever. Graded only when the refusal
+     * earns `dead`; an answer of any other kind, or none, leaves it waiting and writes nothing.
      */
     private suspend fun checkHeld(
         url: NormalizedRelayUrl,
@@ -1404,6 +1433,25 @@ class FitnessPass(
 
         /** The one ask a url waiting on the fold gets. */
         const val STAGE_HELD = "held for the fold"
+
+        /** Grades a server earns only by answering a REQ or refusing one, whatever else they say. */
+        private val ANSWERED_GRADES =
+            setOf(Verdict.PRIME, Verdict.RESTRICTED, Verdict.AUTH_REFUSED, Verdict.NONCOMPLIANT, Verdict.UNPAGEABLE).mapTo(HashSet()) { it.value }
+
+        /** The host and port a dial of [url] opens, the scheme's port where none is written. */
+        internal fun socketOf(url: NormalizedRelayUrl): String? {
+            val uri = runCatching { URI(url.url) }.getOrNull() ?: return null
+            val host = uri.host ?: return null
+            val port =
+                if (uri.port > 0) {
+                    uri.port
+                } else if (url.url.startsWith("wss://", ignoreCase = true)) {
+                    443
+                } else {
+                    80
+                }
+            return "$host:$port"
+        }
 
         const val STAGE_NIP77 = "neg-open"
 

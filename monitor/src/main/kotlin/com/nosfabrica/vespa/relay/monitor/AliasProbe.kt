@@ -92,7 +92,7 @@ class AliasProbe(
         var authRefused = false
         for (shape in SHAPES) {
             val window = walk(url, anchor, shape, onEvent)
-            if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape), spoke = true)
+            if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape, window.drained), spoke = true)
             // Silence after refusing us is filter.nostr.wine's connection gone quiet: each further
             // shape would wait out the whole idle window.
             if (window.ids == null && authRefused) return Attempt(null, spoke = true, authRefused = true)
@@ -123,6 +123,8 @@ class AliasProbe(
     data class Leader(
         val ids: Set<String>,
         val kinds: List<Int>?,
+        /** [ids] is the relay's whole store through [kinds], not a sample of it. */
+        val drained: Boolean = false,
     )
 
     /** The ids at [url], or null when it could not be asked at all. A short walk is a fine answer. */
@@ -164,6 +166,11 @@ class AliasProbe(
          * when nothing came back.
          */
         val oldestAt: Long? = null,
+        /**
+         * The walk served events and then an empty EOSE below them, short of its target: [ids] is
+         * everything the relay holds through this filter, not a sample of it.
+         */
+        val drained: Boolean = false,
     ) {
         /** Our dial ran out of time before any answer, at the connect, the TLS handshake or the upgrade. */
         val dialTimedOut: Boolean get() = ids == null && reason?.startsWith(CANNOT_CONNECT) == true && Silence.of(reason) == Silence.TIMEOUT
@@ -274,6 +281,7 @@ class AliasProbe(
             authRefused: Boolean = false,
             reason: String? = null,
             refusal: String? = null,
+            drained: Boolean = false,
         ) = Window(
             found,
             authRefused,
@@ -282,6 +290,7 @@ class AliasProbe(
             firstPageMs,
             compliance,
             found?.let { kept -> ids.entries.filter { it.key in kept }.minOfOrNull { it.value } },
+            drained,
         )
 
         repeat(maxPages) {
@@ -310,7 +319,9 @@ class AliasProbe(
                     return@repeat
                 }
                 // Refused at the humbler size too: the shape, not the size, is what it declines.
-                return done(newest(ids), refusal = page.refusal?.takeIf { ids.isEmpty() })
+                if (ids.isEmpty()) return done(newest(ids), refusal = page.refusal)
+                // An EOSE with nothing below what was served is the bottom of the store; a CLOSED is not.
+                return done(newest(ids), drained = page.refusal == null)
             }
             // Tallied before the events are folded into `ids`, so a duplicate counts twice. Only page
             // one's `until` is our clock; every later page is asked below a stamp the relay served.

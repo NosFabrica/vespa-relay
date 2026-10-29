@@ -444,3 +444,21 @@ The fold's wall clock in the profiled sample did not move (its slowest host is
 three sequential yardstick asks, not a wide group). It did not cure
 `chorus.bonsai.com`, which still throttled ten of its paths at four at a time:
 that host limits by rate, not by concurrency.
+
+**A store too small to sample folds when a made-up path serves it too.** The
+fold's yardstick needs `minSample` events, and production's largest stuck
+groups were hosts serving one tiny store at every path: `relay.bitmacro.io` 18
+events, `relay.nyanko.win` and `jaunters.basspistol.org` 2, the same ids at each
+path, walked twelve thin attempts deep and left undecided every pass. A thin
+window the walk drained (`Window.drained`: an EOSE with nothing below what was
+served, never a CLOSED, a full target or a stall) is the whole store rather than
+a sample of it. The fold then asks a path on the same host and port that no list
+names (`controlPathOf`, sixteen random hex characters), and only if that serves
+the same complete, non-empty store, id for id, does it fold every member serving
+it too onto the preferred of them (`publishWholeStore`). Identical stores alone
+are not enough: a host provisioning one relay per path can hold the owner's
+profile in each, and it answers a path nobody provisioned with nothing. A member
+with a store of its own, jaunters' `/inbox`, stays undecided. It adds a rule and
+changes none, so `FOLD_EPOCH` stands. In the profiled sample it folded 81 urls on
+4 hosts, each re-checked live against two paths of our own making, and declined
+2 whose made-up path answered 403 and 404.

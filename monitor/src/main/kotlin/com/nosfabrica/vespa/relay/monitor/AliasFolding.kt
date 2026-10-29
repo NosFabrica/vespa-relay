@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -39,6 +40,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 
 /**
  * The fold, in two halves: [applyVerdicts] reads the verdicts already written and collapses a
@@ -295,6 +297,8 @@ class AliasFolding(
                 members = listOf(twin)
             }
         }
+        // Too small a store to sample is still a whole store, and a server serving it at any path is one relay.
+        if (search.found == null && foldedOnWholeStore(run, wanted, search, anchor)) return
         // A group nothing would read from folds onto its preferred survivor: a policy, not a
         // measurement, and only while every url asked so far answered.
         val unreadable = search.found == null && thin == null && foldUnreadableGroups && search.asked.isNotEmpty() && search.asked.all { it in search.spoke }
@@ -416,6 +420,51 @@ class AliasFolding(
         }
         return true
     }
+
+    /**
+     * A group whose first thin window is the whole of its relay's store: a path on the host that no
+     * list names is asked through the same filter, and only if it serves that same complete store
+     * does the server ignore the path, so every member serving it too folds onto the preferred of them.
+     */
+    private suspend fun foldedOnWholeStore(
+        run: Run,
+        wanted: List<NormalizedRelayUrl>,
+        search: Search,
+        anchor: Long,
+    ): Boolean {
+        val thin = search.thin ?: return false
+        val store = search.thinPrint?.takeIf { it.drained && it.ids.isNotEmpty() } ?: return false
+        val control = controlPathOf(thin) ?: return false
+        val seen = ask(run, control) { probe.window(control, anchor, store.kinds, run.onEvent) }.answer
+        if (seen == null || !servesStore(seen, store)) return false
+        val stores = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Window>()
+        coroutineScope {
+            for (url in wanted.filter { it != thin }) {
+                launch { ask(run, url) { probe.window(url, anchor, store.kinds, run.onEvent) }.answer?.let { stores[url] = it } }
+            }
+        }
+        val same = listOf(thin) + wanted.filter { url -> stores[url]?.let { servesStore(it, store) } == true }
+        if (same.size < 2 || writesStopped(run, same)) return false
+        val survivor = aliases.preferred(same) ?: return false
+        val folds = aliases.foldOnto(same, survivor)
+        val landed = run.writer.write(folds.keys.toList()) { record.publishWholeStore(it, survivor, store.ids.size) != null }
+        run.newVerdicts += landed
+        if (folds.isNotEmpty()) clearUndecidable(survivor)
+        if (landed.size < folds.size) writesStopped(run, same)
+        if (landed.isNotEmpty()) {
+            System.err.println(
+                "router: ${run.label} ${RelayAliases.hostOf(survivor.url)} serves one complete store of ${store.ids.size} event(s) " +
+                    "at every path, a made-up one included — ${landed.size} url(s) folded onto ${survivor.url}",
+            )
+        }
+        return folds.isNotEmpty()
+    }
+
+    /** The same complete store, id for id: a sample would not do, and nor would an empty one. */
+    private fun servesStore(
+        window: AliasProbe.Window,
+        store: AliasProbe.Leader,
+    ): Boolean = window.drained && window.ids == store.ids
 
     /** Fingerprint [members] through the yardstick's filter and publish what the group proved. */
     private suspend fun compareAgainst(
@@ -754,6 +803,22 @@ class AliasFolding(
 
     companion object {
         const val DEFAULT_DIAL_CONCURRENCY = MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+
+        /**
+         * A url on [url]'s host and port that no relay list names: a path made up for this ask alone,
+         * so a server answering it as it answers the listed ones is not routing by path.
+         */
+        internal fun controlPathOf(
+            url: NormalizedRelayUrl,
+            token: String = randomToken(),
+        ): NormalizedRelayUrl? {
+            val origin = Regex("^(wss?://[^/?#]+)").find(url.url)?.value ?: return null
+            return RelayUrlNormalizer.normalizeOrNull("$origin/$token")
+        }
+
+        private fun randomToken(): String = (1..CONTROL_TOKEN_BYTES).joinToString("") { "%02x".format(Random.nextInt(256)) }
+
+        private const val CONTROL_TOKEN_BYTES = 8
 
         /**
          * Every candidate a fold in [held] names, onto the url it folds onto, whether or not that
