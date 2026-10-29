@@ -493,6 +493,7 @@ internal class VisitPool(
         val stream = ask.stream
         // Read before the first `record` below widens it; it tells a catch-up from a re-fetch.
         val covered = bands.band(key, url, ask.filter)
+        val eventsBefore = ongoingVisit.events.get()
         val floor = ask.filter.bandFloor(bandSince)
         for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
@@ -528,6 +529,13 @@ internal class VisitPool(
             } finally {
                 hold?.release()
             }
+        }
+        // Once per band, the visit that completed it: the abort lines' counterpart, bounded by the roster.
+        if (covered?.complete != true && bands.band(key, url, ask.filter)?.complete == true) {
+            System.err.println(
+                "router: visit ${stream.name} ${url.url} settled [${VisitAborts.asked(floor)}] — " +
+                    "${ongoingVisit.events.get() - eventsBefore} event(s), the past is walked to its floor",
+            )
         }
         return null
     }
@@ -648,7 +656,7 @@ internal class VisitPool(
                     seenMin,
                     seenMax,
                     paged = true,
-                    observedByKind = seenByKind,
+                    observedByKind = withDrainedWindow(seenByKind, walked, chunk, ask.filter, askedAtMs / 1000),
                     drained = drainSettlesThePast(walked, chunk, floor),
                 )
             } else {

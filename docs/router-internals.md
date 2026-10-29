@@ -549,7 +549,11 @@ records `complete = false`; only a finished negentropy reconcile records
 is evidence, not bookkeeping: a completed reconcile compared both sides and
 proved them level, so it can claim coverage through the moment it started even
 with nothing to show for it, while an empty page only proves that one window
-was empty. The legacy deleteMissing engine used to fall in the crack between
+was empty. When that window is the whole of a closed leg, though, it is the
+whole claim: a drained walk with an `until` records its window for every kind
+it asked, events or none (`withDrainedWindow`). Otherwise a relay holding none
+of a past-only stream's kinds stayed `neverRun` forever, and one holding a few
+kept a newer leg `(newest, until]` it could never fill (issue 291). The legacy deleteMissing engine used to fall in the crack between
 them — it reconciled through `negentropyReconcileIds` (a different quartz
 call, because the delete side needs `haveIds`) and recorded nothing on that
 branch, so only its paging fallbacks ever wrote a band and only when events

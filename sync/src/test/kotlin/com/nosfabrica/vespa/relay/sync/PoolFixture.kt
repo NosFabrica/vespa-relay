@@ -103,6 +103,16 @@ internal class PoolFixture(
         }
     }
 
+    /** Waits for a tail, or for a visit that asked something to end: a past-only ask opens no tail. */
+    suspend fun awaitVisit(
+        pool: VisitPool,
+        timeoutMs: Long = 10_000,
+    ) {
+        withTimeout(timeoutMs) {
+            while (tails.isEmpty() && (asked.isEmpty() || pool.primeUnits().any { it.visiting })) delay(10)
+        }
+    }
+
     fun pool(
         limits: PoolLimits = PoolLimits(emptyMap()),
         quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
@@ -163,7 +173,7 @@ internal class PoolFixture(
                 val fixture = PoolFixture(scope, streams, answer, bands)
                 val pool = fixture.pool()
                 pool.start()
-                fixture.awaitTail()
+                fixture.awaitVisit(pool)
                 return pool
             } finally {
                 scope.cancel()

@@ -232,7 +232,8 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   already walked per (stream, filter, relay), per kind, so a re-run asks only
   outside it. The arithmetic is quartz's `SyncCoverage`; fix band behaviour
   upstream. A completed reconcile records `reconciledThrough`; an empty page
-  records nothing.
+  records nothing, except that a drained walk of a closed window (an `until`)
+  records the whole window for every kind it asked (`withDrainedWindow`).
 - **The visit pool.** `VisitPool` walks declared and discovered relays the same
   way: a rotating queue of (relay, stream) units worked by a fixed set of
   workers. A visit pages forward from the band's edge, audits the past by

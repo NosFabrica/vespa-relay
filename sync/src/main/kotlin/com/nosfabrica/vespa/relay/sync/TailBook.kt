@@ -145,6 +145,13 @@ internal class TailBook(
         val url = key.url
         val unit = roster().asks[url]?.get(key.stream) ?: return
         if (unit.asks.isEmpty()) return
+        val since = nowSeconds() - VisitPool.TAIL_OVERLAP_SECONDS
+        // An ask bounded in the past matches nothing live; a tail of only those would hold a live permit for nothing.
+        val live = unit.asks.filter { ask -> ask.filter.until.let { it == null || it >= since } }
+        if (live.isEmpty()) {
+            drop(key)
+            return
+        }
         val wantsNow = unit.identity
         val capNow = widths.capFor(url)
         val sitting = tails[key]
@@ -168,7 +175,7 @@ internal class TailBook(
         // Claim and subscribe before publishing, so a concurrent drop meets a fully formed tail.
         sockets.claim(url)
         try {
-            val filters = VisitPool.tailFilters(unit.asks, nowSeconds() - VisitPool.TAIL_OVERLAP_SECONDS)
+            val filters = VisitPool.tailFilters(live, since)
             reads.tail(subId, url, widths.chunkAll(url, filters)) { event ->
                 onArrived()
                 credit(url)

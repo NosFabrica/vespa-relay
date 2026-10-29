@@ -939,3 +939,39 @@ internal fun drainSettlesThePast(
     val filterFloor = filter.since ?: SyncCoverage.PLAUSIBLE_FLOOR
     return legFloor <= filterFloor
 }
+
+/**
+ * [observed] plus what a drained walk of a closed [chunk] read: the whole chunk, for every kind
+ * it names, events or none. An open chunk adds nothing, since its forward edge is the newest event.
+ */
+internal fun withDrainedWindow(
+    observed: Map<Int, SyncCoverage.Span>,
+    walk: PagedFetchResult,
+    chunk: Filter,
+    filter: Filter,
+    askedAt: Long,
+): Map<Int, SyncCoverage.Span> {
+    if (walk.end != PagedFetchResult.End.DRAINED) return observed
+    val top = drainedTop(chunk, filter, askedAt) ?: return observed
+    val bottom = maxOf(chunk.since ?: SyncCoverage.PLAUSIBLE_FLOOR, SyncCoverage.PLAUSIBLE_FLOOR)
+    if (bottom > top) return observed
+    val window = SyncCoverage.Span(bottom, top)
+    val kinds = chunk.kinds?.takeIf { it.isNotEmpty() } ?: listOf(SyncCoverage.ALL_KINDS)
+    return observed + kinds.associateWith { observed[it]?.widen(window) ?: window }
+}
+
+/**
+ * The newest second a drained [chunk] vouches for, held back by the landing overlap. Reaching
+ * [filter]'s own past `until`, it is the ask itself: the filter matches nothing above its bound.
+ */
+private fun drainedTop(
+    chunk: Filter,
+    filter: Filter,
+    askedAt: Long,
+): Long? {
+    val top = chunk.until ?: return null
+    val landed = askedAt - VisitPool.TAIL_OVERLAP_SECONDS
+    val bound = filter.until
+    if (bound != null && top >= bound && bound <= landed) return askedAt
+    return minOf(top, landed)
+}
