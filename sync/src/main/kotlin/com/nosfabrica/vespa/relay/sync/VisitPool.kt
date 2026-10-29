@@ -137,6 +137,7 @@ internal class VisitPool(
             widths = widths,
             ingest = ingest,
             queue = queue,
+            unreadable = { key, ask -> bands.unreadable(key.stream, key.url, ask.filter) != null },
             roster = { currentRoster },
             onArrived = { counters.poolReceived.incrementAndGet() },
             onChange = ::phasesChanged,
@@ -376,6 +377,8 @@ internal class VisitPool(
             for (step in wanted.indices) {
                 val at = (start + step) % wanted.size
                 val ask = wanted[at]
+                // Before the quiet check: skipping costs the relay nothing, so it cannot be silence.
+                if (bands.unreadable(key.stream, url, ask.filter) != null) continue
                 // Give up on silence, not on a deadline: a delivering visit is never cut.
                 if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > quietGiveUpMs) {
                     resumeAt[key] = at
@@ -396,18 +399,21 @@ internal class VisitPool(
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
                     resumeAt[key] = at + 1
+                    // A stall of ours has no sentence from the relay to wait for.
+                    val said = if (refusal.reason.ours) null else complaints.awaitSince(url, refusal.askedAtMs)
                     aborts
                         .record(
                             key.stream,
                             url,
                             refusal.reason,
                             asked = VisitAborts.asked(refusal.filter),
-                            // A stall of ours has no sentence from the relay to wait for.
-                            said = if (refusal.reason.ours) null else complaints.awaitSince(url, refusal.askedAtMs),
+                            said = said,
                             sent = refusal.sent,
                         )?.let(System.err::println)
+                    if (!refusal.reason.ours && StandingRefusal.of(refusal.end, said)) noteUnreadable(key, ask, refusal, said)
                     return
                 }
+                bands.clearUnreadable(key.stream, url, ask.filter)
                 auditIfDue(
                     ask,
                     url,
@@ -427,6 +433,22 @@ internal class VisitPool(
             // The heal drain and the tail open still count as visiting.
             permit.release()
         }
+    }
+
+    /** One standing refusal of [ask]; the strike that makes it unreadable is said once. */
+    private fun noteUnreadable(
+        key: VisitKey,
+        ask: RosterBuilder.Ask,
+        refusal: Refusal,
+        said: String?,
+    ) {
+        val strikes = bands.noteUnreadable(key.stream, key.url, ask.filter, refusal.reason.says, said)
+        if (strikes != SyncBands.STRIKES_BEFORE_UNREADABLE) return
+        System.err.println(
+            "router: visit ${key.stream} ${key.url.url} — the relay refused [${VisitAborts.asked(ask.filter)}] $strikes time(s) " +
+                "as policy (${said ?: refusal.reason.says}); this ask is unreadable there, not outstanding, and is not " +
+                "asked again for ${SyncBands.UNREADABLE_TTL_SECONDS / 3_600}h",
+        )
     }
 
     /** Nothing was dialled, so the next try needs no revisit's wait; a standing timer would hold it to one. */

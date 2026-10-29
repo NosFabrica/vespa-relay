@@ -118,6 +118,7 @@ internal class PoolFixture(
         quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
         roster: RosterSource = RosterBuilder(store = store, streams = streams, bands = bands),
         workers: Int = 1,
+        complaints: RelayComplaints = RelayComplaints.DEAF,
     ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
@@ -125,6 +126,7 @@ internal class PoolFixture(
         ingest.start()
         return VisitPool(
             reads = this,
+            complaints = complaints,
             bands = bands,
             ingest = ingest,
             pager =
