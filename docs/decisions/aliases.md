@@ -434,3 +434,13 @@ in the profiled sample served after a timeout on an earlier rung; the `c…e`
 urls there are CLOSED-then-served. That sample has no `.onion` urls, and a Tor
 circuit is rebuilt on every attempt, so a Tor-routed url keeps its second rung
 (`retriesTimeouts`) until a profile with Tor says otherwise.
+
+**The fold dials at most four urls of one host at once.** A group's members
+were all launched together, up to the pass's whole permit budget against one
+server, which some servers answer with 429s and 502s for the overflow, and a
+member refused is a member the fold cannot fold. `DIALS_PER_HOST` sits in front
+of the pass's gate, so a queued host holds no permit another host could use.
+The fold's wall clock in the profiled sample did not move (its slowest host is
+three sequential yardstick asks, not a wide group). It did not cure
+`chorus.bonsai.com`, which still throttled ten of its paths at four at a time:
+that host limits by rate, not by concurrency.

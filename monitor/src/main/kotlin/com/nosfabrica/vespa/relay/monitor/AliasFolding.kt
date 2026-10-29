@@ -34,6 +34,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -211,6 +213,11 @@ class AliasFolding(
 
         /** Dials this pass took. */
         val taken = AtomicInteger()
+
+        /** Each host's share of the pass's dials, so a server is never asked for every path at once. */
+        private val hosts = ConcurrentHashMap<String, Semaphore>()
+
+        fun hostGate(url: NormalizedRelayUrl): Semaphore = hosts.computeIfAbsent(RelayAliases.hostOf(url.url)) { Semaphore(DIALS_PER_HOST) }
     }
 
     /** One url's answer, or [asked] false when our transport declined to dial it. */
@@ -255,11 +262,14 @@ class AliasFolding(
         url: NormalizedRelayUrl,
         walk: suspend () -> T,
     ): Asked<T> =
-        gate.withPermit(url) {
-            // A stopped writer refuses whatever this dial could prove, so it is not taken.
-            if (run.writer.stoppedBy != null || !run.canDial(url)) return@withPermit Asked(false, null)
-            run.taken.incrementAndGet()
-            Asked(true, dial(url, run.sockets, walk))
+        // The host's permit before the pass's: a server's queue must not hold a permit another server could use.
+        run.hostGate(url).withPermit {
+            gate.withPermit(url) {
+                // A stopped writer refuses whatever this dial could prove, so it is not taken.
+                if (run.writer.stoppedBy != null || !run.canDial(url)) return@withPermit Asked(false, null)
+                run.taken.incrementAndGet()
+                Asked(true, dial(url, run.sockets, walk))
+            }
         }
 
     /** One host's group: find a yardstick, then hold the rest up against it and publish what that proves. */
@@ -785,6 +795,12 @@ class AliasFolding(
 
         /** What a held url of this pass is doing. */
         const val STAGE_FINGERPRINT = "fingerprint"
+
+        /**
+         * A host's dials in flight at once. A server asked for every path together answers the
+         * overflow with 429s and 502s, and a member it refused is a member the fold cannot fold.
+         */
+        const val DIALS_PER_HOST = 4
 
         /** How many urls of a group the sequential search for a yardstick may find silent or declined. */
         const val YARDSTICK_ATTEMPTS = 3

@@ -170,8 +170,7 @@ class SameServerTest {
             assertNotEquals(Verdict.PRIME.value, gradeOf(store, coracleAlphaCharlie)?.get(1))
             fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, both)
 
-            assertEquals(setOf(coracle), primeAmong(store, both))
-            assertEquals(0, servers.askedOf(coracleAlphaCharlie), "a url waiting on the fold is never dialled for a grade")
+            assertEquals(setOf(coracle), primeAmong(store, both), "a url waiting on the fold that answers is never graded off that answer")
         }
 
     @Test
@@ -186,6 +185,79 @@ class SameServerTest {
 
             assertNull(gradeOf(store, coracleAlphaCharlie), "withdrawn, not replaced: the fold has not said what it is")
             assertEquals(setOf(coracle), primeAmong(store, listOf(coracle, coracleAlphaCharlie)))
+        }
+
+    @Test
+    fun `a held path its server will not upgrade is graded dead, and a held path that answers keeps waiting`() =
+        runBlocking {
+            // relay.ngit.dev on production: the root a relay, every other listed path a 404 or a web page.
+            val root = url("wss://relay.ngit.dev/")
+            val paths = mapOf("missing" to 404, "page" to 200, "gone" to 410, "busy" to 503, "walled" to 403, "throttled" to 429)
+            val refused = paths.mapKeys { url("wss://relay.ngit.dev/${it.key}") }
+            val answers = url("wss://relay.ngit.dev/answers")
+            val notes = corpus("ngit")
+            val store = newStore()
+            val all = listOf(root, answers) + refused.keys
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            // The sweep before graded the root, which is what makes its paths worth an ask.
+            RelayVerdictRecord(store, signer).publishFitness(root, Verdict.PRIME.value, "answered 40 events at a settled anchor", pageable = null, nip77 = null)
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(
+                        fetch = { at, want, until, _ ->
+                            asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                            refused[at]?.let { status ->
+                                AliasProbe.Page(
+                                    events = null,
+                                    reason = "cannot:Server Misconfigured. Response: $status X. Exception: Expected HTTP 101 response but was '$status X'",
+                                )
+                            } ?: AliasProbe.Page(notes.filter { until == null || it.createdAt <= until }.take(want))
+                        },
+                        target = 40,
+                        page = 40,
+                        fallbackPage = 40,
+                    ),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).grade(AliasMonitor.ALL_STREAMS, all)
+
+            val grades = all.associateWith { gradeOf(store, it)?.get(1) }
+            assertEquals(Verdict.PRIME.value, grades[root])
+            for (path in listOf("missing", "page", "gone")) {
+                assertEquals(Verdict.DEAD.value, grades[url("wss://relay.ngit.dev/$path")], "/$path refused the upgrade as no relay")
+            }
+            // A server error, a wall or a rate limit is not "no relay here", and an answer is the fold's to judge.
+            for (path in listOf("busy", "walled", "throttled", "answers")) {
+                assertNull(grades[url("wss://relay.ngit.dev/$path")], "/$path must keep waiting on the fold")
+            }
+            assertTrue(refused.keys.all { asked[it]?.get() == 1 }, "a held url is asked once, never walked down the ladder: $asked")
+        }
+
+    @Test
+    fun `the paths of a server down at its stand-in are not asked`() =
+        runBlocking {
+            // nostr.ac on production: 87 held paths answering 503, as its stand-in did.
+            val root = url("wss://down.example/")
+            val missing = url("wss://down.example/missing")
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            val store = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(fetch = { at, _, _, _ ->
+                        asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                        val status = if (at == root) 503 else 404
+                        AliasProbe.Page(events = null, reason = "cannot:Server Misconfigured. Exception: Expected HTTP 101 response but was '$status X'")
+                    }),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).grade(AliasMonitor.ALL_STREAMS, listOf(root, missing))
+
+            assertNull(asked[missing], "a held path is asked only beside a `prime` stand-in")
+            assertNull(gradeOf(store, missing))
         }
 
     private val nostrNet = url("wss://relay.nostr.net/")
@@ -324,7 +396,7 @@ class SameServerTest {
 
             fitness(store, servers, world = { languages + arSlash }).grade(AliasMonitor.FAST_LANE, listOf(arSlash))
             assertNull(gradeOf(store, arSlash))
-            assertEquals(0, servers.askedOf(arSlash))
+            assertEquals(0, servers.askedOf(arSlash), "a waiting url is asked only beside a `prime` stand-in")
 
             val roster = folding(store, servers).applyVerdicts(languages + arSlash)
             assertEquals(mapOf(arSlash to ar), roster.waiting)

@@ -598,3 +598,19 @@ document's ten-second clock was paid in full in front of every dead url's
 ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
 url's stage reads `nip-11 document` only while the dial has finished and the
 document has not.
+
+**A url waiting on the fold behind a `prime` stand-in is asked once.** The fold
+fingerprints what a path serves, so a path its server will not upgrade (a 404,
+a 410, a web page answering 200) gives it nothing to compare and is never
+decided; it waited behind its server's stand-in forever, ungraded and
+re-dialled by every fold pass. Production's records held 3,413 such urls on
+179 servers with another url graded, and its fold dialled 3,642 urls in a pass
+that decided 2. Fitness now asks each one once, beside the stand-in's standing
+grade only when that is `prime` (a server down at its stand-in answered 503 at
+all 87 of its paths), and grades it `dead` only when the refusal earns `dead`
+under the existing rules; any answer, a 5xx, a wall or a rate limit leaves it
+waiting with nothing written, and a cut one stays outside the batch guard. In
+the profiled sample it graded 135 such paths (`relay.ngit.dev` 45 of 46,
+`pyramid.fiatjaf.com` 57) for 350 permit-seconds, with fitness's wall clock
+unchanged; checking only beside a stand-in graded in the same batch took a
+second dial phase and 27 seconds more, for the same paths a sweep later.

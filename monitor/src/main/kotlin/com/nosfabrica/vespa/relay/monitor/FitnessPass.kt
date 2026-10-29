@@ -371,16 +371,21 @@ class FitnessPass(
             val graded = gradeFreeRefusals(held, candidates, batch.outcomes)
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
-            val waiting = AliasFolding.heldAmong(held, graded, mates)
-            batch.backingOff += backingOff(graded.filter { it !in waiting })
-            val toDial = graded.filter { it !in waiting && it !in batch.backingOff }
+            val heldBack = AliasFolding.heldAmong(held, graded, mates)
+            batch.backingOff += backingOff(graded.filter { it !in heldBack })
+            val toDial = graded.filter { it !in heldBack && it !in batch.backingOff }
+            // Only beside a stand-in standing `prime`: a server down at its stand-in is down at its paths.
+            val toCheck = heldBack.filterValues { standIn -> held.fitness[standIn]?.value == Verdict.PRIME.value }.keys
             // The free refusals are outside this count: they cost no socket.
-            progress.measuring(toDial.size, Processors.UNIT_URL)
+            progress.measuring(toDial.size + toCheck.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
-            dialEach(toDial, gate, probe::deadlineMs, progress, cut = batch::cut) { url ->
-                measureOne(url, anchor, reach, sockets, batch, onEvent)
+            // A held url writes nothing when cut, so it is outside the batch guard's count.
+            dialEach(toDial + toCheck, gate, probe::deadlineMs, progress, cut = { url -> if (url !in toCheck) batch.cut(url) }) { url ->
+                if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, reach, sockets, batch, onEvent)
             }
+            // A held path its server refused to upgrade is graded and no longer waits; every other one still does.
+            val waiting = heldBack.filterKeys { !batch.outcomes.containsKey(it) }
             // Before the guard: a refused batch still heard each relay ask us to come back later.
             backOff(batch)
 
@@ -670,6 +675,39 @@ class FitnessPass(
                 progress.holding(url.url, STAGE_DOCUMENT)
                 reading.join()
             }
+        }
+    }
+
+    /**
+     * A url waiting on the fold behind a `prime` stand-in, asked once: the fold cannot fingerprint a path
+     * its server will not upgrade, so that path would wait forever. Graded only when the refusal earns
+     * `dead`; an answer of any other kind, or none, leaves it waiting and writes nothing.
+     */
+    private suspend fun checkHeld(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        sockets: Sockets,
+        batch: Batch,
+        onEvent: suspend (Event) -> Unit,
+    ) {
+        progress.holding(url.url, STAGE_HELD)
+        sockets.claim(url)
+        try {
+            val window =
+                probe.window(url, anchor, null) { event ->
+                    batch.downloaded.incrementAndGet()
+                    onEvent(event)
+                }
+            val reason = window.reason
+            if (window.ids == null && Silence.of(reason) == Silence.UPGRADE) {
+                upgradeRefused(reason) {}?.takeIf { it.verdict == Verdict.DEAD }?.let { batch.outcomes[url] = it }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Our instrument failing on a url that writes nothing either way: it simply goes on waiting.
+        } finally {
+            sockets.release(url)
         }
     }
 
@@ -1172,7 +1210,7 @@ class FitnessPass(
         if (written.waiting.isNotEmpty()) {
             System.err.println(
                 "router: fitness [$label] — ${written.waiting.size} url(s) on ${written.waiting.values.toSet().size} server(s) wait on " +
-                    "the fold behind another url of the same server, not dialled; ${written.withdrawn.count { it in written.waiting }} standing `prime` grade(s) " +
+                    "the fold behind another url of the same server, not graded; ${written.withdrawn.count { it in written.waiting }} standing `prime` grade(s) " +
                     "taken back. The fold has not said whether those paths are their own relays, so only the server's stand-in is graded",
             )
         }
@@ -1363,6 +1401,9 @@ class FitnessPass(
         const val STAGE_DOCUMENT = "nip-11 document"
 
         const val STAGE_LADDER = "ask ladder"
+
+        /** The one ask a url waiting on the fold gets. */
+        const val STAGE_HELD = "held for the fold"
 
         const val STAGE_NIP77 = "neg-open"
 

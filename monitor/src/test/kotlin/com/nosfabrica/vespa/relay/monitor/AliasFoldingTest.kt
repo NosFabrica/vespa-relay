@@ -1073,6 +1073,47 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a host is never asked for more than its share of paths at once, and every path still folds`() =
+        runBlocking {
+            // chorus.bonsai.com answered a whole group dialled together with 429s and 502s.
+            val pool: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "pool$it") }
+            val hosts = listOf("busy.example", "other.example")
+            val urls = hosts.flatMap { host -> (0 until 20).map { RelayUrlNormalizer.normalize("wss://$host/p$it") } }
+            val inFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+            val most = java.util.concurrent.ConcurrentHashMap<String, Int>()
+            val store = newStore()
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { at, want, until, _ ->
+                                val host = RelayAliases.hostOf(at.url)
+                                val now = inFlight.computeIfAbsent(host) { AtomicInteger() }.incrementAndGet()
+                                most.merge(host, now, ::maxOf)
+                                try {
+                                    kotlinx.coroutines.delay(5)
+                                    AliasProbe.Page(pool.filter { until == null || it.createdAt <= until }.take(want))
+                                } finally {
+                                    inFlight.getValue(host).decrementAndGet()
+                                }
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                        ),
+                )
+
+            fold.measure("t", urls, canDial = { true })
+
+            for (host in hosts) {
+                assertTrue((most[host] ?: 0) <= AliasFolding.DIALS_PER_HOST, "$host had ${most[host]} dials at once")
+            }
+            assertEquals(hosts.size, fold.applyVerdicts(urls).dial.size, "each host's twenty paths fold onto one url")
+        }
+
+    @Test
     fun `a host of genuinely distinct endpoints keeps every one of them`() =
         runBlocking {
             val store = newStore()
