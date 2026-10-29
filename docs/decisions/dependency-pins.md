@@ -45,7 +45,28 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
+2.7.3 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL, tag v2.7.3 (fbe091254012, 2026-10-29),
+81 commits past 2.4.0. One quartz module per process still: 2.4.0, which the store at 493fe01d9ea7
+names, resolves up to it (`quartz:2.4.0 -> 2.7.3`), and the full check passes on that graph. What
+this relay reaches:
+
+  CHEAPER LIVE FAN-OUT (4f7f84d, 2e83e22; written against this relay's measurements,
+    docs/live-feeds.md). FilterMatcher matches kinds without boxing the event's kind; FilterIndex
+    returns a lone bucket's subscriber set uncopied instead of a fresh LinkedHashSet per event; and
+    LiveFrameSink hands a live EVENT frame to a sink as its prefix and the event's body, one String
+    instance across every subscription, which NativeWebSocket encodes once per event loop. Together
+    about a fifth off the relay's user CPU per live frame at 12,000 feeds.
+  MORE HOSTS ARE LOCAL (c1e23a7, 9d62158). isLocalHost now also matches 100.64.0.0/10, single-label
+    hosts, .lan, .home, .home.arpa, .internal, .intranet, .localdomain and IPv4-mapped IPv6.
+    RelayUrlCache refuses what it matches, so discovery no longer dials such a url found in someone
+    else's relay list, which could never have been reached from outside anyway. normalizeOrNull
+    is unchanged for the urls this deployment dials itself (ws://relay:7777 stays ws://relay:7777),
+    so SYNC_INGEST_URL and compose are unaffected. The filtered relay-list accessors are deprecated,
+    and nothing here calls them.
+  The rest of the range is event classes, builders and NIP-03/05/57/5D hardening for other apps;
+    none of it is on a path this relay runs.
+
+Prev 2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
 is tag v2.4.0 (git rev-parse v2.4.0^{commit} = c63c35ca7629), published by quartz's release workflow.
 The first quartz this relay takes from a release rather than a JitPack commit:
 
