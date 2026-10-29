@@ -558,3 +558,34 @@ package rather than forcing it, and read what the override protects first.
 - AGENTS.md, "Traps that have cost real time" — the container-side sibling of
   the restart class (`<jvm options>` changes, measured with the old JVM still
   serving 90s after a successful activation)
+
+## Migration: drss.io kinds, the 30054 split and napplet sources (quartz 2.7.3, store `fec452107fe8`)
+
+The relay's quartz pin moves the derivation; the store pin moves too, so the
+graph carries one quartz and picks up its engine fixes. Three things change for
+search:
+
+- **30100, 30101, 30102, 30104, 31341, 31985** (drss.io's feed lists, list and
+  provenance folders, event lists, shows and provenance records) gain search
+  fields. 30100–30104 and 31985 are shared with other apps; an event without
+  drss's shape parses as an unrecognized event and stays unsearchable.
+- **30054 is split.** Only a Podcasting-2.0 episode's shape is still
+  searchable; drss.io's listening-progress records on the same kind are not.
+  A progress record indexed before the bump keeps its old search fields until
+  the walk below re-reads it.
+- **15129 / 35129 / 5129** (napplet root, named, snapshot) also carry their
+  source url as the website field, as the 15128 / 35128 / 5128 websites do.
+
+**The schema does not move.** `event.sd` changes a comment only, so
+`AUTO_DEPLOY` redeploys the package once (the file differs) with no field
+moving. Read `configChangeActions` anyway, per the top of this file.
+
+### The procedure
+
+One boot with `REINDEX_FTS_ON_START=true` and `REINDEX_FTS_KINDS` set to the
+list below; remove both settings once the log reads `fts: reindex complete`.
+New writes are correct on arrival.
+
+```
+30100, 30101, 30102, 30104, 31341, 31985, 30054, 15129, 35129, 5129
+```
