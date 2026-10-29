@@ -94,3 +94,32 @@ networking, `LENS=none` since it has no NIP-50; ours is the native websocket
 - strfry's process held 27 MB; ours runs a 2–4 GB heap sized up front, so
   that pair is not a per-socket comparison. strfry also does none of the
   lens, trust gate or Vespa work an edge relay does.
+
+## The JVM wins, against strfry again
+
+Same setup, later the same day, every build alternated with the others:
+
+| build | user CPU | kernel CPU | total | delivery p50 | p99 |
+|---|---:|---:|---:|---:|---:|
+| native websocket, before | 0.77 cores | 0.79 | 1.56 | 104 ms | 201 ms |
+| + pre-encoded frames, one tick timer per event loop (`02bffcb`) | 0.42–0.44 | 0.68–0.71 | 1.10–1.15 | 97–106 ms | 184–208 ms |
+| + Netty's native epoll transport | 0.41 | 0.68 | 1.09 | 98 ms | 194 ms |
+| + the quartz fan-out patch (prototype) | 0.32–0.36 | 0.70–0.75 | 1.02–1.11 | 90–101 ms | 179–199 ms |
+| strfry | 0.09–0.10 | 0.70–0.73 | 0.79–0.83 | 725–926 ms | 1.6–1.75 s |
+
+- **Pre-encoded frames and one timer per loop took 45% off user CPU.** A
+  frame is one pooled buffer holding its header and UTF-8, written from the
+  session's place in the pipeline; the per-connection 1 s tick had kept
+  thousands of entries in each loop's scheduled-task queue.
+- **Epoll changed nothing measurable** and is not added.
+- **The quartz patch took another 20%** (quartz branch `relay-fanout-perf`,
+  not yet released, measured by loading the patched classes ahead of quartz
+  2.4.0): kinds matched without boxing, `FilterIndex.candidatesFor` returning
+  a lone bucket uncopied, and an optional `LiveFrameSink` that hands the
+  transport each live frame's prefix and the event's shared body, so the
+  body is encoded once per event loop instead of once per subscription.
+  Quartz's own `FilterIndexTest`, `FilterMatcherTest` and
+  `FilterMatcherEquivalenceTest` pass against the patched classes.
+- **The gap to strfry went from 2.1× to about 1.3× CPU per frame**, all of
+  it user space: kernel time is now the same for both. Our median delivery
+  stays 7–9× faster, because strfry batches.
