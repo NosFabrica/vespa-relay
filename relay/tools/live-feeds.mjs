@@ -50,7 +50,7 @@ function feedsChild() {
     hist[bucketOf(at - t)]++; received++;
   };
   const open = () => new Promise((resolve) => {
-    const ws = new WebSocket(urls[nextUrl++ % urls.length]); const s = { ws, subs: perSocket, alive: false, gotEose: 0 };
+    const ws = new WebSocket(urls[nextUrl++ % urls.length]); const s = { ws, subs: perSocket, alive: false, gotEose: 0, counted: false };
     let settled = false; const settle = (ok) => { if (!settled) { settled = true; if (ok) { s.alive = true; live++; } else failed++; resolve(); } };
     ws.onopen = () => {
       const sent = performance.now();
@@ -59,7 +59,8 @@ function feedsChild() {
     };
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
-      if (m[0] === "EVENT") { if (windowOpen) record(m[2].id, Date.now()); }
+      // Only feeds live when the window opened are owed its events, so only theirs count.
+      if (m[0] === "EVENT") { if (windowOpen && s.counted) record(m[2].id, Date.now()); }
       else if (m[0] === "EOSE") { if (++s.gotEose === perSocket) { eose.push(performance.now() - s.sent); settle(true); } }
       else if (m[0] === "CLOSED" || m[0] === "NOTICE") { const why = String(m.at(-1)).slice(0, 80); closedWhy[why] = (closedWhy[why] || 0) + 1; if (m[0] === "CLOSED") s.subs--; }
     };
@@ -77,7 +78,8 @@ function feedsChild() {
       process.send({ op: "grown", live, failed, eose: [...eose], closedWhy: { ...closedWhy }, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "window") {
       pubAt = new Map(); early = new Map(); hist.fill(0); received = 0; dropped = 0; windowOpen = true;
-      process.send({ op: "windowed", feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
+      for (const s of sockets) s.counted = s.alive;
+      process.send({ op: "windowed", feeds: sockets.filter((s) => s.counted).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "pub") {
       pubAt.set(msg.id, msg.t);
       for (const at of early.get(msg.id) || []) record(msg.id, at); early.delete(msg.id);
