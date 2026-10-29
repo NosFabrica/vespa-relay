@@ -972,14 +972,8 @@ class IngestPipeline(
         const val WEDGE_AFTER_MS = 600_000L
 
         /**
-         * How long a drop-probe may take before its batch goes to the store unprobed. A probe only
-         * saves the verifying of events the store would refuse anyway, so a slow one is worth
-         * nothing and an unanswered one was the costliest call in the process: on staging one
-         * `newestVersions` query got its headers and part of its body and then nothing, for
-         * 4 h 40 min (NosFabrica/vespa-relay#289). Its pass held one of the two workers, and every
-         * visit with an event in that batch waited on it. Neither the store's client nor Vespa's
-         * query profile bounds a query, so this is the bound. Measured there: `versions.pre` mean
-         * 737 ms and max 10.3 s, `dedup.pre` max 5.6 s.
+         * How long a drop-probe may hold its pass before the batch goes to the store unprobed. Nothing
+         * below bounds a store query, and a probe only saves verifying what the store would refuse.
          */
         const val PROBE_TIMEOUT_MS = 60_000L
     }

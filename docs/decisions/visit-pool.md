@@ -132,8 +132,13 @@ walk cut there records no band and ends the visit as `abortedUnstored`, ours,
 never on the relay's row; the revisit starts at the same ask rather than the
 next, since the relay refused nothing. A late verdict is still counted and
 changes nothing. The ingest pipeline bounds its own share of that wait too: a
-drop-probe is cut at `PROBE_TIMEOUT_MS` and the batch goes on unprobed, since
-neither the store's query client nor Vespa's query profile bounds a query.
+drop-probe is cut at `PROBE_TIMEOUT_MS` (60 s, against a measured
+`versions.pre` mean of 737 ms and max of 10.3 s) and the batch goes on
+unprobed, since neither the store's query client nor Vespa's query profile
+bounds a query. The bound is on the whole probe, not each query, because what
+it protects is the pass. The time a visit spends waiting is taken off its quiet
+clock, so the next ask does not read the store's silence as the relay's. A
+retraction audit whose recovered events are unanswered deletes nothing.
 
 **A visit is not dialled into a full queue.** The download would park its
 first event, silence the socket, and come back `abortedBackpressured` an idle

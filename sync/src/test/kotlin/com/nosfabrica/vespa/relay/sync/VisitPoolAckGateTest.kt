@@ -132,21 +132,9 @@ class VisitPoolAckGateTest {
                 val pool = fixture.pool(quietGiveUpMs = 500)
                 pool.start()
                 // The walk is over; its row must say what it waits for, not that it is still paging.
-                val waiting =
-                    withTimeout(10_000) {
-                        while (true) {
-                            pool
-                                .inFlightFor("s")
-                                .relays
-                                .firstOrNull()
-                                ?.stage
-                                ?.let { if (it == VisitPool.STAGE_AWAITING_STORE) return@withTimeout it }
-                            delay(10)
-                        }
-                        @Suppress("UNREACHABLE_CODE")
-                        null
-                    }
-                assertEquals(VisitPool.STAGE_AWAITING_STORE, waiting)
+                withTimeout(10_000) {
+                    while (pool.inFlightFor("s").relays.none { it.stage == VisitPool.STAGE_AWAITING_STORE }) delay(10)
+                }
                 withTimeout(10_000) { while ((fixture.counts()["abortedUnstored"] ?: 0L) == 0L) delay(10) }
                 assertNull(bands.band("s", url, notes), "no verdict, no band")
                 assertTrue(fixture.tails.isEmpty(), "the visit ended at the cut rather than opening its tail")

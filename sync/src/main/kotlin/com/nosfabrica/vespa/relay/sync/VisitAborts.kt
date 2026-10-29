@@ -75,10 +75,7 @@ internal class VisitAborts(
          */
         BACKPRESSURED("abortedBackpressured", "our own ingest queue held the socket — nothing the relay did", ours = true),
 
-        /**
-         * The walk was over, and the store had not answered every event it handed to ingest within
-         * `LEG_QUIET_GIVE_UP_MS` (NosFabrica/vespa-relay#289): the ask is walked again at the revisit.
-         */
+        /** The walk was read, and the store had not answered all of its events within `LEG_QUIET_GIVE_UP_MS`. */
         UNSTORED("abortedUnstored", "our store did not answer the walk's events in time — nothing the relay did", ours = true),
     }
 

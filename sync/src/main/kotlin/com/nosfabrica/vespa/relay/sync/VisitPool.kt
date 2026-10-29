@@ -395,8 +395,7 @@ internal class VisitPool(
                 val refusal = catchUp(ask, url, ongoingVisit)
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
-                    // A store that did not answer is no reason to skip the ask: the revisit starts at it.
-                    resumeAt[key] = if (refusal.unstored) at else at + 1
+                    resumeAt[key] = at + 1
                     aborts
                         .record(
                             key.stream,
@@ -445,7 +444,7 @@ internal class VisitPool(
         val sent: String? = null,
         /** A hook of ours was parked in the ingest queue when the walk gave up. */
         val ours: Boolean = false,
-        /** The walk ended, and the store had not answered all of its events within the quiet give-up. */
+        /** The walk was read, and the store had not answered all of its events within the quiet give-up. */
         val unstored: Boolean = false,
     ) {
         val reason: VisitAborts.Reason
@@ -534,44 +533,45 @@ internal class VisitPool(
     }
 
     /**
-     * Whether every event a walk handed to ingest reached the store. A band is recorded only when
-     * they all did ([IngestAcks]); otherwise the ground is walked again at the next visit.
-     *
-     * BOUNDED by [quietGiveUpMs], the same silence a visit gives a relay: a verdict that has not
-     * come by then is not coming soon, and the wait held the visit's slot and socket claim while
-     * its row said `catching up (paging)` for a walk already over. One batch pass held on an
-     * unanswered store query kept nine visits here for up to 4 h 40 min (NosFabrica/vespa-relay#289).
-     * The row reads [STAGE_AWAITING_STORE] while it waits; [IngestAcks.unanswered] tells the caller
-     * a cut wait from failed writes.
+     * Whether every event a walk handed to ingest reached the store, waiting at most [quietGiveUpMs].
+     * A band is recorded only when they all did ([IngestAcks]); otherwise the ground is walked again.
      */
     private suspend fun storedAll(
         acks: IngestAcks,
         stream: String,
         url: NormalizedRelayUrl,
         ongoingVisit: OngoingVisit,
-    ): Boolean {
+    ): IngestAcks.Verdicts {
         val before = ongoingVisit.stage
         ongoingVisit.stage = Stage(before.pool, STAGE_AWAITING_STORE)
-        val stored =
+        val startedMs = System.currentTimeMillis()
+        val verdicts =
             try {
                 acks.awaitWithin(quietGiveUpMs)
             } finally {
                 ongoingVisit.stage = before
+                // The wait was ours: the quiet clock skips it, so the next ask does not read it as the relay's silence.
+                val now = System.currentTimeMillis()
+                ongoingVisit.lastActivityMs = minOf(now, ongoingVisit.lastActivityMs + (now - startedMs))
             }
-        if (stored) return true
+        val why =
+            when (verdicts) {
+                IngestAcks.Verdicts.Stored -> {
+                    return verdicts
+                }
+
+                is IngestAcks.Verdicts.Failed -> {
+                    "${verdicts.count} event(s) of this walk did not reach the store"
+                }
+
+                is IngestAcks.Verdicts.Unanswered -> {
+                    "${verdicts.count} event(s) of this walk had no verdict from the store after ${quietGiveUpMs / 1000}s " +
+                        "(oldestBatchSec and the store call SLOW lines say where it is)"
+                }
+            }
         counters.bandsWithheld.incrementAndGet()
-        val unanswered = acks.unanswered
-        System.err.println(
-            if (unanswered > 0) {
-                "router: $stream ${url.url} — $unanswered event(s) of this walk still had no verdict from the store after " +
-                    "${quietGiveUpMs / 1000}s; its band is not recorded, and the next visit walks the ground again " +
-                    "(the ingest processor's oldestBatchSec, and the store call SLOW lines, say where the store is)"
-            } else {
-                "router: $stream ${url.url} — ${acks.failures} event(s) of this walk did not reach the store; " +
-                    "its band is not recorded, and the next visit walks the ground again"
-            },
-        )
-        return false
+        System.err.println("router: $stream ${url.url} — $why; its band is not recorded, and the next visit walks the ground again")
+        return verdicts
     }
 
     /**
@@ -632,9 +632,10 @@ internal class VisitPool(
                 // No band for a refused chunk: nothing was walked.
                 return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded), ours = paged.ours)
             }
-            if (!storedAll(acks, stream.name, url, ongoingVisit)) {
-                // The store, not the relay, has gone quiet: every further chunk would wait on it the same way.
-                if (acks.unanswered > 0) return Refusal(walked.end, chunk, askedAtMs, unstored = true)
+            val verdicts = storedAll(acks, stream.name, url, ongoingVisit)
+            // Every further chunk would wait on the same silent store.
+            if (verdicts is IngestAcks.Verdicts.Unanswered) return Refusal(walked.end, chunk, askedAtMs, unstored = true)
+            if (verdicts is IngestAcks.Verdicts.Failed) {
                 // Read to the end or not, ground whose events did not reach the store is not covered.
                 ongoingVisit.lastActivityMs = System.currentTimeMillis()
             } else if (readToTheEnd(walked)) {
@@ -894,7 +895,7 @@ internal class VisitPool(
             // A window did reconcile, so the band is ordinary work again whatever it looked like before.
             bands.clearCannotReconcile(stream.name, url, ask.filter, band)
         }
-        if (outcome.complete && storedAll(acks, stream.name, url, ongoingVisit)) {
+        if (outcome.complete && storedAll(acks, stream.name, url, ongoingVisit) == IngestAcks.Verdicts.Stored) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
             bands.recordAudit(
                 stream.name,
@@ -965,6 +966,7 @@ internal class VisitPool(
             ask.filter,
             sharedAuthors,
             onActivity = { ongoingVisit.lastActivityMs = System.currentTimeMillis() },
+            verdictWaitMs = quietGiveUpMs,
         ) { arrived(url, ongoingVisit) }
         counters.retractionsRun.incrementAndGet()
     }
