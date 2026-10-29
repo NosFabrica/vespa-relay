@@ -51,6 +51,7 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -83,6 +84,8 @@ class IngestPipeline(
     private val writer: StoreWriter = StoreWriter.local(store),
     /** Names the first event submitted and the first stored as `boot:` lines ([BootClock]); null prints neither. */
     private val bootName: String? = null,
+    /** How long one drop-probe may take before the pass goes on without it; see [PROBE_TIMEOUT_MS]. */
+    private val probeTimeoutMs: Long = PROBE_TIMEOUT_MS,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -460,12 +463,14 @@ class IngestPipeline(
                 probing(idProbeTrouble) {
                     // One store call round the whole probe: the worker is suspended in the fan-out.
                     storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(copies.size)) {
-                        IngestStats.timed("dedup.pre") {
-                            copies
-                                .map { batch[it[0]].event.id }
-                                .chunked(dedupChunk)
-                                .mapBounded(QUERY_FANOUT) { probe(it) }
-                                .flatMapTo(HashSet()) { it }
+                        bounded("id") {
+                            IngestStats.timed("dedup.pre") {
+                                copies
+                                    .map { batch[it[0]].event.id }
+                                    .chunked(dedupChunk)
+                                    .mapBounded(QUERY_FANOUT) { probe(it) }
+                                    .flatMapTo(HashSet()) { it }
+                            }
                         }
                     }
                 }
@@ -695,15 +700,27 @@ class IngestPipeline(
                 StoreCalls.OP_NEWEST_VERSIONS,
                 "${addresses.map { it.first }.distinct().size} kind(s), ${addresses.size} address(es)",
             ) {
-                IngestStats.timed("versions.pre") {
-                    addresses
-                        .groupBy({ it.first }, { it.second })
-                        .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
-                        .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
-                        .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+                bounded("version") {
+                    IngestStats.timed("versions.pre") {
+                        addresses
+                            .groupBy({ it.first }, { it.second })
+                            .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
+                            .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
+                            .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+                    }
                 }
             }
         }
+
+    /**
+     * [read] cut at [probeTimeoutMs], the cut thrown as a [ProbeTimeoutException]: inside the store
+     * call it books as `failed`, not as the `cancelled` of a shutdown, and [probing] counts and backs
+     * it off like any failed probe. Cancelling the read cancels its HTTP call.
+     */
+    private suspend fun <T : Any> bounded(
+        name: String,
+        read: suspend () -> T,
+    ): T = withTimeoutOrNull(probeTimeoutMs) { read() } ?: throw ProbeTimeoutException(name, probeTimeoutMs)
 
     /** [read]'s answer, or null when it threw: counted, logged and backed off in [trouble]. */
     private suspend fun <T> probing(
@@ -953,8 +970,20 @@ class IngestPipeline(
 
         /** A false `wedged` is worse than a late one. Nothing here stops the pass. */
         const val WEDGE_AFTER_MS = 600_000L
+
+        /**
+         * How long a drop-probe may hold its pass before the batch goes to the store unprobed. Nothing
+         * below bounds a store query, and a probe only saves verifying what the store would refuse.
+         */
+        const val PROBE_TIMEOUT_MS = 60_000L
     }
 }
+
+/** A drop-probe the store did not answer within the pipeline's bound; the batch goes on unprobed. */
+class ProbeTimeoutException(
+    probe: String,
+    timeoutMs: Long,
+) : Exception("the $probe probe got no answer from the store in ${timeoutMs}ms")
 
 /** The newest stored version of one address, which an arriving replaceable has to beat. */
 data class AddressVersion(

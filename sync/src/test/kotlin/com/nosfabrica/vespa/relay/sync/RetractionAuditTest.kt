@@ -160,6 +160,54 @@ class RetractionAuditTest {
         assertNull(verifiedAfter(Relay(answersInFull = false)), "an id never answered for is not a mirrored one")
     }
 
+    /** A relay that no longer serves one of our ids, and sends back [recovered] for the one it owes us. */
+    private class Retracting(
+        private val recovered: Event?,
+    ) : RetractionReads {
+        override suspend fun reconcileIds(
+            url: NormalizedRelayUrl,
+            filter: Filter,
+            local: List<IdAndTime>,
+        ) = NegentropyIdDiff(needIds = listOf("b".repeat(64)), haveIds = listOf("c".repeat(64)), windows = 1)
+
+        override suspend fun fetchIds(
+            url: NormalizedRelayUrl,
+            ids: List<String>,
+            onEvent: suspend (Event) -> Unit,
+        ): Boolean {
+            recovered?.let { onEvent(it) }
+            return true
+        }
+    }
+
+    /** Records [reads] deleted in one enforcing audit, through an ingest that is never started. */
+    private fun deletedBy(reads: Retracting): Long {
+        val scope = CoroutineScope(SupervisorJob())
+        try {
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            val audit =
+                RetractionAudit(
+                    reads = reads,
+                    store = store,
+                    bands = SyncBands(null),
+                    ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1), null, null, scope, null, null),
+                    refusedIds = RefusedIds.disabled(),
+                )
+            val enforcing = stream.copy(deleteMissing = DeleteMissing.ON)
+            runBlocking { audit.reconcileAndDelete(enforcing, relay, ask, sharedAuthors = emptySet(), verdictWaitMs = 200) }
+            return audit.deleted.get()
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `an audit whose recovered events the store never answers deletes nothing`() {
+        val recovered = Event("b".repeat(64), author, nowSeconds(), 30382, emptyArray(), "", "d".repeat(128))
+        assertEquals(0L, deletedBy(Retracting(recovered)), "a store that has not taken what we recovered is not one to delete from")
+        assertEquals(1L, deletedBy(Retracting(recovered = null)), "the premise: with every verdict in, the same audit deletes")
+    }
+
     @Test
     fun `a by-id fetch answered in full verifies the band`() {
         assertNotNull(verifiedAfter(Relay(answersInFull = true)), "a clean comparison and a full answer earn the claim")

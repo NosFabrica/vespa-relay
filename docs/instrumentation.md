@@ -77,14 +77,14 @@ Reach for it first.
 - **the abort partition on the visits row, and the `visit … aborted` lines
   beside it** — WHY visits are ending early, which on a mirror that has stopped
   converging is the only question. `abortedVisits` is a total and unactionable
-  on its own; the eight counters that split it (`abortedAuthRequired`,
+  on its own; the nine counters that split it (`abortedAuthRequired`,
   `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
-  `abortedGaveUp`, `abortedFailed`, `abortedBackpressured`) sum back to it
+  `abortedGaveUp`, `abortedFailed`, `abortedBackpressured`, `abortedUnstored`) sum back to it
   exactly, and each has a different remedy — a key the relay accepts, its own
   CLOSED sentence read, a slower revisit, nothing at all. Read
-  `abortedBackpressured` FIRST, with `visitsHeldByIngest` and
+  `abortedBackpressured` and `abortedUnstored` FIRST, with `visitsHeldByIngest` and
   `walksPausedByIngest` (walks that waited out the queue and resumed) beside it: they are
-  about this mirror's ingest queue rather than about any relay, and before they
+  about this mirror's ingest queue and store rather than about any relay, and before they
   existed their share sat inside `Quiet` and `Unpageable` — 90% of all aborts
   on staging, blamed on relays that were fine. Reach for it the moment `contentViaOutbox`
   stops reconciling: 92.5% aborting says the resync cannot converge, and only

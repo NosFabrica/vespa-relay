@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -36,13 +37,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * made (the outcome can land before [IngestPipeline.submit] returns), and [await] suspends until
  * every tracked one is answered. It answers true only when each was stored or refused for good;
  * a [IEventStore.InsertOutcome.Failed] (the store's fault, or a shutdown) is ground not covered.
+ * [awaitWithin] is the bounded wait: a verdict that does not come is ground not covered either.
  */
 class IngestAcks {
     private val pending = MutableStateFlow(0)
     private val failed = AtomicInteger()
-
-    /** Submissions answered as failed so far. */
-    val failures: Int get() = failed.get()
 
     /** The callback for one submission. Call it once per submit, before the submit. */
     fun track(): (IEventStore.InsertOutcome) -> Unit {
@@ -57,5 +56,34 @@ class IngestAcks {
     suspend fun await(): Boolean {
         pending.first { it == 0 }
         return failed.get() == 0
+    }
+
+    /** [await] for at most [timeoutMs], read once at the end, so an answer landing at the cut is counted. */
+    suspend fun awaitWithin(timeoutMs: Long): Verdicts {
+        withTimeoutOrNull(timeoutMs) { pending.first { it == 0 } }
+        // Pending first: an outcome counts its failure before it stops being pending.
+        val left = pending.value
+        val failures = failed.get()
+        return when {
+            left > 0 -> Verdicts.Unanswered(left)
+            failures > 0 -> Verdicts.Failed(failures)
+            else -> Verdicts.Stored
+        }
+    }
+
+    /** How an [awaitWithin] ended. */
+    sealed interface Verdicts {
+        /** Every submission was stored or refused for good. */
+        data object Stored : Verdicts
+
+        /** Every submission was answered, and [count] of them failed. */
+        class Failed(
+            val count: Int,
+        ) : Verdicts
+
+        /** [count] submissions had no answer at the deadline. */
+        class Unanswered(
+            val count: Int,
+        ) : Verdicts
     }
 }

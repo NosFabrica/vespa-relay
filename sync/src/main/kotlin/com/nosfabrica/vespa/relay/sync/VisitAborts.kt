@@ -74,6 +74,9 @@ internal class VisitAborts(
          * ending quartz reported was manufactured on our side of the socket.
          */
         BACKPRESSURED("abortedBackpressured", "our own ingest queue held the socket — nothing the relay did", ours = true),
+
+        /** The walk was read, and the store had not answered all of its events within `LEG_QUIET_GIVE_UP_MS`. */
+        UNSTORED("abortedUnstored", "our store did not answer the walk's events in time — nothing the relay did", ours = true),
     }
 
     private val counters = Reason.entries.associateWith { AtomicLong() }

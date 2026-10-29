@@ -937,6 +937,16 @@ internal val MIRROR_TERMS: JsonObject =
                 "and `abortedUnpageable` before the pool could tell its own stalls from a relay's.",
         )
         term(
+            "abortedUnstored",
+            "Visits ended because a walk was over and the STORE had not answered every event it handed to " +
+                "ingest within the visit's quiet give-up (`LEG_QUIET_GIVE_UP_MS`). The relay did nothing; nothing " +
+                "is written on its row, no band is recorded, and the revisit starts at the same ask. Before this, " +
+                "the visit waited for those verdicts with no bound, holding its slot while its row said `catching " +
+                "up (paging)`: one batch pass held on an unanswered store query kept nine visits there for up to " +
+                "4 h 40 min (NosFabrica/vespa-relay#289). Read beside the ingest processor's `oldestBatchSec` and " +
+                "the `store call SLOW` lines, which name the call the batch is in.",
+        )
+        term(
             "syncStatus",
             "Where this router's sync of one (relay, stream) pair stands. `complete` — every ask's past is " +
                 "settled down to the floor, by a paged walk the relay EOSEd empty in every band it holds or by " +

@@ -154,6 +154,8 @@ internal class RetractionAudit(
         ask: Filter,
         sharedAuthors: Set<String>,
         onActivity: () -> Unit = {},
+        /** How long the recovered events may wait for the store's verdicts; past it nothing is recorded or deleted. */
+        verdictWaitMs: Long = LEG_QUIET_GIVE_UP_MS,
         onEvent: suspend (Event) -> Unit = {},
     ) {
         val ownedAsk = ownedAskOf(stream, ask) ?: return
@@ -196,10 +198,21 @@ internal class RetractionAudit(
         // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records;
         // a by-id answer that stalled or was refused leaves ids unfetched, so it claims nothing, and
         // neither does one whose events did not all reach the store ([IngestAcks]).
-        val stored = observed.acks.await()
-        if (compared && observed.drained && !stored) {
+        val verdicts = observed.acks.awaitWithin(verdictWaitMs)
+        // The wait was ours, not the relay's silence.
+        onActivity()
+        if (verdicts is IngestAcks.Verdicts.Unanswered) {
+            // A store that has not taken what we recovered is not one to delete from.
             System.err.println(
-                "router: ${stream.name} ${url.url} — ${observed.acks.failures} recovered event(s) did not reach the store; " +
+                "router: ${stream.name} ${url.url} — ${verdicts.count} recovered event(s) had no verdict from the store after " +
+                    "${verdictWaitMs / 1000}s; the band stays unverified and nothing is deleted until the next audit",
+            )
+            return
+        }
+        val stored = verdicts == IngestAcks.Verdicts.Stored
+        if (compared && observed.drained && verdicts is IngestAcks.Verdicts.Failed) {
+            System.err.println(
+                "router: ${stream.name} ${url.url} — ${verdicts.count} recovered event(s) did not reach the store; " +
                     "the band stays unverified and the next audit fetches them again",
             )
         }

@@ -341,10 +341,10 @@ the `!clean` path returned naming neither the relay, the stream, the ask nor the
 reason, and the refusals an operator COULD see were the relay client's own
 connection logging, undercounting by ~10x. `abortedVisits` said a problem
 existed and no instrument in the process could name it, which is the same shape
-as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: eight
+as `oldestBatchSec` before `StoreCalls`. `VisitAborts` is the answer: nine
 counters that partition the total exactly (`abortedAuthRequired`,
 `abortedClosed`, `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`,
-`abortedGaveUp`, `abortedFailed`, `abortedBackpressured`), plus one line per
+`abortedGaveUp`, `abortedFailed`, `abortedBackpressured`, `abortedUnstored`), plus one line per
 (stream, relay, reason) per half hour carrying the ask and — through
 `RelayComplaints` — the sentence the relay refused with. **The sentence is the half that could not be
 inferred**: quartz reports how a walk ENDED, which is the right shape for the

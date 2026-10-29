@@ -224,6 +224,7 @@ const ABORTS = [
   ["abortedGaveUp", "given up on"],
   ["abortedFailed", "failed"],
   ["abortedBackpressured", "held by our own ingest"],
+  ["abortedUnstored", "waiting on our own store"],
 ];
 
 /**
