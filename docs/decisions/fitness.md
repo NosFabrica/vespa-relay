@@ -567,3 +567,29 @@ a dispatcher of its own sized to the passes' dials over both transports
 (one document per dial), four at a time per host, and its wall clock covers
 the wait for a slot as well as the call. Cancelling the caller still cancels
 the call.
+
+**The pre-probe says when no address took a connect inside its whole window.**
+Every url `MonitorProfileProbe` saw hang a dial for its full idle window and
+then fail `Connect timed out` (203 across the three passes of a 1,500-server
+sample) had already timed out at the pre-probe, and was judged `REACHABLE`
+because a timeout proves nothing. `Reach.UNANSWERED` is that case, and only
+when every address was handed the whole `PROBE_TIMEOUT_MS`: a timeout beside a
+refusal, our own missing route, or a window the deadline shortened is still
+`REACHABLE`. The fold and the stability gate decline it, since neither
+publishes anything about a url that never answers; fitness still dials it,
+because `silent` is the dial's word on the dial's own window.
+
+**A pre-probe answer no claim is signed on is reused for an hour.** All three
+passes pre-probe the same hosts within a sweep, and the fold once per path, so
+an unanswered host cost five seconds of a dial permit three times over.
+`REACHABLE` and `UNANSWERED` are remembered per host and port for `REUSE_MS`,
+shorter than a sweep; both still end in a dial or in no claim. Proof is asked
+afresh every time, since `dead` is signed on it, and so is our own side. Fitness
+spent 619 permit-seconds pre-probing in the sample, and 81 after.
+
+**The NIP-11 document is fetched beside the dial, not before it.** The two
+fail independently, and a host that hangs one usually hangs both, so the
+document's ten-second clock was paid in full in front of every dead url's
+ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
+url's stage reads `nip-11 document` only while the dial has finished and the
+document has not.

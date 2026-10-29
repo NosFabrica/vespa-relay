@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -377,6 +378,27 @@ class AliasProbeTest {
             assertTrue(attempt.spoke, "a refusal is the relay ANSWERING, and the fold turns on that")
             assertTrue(attempt.authRefused)
             assertEquals(AliasProbe.SHAPES.size, fake.asks.size, "one ask per shape: ${fake.kindsAsked}")
+        }
+
+    @Test
+    fun `a connect that ran out of time is asked one shape, and a refused upgrade both general ones`() =
+        runBlocking {
+            suspend fun shapesAsked(reason: String): Int {
+                var asks = 0
+                val attempt =
+                    AliasProbe(fetch = { _, _, _, _ ->
+                        asks++
+                        AliasProbe.Page(events = null, reason = reason)
+                    }).leaderPrint(url, BASE) {}
+                assertNull(attempt.leader)
+                assertFalse(attempt.spoke, "a url that never answered did not speak")
+                return asks
+            }
+
+            // The next shape would wait on the same dial's clock.
+            assertEquals(1, shapesAsked("cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)"))
+            // A refused upgrade is quick to ask again, and a second dial is how a flaky one is caught.
+            assertEquals(2, shapesAsked("cannot:Server Misconfigured. Response: 503 Service Unavailable. Exception: Expected HTTP 101 response but was '503 Service Unavailable' (ProtocolException)"))
         }
 
     @Test

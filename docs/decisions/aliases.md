@@ -410,3 +410,26 @@ where the code before it read the candidates' own records and went on. The
 fallback is back: the candidates plus the other urls on their servers, read
 by `#d` like `load`, so the pass still acts on what the store says and never
 signs blind. Only when that read fails too is the pass skipped.
+
+**A probe ask resets quartz's reconnect backoff before it subscribes.** After a
+failed connect, quartz holds a relay back for its reconnect backoff and only
+the 60-second keep-alive tick dials it again, so the ladder's next shape (and
+the stability gate's kinds pair) subscribed to a relay nothing was dialling
+and sat out a whole idle window. `MonitorProfileProbe` over 1,500 servers of
+production's corpus found that pattern, a refused upgrade or a 503 followed by
+20 seconds of nothing, behind two thirds of the fold's and the stability
+gate's dial time and nearly half of fitness's. `AliasProbe.over` now calls
+`resetBackoff(url)` before every ask, which leaves an open socket alone, so the
+second shape is a real second dial costing what the first did. Dial time fell
+from 4,808 to 1,894 permit-seconds in the fold, 6,984 to 1,773 in the gate and
+7,207 to 3,689 on fitness's ladder, with the same grades.
+
+**A connect that ran out of time ends the ladder while nothing has answered.**
+The next shape is a fresh dial on the same clock, and over Tor that clock is
+`SYNC_TOR_CONNECT_TIMEOUT_SECONDS`: a hung hidden service cost the bare shape
+a full connect timeout and the kinds shape another. `Window.connectTimedOut`
+is our dial failing on a `Silence.TIMEOUT` word before any answer; `leaderPrint`
+returns unspoken on it, fitness grades it `silent` off that one rung (the grade
+the second rung earned), and the stability gate skips its kinds pair. No url in
+the profiled sample served after a connect timeout on an earlier rung; the
+`c…e` urls there are CLOSED-then-served.

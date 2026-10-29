@@ -617,7 +617,7 @@ class FitnessPass(
     }
 
     /**
-     * One url's whole job: the pre-probe, then the document, then the dial. Only the dial claims
+     * One url's whole job: the pre-probe, then the document beside the dial. Only the dial claims
      * a socket. [Processors.Handle.holding] is called at each boundary to name the step.
      */
     private suspend fun measureOne(
@@ -640,7 +640,8 @@ class FitnessPass(
                 return
             }
         when (reached) {
-            Reach.REACHABLE -> {
+            // Dialled all the same: `silent` is the dial's word to say, on the dial's own window.
+            Reach.REACHABLE, Reach.UNANSWERED -> {
                 Unit
             }
 
@@ -660,9 +661,26 @@ class FitnessPass(
                 return
             }
         }
-        progress.holding(url.url, STAGE_DOCUMENT)
-        document?.read(url)?.let { batch.readings[url] = it }
-        progress.holding(url.url, STAGE_LADDER)
+        // Beside the dial, not before it: the two fail independently, and a host that hangs one hangs both.
+        coroutineScope {
+            val reading = document?.let { doc -> launch { batch.readings[url] = doc.read(url) } }
+            progress.holding(url.url, STAGE_LADDER)
+            dial(url, anchor, sockets, batch, onEvent)
+            if (reading?.isActive == true) {
+                progress.holding(url.url, STAGE_DOCUMENT)
+                reading.join()
+            }
+        }
+    }
+
+    /** The ladder on a claimed socket, its outcome or the reason it has none filed on [batch]. */
+    private suspend fun dial(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        sockets: Sockets,
+        batch: Batch,
+        onEvent: suspend (Event) -> Unit,
+    ) {
         sockets.claim(url)
         try {
             val outcome =
@@ -788,6 +806,8 @@ class FitnessPass(
                 silent++
                 // Two silent rungs in a row is a url that is not there.
                 if (rung == AliasProbe.FALLBACK_KINDS && silent == 2) break
+                // Nothing has answered and the connect itself ran out of time: the next rung is the same dial.
+                if (window.connectTimedOut && served == null && empty == null && refusals.isEmpty()) break
                 continue
             }
             if (ids.isNotEmpty()) {

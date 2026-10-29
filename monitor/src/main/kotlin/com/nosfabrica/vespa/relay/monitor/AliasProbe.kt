@@ -90,6 +90,8 @@ class AliasProbe(
             // since a kinds walk refused beside a bare walk our transport cut is a live server.
             if (window.ids == null) silent++
             if (shape == FALLBACK_KINDS && silent == 2) return Attempt(null, spoke = false)
+            // Nothing has answered and the connect itself ran out of time: the next shape is the same dial.
+            if (window.connectTimedOut && !authRefused && silent == SHAPES.indexOf(shape) + 1) return Attempt(null, spoke = false)
         }
         return Attempt(null, spoke = true, authRefused = authRefused)
     }
@@ -152,7 +154,10 @@ class AliasProbe(
          * when nothing came back.
          */
         val oldestAt: Long? = null,
-    )
+    ) {
+        /** Our dial ran out of time before any answer: another ask this pass waits on the same clock. */
+        val connectTimedOut: Boolean get() = ids == null && reason?.startsWith(CANNOT_CONNECT) == true && Silence.of(reason) == Silence.TIMEOUT
+    }
 
     /**
      * Did the answer match the ask: the counters, and nothing that judges them. Each event is
@@ -369,10 +374,16 @@ class AliasProbe(
             target: Int,
             /** Sized from the target, so a small-target pass does not ask each relay for a full page. */
             page: Int = maxOf(target, MIN_PAGE),
+            /** Hears every page with how long it took, for a probe that profiles a pass. */
+            observe: ((NormalizedRelayUrl, Long, Page) -> Unit)? = null,
             idleMs: (NormalizedRelayUrl) -> Long,
         ): AliasProbe =
             AliasProbe(
                 fetch = { url, size, until, kinds ->
+                    val startedNs = System.nanoTime()
+                    // An ask after a failed connect would otherwise wait out quartz's reconnect backoff
+                    // undialled and come back as a whole idle window of silence; a live socket is untouched.
+                    client.resetBackoff(url)
                     val result =
                         client.fetchAllWithHooks(
                             filters = mapOf(url to listOf(Filter(limit = size, until = until, kinds = kinds))),
@@ -387,7 +398,7 @@ class AliasProbe(
                         reason = done,
                         authRefused = url in result.authRefused,
                         refusal = done?.takeIf { it.startsWith(CLOSED) }?.removePrefix(CLOSED)?.trim(),
-                    )
+                    ).also { observe?.invoke(url, (System.nanoTime() - startedNs) / 1_000_000, it) }
                 },
                 target = target,
                 page = page,
