@@ -85,6 +85,7 @@ node web/src/test/browser/csp.probe.mjs          # every public page under the s
 ./gradlew :monitor:test --tests '*RelayComplianceProbe*' -DcomplianceProbe=true --rerun -i                  # does a relay serve what it was asked; -DcomplianceUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*RelayShapesProbe*' -DshapesProbe=true --rerun -i                          # which ask shapes a relay serves, refuses or ignores, and the grade; -DshapesUrls='wss://a,wss://b'
 ./gradlew :monitor:test --tests '*MonitorReplayProbe*' -DreplayProbe=true -DreplayUrls=urls.txt -DreplayOut=out.tsv -PtestHeap=6g --rerun -i   # fold then fitness over a url list, a TSV of grade + same-as per url; the default 512m heap dies on a full sweep
+./gradlew :monitor:test --tests '*MonitorProfileProbe*' -DprofileProbe=true -DprofileRecords=v30166.jsonl -DprofileOut=out -DprofileHosts=1500 -PtestHeap=6g --rerun -i   # where a sweep's dial permits go, per pass and stage, over 30166 records pulled off a relay; -DprofileCold=true, -DprofileDirect=true where the JVM's proxy cannot carry a websocket
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i  # does the abort sampler fire; wants a busy relay
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
 ./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)
@@ -199,7 +200,7 @@ web/…/relay/web/
   resources/observer_stats.html   an operator diagnostic with its own relay client (web/observers/)
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay, fetch-slice.mjs
-                              one kind mix of it; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
+                              one kind mix of it, fetch-verdicts.mjs its monitor's 30166 records; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket;
                               live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher (docs/live-feeds.md);
                               nostr-sign.mjs is the BIP-340 signer the publishing tools share

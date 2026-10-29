@@ -45,26 +45,33 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.7.3 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL, tag v2.7.3 (fbe091254012, 2026-10-29),
-81 commits past 2.4.0. One quartz module per process still: 2.4.0, which the store at 493fe01d9ea7
-names, resolves up to it (`quartz:2.4.0 -> 2.7.3`), and the full check passes on that graph. What
-this relay reaches:
+2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
+What this relay reaches:
 
+  RELAY URLS ARE THE APP'S CALL (quartz c1e23a7). isLocalHost now covers 100.64.0.0/10 (CGNAT,
+    Tailscale), single-label hosts, .lan/.home/.home.arpa/.internal/.intranet/.localdomain and
+    IPv4-mapped IPv6, and quartz adds isDialableFromOthers, the policy for a url found in someone
+    else's data. RelayUrlCache.decide, which every discovery read goes through and which only ever
+    reads other people's relay lists, moves from isLocalHost to it: it also refuses documentation,
+    benchmarking and multicast literals and names that cannot be a host (`wss://wss/nos.lol`).
+    Measured on production's 49,184 relay-list urls: 305 Tailscale addresses had been dialled and
+    graded `silent`, 456 single-label and local-suffix hosts graded `dead`; none is a candidate now.
+    The urls this deployment declares itself (sync.conf `urls`) are never filtered, as before.
+  PARSERS KEEP LOCAL RELAYS; the filtered accessors (readRelaysNorm, writeRelaysNorm, the DM and
+    KeyPackage relays()) are deprecated and keep filtering until 3.0.0. Nothing here calls them:
+    discovery reads raw tags through RelayDiscovery.
   CHEAPER LIVE FAN-OUT (4f7f84d, 2e83e22; written against this relay's measurements,
     docs/live-feeds.md). FilterMatcher matches kinds without boxing the event's kind; FilterIndex
     returns a lone bucket's subscriber set uncopied instead of a fresh LinkedHashSet per event; and
     LiveFrameSink hands a live EVENT frame to a sink as its prefix and the event's body, one String
     instance across every subscription, which NativeWebSocket encodes once per event loop. Together
     about a fifth off the relay's user CPU per live frame at 12,000 feeds.
-  MORE HOSTS ARE LOCAL (c1e23a7, 9d62158). isLocalHost now also matches 100.64.0.0/10, single-label
-    hosts, .lan, .home, .home.arpa, .internal, .intranet, .localdomain and IPv4-mapped IPv6.
-    RelayUrlCache refuses what it matches, so discovery no longer dials such a url found in someone
-    else's relay list, which could never have been reached from outside anyway. normalizeOrNull
-    is unchanged for the urls this deployment dials itself (ws://relay:7777 stays ws://relay:7777),
-    so SYNC_INGEST_URL and compose are unaffected. The filtered relay-list accessors are deprecated,
-    and nothing here calls them.
-  The rest of the range is event classes, builders and NIP-03/05/57/5D hardening for other apps;
-    none of it is on a path this relay runs.
+  Inert here: drss.io kinds and the kind-30054 split (the store's own pin note).
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. With the store at 493fe01d9ea7 the graph
+    showed `com.vitorpamplona.quartz:quartz:2.4.0 -> 2.7.3`, the force winning; the store at
+    fec452107fe8 (vespaEventStore) names 2.7.3 itself, and no arrow is left.
+  SEARCH: the drss.io kinds, the kind-30054 split and the napplets' source url move the
+    derivation; the reindex list is in docs/migrations.md.
 
 Prev 2.4.0 = com.vitorpamplona.quartz:quartz from MAVEN CENTRAL: the same code as c63c35ca76 (below), which
 is tag v2.4.0 (git rev-parse v2.4.0^{commit} = c63c35ca7629), published by quartz's release workflow.
@@ -467,7 +474,37 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-493fe01d9ea7 = vespa-eventstore main @ 2026-10-27, the merge of PR #182 (over 343926b68850, below):
+fec452107fe8 = vespa-eventstore main @ 2026-10-29, the merge of PR #189 (over 493fe01d9ea7, below):
+the store takes quartz 2.7.3, which this relay already forced, so the graph carries one quartz with
+no arrow. Also on main since 493fe01d9ea7:
+  A DENSE created_at SECOND IS SPLIT BY ID PREFIX, NOT SCANNED (#186, e8bc99c, 2c1bd5e). A second
+    holding more ids than the walk's cursor carries (80,000) went to a document-API visit over the
+    whole corpus: 22-51 minutes per scan on staging's 516M documents, so a NIP-77 snapshot over a
+    NIP-85 provider's run (whole runs signed on one second) never finished, and with it the content
+    and retraction audits (#185). It is now read through the attribute index in id-prefix buckets,
+    and a limited walk through such a second keeps NIP-01's lowest ids: a captured provider run's
+    `limit: 100000` snapshot returned 95,337 ids (4,760 missing, 97 extra) before and is exact now.
+  A RESPONSE BODY THAT STALLS MID-STREAM IS CUT (#188, c0a5fae; this relay's #289). The query client
+    bounds silence inside a body at 120 s, where one newestVersions probe had waited 4 h 40 min on a
+    healthy HTTP/2 connection; the cut is an IOException the client already retries.
+  TRUST COMMITS (#184, 535c827, a3d0df8): a clean commit makes 2 crash-marker calls instead of 3
+    (about 15% of the ingest lock on a loaded 3-node cluster, #183), and a batch's untyped 10040 now
+    counts when planning its cover, which had left some cards uninsured on the address-keyed path.
+  git merge-base --is-ancestor 493fe01d9ea7 fec452107fe8   # verified
+
+DEPLOY: the schema moves by a comment only (AUTO_DEPLOY redeploys once, no field moves); the
+  search re-derivation is docs/migrations.md's entry for this pin.
+
+GATED, the store at 3f931f5 (PR #189's head): its integration suite against a real Vespa
+  (vespaengine/vespa:latest ed696aa1c9fc): 49 tests in 31 classes, 1 skipped (StagingCorpusIT),
+  0 failures. The merge's tree is the head's (git rev-parse fec452107fe8^{tree} == 3f931f5^{tree}).
+  JitPack built the commit (store-fec452107fe8.jar, 891 KB; its POM names quartz-jvm 2.7.3). Here,
+  ./gradlew build against it: 1,653 tests, 2 skipped, 0 failures. Runtime classpath (:relay, :sync)
+  otherwise identical: the store's two modules alone move.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 493fe01d9ea7 = vespa-eventstore main @ 2026-10-27, the merge of PR #182 (over 343926b68850, below):
 the store takes quartz 2.4.0 from Maven Central (com.vitorpamplona.quartz) instead of JitPack's
 c63c35ca76, the same code. Its published POMs now name a coordinate any Central consumer resolves,
 and its build reads nothing from JitPack. Nothing else changed: libs.versions.toml,

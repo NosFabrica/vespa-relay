@@ -352,6 +352,21 @@ class RelayVerdictRecord(
         shared: Int,
     ): Event? = write(alias, canonical, "same group list as ${canonical.url}: $shared of $sampled group definitions shared")
 
+    /**
+     * A fold on a store too small to sample: both urls served the same complete store, and so did a
+     * path on their host that no relay list names, which only a server ignoring the path does.
+     */
+    suspend fun publishWholeStore(
+        alias: NormalizedRelayUrl,
+        canonical: NormalizedRelayUrl,
+        events: Int,
+    ): Event? =
+        write(
+            alias,
+            canonical,
+            "the same complete store of $events event(s) as ${canonical.url}, as a path no relay list names also serves",
+        )
+
     /** The weakest fold: these urls share a host, every one answered, none would serve anything. */
     suspend fun publishUnreadable(
         alias: NormalizedRelayUrl,

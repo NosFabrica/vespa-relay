@@ -68,7 +68,8 @@ internal class RelayUrlCache(
         if (!trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return REFUSED
         val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return REFUSED
         if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return REFUSED
-        if (RelayUrlNormalizer.isLocalHost(url.url)) return REFUSED
+        // Every url read here is someone else's: a local, private or malformed host names their machine, not a relay.
+        if (!RelayUrlNormalizer.isDialableFromOthers(url.url)) return REFUSED
         return Decided(withoutDefaultPort(url), RelayUrlNormalizer.isOnion(url.url))
     }
 

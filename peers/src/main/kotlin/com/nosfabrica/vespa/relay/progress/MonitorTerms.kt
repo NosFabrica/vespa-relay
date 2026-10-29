@@ -185,7 +185,7 @@ internal val MONITOR_TERMS: JsonObject =
         term(
             "stage",
             "WHICH STEP a probe pass is on for the url it is holding, in the pass's own words — `pre-probe`, " +
-                "`nip-11 document`, `ask ladder`, `neg-open` for fitness, `paired walk` for the stability gate, " +
+                "`nip-11 document`, `ask ladder`, `neg-open`, `held for the fold` for fitness, `paired walk` for the stability gate, " +
                 "`fingerprint` for the fold. `heldForSec` beside it says how long; only this says what for, and " +
                 "the steps stall for unrelated reasons: a name that will not resolve stalls the pre-probe, a " +
                 "relay that never stops sending stalls the ladder, a full ingest queue stalls whichever step is " +

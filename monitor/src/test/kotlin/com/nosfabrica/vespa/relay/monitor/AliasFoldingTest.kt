@@ -45,6 +45,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -839,12 +840,14 @@ class AliasFoldingTest {
             val store = newStore()
             val urls = (listOf("") + (0 until 2 * AliasFolding.THIN_ATTEMPTS).map { "p$it" }).map { RelayUrlNormalizer.normalize("wss://quiet.example/$it") }
             val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
-            val up = Upstreams { thin }
+            // Routed by path: a path no list names serves nothing, so the shared store is not proof of one relay.
+            val up = Upstreams { at -> if (at in urls) thin else emptyList() }
 
             folding(store, up).measure("t", urls, canDial = { true })
 
-            // The search still costs its few probes per pass, which is how a recovery is noticed.
-            assertEquals(AliasFolding.THIN_ATTEMPTS, up.contacted.size, "members were fingerprinted behind no yardstick")
+            // The search still costs its few probes per pass, which is how a recovery is noticed, and one
+            // made-up path; a server answering that one as the rest is folded instead (`one store too small`).
+            assertEquals(AliasFolding.THIN_ATTEMPTS + 1, up.contacted.size, "members were fingerprinted behind no yardstick")
         }
 
     @Test
@@ -1071,6 +1074,160 @@ class AliasFoldingTest {
             assertEquals(listOf(inbox, paths.first()), cleaned.dial)
             assertEquals(paths.drop(1).associateWith { paths.first() }, cleaned.aliases)
         }
+
+    @Test
+    fun `a host is never asked for more than its share of paths at once, and every path still folds`() =
+        runBlocking {
+            // chorus.bonsai.com answered a whole group dialled together with 429s and 502s.
+            val pool: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "pool$it") }
+            val hosts = listOf("busy.example", "other.example")
+            val urls = hosts.flatMap { host -> (0 until 20).map { RelayUrlNormalizer.normalize("wss://$host/p$it") } }
+            val inFlight = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+            val most = java.util.concurrent.ConcurrentHashMap<String, Int>()
+            val store = newStore()
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { at, want, until, _ ->
+                                val host = RelayAliases.hostOf(at.url)
+                                val now = inFlight.computeIfAbsent(host) { AtomicInteger() }.incrementAndGet()
+                                most.merge(host, now, ::maxOf)
+                                try {
+                                    kotlinx.coroutines.delay(5)
+                                    AliasProbe.Page(pool.filter { until == null || it.createdAt <= until }.take(want))
+                                } finally {
+                                    inFlight.getValue(host).decrementAndGet()
+                                }
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                        ),
+                )
+
+            fold.measure("t", urls, canDial = { true })
+
+            for (host in hosts) {
+                assertTrue((most[host] ?: 0) <= AliasFolding.DIALS_PER_HOST, "$host had ${most[host]} dials at once")
+            }
+            assertEquals(hosts.size, fold.applyVerdicts(urls).dial.size, "each host's twenty paths fold onto one url")
+        }
+
+    /** A host whose paths [storeAt] answers from; a path no fixture names is whatever [storeAt] says of it. */
+    private fun tinyHost(
+        paths: List<String>,
+        storeAt: (String) -> List<Event>,
+    ): Pair<List<NormalizedRelayUrl>, Upstreams> {
+        val urls = paths.map { RelayUrlNormalizer.normalize("wss://tiny.example/$it") }
+        return urls to Upstreams { at -> storeAt(RelayAliases.pathOf(at.url)) }
+    }
+
+    private fun store(
+        name: String,
+        n: Int,
+    ): List<Event> = (0 until n).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "$name$it") }
+
+    @Test
+    fun `a server serving one store too small to sample at every path, a made-up one included, folds to one url`() =
+        runBlocking {
+            // relay.bitmacro.io: 18 events, the same at every listed path, below the 20 a yardstick needs.
+            val whole = store("whole", 18)
+            val (urls, up) = tinyHost(listOf("", "alpha-haven-xray", "beacon-beacon-ivory", "hotel")) { whole }
+            val store = newStore()
+
+            assertEquals(3, folding(store, up).measure("t", urls, canDial = { true }))
+
+            val held = RelayVerdictRecord(store, signer).load(urls)
+            assertEquals(urls.drop(1).toSet(), held.aliases.keys)
+            assertEquals(setOf(urls.first()), held.aliases.values.toSet(), "folded onto the preferred url")
+            val dialled = up.contacted.filter { it !in urls }
+            assertEquals(1, dialled.size, "one path no list names, asked once: $dialled")
+        }
+
+    @Test
+    fun `tiny relays routed by path stay apart when a made-up path serves nothing`() =
+        runBlocking {
+            // A host minting a relay per path: each its own few events, and an unknown path an empty one.
+            val paths = listOf("", "ann", "bob", "cat")
+            val (urls, up) = tinyHost(paths) { path -> if (path in paths) store("own-$path", 5) else emptyList() }
+            val store = newStore()
+
+            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+            assertTrue(RelayVerdictRecord(store, signer).load(urls).aliases.isEmpty())
+        }
+
+    @Test
+    fun `identical tiny stores fold only when a made-up path serves the same store`() =
+        runBlocking {
+            // The same five events at every listed path, but nothing at a path nobody listed: a host
+            // provisioning one relay per path, each holding the owner's profile, is not one relay.
+            val five = store("profile", 5)
+            val paths = listOf("", "ann", "bob")
+            val (urls, up) = tinyHost(paths) { path -> if (path in paths) five else emptyList() }
+            val store = newStore()
+
+            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+            assertTrue(RelayVerdictRecord(store, signer).load(urls).aliases.isEmpty())
+        }
+
+    @Test
+    fun `a path with a store of its own stays apart from a host's default store`() =
+        runBlocking {
+            // jaunters.basspistol.org: minted paths serve the public pool, /inbox serves its own.
+            val pool = store("pool", 2)
+            val inbox = store("inbox", 9)
+            val (urls, up) = tinyHost(listOf("", "echo", "cipher-titan", "inbox")) { path -> if (path == "inbox") inbox else pool }
+            val store = newStore()
+
+            folding(store, up).measure("t", urls, canDial = { true })
+
+            val aliases = RelayVerdictRecord(store, signer).load(urls).aliases
+            val inboxUrl = urls.last()
+            assertEquals(setOf(urls[1], urls[2]), aliases.keys, "the minted paths fold, /inbox does not")
+            assertTrue(inboxUrl !in aliases.values, "nothing folds onto /inbox")
+        }
+
+    @Test
+    fun `a window that is a sample and not the whole store folds on nothing but the yardstick rules`() =
+        runBlocking {
+            // A relay that answers every page with its newest few, whatever `until` says, never drains.
+            val few = store("stuck", 6)
+            val urls = listOf("", "a", "b").map { RelayUrlNormalizer.normalize("wss://stuck.example/$it") }
+            val up =
+                object {
+                    val contacted =
+                        java.util.concurrent.ConcurrentHashMap
+                            .newKeySet<NormalizedRelayUrl>()
+
+                    suspend fun fetch(
+                        at: NormalizedRelayUrl,
+                        want: Int,
+                        until: Long?,
+                        kinds: List<Int>?,
+                    ): AliasProbe.Page {
+                        contacted += at
+                        return AliasProbe.Page(few.take(want))
+                    }
+                }
+            val store = newStore()
+            val fold = AliasFolding(RelayAliases(), RelayVerdictRecord(store, signer), AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40))
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertTrue(up.contacted.all { it in urls }, "no made-up path is asked for a window that is not a whole store")
+        }
+
+    @Test
+    fun `the made-up path is on the same host and port and differs every time`() {
+        val url = RelayUrlNormalizer.normalize("wss://tiny.example:7447/some/path")
+        val a = AliasFolding.controlPathOf(url)
+        val b = AliasFolding.controlPathOf(url)
+        assertTrue(a!!.url.startsWith("wss://tiny.example:7447/"), a.url)
+        assertNotEquals(a, b)
+        assertEquals(RelayAliases.authorityOf(url.url), RelayAliases.authorityOf(a.url))
+    }
 
     @Test
     fun `a host of genuinely distinct endpoints keeps every one of them`() =

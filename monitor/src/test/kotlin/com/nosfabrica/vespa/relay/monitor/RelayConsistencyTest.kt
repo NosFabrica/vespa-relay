@@ -299,6 +299,25 @@ class RelayConsistencyTest {
         }
 
     @Test
+    fun `a connect that ran out of time is walked once, not again through the kinds fallback`() =
+        runBlocking {
+            val asked = java.util.Collections.synchronizedList(ArrayList<List<Int>?>())
+            val pass =
+                ConsistencyPass(
+                    consistency = RelayConsistency(),
+                    record = RelayVerdictRecord(newStore(), signer),
+                    probe =
+                        AliasProbe(fetch = { _, _, _, kinds ->
+                            asked += kinds
+                            AliasProbe.Page(null, reason = "cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)")
+                        }),
+                )
+
+            assertEquals(0, pass.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(listOf(null, null), asked.toList(), "the kinds pair would wait on the same dial's clock")
+        }
+
+    @Test
     fun `a verdict ages on when it was MEASURED, not on the record it rides on`() =
         runBlocking {
             // Quartz rewrites the shared kind 30166 on every connection, so the event's createdAt is

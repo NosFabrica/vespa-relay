@@ -311,9 +311,10 @@ class RelayDiscoveryTest {
 
     @Test
     fun `an ipv6 literal keeps the colons that are not a port`() {
-        val list = event(10002, arrayOf("r", "ws://[2001:db8::1]:80/alpha"), arrayOf("r", "ws://[2001:db8::2]/beta"))
+        // Public addresses: the documentation block, 2001:db8::/32, is no relay a stranger's list can name.
+        val list = event(10002, arrayOf("r", "ws://[2602:f36a:1::1]:80/alpha"), arrayOf("r", "ws://[2602:f36a:1::2]/beta"))
 
-        assertEquals(listOf("ws://[2001:db8::1]/alpha", "ws://[2001:db8::2]/beta"), urls(list, select(tag = "r")))
+        assertEquals(listOf("ws://[2602:f36a:1::1]/alpha", "ws://[2602:f36a:1::2]/beta"), urls(list, select(tag = "r")))
     }
 
     // ---- oversized lists ---------------------------------------------------
@@ -808,6 +809,30 @@ class RelayDiscoveryTest {
             RelayDiscovery.urlsIn(list, select, allowOnion = true).map { it.url },
             "with Tor configured the onion url is an ordinary upstream",
         )
+    }
+
+    /** Urls seen in production's relay lists that no stranger's list can make a relay of; the public ones beside them stay. */
+    @Test
+    fun `a relay list's private, local and malformed hosts are dropped and its public ones kept`() {
+        val refused =
+            listOf(
+                // Tailscale's 100.64.0.0/10, which the old local check let through to a dial.
+                "ws://100.100.10.10:4848",
+                "ws://[::ffff:192.168.1.5]",
+                "ws://calavera.lan:7777",
+                "ws://host.docker.internal:7777",
+                "ws://beelink:7777",
+                // A scheme pasted twice: the host is the single label `wss`.
+                "wss://wss/nos.lol",
+                // Not local, and still no relay: documentation and multicast blocks are not the public internet.
+                "ws://192.0.2.10:4848",
+                "ws://[2001:db8::1]",
+                "ws://224.0.0.251:4848",
+            )
+        val kept = listOf("wss://relay.example/", "wss://aloha-volcano.fable-ilish.ts.net:4848/", "wss://localhost.me/")
+        val list = event(10002, *(refused + kept).map { arrayOf("r", it) }.toTypedArray())
+
+        assertEquals(kept, urls(list, select(tag = "r")))
     }
 
     /** `ws://localhost` in someone else's relay list names their machine, and Tor changes nothing about that. */
