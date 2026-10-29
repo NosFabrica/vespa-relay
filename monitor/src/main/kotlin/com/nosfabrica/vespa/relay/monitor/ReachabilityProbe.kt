@@ -31,7 +31,9 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
@@ -60,6 +62,9 @@ enum class Reach {
 
     /** The lookup failed with no reason left to read; the dial would hit the same cached answer. */
     UNEXPLAINED,
+
+    /** Every address had the whole connect window and none answered: no proof, but a dial would wait out its own. */
+    UNANSWERED,
 }
 
 /** What our own direct handshake says about a dial's TLS failure. */
@@ -85,19 +90,43 @@ internal class ReachabilityProbe(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Our default trust; the dial's client trusts the same roots. */
     private val tlsFactory: SSLSocketFactory = SSLContext.getDefault().socketFactory,
+    /** How long a [REUSABLE] answer stands; no longer than a sweep, so each sweep's fold asks afresh. */
+    private val reuseMs: Long = REUSE_MS,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
+
+    /** Host:port -> an answer no claim is signed on, and when it was had; every pass of a sweep asks the same hosts. */
+    private val lately = ConcurrentHashMap<String, Pair<Reach, Long>>()
 
     /**
      * Whether to dial, and when not, whose side the reason is on. One fresh lookup and connect:
      * the JVM caches a failed lookup without its reason, so a second attempt could not tell our
-     * resolver failing from a name that does not exist.
+     * resolver failing from a name that does not exist. Only [REUSABLE] answers are reused, for [reuseMs].
      */
     suspend fun reach(url: NormalizedRelayUrl): Reach {
         if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
         if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
         val target = Target.of(url) ?: return Reach.REACHABLE
-        return withContext(io) {
+        val key = "${target.host}:${target.port}"
+        lately[key]?.let { (answer, atMs) -> if (clock() - atMs < reuseMs) return answer }
+        return probe(target).also { answer -> if (answer in REUSABLE) remember(key, answer) }
+    }
+
+    /** Past [MAX_REMEMBERED] the lapsed answers go, and all of them if none had: a forgotten host is only asked again. */
+    private fun remember(
+        key: String,
+        answer: Reach,
+    ) {
+        if (lately.size >= MAX_REMEMBERED) {
+            lately.entries.removeIf { clock() - it.value.second >= reuseMs }
+            if (lately.size >= MAX_REMEMBERED) lately.clear()
+        }
+        lately[key] = answer to clock()
+    }
+
+    /** One lookup and connect, on the probe's own threads. */
+    private suspend fun probe(target: Target): Reach =
+        withContext(io) {
             val addresses =
                 try {
                     resolve(target.host)
@@ -106,9 +135,8 @@ internal class ReachabilityProbe(
                 }
             val attempt = open(target, addresses)
             attempt.socket?.close()
-            if (attempt.socket != null) Reach.REACHABLE else judge(attempt.failures, attempt.complete)
+            if (attempt.socket != null) Reach.REACHABLE else judge(attempt.failures, attempt.complete, attempt.fullWindows)
         }
-    }
 
     /**
      * A direct handshake to [url] under our default trust, on the pre-probe's route, to check a
@@ -172,6 +200,8 @@ internal class ReachabilityProbe(
         val socket: Socket?,
         val failures: List<Exception>,
         val complete: Boolean,
+        /** Every address tried was handed the whole [PROBE_TIMEOUT_MS], so a timeout on it means that window. */
+        val fullWindows: Boolean = true,
     )
 
     /**
@@ -184,21 +214,40 @@ internal class ReachabilityProbe(
     ): Attempt {
         val deadline = clock() + TOTAL_TIMEOUT_MS
         val failures = ArrayList<Exception>()
+        var fullWindows = true
         for (address in addresses) {
             val left = deadline - clock()
             if (left <= 0) return Attempt(null, failures, complete = false)
+            // A shortened window cannot make the timeouts so far `UNANSWERED`, so it is not spent on them.
+            if (left < PROBE_TIMEOUT_MS && failures.isNotEmpty() && failures.all { it is SocketTimeoutException }) {
+                return Attempt(null, failures, complete = false)
+            }
+            val window = minOf(PROBE_TIMEOUT_MS.toLong(), left).toInt()
+            if (window < PROBE_TIMEOUT_MS) fullWindows = false
             try {
-                return Attempt(connect(InetSocketAddress(address, target.port), minOf(PROBE_TIMEOUT_MS.toLong(), left).toInt()), failures, complete = true)
+                return Attempt(connect(InetSocketAddress(address, target.port), window), failures, complete = true)
             } catch (e: IOException) {
                 failures += e
-                if (judge(failures, complete = true) == Reach.REACHABLE) return Attempt(null, failures, complete = false)
+                if (judge(failures, complete = true, fullWindows) == Reach.REACHABLE) return Attempt(null, failures, complete = false)
             }
         }
-        return Attempt(null, failures, complete = true)
+        return Attempt(null, failures, complete = true, fullWindows)
     }
 
     companion object {
         private const val PROBE_TIMEOUT_MS = 5_000
+
+        /**
+         * The answers a later ask may reuse: each still ends in a dial or in no claim. Proof is
+         * never reused, since `dead` is signed on it, nor our own side, which is a moment.
+         */
+        private val REUSABLE = setOf(Reach.REACHABLE, Reach.UNANSWERED)
+
+        /** The longest a [REUSABLE] answer stands, whatever the sweep. */
+        internal const val REUSE_MS = 60L * 60 * 1000
+
+        /** Hosts held at once; past it, the lapsed answers are dropped. */
+        private const val MAX_REMEMBERED = 50_000
 
         /** Per read while the direct handshake runs. */
         private const val TLS_READ_TIMEOUT_MS = 5_000
@@ -208,16 +257,19 @@ internal class ReachabilityProbe(
 
         /**
          * A host's verdict over its addresses: proof only when every address failed with proof,
-         * our side only when every address failed on ours, and any mix or gap left to the dial.
+         * our side only when every address failed on ours, unanswered only when every address
+         * timed out on a whole window, and any mix or gap left to the dial.
          */
         internal fun judge(
             failures: List<Exception>,
             complete: Boolean,
+            fullWindows: Boolean = true,
         ): Reach =
             when {
                 !complete || failures.isEmpty() -> Reach.REACHABLE
                 failures.all { Unreachability.ourSide(it) } -> Reach.TRANSPORT_DOWN
                 failures.all { Unreachability.proves(it) } -> Reach.PROVED_UNREACHABLE
+                fullWindows && failures.all { it is SocketTimeoutException } -> Reach.UNANSWERED
                 else -> Reach.REACHABLE
             }
 

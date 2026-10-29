@@ -170,8 +170,7 @@ class SameServerTest {
             assertNotEquals(Verdict.PRIME.value, gradeOf(store, coracleAlphaCharlie)?.get(1))
             fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, both)
 
-            assertEquals(setOf(coracle), primeAmong(store, both))
-            assertEquals(0, servers.askedOf(coracleAlphaCharlie), "a url waiting on the fold is never dialled for a grade")
+            assertEquals(setOf(coracle), primeAmong(store, both), "a url waiting on the fold that answers is never graded off that answer")
         }
 
     @Test
@@ -186,6 +185,174 @@ class SameServerTest {
 
             assertNull(gradeOf(store, coracleAlphaCharlie), "withdrawn, not replaced: the fold has not said what it is")
             assertEquals(setOf(coracle), primeAmong(store, listOf(coracle, coracleAlphaCharlie)))
+        }
+
+    @Test
+    fun `a held path its server will not upgrade is graded dead, and a held path that answers keeps waiting`() =
+        runBlocking {
+            // relay.ngit.dev on production: the root a relay, every other listed path a 404 or a web page.
+            val root = url("wss://relay.ngit.dev/")
+            val paths = mapOf("missing" to 404, "page" to 200, "gone" to 410, "busy" to 503, "walled" to 403, "throttled" to 429)
+            val refused = paths.mapKeys { url("wss://relay.ngit.dev/${it.key}") }
+            val answers = url("wss://relay.ngit.dev/answers")
+            val notes = corpus("ngit")
+            val store = newStore()
+            val all = listOf(root, answers) + refused.keys
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            // The sweep before graded the root, which is what makes its paths worth an ask.
+            RelayVerdictRecord(store, signer).publishFitness(root, Verdict.PRIME.value, "answered 40 events at a settled anchor", pageable = null, nip77 = null)
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(
+                        fetch = { at, want, until, _ ->
+                            asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                            refused[at]?.let { status ->
+                                AliasProbe.Page(
+                                    events = null,
+                                    reason = "cannot:Server Misconfigured. Response: $status X. Exception: Expected HTTP 101 response but was '$status X'",
+                                )
+                            } ?: AliasProbe.Page(notes.filter { until == null || it.createdAt <= until }.take(want))
+                        },
+                        target = 40,
+                        page = 40,
+                        fallbackPage = 40,
+                    ),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).grade(AliasMonitor.ALL_STREAMS, all)
+
+            val grades = all.associateWith { gradeOf(store, it)?.get(1) }
+            assertEquals(Verdict.PRIME.value, grades[root])
+            for (path in listOf("missing", "page", "gone")) {
+                assertEquals(Verdict.DEAD.value, grades[url("wss://relay.ngit.dev/$path")], "/$path refused the upgrade as no relay")
+            }
+            // A server error, a wall or a rate limit is not "no relay here", and an answer is the fold's to judge.
+            for (path in listOf("busy", "walled", "throttled", "answers")) {
+                assertNull(grades[url("wss://relay.ngit.dev/$path")], "/$path must keep waiting on the fold")
+            }
+            assertTrue(refused.keys.all { asked[it]?.get() == 1 }, "a held url is asked once, never walked down the ladder: $asked")
+        }
+
+    @Test
+    fun `a server the pre-probe proves gone is graded dead at every path on that socket in one sweep`() =
+        runBlocking {
+            // haven.almostmachines.dev: 113 paths, graded one a sweep as each took its turn as stand-in.
+            val root = url("wss://gone.example/")
+            val paths = (1..5).map { url("wss://gone.example/p$it") }
+            val otherPort = url("wss://gone.example:7777/")
+            val plain = url("ws://gone.example/plain")
+            val answering = url("wss://answers.example/")
+            val notes = corpus("answers")
+            val store = newStore()
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(
+                        fetch = { at, want, until, _ ->
+                            asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                            AliasProbe.Page(notes.filter { until == null || it.createdAt <= until }.take(want))
+                        },
+                        target = 40,
+                        page = 40,
+                        fallbackPage = 40,
+                    ),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).measure(
+                AliasMonitor.ALL_STREAMS,
+                listOf(root) + paths + listOf(otherPort, plain, answering),
+                // Port 443 of the host refuses the connect; port 7777 and anything else answer.
+                reach = { if (FitnessPass.socketOf(it) == "gone.example:443") Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                onEvent = {},
+                sockets = Sockets.NONE,
+            )
+
+            assertEquals(Verdict.DEAD.value, gradeOf(store, root)?.get(1))
+            for (path in paths) {
+                val grade = gradeOf(store, path)
+                assertEquals(Verdict.DEAD.value, grade?.get(1), "${path.url} shares the socket the pre-probe proved gone")
+                assertEquals("no TCP answer at the pre-probe", grade?.get(RelayVerdictRecord.LABEL_EVIDENCE_INDEX))
+                assertNull(asked[path], "the proof is the stand-in's; the path costs no dial")
+            }
+            // Another port is another socket, and plain ws another port: the proof says nothing of either.
+            assertEquals(Verdict.PRIME.value, gradeOf(store, otherPort)?.get(1))
+            assertNull(gradeOf(store, plain))
+        }
+
+    @Test
+    fun `a held path inherits no proof the dark-network guard withheld from its stand-in`() =
+        runBlocking {
+            // Every host gone at once is our resolver or egress, not sixty servers.
+            val roots = (0 until 60).map { url("wss://gone$it.example/") }
+            val paths = (0 until 60).map { url("wss://gone$it.example/p") }
+            val store = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe = probe(Servers { emptyList() }),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).measure(AliasMonitor.ALL_STREAMS, roots + paths, reach = { Reach.PROVED_UNREACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+
+            assertTrue((roots + paths).all { gradeOf(store, it) == null }, "a withheld proof was signed onto a path")
+        }
+
+    @Test
+    fun `the held paths of a server that answered HTTP are asked even when nothing on it is prime`() =
+        runBlocking {
+            // A server whose root refuses us with a 403 wall is up, and its 404 paths are not relays.
+            val root = url("wss://walled.example/")
+            val missing = listOf(url("wss://walled.example/gone-a"), url("wss://walled.example/gone-b"))
+            val store = newStore()
+            RelayVerdictRecord(store, signer).publishFitness(root, Verdict.RESTRICTED.value, "the websocket upgrade was refused with HTTP 403", pageable = null, nip77 = null)
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(fetch = { at, _, _, _ ->
+                        asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                        val status = if (at == root) 403 else 404
+                        AliasProbe.Page(events = null, reason = "cannot:Server Misconfigured. Exception: Expected HTTP 101 response but was '$status X'")
+                    }),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).grade(AliasMonitor.ALL_STREAMS, listOf(root) + missing)
+
+            // The walled root cannot stand in, so one path does and the other waits behind it.
+            val (held, standIn) = missing.partition { asked[it]?.get() == 1 }
+            assertEquals(1, held.size, "one path asked once, as a held url is: $asked")
+            assertEquals(1, standIn.size)
+            for (url in missing) assertEquals(Verdict.DEAD.value, gradeOf(store, url)?.get(1), "${url.url} refused the upgrade with a 404")
+        }
+
+    @Test
+    fun `the paths of a server down at its stand-in are not asked`() =
+        runBlocking {
+            // nostr.ac on production: 87 held paths answering 503, as its stand-in did.
+            val root = url("wss://down.example/")
+            val missing = url("wss://down.example/missing")
+            val asked = ConcurrentHashMap<NormalizedRelayUrl, AtomicInteger>()
+            val store = newStore()
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    AliasProbe(fetch = { at, _, _, _ ->
+                        asked.computeIfAbsent(at) { AtomicInteger() }.incrementAndGet()
+                        val status = if (at == root) 503 else 404
+                        AliasProbe.Page(events = null, reason = "cannot:Server Misconfigured. Exception: Expected HTTP 101 response but was '$status X'")
+                    }),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            ).grade(AliasMonitor.ALL_STREAMS, listOf(root, missing))
+
+            assertNull(asked[missing], "a held path is asked only beside a `prime` stand-in")
+            assertNull(gradeOf(store, missing))
         }
 
     private val nostrNet = url("wss://relay.nostr.net/")
@@ -324,7 +491,7 @@ class SameServerTest {
 
             fitness(store, servers, world = { languages + arSlash }).grade(AliasMonitor.FAST_LANE, listOf(arSlash))
             assertNull(gradeOf(store, arSlash))
-            assertEquals(0, servers.askedOf(arSlash))
+            assertEquals(0, servers.askedOf(arSlash), "a waiting url is asked only beside a `prime` stand-in")
 
             val roster = folding(store, servers).applyVerdicts(languages + arSlash)
             assertEquals(mapOf(arSlash to ar), roster.waiting)

@@ -160,6 +160,17 @@ Reach for it first.
   any claim of the form *the router cannot read these relays*: a production log
   shows a relay's FIRST word, and for an auth-gated relay that word is always
   `auth-required:` whether or not the AUTH that follows gets us in.
+- **`MonitorProfileProbe`** — where a monitor sweep's dial budget goes. It
+  re-signs a corpus of kind-30166 records (production's, pulled off the relay
+  by `relay/tools/fetch-verdicts.mjs`) into an in-memory store, runs one sweep through `AliasMonitor.runPass`, and
+  reports per pass the wall clock, the permits each stage held (sampled off the
+  progress rows), every page by what came back and how long it took, the
+  quartz reason on each silent page, and the urls grouped by their page
+  sequence (`cn` is a connect failure then an idle window). `-DprofileHosts`
+  samples whole servers, `-DprofileCold=true` strips every verdict, and
+  `grades.tsv` is what two builds are compared on. It found the reconnect
+  backoff costing most of every pass; reach for it before a theory about why a
+  sweep is slow. No Tor, so `.onion` urls are left out.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.

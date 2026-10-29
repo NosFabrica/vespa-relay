@@ -108,6 +108,50 @@ class ReachabilityProbeTest {
     }
 
     @Test
+    fun `a host no address answered within its whole window is unanswered and never proved gone`() {
+        // Each connect spends the whole window it is handed, as a host that never answers makes it.
+        var now = 0L
+        val handed = mutableListOf<Int>()
+
+        fun timing(addresses: List<InetAddress>) =
+            runBlocking {
+                handed.clear()
+                probe(addresses, addresses.associateWith { timedOut }, clock = { now }) { _, timeoutMs ->
+                    handed += timeoutMs
+                    now += timeoutMs
+                }.reach(url)
+            }
+
+        assertEquals(Reach.UNANSWERED, timing(listOf(v4)))
+        // A second address could only be handed a shortened window, which is not the window the claim is about,
+        // so it is not dialled for nothing: the host costs the one window it did before.
+        assertEquals(Reach.REACHABLE, timing(listOf(v4, v6)))
+        assertEquals(listOf(5_000), handed)
+        // Beside a refusal or our own missing route, a timeout leaves the host to the dial.
+        assertEquals(Reach.REACHABLE, reach(listOf(v6, v4), mapOf(v6 to unreachableNet, v4 to timedOut)))
+    }
+
+    @Test
+    fun `a host is asked once a sweep for what no claim rests on, and afresh for proof`() {
+        var connects = 0
+        var now = 0L
+        val reachable = probe(listOf(v4), mapOf(v4 to null), clock = { now }) { _, _ -> connects++ }
+        runBlocking {
+            reachable.reach(url)
+            reachable.reach(RelayUrlNormalizer.normalize("wss://dual.example/another-path"))
+        }
+        assertEquals(1, connects, "every path of one host is the same socket")
+        now += ReachabilityProbe.REUSE_MS
+        runBlocking { reachable.reach(url) }
+        assertEquals(2, connects, "a sweep later the host is asked again")
+
+        connects = 0
+        val refusing = probe(listOf(v4), mapOf(v4 to refused)) { _, _ -> connects++ }
+        runBlocking { repeat(3) { assertEquals(Reach.PROVED_UNREACHABLE, refusing.reach(url)) } }
+        assertEquals(3, connects, "`dead` is signed on proof, so proof is never reused")
+    }
+
+    @Test
     fun `a host with many slow addresses costs one deadline, and the untried ones prove nothing`() {
         // Each connect spends the whole timeout it is handed and is then refused.
         var now = 0L

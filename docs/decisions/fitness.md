@@ -567,3 +567,65 @@ a dispatcher of its own sized to the passes' dials over both transports
 (one document per dial), four at a time per host, and its wall clock covers
 the wait for a slot as well as the call. Cancelling the caller still cancels
 the call.
+
+**The pre-probe says when no address took a connect inside its whole window.**
+Every url `MonitorProfileProbe` saw hang a dial for its full idle window and
+then fail `Connect timed out` (203 across the three passes of a 1,500-server
+sample) had already timed out at the pre-probe, and was judged `REACHABLE`
+because a timeout proves nothing. `Reach.UNANSWERED` is that case, and only
+when every address was handed the whole `PROBE_TIMEOUT_MS`: a timeout beside a
+refusal, our own missing route, or a window the deadline shortened is still
+`REACHABLE`, and a second address is not dialled on a window too short to
+count. The fold declines it, since it publishes nothing about a url that never
+answers. Fitness still dials it, because `silent` is the dial's word on the
+dial's own window, and so the stability gate walks it too: a few unanswered
+hosts in each profiled sweep answered the longer dial, one of them `prime`, and
+the first cut of this skipped the gate for them (`gateDials`, pinned by
+`ProbeDeadlineTest`).
+
+**A pre-probe answer no claim is signed on is reused for up to an hour.** All three
+passes pre-probe the same hosts within a sweep, and the fold once per path, so
+an unanswered host cost five seconds of a dial permit three times over.
+`REACHABLE` and `UNANSWERED` are remembered per host and port for `REUSE_MS`,
+or the sweep period when that is shorter, so each sweep's fold asks afresh; both
+still end in a dial or in no claim. Proof is asked
+afresh every time, since `dead` is signed on it, and so is our own side. Fitness
+spent 619 permit-seconds pre-probing in the sample, and 81 after.
+
+**The NIP-11 document is fetched beside the dial, not before it.** The two
+fail independently, and a host that hangs one usually hangs both, so the
+document's ten-second clock was paid in full in front of every dead url's
+ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
+url's stage reads `nip-11 document` only while the dial has finished and the
+document has not.
+
+**A url waiting on the fold on a server that answered HTTP is asked once.** The fold
+fingerprints what a path serves, so a path its server will not upgrade (a 404,
+a 410, a web page answering 200) gives it nothing to compare and is never
+decided; it waited behind its server's stand-in forever, ungraded and
+re-dialled by every fold pass. Production's records held 3,413 such urls on
+179 servers with another url graded, and its fold dialled 3,642 urls in a pass
+that decided 2. Fitness now asks each one once, when some url on its server
+stands graded as having answered HTTP (`prime`, `restricted`, `auth-refused`,
+`noncompliant`, `unpageable`, or `dead` for a refused upgrade; a server down at
+its stand-in answered 503 at all 87 of its paths), and grades it `dead` only when the refusal earns `dead`
+under the existing rules; any answer, a 5xx, a wall or a rate limit leaves it
+waiting with nothing written, and a cut one stays outside the batch guard. In
+the profiled sample it graded 135 such paths (`relay.ngit.dev` 45 of 46,
+`pyramid.fiatjaf.com` 57) for 350 permit-seconds, with fitness's wall clock
+unchanged; checking only beside a stand-in graded in the same batch took a
+second dial phase and 27 seconds more, for the same paths a sweep later. The
+first cut keyed on the stand-in being `prime`, which missed every server whose
+graded urls were walls or refused upgrades (550 stuck urls on 30 servers in
+production): a stand-in is by construction ungraded or `prime`, since a refusal
+moves the role on, so the server's other grades are what say it is up.
+
+**A held url inherits its stand-in's proof about the socket.** The pre-probe and
+our own TLS handshake test a host and port, which every path on them shares, but
+only the stand-in was dialled, so a dead server's paths were graded one per
+sweep as each took the role: `haven.almostmachines.dev`'s 113 at four sweeps a
+day is four weeks. A held url on the stand-in's socket (`socketOf`, the scheme's
+port where none is written, so `ws://` and `wss://` on one host stay apart) now
+takes that `dead` with its evidence, after the TLS and dark-network guards, so
+it inherits only proof that survived them. Production held 597 urls on 39
+servers this way.

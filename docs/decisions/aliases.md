@@ -410,3 +410,55 @@ where the code before it read the candidates' own records and went on. The
 fallback is back: the candidates plus the other urls on their servers, read
 by `#d` like `load`, so the pass still acts on what the store says and never
 signs blind. Only when that read fails too is the pass skipped.
+
+**A probe ask resets quartz's reconnect backoff before it subscribes.** After a
+failed connect, quartz holds a relay back for its reconnect backoff and only
+the 60-second keep-alive tick dials it again, so the ladder's next shape (and
+the stability gate's kinds pair) subscribed to a relay nothing was dialling
+and sat out a whole idle window. `MonitorProfileProbe` over 1,500 servers of
+production's corpus found that pattern, a refused upgrade or a 503 followed by
+20 seconds of nothing, behind two thirds of the fold's and the stability
+gate's dial time and nearly half of fitness's. `AliasProbe.over` now calls
+`resetBackoff(url)` before every ask, which leaves an open socket alone, so the
+second shape is a real second dial costing what the first did. Dial time fell
+from 4,808 to 1,894 permit-seconds in the fold, 6,984 to 1,773 in the gate and
+7,207 to 3,689 on fitness's ladder, with the same grades.
+
+**A clearnet dial that ran out of time on the first rung ends the ladder.**
+The next rung is a fresh dial on the same clock. `Window.dialTimedOut` is our
+dial failing on a `Silence.TIMEOUT` word before any answer, at the connect, the
+TLS handshake or the upgrade, and `AliasProbe.endsLadder` is the one rule:
+`leaderPrint` returns unspoken, fitness grades `silent` off that rung (the
+grade the second earned), and the stability gate skips its kinds pair. No url
+in the profiled sample served after a timeout on an earlier rung; the `c…e`
+urls there are CLOSED-then-served. That sample has no `.onion` urls, and a Tor
+circuit is rebuilt on every attempt, so a Tor-routed url keeps its second rung
+(`retriesTimeouts`) until a profile with Tor says otherwise.
+
+**The fold dials at most four urls of one host at once.** A group's members
+were all launched together, up to the pass's whole permit budget against one
+server, which some servers answer with 429s and 502s for the overflow, and a
+member refused is a member the fold cannot fold. `DIALS_PER_HOST` sits in front
+of the pass's gate, so a queued host holds no permit another host could use.
+The fold's wall clock in the profiled sample did not move (its slowest host is
+three sequential yardstick asks, not a wide group). It did not cure
+`chorus.bonsai.com`, which still throttled ten of its paths at four at a time:
+that host limits by rate, not by concurrency.
+
+**A store too small to sample folds when a made-up path serves it too.** The
+fold's yardstick needs `minSample` events, and production's largest stuck
+groups were hosts serving one tiny store at every path: `relay.bitmacro.io` 18
+events, `relay.nyanko.win` and `jaunters.basspistol.org` 2, the same ids at each
+path, walked twelve thin attempts deep and left undecided every pass. A thin
+window the walk drained (`Window.drained`: an EOSE with nothing below what was
+served, never a CLOSED, a full target or a stall) is the whole store rather than
+a sample of it. The fold then asks a path on the same host and port that no list
+names (`controlPathOf`, sixteen random hex characters), and only if that serves
+the same complete, non-empty store, id for id, does it fold every member serving
+it too onto the preferred of them (`publishWholeStore`). Identical stores alone
+are not enough: a host provisioning one relay per path can hold the owner's
+profile in each, and it answers a path nobody provisioned with nothing. A member
+with a store of its own, jaunters' `/inbox`, stays undecided. It adds a rule and
+changes none, so `FOLD_EPOCH` stands. In the profiled sample it folded 81 urls on
+4 hosts, each re-checked live against two paths of our own making, and declined
+2 whose made-up path answered 403 and 404.

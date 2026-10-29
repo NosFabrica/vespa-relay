@@ -289,14 +289,20 @@ class RelayAliases(
     fun foldUnreadable(
         group: List<NormalizedRelayUrl>,
         leader: NormalizedRelayUrl,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> = foldOnto(group, leader)
+
+    /** Fold every url of [urls] not already folded onto [survivor]; the caller holds the argument for it. */
+    fun foldOnto(
+        urls: Collection<NormalizedRelayUrl>,
+        survivor: NormalizedRelayUrl,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         val folds = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
-        for (url in group) {
-            if (url == leader || folded.containsKey(url)) continue
-            folded[url] = leader
-            canonicals += leader
+        for (url in urls) {
+            if (url == survivor || folded.containsKey(url)) continue
+            folded[url] = survivor
+            canonicals += survivor
             distinct -= url
-            folds[url] = leader
+            folds[url] = survivor
         }
         return folds
     }
