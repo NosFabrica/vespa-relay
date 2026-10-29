@@ -69,3 +69,28 @@ The sandbox caps a process at 20,000 open files and cannot raise it, so one
 relay held at most ~19,000 sockets; past that the runs stack feeds a socket.
 One destination address gives ~28,000 local ports; `URLS` spreads the load over
 `127.0.0.2…`.
+
+## Against strfry
+
+Same sandbox, same tool, 2026-10-29: 12,000 feeds at 5 events a second, CPU
+read from `/proc` over 30 s of publishing. strfry 1.1.2-148 (C++ on
+uWebSockets, `ghcr.io/hoytech/strfry`) with compression off and host
+networking, `LENS=none` since it has no NIP-50; ours is the native websocket
+(`NATIVE_WEBSOCKET=true`), alternated with strfry's two runs.
+
+| | user CPU | kernel CPU | total | delivery p50 | p99 |
+|---|---:|---:|---:|---:|---:|
+| strfry, run 1 | 0.08 cores | 0.66 | 0.74 | 469 ms | 910 ms |
+| strfry, run 2 | 0.08 | 0.69 | 0.77 | 573 ms | 1.15 s |
+| vespa-relay, native websocket | 0.77 | 0.80 | 1.57 | 106 ms | 210 ms |
+
+- **strfry spends a tenth of our user-space CPU per frame** (~1.3 µs against
+  ~13 µs), but the kernel's share, one socket write per frame, is most of
+  both, so the total is about 2× ours per frame, not 10×.
+- **It buys its lower kernel time with latency.** Its delivery has a ~100 ms
+  floor even at 50 feeds, and at 12,000 a median 4–5× ours: it gathers events
+  and writes them together, so more frames share a write. Our native path
+  writes each frame as it comes.
+- strfry's process held 27 MB; ours runs a 2–4 GB heap sized up front, so
+  that pair is not a per-socket comparison. strfry also does none of the
+  lens, trust gate or Vespa work an edge relay does.
