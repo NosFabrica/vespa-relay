@@ -140,3 +140,19 @@ The release matches the prototype: user CPU 22–30% lower, latency a little
 better, kernel time unchanged. The remaining gap to strfry, about 1.35× per
 frame, is all user space, and our median delivery is 5× faster.
 
+## io_uring, tried and not taken
+
+Netty 4.2's io_uring transport, handed to Ktor through the server bootstrap
+in place of Java NIO, on the 2.7.3 build above, each alternated twice:
+
+| transport | user CPU | kernel CPU | total | delivery p50 | p99 |
+|---|---:|---:|---:|---:|---:|
+| Java NIO (the default) | 0.33–0.35 cores | 0.64–0.67 | 0.99–1.00 | 90 ms | 174–187 ms |
+| Netty io_uring | 0.41–0.42 | 0.82 | 1.23–1.24 | 102–103 ms | 195–227 ms |
+
+A quarter more CPU, kernel and user both, and higher latency, so it is not
+kept. The kernel cost is the TCP send per frame, which every transport pays;
+the io_uring servers that gained elsewhere batch whole passes of sends into
+one submission themselves, which the stock transport does not do for us.
+Native epoll measured no different from NIO either (above).
+
