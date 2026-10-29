@@ -202,7 +202,8 @@ web/src/test/js/              the plain-node suite (run.mjs); web/src/test/brows
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay, fetch-slice.mjs
                               one kind mix of it, fetch-verdicts.mjs its monitor's 30166 records; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
                               drives NIP-FE against a running relay, every answer checked against its socket;
-                              live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher (docs/live-feeds.md);
+                              live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher, and live-bench/ boots the relay
+                              under it to read CPU, memory, churn, stalled clients and a JFR profile (docs/live-feeds.md);
                               nostr-sign.mjs is the BIP-340 signer the publishing tools share
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives

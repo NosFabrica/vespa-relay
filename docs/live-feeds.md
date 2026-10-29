@@ -8,6 +8,10 @@ not a constant; take scale from a fresh run.
 
 ## The method
 
+`relay/tools/live-bench/` runs every measurement below: `cpu.sh` for one step,
+`compare.sh` to alternate variants, `memory.sh`, `churn.sh`, `stalled.sh`,
+`profile.sh` and `strfry.sh`. Its README says how to read them.
+
 A feed is one `REQ` for `{"kinds":[1],"limit":1,"search":"include:spam"}` held
 open after its EOSE: the worst case for fan-out, since every note matches every
 feed. Each step opens sockets until it holds the step's feeds, waits for every
