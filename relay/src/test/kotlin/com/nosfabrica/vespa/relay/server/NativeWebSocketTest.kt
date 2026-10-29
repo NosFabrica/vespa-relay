@@ -20,10 +20,16 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import io.netty.buffer.UnpooledByteBufAllocator
 import io.netty.channel.embedded.EmbeddedChannel
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
 import io.netty.handler.codec.http.websocketx.WebSocket08FrameDecoder
+import kotlinx.coroutines.runBlocking
+import java.net.InetSocketAddress
+import java.net.Socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -42,5 +48,58 @@ class NativeWebSocketTest {
             frame.release()
             client.finishAndReleaseAll()
         }
+    }
+
+    /** The status line [request] gets from a relay serving the native websocket. */
+    private fun statusLine(
+        port: Int,
+        request: String,
+    ): String =
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+            socket.soTimeout = 5_000
+            socket.getOutputStream().apply {
+                write(request.toByteArray())
+                flush()
+            }
+            socket
+                .getInputStream()
+                .bufferedReader()
+                .readLine()
+                .orEmpty()
+        }
+
+    /** The status lines a relay on each transport gives [requests], one connection each. */
+    private fun answers(
+        nativeWebSocket: Boolean,
+        requests: List<String>,
+    ): List<String> {
+        val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
+        val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl)
+        val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), nativeWebSocket = nativeWebSocket, wait = false)
+        return try {
+            val port =
+                runBlocking {
+                    server.engine
+                        .resolvedConnectors()
+                        .first()
+                        .port
+                }
+            requests.map { statusLine(port, it) }
+        } finally {
+            server.stop(0, 0)
+            relay.close()
+        }
+    }
+
+    @Test
+    fun `an upgrade the native handler does not take is answered as the Ktor path answers it`() {
+        val keyless = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        val whole = keyless.replace("Sec-WebSocket-Version", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version")
+        val requests = listOf(keyless, whole)
+        val native = answers(nativeWebSocket = true, requests)
+        assertTrue(native.all { it.startsWith("HTTP/1.1 ") }, "every request answered, none reset: $native")
+        assertEquals(answers(nativeWebSocket = false, requests), native)
+        assertTrue(native[1].startsWith("HTTP/1.1 101"), "a whole upgrade is taken")
     }
 }

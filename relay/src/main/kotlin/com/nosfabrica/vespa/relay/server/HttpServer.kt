@@ -131,7 +131,7 @@ fun serveRelay(
 
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
-        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).toInt(), onionLocation) }
+        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation) }
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }
@@ -149,9 +149,8 @@ fun serveRelay(
         )
 
         install(WebSockets) {
-            // The ping makes a peer that walked off NAT detectable; the timeout reaps its session.
-            pingPeriodMillis = 30_000
-            timeoutMillis = 60_000
+            pingPeriodMillis = PING_PERIOD_MS
+            timeoutMillis = SILENCE_TIMEOUT_MS
             maxFrameSize = maxFrameBytes(limits)
         }
         routing {

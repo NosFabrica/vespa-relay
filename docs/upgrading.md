@@ -7,8 +7,8 @@ about everything else an operator has to do or will see.
 ## HTTP commands have no per-address cap (October 2026)
 
 `HTTP_RELAY_PER_CLIENT`, `HTTP_RELAY_CLIENT_HEADER` and
-`HTTP_RELAY_TRUSTED_PROXIES` are gone; a deployment that sets them boots and
-ignores them. `HTTP_RELAY_TOTAL` is the one bound on NIP-FE commands, and a
+`HTTP_RELAY_TRUSTED_PROXIES` are gone; a deployment that sets them boots, says
+at startup that they do nothing, and ignores them. `HTTP_RELAY_TOTAL` is the one bound on NIP-FE commands, and a
 command past it is a `503`; nothing answers `429` any more. Raise the total if
 one busy address used to be what kept it from filling.
 

@@ -230,6 +230,9 @@ private class Pulse(
     val icon: String?,
 )
 
+/** The per-address cap's settings, gone with it (docs/upgrading.md); set, the boot names them as doing nothing. */
+private val REMOVED_HTTP_RELAY_SETTINGS = listOf("HTTP_RELAY_PER_CLIENT", "HTTP_RELAY_CLIENT_HEADER", "HTTP_RELAY_TRUSTED_PROXIES")
+
 /** Reads and checks every setting, saying what is set but inert; a bad value stops the boot here. */
 private fun readSettings(env: Map<String, String>): Boot {
     refuseSyncConfig(env)
@@ -256,6 +259,9 @@ private fun readSettings(env: Map<String, String>): Boot {
     val httpRelay = httpRelayFromEnv(env) { listOf(endpoint.http) + addresses.alternates().map { it.url.httpFromWs() } }
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
+    }
+    REMOVED_HTTP_RELAY_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
+        System.err.println("relay: ${it.joinToString()} were removed and do nothing — HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
     }
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {

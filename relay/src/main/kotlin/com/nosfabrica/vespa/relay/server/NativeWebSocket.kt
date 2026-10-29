@@ -49,6 +49,7 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory
 import io.netty.util.ReferenceCountUtil
 import io.netty.util.concurrent.ScheduledFuture
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -66,16 +67,9 @@ import java.util.concurrent.atomic.AtomicLong
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
 private const val KTOR_HTTP1 = "http1"
 
-/** Frames and characters one connection may hold queued, and how long past the latter its socket may refuse writes. */
-private const val MAX_QUEUED_FRAMES = 8192
-private const val MAX_QUEUED_CHARS = 16L * 1024 * 1024
-private const val STALL_MS = 30_000L
-private const val CLOSE_GRACE_MS = 5_000L
-
-/** The keepalive tick, the ping period in ticks, and the silence after which a peer is reaped. */
+/** The keepalive tick, and the ping period in ticks; the slow-consumer and silence rules are the Ktor path's (RelayWebSocket.kt). */
 private const val TICK_MS = 1_000L
-private const val PING_EVERY_TICKS = 30
-private const val SILENCE_MS = 60_000L
+private const val PING_EVERY_TICKS = (PING_PERIOD_MS / TICK_MS).toInt()
 
 /** Commands queued from one connection before its reads pause, and the depth at which they resume. */
 private const val PAUSE_READS_AT = 64
@@ -115,6 +109,7 @@ private class NativeWebSocketUpgrade(
         val handshaker =
             WebSocketServerHandshakerFactory("ws://$host/", null, false, maxFrameBytes).newHandshaker(request)
                 ?: return WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel()).let { }
+        // Every check the handshake makes is behind us before the pipeline changes or a session connects.
         val pipeline = ctx.pipeline()
         for (name in KTOR_HTTP1_HANDLERS) if (pipeline.get(name) != null) pipeline.remove(name)
         pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker))
@@ -124,10 +119,15 @@ private class NativeWebSocketUpgrade(
         handshaker.handshake(ctx.channel(), request, headers, ctx.channel().newPromise()).addListener { if (!it.isSuccess) ctx.close() }
     }
 
-    private fun isUpgrade(request: HttpRequest): Boolean =
-        request.method() == HttpMethod.GET &&
-            request.headers().containsValue(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true) &&
+    /** A whole RFC 6455 upgrade on `/`; anything less is Ktor's to answer, as it was before this handler. */
+    private fun isUpgrade(request: HttpRequest): Boolean {
+        val headers = request.headers()
+        return request.method() == HttpMethod.GET &&
+            headers.containsValue(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true) &&
+            headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE, true) &&
+            !headers[HttpHeaderNames.SEC_WEBSOCKET_KEY].isNullOrBlank() &&
             QueryStringDecoder(request.uri()).path() == "/"
+    }
 }
 
 /**
@@ -160,11 +160,23 @@ private class EventLoopSessions(
 
     private fun drain() {
         scheduled.set(false)
-        while (true) dirty.poll()?.drain() ?: break
+        while (true) dirty.poll()?.let { isolated(it) { drain() } } ?: break
     }
 
     // A copy, since a tick can close a connection and so leave this set mid-walk.
-    private fun tick() = sessions.toTypedArray().forEach { it.tick() }
+    private fun tick() = sessions.toTypedArray().forEach { isolated(it) { tick() } }
+
+    /** One session's failure ends that connection; it never escapes into the shared task, which a periodic one would not survive. */
+    private inline fun isolated(
+        session: NativeWebSocketSession,
+        block: NativeWebSocketSession.() -> Unit,
+    ) {
+        try {
+            session.block()
+        } catch (e: Throwable) {
+            session.fail(e)
+        }
+    }
 
     companion object {
         private val byLoop = ConcurrentHashMap<EventLoop, EventLoopSessions>()
@@ -248,11 +260,21 @@ private class NativeWebSocketSession(
         session = relay.connect(SessionSink.of(::offer))
         reader =
             inboundScope.launch {
-                for (text in inbox) {
-                    if (inboxDepth.decrementAndGet() == RESUME_READS_AT) channel.config().isAutoRead = true
-                    session.receive(text)
+                try {
+                    for (text in inbox) {
+                        if (inboxDepth.decrementAndGet() == RESUME_READS_AT) channel.eventLoop().execute(resumeReads)
+                        session.receive(text)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // As on the Ktor path, where the throw leaves serve(): a connection that cannot answer its commands ends.
+                    fail(e)
                 }
             }
+        // Closed only once the reader is done, as serve() does: a close from the loop could land between a REQ starting
+        // and its registering, and leave that subscription live, unreachable, in the fan-out index for good.
+        reader.invokeOnCompletion { session.close() }
         loop.join(this)
         // Ktor reads a request at a time with autoRead off; from here the socket is read as fast as commands drain.
         channel.config().isAutoRead = true
@@ -274,7 +296,7 @@ private class NativeWebSocketSession(
                 val text = msg.text()
                 msg.release()
                 inbox.trySend(text)
-                if (inboxDepth.incrementAndGet() == PAUSE_READS_AT) channel.config().isAutoRead = false
+                if (inboxDepth.incrementAndGet() >= PAUSE_READS_AT) channel.config().isAutoRead = false
             }
 
             is PingWebSocketFrame -> {
@@ -291,10 +313,19 @@ private class NativeWebSocketSession(
         }
     }
 
+    /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
+    private val resumeReads = Runnable { if (!closing && inboxDepth.get() <= RESUME_READS_AT) channel.config().isAutoRead = true }
+
+    /** Ends this connection after an unexpected failure in its own work. */
+    fun fail(cause: Throwable) {
+        System.err.println("websocket: closing a connection after ${cause::class.simpleName}: ${cause.message}")
+        channel.close()
+    }
+
     /** From any thread: queues [text], or ends a connection that has stopped taking what it is sent. */
     private fun offer(text: String) {
         if (closing) return
-        if (queuedFrames.incrementAndGet() > MAX_QUEUED_FRAMES || stalled()) {
+        if (queuedFrames.incrementAndGet() > MAX_OUTGOING_BUFFER || stalled()) {
             queuedFrames.decrementAndGet()
             disconnectSlowConsumer()
             return
@@ -317,7 +348,11 @@ private class NativeWebSocketSession(
             wrote = true
         }
         if (wrote) context.flush()
-        if (!channel.isWritable && unwritableSince == IDLE) unwritableSince = nowMs()
+        if (!channel.isWritable) {
+            if (unwritableSince == IDLE) unwritableSince = nowMs()
+            // Held until the socket takes writes again, when channelWritabilityChanged drains: offers schedule nothing meanwhile.
+            drainScheduled.set(true)
+        }
     }
 
     override fun channelWritabilityChanged(ctx: ChannelHandlerContext) {
@@ -331,9 +366,9 @@ private class NativeWebSocketSession(
     }
 
     private fun stalled(): Boolean {
-        if (queuedChars.get() <= MAX_QUEUED_CHARS) return false
+        if (queuedChars.get() <= MAX_OUTGOING_CHARS) return false
         val since = unwritableSince
-        return since != IDLE && nowMs() - since >= STALL_MS
+        return since != IDLE && nowMs() - since >= WRITER_STALL_MS
     }
 
     private fun disconnectSlowConsumer() {
@@ -346,17 +381,18 @@ private class NativeWebSocketSession(
         }
     }
 
-    /** Once a second on the event loop: catches a queue a writability change missed, a stall, and a silent peer. */
+    /** Once a second on the event loop: catches a queue a writability change missed, a stall, paused reads and a silent peer. */
     fun tick() {
         if (closing) return
         if (stalled()) return disconnectSlowConsumer()
         if (!outbox.isEmpty() && channel.isWritable) drain()
-        if (++ticks % PING_EVERY_TICKS != 0) return
-        if ((System.nanoTime() - lastHeard) / 1_000_000 >= SILENCE_MS) {
-            channel.close()
-        } else {
-            channel.writeAndFlush(PingWebSocketFrame())
+        // Paused reads are our backlog, not the peer's silence: its pongs wait unread behind its commands.
+        if (!channel.config().isAutoRead) {
+            lastHeard = System.nanoTime()
+            resumeReads.run()
         }
+        if ((System.nanoTime() - lastHeard) / 1_000_000 >= SILENCE_TIMEOUT_MS) return channel.close().let { }
+        if (++ticks % PING_EVERY_TICKS == 0) channel.writeAndFlush(PingWebSocketFrame())
     }
 
     override fun channelInactive(ctx: ChannelHandlerContext) {
@@ -380,7 +416,6 @@ private class NativeWebSocketSession(
         outbox.clear()
         inbox.close()
         reader.cancel()
-        session.close()
     }
 
     private fun nowMs() = System.nanoTime() / 1_000_000
