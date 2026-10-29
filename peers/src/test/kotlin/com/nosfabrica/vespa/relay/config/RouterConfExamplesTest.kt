@@ -33,25 +33,28 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * The shipped example config is the router's documentation, so it has to parse
- * into what it claims to be; a broken example is a broken feature.
+ * The router's design rules, checked against a config written to follow them:
+ * `src/test/resources/config/rules-{sync,monitor}.conf`, the shipped examples as of
+ * 792bfd0b. The examples at the repo root track a real deployment, which may
+ * trade a rule for something it measured; [ShippedExamplesTest] holds them to
+ * what every deployment needs — they parse, they boot, they fit the sockets.
  */
 class RouterConfExamplesTest {
     /** NIP-85 assertions and Tapestry Trusted Lists: one family, because a search expands all eight. */
     private val trustedKinds = listOf(30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395)
 
-    /** Tests run from the module dir; the examples sit at the repo root. */
-    private fun at(name: String): File = requireNotNull(listOf(File("../$name"), File(name)).firstOrNull { it.isFile }) { "missing $name" }
+    /** The fixture, from the classpath: a resource is a real file, so an `include` resolves beside it. */
+    private fun at(name: String): File = File(requireNotNull(javaClass.getResource("/config/$name")) { "missing fixture config/$name" }.toURI())
 
-    /** Both shipped files, parsed together the way a deployment reads them. */
+    /** Both fixtures, parsed together the way a deployment reads its two files. */
     private val example: RouterConfig =
         RouterConfigLoader.parse(
-            syncOrigin = at("sync.conf.example"),
-            monitorOrigin = at("monitor.conf.example"),
+            syncOrigin = at("rules-sync.conf"),
+            monitorOrigin = at("rules-monitor.conf"),
         )
 
-    /** The shipped monitor names what it measures; a template that did not would be the bug. */
-    private fun monitorSources() = checkNotNull(example.monitor?.sources) { "monitor.conf.example must declare `sources`" }
+    /** The fixture's monitor names what it measures; a config that did not would be the bug. */
+    private fun monitorSources() = checkNotNull(example.monitor?.sources) { "config/rules-monitor.conf must declare `sources`" }
 
     @Test
     fun `the shipped pair boots`() {
