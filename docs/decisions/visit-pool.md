@@ -118,6 +118,23 @@ carries it since c63c35ca76 (v2.4.0): a full queue no longer ends a page at
 all, and this pause is the fallback for the stalls the pager still reports (a
 socket a hook outside the walk is parked on).
 
+**A walk waits for the store's verdicts, but not forever.** A band is recorded
+only once the store has answered every event the walk handed to ingest
+(`IngestAcks`), and that wait had no bound. On staging one batch pass sat on a
+store query that never answered for 4 h 40 min (NosFabrica/vespa-relay#289):
+nine visits whose walks were long over waited in it, each holding its slot and
+socket claim, each row still reading `catching up (paging)` with a frozen
+cursor, the same picture as a relay that had stopped answering. The quiet
+give-up could not fire, since it is checked between asks. The wait is now bounded by
+the same `LEG_QUIET_GIVE_UP_MS` silence a visit gives a relay, and the row reads
+`walk read, waiting for the store's verdicts on its events` while it waits. A
+walk cut there records no band and ends the visit as `abortedUnstored`, ours,
+never on the relay's row; the revisit starts at the same ask rather than the
+next, since the relay refused nothing. A late verdict is still counted and
+changes nothing. The ingest pipeline bounds its own share of that wait too: a
+drop-probe is cut at `PROBE_TIMEOUT_MS` and the batch goes on unprobed, since
+neither the store's query client nor Vespa's query profile bounds a query.
+
 **A visit is not dialled into a full queue.** The download would park its
 first event, silence the socket, and come back `abortedBackpressured` an idle
 window later, having cost the relay a handshake and a REQ for nothing — per

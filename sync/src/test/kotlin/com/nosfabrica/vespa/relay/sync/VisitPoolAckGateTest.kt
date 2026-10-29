@@ -121,5 +121,40 @@ class VisitPoolAckGateTest {
             }
         }
 
+    // NosFabrica/vespa-relay#289: a batch pass held on a store query kept nine visits here for hours.
+    @Test
+    fun `a walk the store never answers ends its visit at the quiet give-up instead of waiting forever`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val bands = SyncBands(null)
+                val fixture = PoolFixture(scope, listOf(stream), PoolFixture.holding(corpus), bands, index = GatedWrites())
+                val pool = fixture.pool(quietGiveUpMs = 500)
+                pool.start()
+                // The walk is over; its row must say what it waits for, not that it is still paging.
+                val waiting =
+                    withTimeout(10_000) {
+                        while (true) {
+                            pool
+                                .inFlightFor("s")
+                                .relays
+                                .firstOrNull()
+                                ?.stage
+                                ?.let { if (it == VisitPool.STAGE_AWAITING_STORE) return@withTimeout it }
+                            delay(10)
+                        }
+                        @Suppress("UNREACHABLE_CODE")
+                        null
+                    }
+                assertEquals(VisitPool.STAGE_AWAITING_STORE, waiting)
+                withTimeout(10_000) { while ((fixture.counts()["abortedUnstored"] ?: 0L) == 0L) delay(10) }
+                assertNull(bands.band("s", url, notes), "no verdict, no band")
+                assertTrue(fixture.tails.isEmpty(), "the visit ended at the cut rather than opening its tail")
+                assertTrue((fixture.counts()["bandsWithheld"] ?: 0L) >= 1L, "and the withheld band is counted")
+            } finally {
+                scope.cancel()
+            }
+        }
+
     private suspend fun EventIndex.storedIds(): Set<String> = search(EventQuery()).map { it.id }.toSet()
 }

@@ -325,6 +325,7 @@ class StatusVocabularyTest {
                         "abortedGaveUp" to 0,
                         "abortedFailed" to 0,
                         "abortedBackpressured" to 0,
+                        "abortedUnstored" to 0,
                     ),
             ),
             // A counter with a breakdown under its total, and the ingest queue's own shape.

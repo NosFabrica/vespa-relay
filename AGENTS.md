@@ -299,10 +299,10 @@ operator page shows and why is
   are outstanding, whose, how old (`StoreCalls`). Do not wait for `bottleneck`.
 - The abort partition on the visits row (`abortedAuthRequired`, `abortedClosed`,
   `abortedQuiet`, `abortedUnreachable`, `abortedUnpageable`, `abortedGaveUp`,
-  `abortedFailed`, `abortedBackpressured`) and the `visit … aborted` lines
-  beside it. Read `abortedBackpressured`, `visitsHeldByIngest` and
-  `walksPausedByIngest` first: they are about this mirror's ingest queue, not
-  about any relay.
+  `abortedFailed`, `abortedBackpressured`, `abortedUnstored`) and the `visit …
+  aborted` lines beside it. Read `abortedBackpressured`, `abortedUnstored`,
+  `visitsHeldByIngest` and `walksPausedByIngest` first: they are about this
+  mirror's ingest and store, not about any relay.
 - The `prime relays` table: `syncStatus` is the past, `behind` the present,
   `kindCap` and `negentropy` the terms the relay serves us on, and `unwatched`
   the pairs this mirror syncs that our own monitor grades nothing about — a
@@ -384,6 +384,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - `\n` inside a Kotlin raw string is literal, which breaks HOCON fixtures.
 - A timeout is an idle window, not a deadline; size it by the slowest single answer.
 - An idle window bounds one ask and a visit is a sequence of them; `LEG_QUIET_GIVE_UP_MS` fires on silence between asks.
+- A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.

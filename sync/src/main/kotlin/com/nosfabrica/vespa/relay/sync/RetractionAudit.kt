@@ -195,12 +195,21 @@ internal class RetractionAudit(
 
         // The claim rests on `reconciledThrough`, not event times, so an empty reconcile still records;
         // a by-id answer that stalled or was refused leaves ids unfetched, so it claims nothing, and
-        // neither does one whose events did not all reach the store ([IngestAcks]).
-        val stored = observed.acks.await()
+        // neither does one whose events did not all reach the store ([IngestAcks]), or not within a
+        // visit's quiet give-up: an unanswered store held a walk's wait for hours (NosFabrica/vespa-relay#289).
+        val stored = observed.acks.awaitWithin(LEG_QUIET_GIVE_UP_MS)
         if (compared && observed.drained && !stored) {
+            val unanswered = observed.acks.unanswered
             System.err.println(
-                "router: ${stream.name} ${url.url} — ${observed.acks.failures} recovered event(s) did not reach the store; " +
-                    "the band stays unverified and the next audit fetches them again",
+                "router: ${stream.name} ${url.url} — " +
+                    (
+                        if (unanswered > 0) {
+                            "$unanswered recovered event(s) still had no verdict from the store after ${LEG_QUIET_GIVE_UP_MS / 1000}s"
+                        } else {
+                            "${observed.acks.failures} recovered event(s) did not reach the store"
+                        }
+                    ) +
+                    "; the band stays unverified and the next audit fetches them again",
             )
         }
         if (compared && observed.drained && stored) {

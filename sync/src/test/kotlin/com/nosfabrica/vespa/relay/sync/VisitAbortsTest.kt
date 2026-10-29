@@ -150,7 +150,7 @@ class VisitAbortsTest {
         a.record("content", url, VisitAborts.Reason.BACKPRESSURED, "139 kinds", null)
         assertEquals(VisitAborts.Reason.CLOSED, a.last("content", url)?.reason)
         // The marker is the enum's, so a second reason of ours is a decision here.
-        assertEquals(listOf(VisitAborts.Reason.BACKPRESSURED), VisitAborts.Reason.entries.filter { it.ours })
+        assertEquals(listOf(VisitAborts.Reason.BACKPRESSURED, VisitAborts.Reason.UNSTORED), VisitAborts.Reason.entries.filter { it.ours })
     }
 
     @Test

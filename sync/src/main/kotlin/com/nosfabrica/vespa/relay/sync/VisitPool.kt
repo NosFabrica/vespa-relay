@@ -189,6 +189,9 @@ internal class VisitPool(
     /** Every open tail subscription, quietest first. */
     internal fun livePool(): InFlight = status.livePool()
 
+    /** The visits serving [stream] right now, as its in-flight rows publish them. */
+    internal fun inFlightFor(stream: String): InFlight = status.inFlightFor(stream)
+
     fun start() {
         if (streams.isEmpty()) return
         warnOnSocketBudget(streams)
@@ -392,7 +395,8 @@ internal class VisitPool(
                 val refusal = catchUp(ask, url, ongoingVisit)
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
-                    resumeAt[key] = at + 1
+                    // A store that did not answer is no reason to skip the ask: the revisit starts at it.
+                    resumeAt[key] = if (refusal.unstored) at else at + 1
                     aborts
                         .record(
                             key.stream,
@@ -400,7 +404,7 @@ internal class VisitPool(
                             refusal.reason,
                             asked = VisitAborts.asked(refusal.filter),
                             // A stall of ours has no sentence from the relay to wait for.
-                            said = if (refusal.ours) null else complaints.awaitSince(url, refusal.askedAtMs),
+                            said = if (refusal.reason.ours) null else complaints.awaitSince(url, refusal.askedAtMs),
                             sent = refusal.sent,
                         )?.let(System.err::println)
                     return
@@ -441,9 +445,16 @@ internal class VisitPool(
         val sent: String? = null,
         /** A hook of ours was parked in the ingest queue when the walk gave up. */
         val ours: Boolean = false,
+        /** The walk ended, and the store had not answered all of its events within the quiet give-up. */
+        val unstored: Boolean = false,
     ) {
         val reason: VisitAborts.Reason
-            get() = if (ours) VisitAborts.Reason.BACKPRESSURED else VisitAborts.of(end)
+            get() =
+                when {
+                    unstored -> VisitAborts.Reason.UNSTORED
+                    ours -> VisitAborts.Reason.BACKPRESSURED
+                    else -> VisitAborts.of(end)
+                }
     }
 
     /**
@@ -501,7 +512,8 @@ internal class VisitPool(
                 while (true) {
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
                     // The relay's complaint arrives on a different listener than the refusal, so await it.
-                    if (!refusal.ours &&
+                    // A refusal of ours has none, and no width to learn.
+                    if (!refusal.reason.ours &&
                         narrowings < MAX_NARROWINGS &&
                         widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
                     ) {
@@ -524,17 +536,40 @@ internal class VisitPool(
     /**
      * Whether every event a walk handed to ingest reached the store. A band is recorded only when
      * they all did ([IngestAcks]); otherwise the ground is walked again at the next visit.
+     *
+     * BOUNDED by [quietGiveUpMs], the same silence a visit gives a relay: a verdict that has not
+     * come by then is not coming soon, and the wait held the visit's slot and socket claim while
+     * its row said `catching up (paging)` for a walk already over. One batch pass held on an
+     * unanswered store query kept nine visits here for up to 4 h 40 min (NosFabrica/vespa-relay#289).
+     * The row reads [STAGE_AWAITING_STORE] while it waits; [IngestAcks.unanswered] tells the caller
+     * a cut wait from failed writes.
      */
     private suspend fun storedAll(
         acks: IngestAcks,
         stream: String,
         url: NormalizedRelayUrl,
+        ongoingVisit: OngoingVisit,
     ): Boolean {
-        if (acks.await()) return true
+        val before = ongoingVisit.stage
+        ongoingVisit.stage = Stage(before.pool, STAGE_AWAITING_STORE)
+        val stored =
+            try {
+                acks.awaitWithin(quietGiveUpMs)
+            } finally {
+                ongoingVisit.stage = before
+            }
+        if (stored) return true
         counters.bandsWithheld.incrementAndGet()
+        val unanswered = acks.unanswered
         System.err.println(
-            "router: $stream ${url.url} — ${acks.failures} event(s) of this walk did not reach the store; " +
-                "its band is not recorded, and the next visit walks the ground again",
+            if (unanswered > 0) {
+                "router: $stream ${url.url} — $unanswered event(s) of this walk still had no verdict from the store after " +
+                    "${quietGiveUpMs / 1000}s; its band is not recorded, and the next visit walks the ground again " +
+                    "(the ingest processor's oldestBatchSec, and the store call SLOW lines, say where the store is)"
+            } else {
+                "router: $stream ${url.url} — ${acks.failures} event(s) of this walk did not reach the store; " +
+                    "its band is not recorded, and the next visit walks the ground again"
+            },
         )
         return false
     }
@@ -597,7 +632,9 @@ internal class VisitPool(
                 // No band for a refused chunk: nothing was walked.
                 return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded), ours = paged.ours)
             }
-            if (!storedAll(acks, stream.name, url)) {
+            if (!storedAll(acks, stream.name, url, ongoingVisit)) {
+                // The store, not the relay, has gone quiet: every further chunk would wait on it the same way.
+                if (acks.unanswered > 0) return Refusal(walked.end, chunk, askedAtMs, unstored = true)
                 // Read to the end or not, ground whose events did not reach the store is not covered.
                 ongoingVisit.lastActivityMs = System.currentTimeMillis()
             } else if (readToTheEnd(walked)) {
@@ -857,7 +894,7 @@ internal class VisitPool(
             // A window did reconcile, so the band is ordinary work again whatever it looked like before.
             bands.clearCannotReconcile(stream.name, url, ask.filter, band)
         }
-        if (outcome.complete && storedAll(acks, stream.name, url)) {
+        if (outcome.complete && storedAll(acks, stream.name, url, ongoingVisit)) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
             bands.recordAudit(
                 stream.name,
@@ -1003,6 +1040,7 @@ internal class VisitPool(
         const val STAGE_ASKING = "checking what this ask still owes"
         const val STAGE_FINISHING = "draining queued heals, then the tail"
         const val STAGE_PAUSED = "paused: waiting for our ingest queue to drain"
+        const val STAGE_AWAITING_STORE = "walk read, waiting for the store's verdicts on its events"
 
         /** The pool's four workloads, as the `pool` word on every published row. */
         const val POOL_LIVE = "live"

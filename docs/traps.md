@@ -380,6 +380,22 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   `VisitPool.visit` now, between asks; it also never fires before the first
   ask, because the quiet clock starts at the CLAIM and a visit that queued
   behind a saturated pool arrives already "quiet".
+- **A store query has no deadline at any layer, and PINGs do not stand in for
+  one.** The store's query client runs with `readTimeout`/`callTimeout` ZERO
+  (an unlimited query may take as long as it takes), Vespa's bundled query
+  profile sets `timeout` to 999999999ms with soft timeout off, and HTTP/2 PINGs
+  only catch a dead CONNECTION. On staging one `newestVersions` probe got its
+  headers and part of its body and then nothing for **4 h 40 min**, on a
+  connection that kept carrying every other call
+  (NosFabrica/vespa-relay#289). Its batch pass held one of the two ingest
+  workers, and nine visits whose walks were over waited on that batch's
+  verdicts, still reading `catching up (paging)`. The thread dump shows no
+  ingest frame for it: a suspended coroutine is invisible there. Read
+  `progress.store.calls` or the `store call SLOW` lines, which named it from
+  the first five minutes. Bound it where you call it: the drop-probes are cut
+  at `IngestPipeline.PROBE_TIMEOUT_MS`, a walk's wait for verdicts at
+  `LEG_QUIET_GIVE_UP_MS`, and the store now cuts a body that stalls
+  (NosFabrica/vespa-eventstore#187).
 - **An auth-gated relay used to read as an EMPTY one, on every sync path.** A
   relay gating reads answers the REQ with `CLOSED auth-required:` before sending
   anything, and every fetch accessory took that as terminal — so the fetch
