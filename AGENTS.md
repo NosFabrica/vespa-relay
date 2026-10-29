@@ -200,7 +200,9 @@ web/…/relay/web/
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay, fetch-slice.mjs
                               one kind mix of it; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
-                              drives NIP-FE against a running relay, every answer checked against its socket
+                              drives NIP-FE against a running relay, every answer checked against its socket;
+                              live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher (docs/live-feeds.md);
+                              nostr-sign.mjs is the BIP-340 signer the publishing tools share
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives
 ```
@@ -208,7 +210,7 @@ tools/                        record-cds-classlists.sh re-records relay/ and syn
 `docs/configuration.md` documents every environment variable (`.env.example`
 is the copyable start), `docs/router.md` the two config files' format,
 `docs/migrations.md` the schema changes a store bump can need on a cluster that
-already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, and `docs/search-latency.md` what a search costs.
+already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, `docs/search-latency.md` what a search costs, and `docs/live-feeds.md` what holding open feeds costs.
 
 ## How the router works
 
