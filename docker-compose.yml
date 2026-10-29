@@ -161,14 +161,10 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
-      # NIP-FE: a client frame POSTed to the relay's URL. Behind a proxy, set the client
-      # header and the proxy's addresses, or every caller shares one cap.
+      # NIP-FE: a client frame POSTed to the relay's URL.
       HTTP_RELAY: ${HTTP_RELAY:-}
-      HTTP_RELAY_PER_CLIENT: ${HTTP_RELAY_PER_CLIENT:-}
       HTTP_RELAY_TOTAL: ${HTTP_RELAY_TOTAL:-}
       HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
-      HTTP_RELAY_CLIENT_HEADER: ${HTTP_RELAY_CLIENT_HEADER:-}
-      HTTP_RELAY_TRUSTED_PROXIES: ${HTTP_RELAY_TRUSTED_PROXIES:-}
       # ORE-05 search backend for Brainstorm's server, public; off by default.
       ORE_ENABLED: ${ORE_ENABLED:-}
       ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}

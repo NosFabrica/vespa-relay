@@ -1297,7 +1297,6 @@ com/nosfabrica/vespa/relay/server/HttpRelay
 com/nosfabrica/vespa/relay/server/HttpRelay$Companion
 com/nosfabrica/vespa/relay/server/HttpRelayGate
 com/nosfabrica/vespa/relay/server/HttpRelayGate$Companion
-com/nosfabrica/vespa/relay/server/ClientAddresses
 com/nosfabrica/vespa/eventstore/search/SearchExpansionLimits
 com/nosfabrica/vespa/eventstore/search/SearchExpansionLimits$Companion
 com/nosfabrica/vespa/relay/maintenance/FtsReindexKt

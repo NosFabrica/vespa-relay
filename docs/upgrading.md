@@ -4,6 +4,14 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## HTTP commands have no per-address cap (October 2026)
+
+`HTTP_RELAY_PER_CLIENT`, `HTTP_RELAY_CLIENT_HEADER` and
+`HTTP_RELAY_TRUSTED_PROXIES` are gone; a deployment that sets them boots and
+ignores them. `HTTP_RELAY_TOTAL` is the one bound on NIP-FE commands, and a
+command past it is a `503`; nothing answers `429` any more. Raise the total if
+one busy address used to be what kept it from filling.
+
 ## The relay is the only writer (October 2026)
 
 The sync process no longer writes the store. Every write it makes (ingest's

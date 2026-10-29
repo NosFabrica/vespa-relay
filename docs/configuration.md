@@ -256,10 +256,8 @@ turning the gate off there, or by giving the mirroring key a real lens.
 | var | meaning | default |
 |---|---|---|
 | `HTTP_RELAY` | answer one client command per HTTP request, beside the websocket. `false`/`0`/`no`/`off` turns them off (a POST to `/` is then only ever the NIP-86 rpc); anything else that is not a boolean stops the boot | on |
-| `HTTP_RELAY_PER_CLIENT` | commands one client address may run at once; the next is a `429`. `0` lifts the cap | `2` |
-| `HTTP_RELAY_TOTAL` | commands the whole relay may run at once; the next is a `503`. `0` lifts the cap | `64` |
+| `HTTP_RELAY_TOTAL` | commands the whole relay may run at once; the next is a `503`. `0` lifts the cap. There is no per-address cap: Tor, the `.onion`, carrier NAT and a proxy put many people behind one address | `64` |
 | `HTTP_RELAY_DEADLINE_SECONDS` | how long one answer may run, first byte to last, `1`–`3600` | `30` |
-| `HTTP_RELAY_CLIENT_HEADER` / `HTTP_RELAY_TRUSTED_PROXIES` | behind a reverse proxy: the header it names the client in (e.g. `X-Forwarded-For`) and the addresses or blocks it connects from (e.g. `172.16.0.0/12`). The header is read only on a request whose socket peer is one of those proxies, and then right to left across every line of it, skipping entries that are themselves in those blocks: the nearest address no trusted hop vouches for is the client, so a balancer in front of nginx is listed too. An IPv6 client counts as its /64. Set both or neither; without them the per-client cap is keyed on the socket's peer, which behind a proxy — or for every Tor client — is one address for everyone | unset |
 
 A command is a `POST` to the relay's own URL (`/`, where the websocket and the
 NIP-11 document live) whose body is one client frame exactly as it would go on
@@ -301,7 +299,7 @@ never ran — its NIP-01 prefix picking the code: `auth-required:` is `401` (wit
 `WWW-Authenticate: Nostr`), `restricted:`/`blocked:` `403`, `rate-limited:`
 `429`, `error:` `500`, anything else `400`. An `OK` for a `duplicate:` is `200`:
 the event is stored, which is what was asked. A request refused before its
-command runs is one `NOTICE` line: the gate's refusals `429`/`503` (the gate
+command runs is one `NOTICE` line: the gate's refusal `503` (the gate
 admits a request before its body is read, so a refused one uploads nothing), a
 body that does not arrive within 10 seconds `408`, one that is not one `REQ`,
 `COUNT` or `EVENT` frame `400`, one over `MAX_MESSAGE_LENGTH` `413`, and no frame
@@ -323,8 +321,8 @@ other scheme (a proxy's `Basic`, a client's `Bearer`) is not addressed to the
 relay and is ignored.
 
 **Limits.** The per-connection search gate (`SEARCH_CONCURRENCY_PER_CONNECTION`)
-cannot hold here, because every request is its own connection; the two caps
-above stand in for it. A reader slower than the network holds the relay's
+cannot hold here, because every request is its own connection; the total cap
+above stands in for it. A reader slower than the network holds the relay's
 writes, not its memory; one more than the websocket's bound (8,192 frames)
 behind the store is cut off with a `CLOSED` line, and one that stops reading
 altogether is dropped five seconds past the deadline. Browsers may call it from
@@ -736,7 +734,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `RELAY_PORT` | relay | `1`–`65535` |
 | `PULSE_PORT` / `SYNC_PULSE_PORT` / `SYNC_STATUS_PORT` / `MONITOR_STATUS_PORT` | relay / sync | `0`–`65535` |
 | `SEARCH_CONCURRENCY_PER_CONNECTION` / `SEARCH_EXPAND_MAX_PER_EVENT` / `SEARCH_EXPAND_MAX_TOTAL` | relay | `0` or more |
-| `HTTP_RELAY_PER_CLIENT` / `HTTP_RELAY_TOTAL` | relay | `0` or more |
+| `HTTP_RELAY_TOTAL` | relay | `0` or more |
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
 | `MAX_MESSAGE_LENGTH` | relay | `512` or more |

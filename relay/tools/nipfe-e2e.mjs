@@ -15,8 +15,8 @@
 // frames as the socket, subscription id and order included; COUNT; gzip on the wire; NIP-98 (signed in
 // without a lens, not single-use, bound to its body and the relay's url, other schemes ignored); EVENT
 // (OK, served after, duplicate, forged, stale replaceable); every refusal before a command runs (a
-// NOTICE); a deep body; NIP-86's Content-Type on the same URL; and the per-client gate under 40
-// concurrent requests, which expects the default HTTP_RELAY_PER_CLIENT.
+// NOTICE); a deep body; NIP-86's Content-Type on the same URL; and the gate under 40 concurrent
+// requests, which never refuses below the default HTTP_RELAY_TOTAL.
 //
 // It WRITES: one signed note and two kind-0s under throwaway keys, plus the signature self-check.
 // Point it at a local relay, never at staging or production (AGENTS.md: read staging, never publish).
@@ -236,15 +236,13 @@ for (const q of ["bitcoin", "nostr", "music", "art", "zap"]) for (const kinds of
   check(`"${q}" kinds ${JSON.stringify(kinds)}: ${ids(h.lines).length} hits, line for line the socket's`, h.status === 200 && JSON.stringify(h.lines) === JSON.stringify(w), `http ${h.lines.length} ws ${w.length} ${h.lines.at(-1)}`);
 }
 
-console.log("the per-client gate under 40 concurrent requests");
+console.log("the gate under 40 concurrent requests from one address");
 {
   const body = REQ("g", { kinds: [0, 1, 1985, 10040, 30392, 30393, 30394, 30395], limit: 5000, search: "include:spam" });
   const all = await Promise.all(Array.from({ length: 40 }, () => post(body)));
   const by = {}; for (const r of all) by[r.status] = (by[r.status] || 0) + 1;
   console.log("  statuses:", JSON.stringify(by));
-  check("every answer is a 200 or a 429 from the gate", all.every((r) => r.status === 200 || r.status === 429));
-  check("the 429s are one NOTICE rate-limited: line and the 200s end on EOSE", all.every((r) => (r.status === 429 ? r.lines[0].startsWith('["NOTICE","rate-limited:') : r.lines.at(-1) === '["EOSE","g"]')));
-  check("some were refused at the default HTTP_RELAY_PER_CLIENT", (by[429] || 0) > 0);
+  check("one address is not capped: every answer is a 200 that ends on EOSE", all.every((r) => r.status === 200 && r.lines.at(-1) === '["EOSE","g"]'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
