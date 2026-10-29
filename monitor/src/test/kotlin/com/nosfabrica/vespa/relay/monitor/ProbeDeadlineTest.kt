@@ -237,6 +237,79 @@ class ProbeDeadlineTest {
         }
 
     @Test
+    fun `a url no TCP answered at the pre-probe is graded by its own dial`() =
+        runBlocking {
+            val url = RelayUrlNormalizer.normalize("wss://slow.example")
+
+            suspend fun grade(serves: Boolean): String? {
+                val store = newStore()
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe =
+                        probe { at, want, until, _ ->
+                            if (at == answering || serves) {
+                                paged(corpus(), want, until)
+                            } else {
+                                AliasProbe.Page(events = null, reason = "cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)")
+                            }
+                        },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure("one", listOf(url, answering), reach = { if (it == url) Reach.UNANSWERED else Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                return gradeOf(store, url)
+            }
+
+            // The pre-probe's window is shorter than the dial's: what the relay is graded is what the dial heard.
+            assertEquals(Verdict.PRIME.value, grade(serves = true))
+            assertEquals(Verdict.SILENT.value, grade(serves = false))
+        }
+
+    @Test
+    fun `the stability gate walks every url fitness dials`() =
+        runBlocking {
+            // A url fitness dials can come back `prime`, and none may get there past the gate.
+            for (reach in Reach.entries) {
+                val url = RelayUrlNormalizer.normalize("wss://${reach.name.lowercase()}.example")
+                var dialled = false
+                FitnessPass(
+                    record = RelayVerdictRecord(newStore(), signer),
+                    probe =
+                        probe { at, want, until, _ ->
+                            if (at == url) dialled = true
+                            paged(corpus(), want, until)
+                        },
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                ).measure("one", listOf(url, answering), reach = { if (it == url) reach else Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                if (dialled) assertTrue(MonitorEngine.gateDials(reach), "fitness dials a url the pre-probe called $reach and the gate does not")
+            }
+        }
+
+    @Test
+    fun `a connect that ran out of time is graded silent on one rung`() =
+        runBlocking {
+            val url = RelayUrlNormalizer.normalize("wss://hung.example")
+            val store = newStore()
+            var asks = 0
+            FitnessPass(
+                record = RelayVerdictRecord(store, signer),
+                probe =
+                    probe { at, want, until, _ ->
+                        if (at == answering) {
+                            paged(corpus(), want, until)
+                        } else {
+                            asks++
+                            AliasProbe.Page(events = null, reason = "cannot:WebSocket Failure: Connect timed out (SocketTimeoutException)")
+                        }
+                    },
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+            ).measure("one", listOf(url, answering), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertEquals(Verdict.SILENT.value, gradeOf(store, url))
+            assertEquals(1, asks, "a second rung would wait on the same dial's clock")
+        }
+
+    @Test
     fun `a rate limit or words the silence table does not know earn no grade`() =
         runBlocking {
             val url = RelayUrlNormalizer.normalize("wss://busy.example")

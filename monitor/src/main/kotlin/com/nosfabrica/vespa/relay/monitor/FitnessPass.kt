@@ -371,15 +371,19 @@ class FitnessPass(
             val graded = gradeFreeRefusals(held, candidates, batch.outcomes)
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
-            val waiting = AliasFolding.heldAmong(held, graded, mates)
-            batch.backingOff += backingOff(graded.filter { it !in waiting })
-            val toDial = graded.filter { it !in waiting && it !in batch.backingOff }
+            val heldBack = AliasFolding.heldAmong(held, graded, mates)
+            batch.backingOff += backingOff(graded.filter { it !in heldBack })
+            val toDial = graded.filter { it !in heldBack && it !in batch.backingOff }
+            // Only on a server some url of which answered HTTP last time: one down there is down at every path.
+            val answering = answeringServers(held)
+            val toCheck = heldBack.keys.filterTo(HashSet()) { RelayAliases.authorityOf(it.url) in answering }
             // The free refusals are outside this count: they cost no socket.
-            progress.measuring(toDial.size, Processors.UNIT_URL)
+            progress.measuring(toDial.size + toCheck.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
-            dialEach(toDial, gate, probe::deadlineMs, progress, cut = batch::cut) { url ->
-                measureOne(url, anchor, reach, sockets, batch, onEvent)
+            // A held url writes nothing when cut, so it is outside the batch guard's count.
+            dialEach(toDial + toCheck, gate, probe::deadlineMs, progress, cut = { url -> if (url !in toCheck) batch.cut(url) }) { url ->
+                if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, reach, sockets, batch, onEvent)
             }
             // Before the guard: a refused batch still heard each relay ask us to come back later.
             backOff(batch)
@@ -391,6 +395,10 @@ class FitnessPass(
             val stale = if (sweep) staleWhileDeferring(held, batch.deferring()) else emptySet()
             withholdTlsDead(label, toDial, batch)
             withholdUnspoken(label, toDial, batch)
+            // After the guards, so a held url inherits only the proof that survived them.
+            inheritSocketProof(heldBack, batch)
+            // A held path graded here no longer waits; every other one still does.
+            val waiting = heldBack.filterKeys { !batch.outcomes.containsKey(it) }
             val written = write(label, held, waiting, stale, batch)
             if (sweep) {
                 // Over a sweep only: a fast-lane batch is a handful of urls, not the roster.
@@ -617,7 +625,7 @@ class FitnessPass(
     }
 
     /**
-     * One url's whole job: the pre-probe, then the document, then the dial. Only the dial claims
+     * One url's whole job: the pre-probe, then the document beside the dial. Only the dial claims
      * a socket. [Processors.Handle.holding] is called at each boundary to name the step.
      */
     private suspend fun measureOne(
@@ -640,7 +648,8 @@ class FitnessPass(
                 return
             }
         when (reached) {
-            Reach.REACHABLE -> {
+            // Dialled all the same: `silent` is the dial's word to say, on the dial's own window.
+            Reach.REACHABLE, Reach.UNANSWERED -> {
                 Unit
             }
 
@@ -660,9 +669,85 @@ class FitnessPass(
                 return
             }
         }
-        progress.holding(url.url, STAGE_DOCUMENT)
-        document?.read(url)?.let { batch.readings[url] = it }
-        progress.holding(url.url, STAGE_LADDER)
+        // Beside the dial, not before it: the two fail independently, and a host that hangs one hangs both.
+        coroutineScope {
+            val reading = document?.let { doc -> launch { batch.readings[url] = doc.read(url) } }
+            progress.holding(url.url, STAGE_LADDER)
+            dial(url, anchor, sockets, batch, onEvent)
+            if (reading?.isActive == true) {
+                progress.holding(url.url, STAGE_DOCUMENT)
+                reading.join()
+            }
+        }
+    }
+
+    /**
+     * The servers, by [RelayAliases.authorityOf], with a url whose standing grade says the server
+     * answered HTTP: it spoke NIP-01, or refused the websocket upgrade in so many words.
+     */
+    private fun answeringServers(held: RelayVerdictRecord.Verdicts): Set<String> =
+        held.fitness.entries
+            .filter { (_, grade) -> grade.value in ANSWERED_GRADES || (grade.value == Verdict.DEAD.value && grade.evidence?.startsWith(Silence.UPGRADE.reason) == true) }
+            .mapTo(HashSet()) { RelayAliases.authorityOf(it.key.url) }
+
+    /**
+     * Held urls on the socket a stand-in's pre-probe or handshake proof is about inherit it, since
+     * both test the host and port, which every path on them shares. A dead server's paths were
+     * otherwise graded one per sweep, each in its turn as the stand-in.
+     */
+    private fun inheritSocketProof(
+        heldBack: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        batch: Batch,
+    ) {
+        for ((url, standIn) in heldBack) {
+            if (batch.outcomes.containsKey(url)) continue
+            val proof = batch.outcomes[standIn]?.takeIf { it.verdict == Verdict.DEAD && (it.preProbe || it.tls) } ?: continue
+            val socket = socketOf(url) ?: continue
+            if (socket == socketOf(standIn)) batch.outcomes[url] = proof
+        }
+    }
+
+    /**
+     * A url waiting on the fold on a server that answered HTTP, asked once: the fold cannot fingerprint
+     * a path its server will not upgrade, so that path would wait forever. Graded only when the refusal
+     * earns `dead`; an answer of any other kind, or none, leaves it waiting and writes nothing.
+     */
+    private suspend fun checkHeld(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        sockets: Sockets,
+        batch: Batch,
+        onEvent: suspend (Event) -> Unit,
+    ) {
+        progress.holding(url.url, STAGE_HELD)
+        sockets.claim(url)
+        try {
+            val window =
+                probe.window(url, anchor, null) { event ->
+                    batch.downloaded.incrementAndGet()
+                    onEvent(event)
+                }
+            val reason = window.reason
+            if (window.ids == null && Silence.of(reason) == Silence.UPGRADE) {
+                upgradeRefused(reason) {}?.takeIf { it.verdict == Verdict.DEAD }?.let { batch.outcomes[url] = it }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Our instrument failing on a url that writes nothing either way: it simply goes on waiting.
+        } finally {
+            sockets.release(url)
+        }
+    }
+
+    /** The ladder on a claimed socket, its outcome or the reason it has none filed on [batch]. */
+    private suspend fun dial(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        sockets: Sockets,
+        batch: Batch,
+        onEvent: suspend (Event) -> Unit,
+    ) {
         sockets.claim(url)
         try {
             val outcome =
@@ -788,6 +873,7 @@ class FitnessPass(
                 silent++
                 // Two silent rungs in a row is a url that is not there.
                 if (rung == AliasProbe.FALLBACK_KINDS && silent == 2) break
+                if (rung == AliasProbe.SHAPES.first() && probe.endsLadder(url, window)) break
                 continue
             }
             if (ids.isNotEmpty()) {
@@ -1153,7 +1239,7 @@ class FitnessPass(
         if (written.waiting.isNotEmpty()) {
             System.err.println(
                 "router: fitness [$label] — ${written.waiting.size} url(s) on ${written.waiting.values.toSet().size} server(s) wait on " +
-                    "the fold behind another url of the same server, not dialled; ${written.withdrawn.count { it in written.waiting }} standing `prime` grade(s) " +
+                    "the fold behind another url of the same server, not graded; ${written.withdrawn.count { it in written.waiting }} standing `prime` grade(s) " +
                     "taken back. The fold has not said whether those paths are their own relays, so only the server's stand-in is graded",
             )
         }
@@ -1344,6 +1430,28 @@ class FitnessPass(
         const val STAGE_DOCUMENT = "nip-11 document"
 
         const val STAGE_LADDER = "ask ladder"
+
+        /** The one ask a url waiting on the fold gets. */
+        const val STAGE_HELD = "held for the fold"
+
+        /** Grades a server earns only by answering a REQ or refusing one, whatever else they say. */
+        private val ANSWERED_GRADES =
+            setOf(Verdict.PRIME, Verdict.RESTRICTED, Verdict.AUTH_REFUSED, Verdict.NONCOMPLIANT, Verdict.UNPAGEABLE).mapTo(HashSet()) { it.value }
+
+        /** The host and port a dial of [url] opens, the scheme's port where none is written. */
+        internal fun socketOf(url: NormalizedRelayUrl): String? {
+            val uri = runCatching { URI(url.url) }.getOrNull() ?: return null
+            val host = uri.host ?: return null
+            val port =
+                if (uri.port > 0) {
+                    uri.port
+                } else if (url.url.startsWith("wss://", ignoreCase = true)) {
+                    443
+                } else {
+                    80
+                }
+            return "$host:$port"
+        }
 
         const val STAGE_NIP77 = "neg-open"
 
