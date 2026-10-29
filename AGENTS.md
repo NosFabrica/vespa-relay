@@ -241,7 +241,9 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   negentropy when due, drains queued heals, then leaves a live tail. One
   unclean ask ends the visit, except a walk our full ingest queue silenced,
   which waits for it and resumes; `VisitAborts` partitions why, `RelayComplaints`
-  keeps the relay's sentence, `FilterWidths` narrows an ask refused for width.
+  keeps the relay's sentence, `FilterWidths` narrows an ask refused for width,
+  and an ask refused twice as policy (`StandingRefusal`) is skipped as
+  unreadable for a day, counted under `cannotRun`.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
 - **The monitor.** Its own config file (`MONITOR_CONFIG_FILE`, `monitor.conf`;

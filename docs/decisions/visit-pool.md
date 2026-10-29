@@ -246,3 +246,21 @@ no tail when nothing is left.
 **A visit that completes a band says so once.** Aborts have a log line and successes had none, so a
 stream's progress could not be read from the log. `router: visit … settled [...]` prints when a
 band first turns complete, so it fires at most once per band rather than once per visit.
+
+**An ask a relay refuses as policy is unreadable, not owed (issue 291, Q3).** Of the issue's failing
+relays, many refuse the ask as policy, and their answer never changes: `restricted: this relay only
+serves kinds …`, `blocked: kinds 10000 not allowed`, `invalid-filter: only wallet kinds are
+allowed`, `blocked: … must have 'h', 'e' or 'a' tag`, or a NIP-42 gate that will not take our
+identity. Each revisit asked again, logged an abort, and left the pair in `neverRun`, so a past-only
+stream's counter had a floor it could not get below. `StandingRefusal` reads the ending and the
+relay's sentence: NIP-01's refusal prefixes and a "kind not allowed" phrase count; anything about
+our load (`rate-limited:`, `blocked: already 50 subscriptions`, "too many") never does, and width
+refusals still go to `FilterWidths` first. Two such refusals make the ask unreadable. Other endings
+neither add a strike nor reset the count, because mostro-p2p.tech was measured alternating its
+`kind not allowed` CLOSED with silence; only a clean read clears it. While the verdict stands, the
+pool skips the ask (no dial, and no tail carries it), and the schedule counts it under `cannotRun`,
+the column `CannotReconcile` already uses. The per-relay row keeps the relay's sentence after the
+abort itself is cleared. The verdict is persisted, so a restart does not spend two more refusals to
+learn it again. It lapses after a day, one REQ against a policy that rarely moves, and then the
+next standing refusal restores it, since the strikes are kept until a clean read.
+`UnreadableAskTest` pins it, and fails without the skip.
