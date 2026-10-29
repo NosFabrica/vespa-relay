@@ -112,9 +112,9 @@ Same setup, later the same day, every build alternated with the others:
   session's place in the pipeline; the per-connection 1 s tick had kept
   thousands of entries in each loop's scheduled-task queue.
 - **Epoll changed nothing measurable** and is not added.
-- **The quartz patch took another 20%** (quartz branch `relay-fanout-perf`,
-  not yet released, measured by loading the patched classes ahead of quartz
-  2.4.0): kinds matched without boxing, `FilterIndex.candidatesFor` returning
+- **The quartz patch took another 20%** (measured here by loading the
+  patched classes ahead of quartz 2.4.0; since released in quartz 2.7.3, see
+  below): kinds matched without boxing, `FilterIndex.candidatesFor` returning
   a lone bucket uncopied, and an optional `LiveFrameSink` that hands the
   transport each live frame's prefix and the event's shared body, so the
   body is encoded once per event loop instead of once per subscription.
@@ -123,3 +123,20 @@ Same setup, later the same day, every build alternated with the others:
 - **The gap to strfry went from 2.1× to about 1.3× CPU per frame**, all of
   it user space: kernel time is now the same for both. Our median delivery
   stays 7–9× faster, because strfry batches.
+
+## On quartz 2.7.3
+
+The fan-out changes shipped in quartz 2.7.3, and the relay takes them
+(`LiveFrameSink` in `NativeWebSocket.kt`). Measured on the release, each
+build run twice and alternated with the other and with strfry:
+
+| build | user CPU | kernel CPU | total | delivery p50 | p99 |
+|---|---:|---:|---:|---:|---:|
+| quartz 2.4.0, before | 0.41–0.47 cores | 0.65–0.69 | 1.06–1.16 | 94–102 ms | 187–204 ms |
+| quartz 2.7.3, body encoded once per event loop | 0.32–0.33 | 0.70–0.71 | 1.02–1.04 | 90–92 ms | 183 ms |
+| strfry | 0.09 | 0.67 | 0.76 | 477 ms | 963 ms |
+
+The release matches the prototype: user CPU 22–30% lower, latency a little
+better, kernel time unchanged. The remaining gap to strfry, about 1.35× per
+frame, is all user space, and our median delivery is 5× faster.
+
