@@ -26,6 +26,7 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.ChannelPipeline
+import io.netty.channel.EventLoop
 import io.netty.handler.codec.http.DefaultFullHttpRequest
 import io.netty.handler.codec.http.DefaultHttpHeaders
 import io.netty.handler.codec.http.EmptyHttpHeaders
@@ -51,6 +52,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -126,9 +128,37 @@ private class NativeWebSocketUpgrade(
 }
 
 /**
- * One relay connection over an upgraded channel. Frames from any thread join a lock-free queue that one task on
- * the channel's event loop drains while the socket takes writes, so a fan-out costs an enqueue and at most one
- * task per connection, never a coroutine. Commands are read in order by one coroutine per connection.
+ * The connections of one event loop with frames waiting, drained by one task on that loop however many of them a
+ * fan-out touched: a task per loop rather than per connection, and so one selector wakeup rather than thousands.
+ */
+private class LoopFlusher(
+    private val loop: EventLoop,
+) {
+    private val dirty = ConcurrentLinkedQueue<NativeWebSocketSession>()
+    private val scheduled = AtomicBoolean()
+    private val task = Runnable { run() }
+
+    fun mark(session: NativeWebSocketSession) {
+        dirty.add(session)
+        if (scheduled.compareAndSet(false, true)) loop.execute(task)
+    }
+
+    private fun run() {
+        scheduled.set(false)
+        while (true) dirty.poll()?.drain() ?: break
+    }
+
+    companion object {
+        private val byLoop = ConcurrentHashMap<EventLoop, LoopFlusher>()
+
+        fun of(loop: EventLoop): LoopFlusher = byLoop.computeIfAbsent(loop, ::LoopFlusher)
+    }
+}
+
+/**
+ * One relay connection over an upgraded channel. Frames from any thread join a lock-free queue that its event
+ * loop's [LoopFlusher] drains while the socket takes writes, so a fan-out costs an enqueue, never a coroutine.
+ * Commands are read in order by one coroutine per connection.
  */
 private class NativeWebSocketSession(
     private val relay: NostrRelayServer,
@@ -143,7 +173,7 @@ private class NativeWebSocketSession(
     private val queuedFrames = AtomicInteger()
     private val queuedChars = AtomicLong()
     private val drainScheduled = AtomicBoolean()
-    private val drainTask = Runnable { drain() }
+    private lateinit var flusher: LoopFlusher
 
     @Volatile
     private var unwritableSince = IDLE
@@ -159,6 +189,7 @@ private class NativeWebSocketSession(
 
     override fun handlerAdded(ctx: ChannelHandlerContext) {
         channel = ctx.channel()
+        flusher = LoopFlusher.of(channel.eventLoop())
         session = relay.connect(SessionSink.of(::offer))
         reader =
             inboundScope.launch {
@@ -215,11 +246,11 @@ private class NativeWebSocketSession(
         }
         queuedChars.addAndGet(text.length.toLong())
         outbox.add(text)
-        if (drainScheduled.compareAndSet(false, true)) channel.eventLoop().execute(drainTask)
+        if (drainScheduled.compareAndSet(false, true)) flusher.mark(this)
     }
 
     /** On the event loop: writes what is queued while the socket takes it, then flushes once. */
-    private fun drain() {
+    fun drain() {
         drainScheduled.set(false)
         var wrote = false
         while (channel.isWritable) {
