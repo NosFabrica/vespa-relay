@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
+import com.vitorpamplona.quartz.nip01Core.relay.server.LiveFrameSink
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.relay.server.SessionSink
 import io.netty.buffer.ByteBuf
@@ -163,6 +165,28 @@ private class EventLoopSessions(
         while (true) dirty.poll()?.let { isolated(it) { drain() } } ?: break
     }
 
+    private var lastBody: String? = null
+    private var lastBodyBytes: ByteBuf? = null
+
+    /**
+     * [body] and the frame's closing `]` as bytes, encoded once per event however many of this loop's sockets
+     * it reaches: fan-out hands every subscription the same string, so identity finds it.
+     */
+    fun sharedBody(
+        body: String,
+        alloc: ByteBufAllocator,
+    ): ByteBuf {
+        if (body !== lastBody) {
+            lastBodyBytes?.release()
+            val bytes = alloc.directBuffer(ByteBufUtil.utf8Bytes(body) + 1)
+            ByteBufUtil.writeUtf8(bytes, body)
+            bytes.writeByte(']'.code)
+            lastBody = body
+            lastBodyBytes = bytes
+        }
+        return lastBodyBytes!!.retainedDuplicate()
+    }
+
     // A copy, since a tick can close a connection and so leave this set mid-walk.
     private fun tick() = sessions.toTypedArray().forEach { isolated(it) { tick() } }
 
@@ -194,15 +218,39 @@ internal fun encodeTextFrame(
     text: CharSequence,
 ): ByteBuf {
     val length = ByteBufUtil.utf8Bytes(text)
-    val header =
-        when {
-            length < 126 -> 2
-            length <= 0xFFFF -> 4
-            else -> 10
-        }
-    val frame = alloc.ioBuffer(header + length)
+    val frame = alloc.ioBuffer(frameHeaderSize(length) + length)
+    writeFrameHeader(frame, length)
+    ByteBufUtil.writeUtf8(frame, text)
+    return frame
+}
+
+/** The header and [prefix] of a live frame whose shared body, `]` included, is [bodyBytes] long. */
+internal fun encodeLiveFrameHead(
+    alloc: ByteBufAllocator,
+    prefix: String,
+    bodyBytes: Int,
+): ByteBuf {
+    val prefixBytes = ByteBufUtil.utf8Bytes(prefix)
+    val length = prefixBytes + bodyBytes
+    val head = alloc.ioBuffer(frameHeaderSize(length) + prefixBytes)
+    writeFrameHeader(head, length)
+    ByteBufUtil.writeUtf8(head, prefix)
+    return head
+}
+
+private fun frameHeaderSize(length: Int): Int =
+    when {
+        length < 126 -> 2
+        length <= 0xFFFF -> 4
+        else -> 10
+    }
+
+private fun writeFrameHeader(
+    frame: ByteBuf,
+    length: Int,
+) {
     frame.writeByte(0x81)
-    when (header) {
+    when (frameHeaderSize(length)) {
         2 -> {
             frame.writeByte(length)
         }
@@ -217,9 +265,13 @@ internal fun encodeTextFrame(
             frame.writeLong(length.toLong())
         }
     }
-    ByteBufUtil.writeUtf8(frame, text)
-    return frame
 }
+
+/** A live `EVENT` frame queued in its two parts; [body] is shared by every subscription it reaches. */
+private class LiveFrame(
+    val prefix: String,
+    val body: String,
+)
 
 /**
  * One relay connection over an upgraded channel. Frames from any thread join a lock-free queue that its event
@@ -235,7 +287,7 @@ private class NativeWebSocketSession(
     private lateinit var session: RelaySession
     private lateinit var reader: Job
 
-    private val outbox = ConcurrentLinkedQueue<String>()
+    private val outbox = ConcurrentLinkedQueue<Any>()
     private val queuedFrames = AtomicInteger()
     private val queuedChars = AtomicLong()
     private val drainScheduled = AtomicBoolean()
@@ -257,7 +309,19 @@ private class NativeWebSocketSession(
         context = ctx
         channel = ctx.channel()
         loop = EventLoopSessions.of(channel.eventLoop())
-        session = relay.connect(SessionSink.of(::offer))
+        session =
+            relay.connect(
+                object : SessionSink, LiveFrameSink {
+                    override fun message(message: Message) = raw(message.toJson())
+
+                    override fun raw(json: String) = offer(json, json.length)
+
+                    override fun liveEvent(
+                        framePrefix: String,
+                        body: String,
+                    ) = offer(LiveFrame(framePrefix, body), framePrefix.length + body.length + 1)
+                },
+            )
         reader =
             inboundScope.launch {
                 try {
@@ -322,16 +386,19 @@ private class NativeWebSocketSession(
         channel.close()
     }
 
-    /** From any thread: queues [text], or ends a connection that has stopped taking what it is sent. */
-    private fun offer(text: String) {
+    /** From any thread: queues a frame of [chars] characters, or ends a connection that has stopped taking what it is sent. */
+    private fun offer(
+        frame: Any,
+        chars: Int,
+    ) {
         if (closing) return
         if (queuedFrames.incrementAndGet() > MAX_OUTGOING_BUFFER || stalled()) {
             queuedFrames.decrementAndGet()
             disconnectSlowConsumer()
             return
         }
-        queuedChars.addAndGet(text.length.toLong())
-        outbox.add(text)
+        queuedChars.addAndGet(chars.toLong())
+        outbox.add(frame)
         if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
     }
 
@@ -340,11 +407,19 @@ private class NativeWebSocketSession(
         drainScheduled.set(false)
         var wrote = false
         while (channel.isWritable) {
-            val text = outbox.poll() ?: break
+            val frame = outbox.poll() ?: break
             queuedFrames.decrementAndGet()
-            queuedChars.addAndGet(-text.length.toLong())
             // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
-            context.write(encodeTextFrame(context.alloc(), text), context.voidPromise())
+            if (frame is LiveFrame) {
+                queuedChars.addAndGet(-(frame.prefix.length + frame.body.length + 1).toLong())
+                val body = loop.sharedBody(frame.body, context.alloc())
+                context.write(encodeLiveFrameHead(context.alloc(), frame.prefix, body.readableBytes()), context.voidPromise())
+                context.write(body, context.voidPromise())
+            } else {
+                val text = frame as String
+                queuedChars.addAndGet(-text.length.toLong())
+                context.write(encodeTextFrame(context.alloc(), text), context.voidPromise())
+            }
             wrote = true
         }
         if (wrote) context.flush()
