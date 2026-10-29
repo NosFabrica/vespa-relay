@@ -14,6 +14,8 @@
 //           a relay without NIP-50
 // CHILDREN  load processes; each is one process's open-file limit 4
 // OPEN_RATE sockets opened a second, over all children            1000
+// LINGER    seconds to hold every feed open, idle, after the last step: for heap and
+//           kernel readings per connection                                  0
 // URLS      extra comma-separated ws:// addresses of the same relay (127.0.0.2…): one address
 //           gives ~28k local ports
 //
@@ -172,6 +174,11 @@ async function main() {
     if (pub.oks < pub.n || pub.refused.length) console.log(`  publisher: ${pub.oks}/${pub.n} OK, refused ${JSON.stringify(pub.refused.slice(0, 3))}`);
     else console.log(`  publisher: ${pub.n} OK, ok p50 ${pub.okP50}ms max ${pub.okMax}ms`);
     if (Object.keys(why).length) console.log(`  relay said: ${JSON.stringify(why)}`);
+  }
+  const linger = Number(env("LINGER", 0));
+  if (linger > 0) {
+    console.log(`holding ${steps.at(-1)} feeds idle for ${linger}s`);
+    await new Promise((r) => setTimeout(r, linger * 1000));
   }
   for (const c of [...children, publisher]) c.send({ op: "exit" });
 }
