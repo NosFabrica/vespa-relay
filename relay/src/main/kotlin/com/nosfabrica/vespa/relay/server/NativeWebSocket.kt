@@ -22,6 +22,9 @@ package com.nosfabrica.vespa.relay.server
 
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.relay.server.SessionSink
+import io.netty.buffer.ByteBuf
+import io.netty.buffer.ByteBufAllocator
+import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
@@ -128,52 +131,103 @@ private class NativeWebSocketUpgrade(
 }
 
 /**
- * The connections of one event loop with frames waiting, drained by one task on that loop however many of them a
- * fan-out touched: a task per loop rather than per connection, and so one selector wakeup rather than thousands.
+ * The connections served by one event loop. Those with frames waiting are drained by one task on the loop however
+ * many a fan-out touched, and one timer a second ticks them all, so neither costs a task per connection.
+ * [sessions] is the loop's own: touched only on the loop thread.
  */
-private class LoopFlusher(
+private class EventLoopSessions(
     private val loop: EventLoop,
 ) {
     private val dirty = ConcurrentLinkedQueue<NativeWebSocketSession>()
     private val scheduled = AtomicBoolean()
-    private val task = Runnable { run() }
+    private val drainTask = Runnable { drain() }
+    private val sessions = LinkedHashSet<NativeWebSocketSession>()
+    private var ticker: ScheduledFuture<*>? = null
+
+    fun join(session: NativeWebSocketSession) {
+        sessions.add(session)
+        if (ticker == null) ticker = loop.scheduleAtFixedRate({ tick() }, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS)
+    }
+
+    fun leave(session: NativeWebSocketSession) {
+        sessions.remove(session)
+    }
 
     fun mark(session: NativeWebSocketSession) {
         dirty.add(session)
-        if (scheduled.compareAndSet(false, true)) loop.execute(task)
+        if (scheduled.compareAndSet(false, true)) loop.execute(drainTask)
     }
 
-    private fun run() {
+    private fun drain() {
         scheduled.set(false)
         while (true) dirty.poll()?.drain() ?: break
     }
 
-    companion object {
-        private val byLoop = ConcurrentHashMap<EventLoop, LoopFlusher>()
+    // A copy, since a tick can close a connection and so leave this set mid-walk.
+    private fun tick() = sessions.toTypedArray().forEach { it.tick() }
 
-        fun of(loop: EventLoop): LoopFlusher = byLoop.computeIfAbsent(loop, ::LoopFlusher)
+    companion object {
+        private val byLoop = ConcurrentHashMap<EventLoop, EventLoopSessions>()
+
+        fun of(loop: EventLoop): EventLoopSessions = byLoop.computeIfAbsent(loop, ::EventLoopSessions)
     }
 }
 
 /**
+ * [text] as one server-to-client websocket text frame (RFC 6455 §5.2: final, unmasked) in a pooled buffer: the
+ * header and the UTF-8 written once, with no frame object or encoder between it and the socket.
+ */
+internal fun encodeTextFrame(
+    alloc: ByteBufAllocator,
+    text: CharSequence,
+): ByteBuf {
+    val length = ByteBufUtil.utf8Bytes(text)
+    val header =
+        when {
+            length < 126 -> 2
+            length <= 0xFFFF -> 4
+            else -> 10
+        }
+    val frame = alloc.ioBuffer(header + length)
+    frame.writeByte(0x81)
+    when (header) {
+        2 -> {
+            frame.writeByte(length)
+        }
+
+        4 -> {
+            frame.writeByte(126)
+            frame.writeShort(length)
+        }
+
+        else -> {
+            frame.writeByte(127)
+            frame.writeLong(length.toLong())
+        }
+    }
+    ByteBufUtil.writeUtf8(frame, text)
+    return frame
+}
+
+/**
  * One relay connection over an upgraded channel. Frames from any thread join a lock-free queue that its event
- * loop's [LoopFlusher] drains while the socket takes writes, so a fan-out costs an enqueue, never a coroutine.
+ * loop's [EventLoopSessions] drains while the socket takes writes, so a fan-out costs an enqueue, never a coroutine.
  * Commands are read in order by one coroutine per connection.
  */
 private class NativeWebSocketSession(
     private val relay: NostrRelayServer,
     private val handshaker: WebSocketServerHandshaker,
 ) : ChannelInboundHandlerAdapter() {
+    private lateinit var context: ChannelHandlerContext
     private lateinit var channel: io.netty.channel.Channel
     private lateinit var session: RelaySession
     private lateinit var reader: Job
-    private var ticker: ScheduledFuture<*>? = null
 
     private val outbox = ConcurrentLinkedQueue<String>()
     private val queuedFrames = AtomicInteger()
     private val queuedChars = AtomicLong()
     private val drainScheduled = AtomicBoolean()
-    private lateinit var flusher: LoopFlusher
+    private lateinit var loop: EventLoopSessions
 
     @Volatile
     private var unwritableSince = IDLE
@@ -188,8 +242,9 @@ private class NativeWebSocketSession(
     private var ticks = 0
 
     override fun handlerAdded(ctx: ChannelHandlerContext) {
+        context = ctx
         channel = ctx.channel()
-        flusher = LoopFlusher.of(channel.eventLoop())
+        loop = EventLoopSessions.of(channel.eventLoop())
         session = relay.connect(SessionSink.of(::offer))
         reader =
             inboundScope.launch {
@@ -198,7 +253,7 @@ private class NativeWebSocketSession(
                     session.receive(text)
                 }
             }
-        ticker = ctx.executor().scheduleAtFixedRate({ tick() }, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS)
+        loop.join(this)
         // Ktor reads a request at a time with autoRead off; from here the socket is read as fast as commands drain.
         channel.config().isAutoRead = true
         ctx.read()
@@ -246,7 +301,7 @@ private class NativeWebSocketSession(
         }
         queuedChars.addAndGet(text.length.toLong())
         outbox.add(text)
-        if (drainScheduled.compareAndSet(false, true)) flusher.mark(this)
+        if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
     }
 
     /** On the event loop: writes what is queued while the socket takes it, then flushes once. */
@@ -257,10 +312,11 @@ private class NativeWebSocketSession(
             val text = outbox.poll() ?: break
             queuedFrames.decrementAndGet()
             queuedChars.addAndGet(-text.length.toLong())
-            channel.write(TextWebSocketFrame(Unpooled.wrappedBuffer(text.toByteArray(Charsets.UTF_8))), channel.voidPromise())
+            // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
+            context.write(encodeTextFrame(context.alloc(), text), context.voidPromise())
             wrote = true
         }
-        if (wrote) channel.flush()
+        if (wrote) context.flush()
         if (!channel.isWritable && unwritableSince == IDLE) unwritableSince = nowMs()
     }
 
@@ -291,7 +347,7 @@ private class NativeWebSocketSession(
     }
 
     /** Once a second on the event loop: catches a queue a writability change missed, a stall, and a silent peer. */
-    private fun tick() {
+    fun tick() {
         if (closing) return
         if (stalled()) return disconnectSlowConsumer()
         if (!outbox.isEmpty() && channel.isWritable) drain()
@@ -320,7 +376,7 @@ private class NativeWebSocketSession(
     private fun end() {
         if (!ended.compareAndSet(false, true)) return
         closing = true
-        ticker?.cancel(false)
+        loop.leave(this)
         outbox.clear()
         inbox.close()
         reader.cancel()
