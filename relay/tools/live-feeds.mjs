@@ -10,7 +10,8 @@
 // PER_SOCKET feeds per socket (the relay allows MAX_SUBSCRIPTIONS)  1
 // RATE      events a second the publisher writes                  5
 // HOLD      seconds each step publishes                           20
-// LENS      the search token every feed carries                   include:spam
+// LENS      the search token every feed carries; `none` omits it, for include:spam
+//           a relay without NIP-50
 // CHILDREN  load processes; each is one process's open-file limit 4
 // OPEN_RATE sockets opened a second, over all children            1000
 // URLS      extra comma-separated ws:// addresses of the same relay (127.0.0.2…): one address
@@ -38,7 +39,7 @@ else await main();
 // ---------------------------------------------------------------- the feeds: sockets and their REQs
 function feedsChild() {
   const urls = JSON.parse(process.argv[3]); const perSocket = Number(process.argv[4]); const lens = process.argv[5];
-  const filter = { kinds: [1], limit: 1, search: lens };
+  const filter = lens === "none" ? { kinds: [1], limit: 1 } : { kinds: [1], limit: 1, search: lens };
   const sockets = []; let live = 0, failed = 0, dropped = 0, nextUrl = 0;
   const closedWhy = {}; const eose = [];
   let pubAt = new Map(), early = new Map(), hist = new Array(BUCKETS.length).fill(0), received = 0, windowOpen = false;
