@@ -274,6 +274,15 @@ document lambda runs only after the request is admitted, so an anonymous poller 
 make the process walk its counters, and a process with no metered store answers 503 rather than
 a document of zeros.
 
+**The pulse, the trust page and the metrics line read one `telemetry()`.**
+They assembled the store's ledger and four process-wide engine registries
+(`IngestStats`' stages, holds and blocked split, `DegradedReads`) by name, each
+read when the page's code got to it, so the lock table and the stage table
+described different moments. `VespaEventStore.telemetry()` reads them back to
+back after its one I/O, the cached headroom probe, and the documents render
+that snapshot. The shapes did not move: `PulseDocumentTest` holds the snapshot's
+document equal to its parts'.
+
 **The 403 echoes the refused pubkey.** A verified non-administrator is told so and shown its
 own key: saying "you are not on the list" to somebody who just proved who they are costs
 nothing and saves an operator from debugging a silent refusal that was a typo in

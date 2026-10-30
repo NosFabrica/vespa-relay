@@ -73,7 +73,7 @@ class CorpusIngestBench {
                 run(store, events.map { it.first }, bytes, tuning, probes, "pass ${pass + 1}", writer)
                 writer.close()
                 scope.cancel()
-                println("CORPUS-BENCH   ${StoreMetricsLog.line("bench", store.metrics())}")
+                println("CORPUS-BENCH   ${StoreMetricsLog.line("bench", store.metrics(), IngestStats.snapshot(), IngestStats.heldAll())}")
             }
         }
     }
