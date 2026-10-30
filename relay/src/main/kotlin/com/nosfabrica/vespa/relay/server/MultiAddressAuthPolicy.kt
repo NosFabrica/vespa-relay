@@ -38,6 +38,7 @@ import kotlinx.coroutines.CancellationException
  * NIP-42 for a relay that answers at more than one address. Quartz's [OptionalAuthPolicy] binds
  * one url, so its check is restated: any address satisfies the relay tag, every `relay` tag is
  * considered, and a scheme's default port folds. The other conditions are quartz's, pinned by test.
+ * Remove the restated check when quartz's `FullAuthPolicy` takes a set of addresses.
  */
 class MultiAddressAuthPolicy(
     primary: NormalizedRelayUrl,

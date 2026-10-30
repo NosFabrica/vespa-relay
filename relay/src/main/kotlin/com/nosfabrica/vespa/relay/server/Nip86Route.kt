@@ -149,6 +149,7 @@ internal sealed interface Precheck {
 /**
  * The token's every check but the payload hash and replay, which need the body and are quartz's
  * after it: a stranger, or a stale or forged token, is refused without the relay reading a byte.
+ * Remove when quartz's NIP-98 verifier checks a header before the body.
  */
 internal fun Nip86Admin.precheck(header: String?): Precheck {
     if (header.isNullOrBlank()) return Precheck.Missing

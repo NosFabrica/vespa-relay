@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
  * Parses every pubkey setting: a bech32 public key, converted to lowercase hex. Bare hex is
  * refused because it has no checksum, and a bad value throws rather than being dropped, because
  * a dropped entry looks like the feature not working.
+ * Remove the nsec guard when quartz has a decoder that accepts public keys only.
  */
 object PubKeys {
     /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */

@@ -62,6 +62,7 @@ fun interface AdminGate {
  * The relay's existing definition of an administrator, applied to a GET: a NIP-98 token from one
  * of `RELAY_ADMIN_PUBKEYS`, the same proof and list the NIP-86 rpc uses. Tokens are single-use,
  * so a polling page goes through [AdminSessions]; [publicUrl] is never derived from the request.
+ * Remove the second verifier when quartz's NIP-98 replay set admits only accepted authors.
  */
 class Nip98AdminGate(
     /** The administrators, 64-hex. Empty admits nobody. */

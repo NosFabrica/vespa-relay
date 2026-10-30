@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
  * What the relay sent when the walk says it sent nothing: a sample of the events that crossed
  * the socket during one ask, taken on the connection listener, upstream of the filter match.
  * Armed per walk, one sampler per relay at a time, because several streams share one socket.
+ * Remove when quartz's `fetchAllPages` has a per-page hook.
  */
 internal interface RelayPages {
     /** Starts sampling [url], or returns null when another walk already is. */

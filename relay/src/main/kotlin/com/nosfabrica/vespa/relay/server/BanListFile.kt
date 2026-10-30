@@ -37,7 +37,10 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 
-/** File persistence for the NIP-86 [BanStore]. Only the moderation lists are durable. */
+/**
+ * File persistence for the NIP-86 [BanStore]. Only the moderation lists are durable.
+ * Remove the codec when quartz's `BanStore` has one.
+ */
 object BanListFile {
     private val json = Json { prettyPrint = true }
 

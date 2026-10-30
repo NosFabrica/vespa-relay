@@ -24,6 +24,7 @@ package com.nosfabrica.vespa.relay.peers
  * The NIP-66 payload proper: what the relay is, as opposed to the verdict, which is what this
  * deployment decided about it. Each field is either measured on the fitness dial or read off
  * the relay's NIP-11 document, which is a claim the relay makes about itself.
+ * Remove the hand-written tags when quartz's NIP-66 record edit helper is public.
  */
 data class RelayFacts(
     /** `clearnet` / `tor`, from the transport that would carry this url, not from the document. */

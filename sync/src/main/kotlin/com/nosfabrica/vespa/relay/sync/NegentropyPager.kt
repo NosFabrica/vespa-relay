@@ -81,7 +81,10 @@ internal class PagedWindow(
     val refused: Boolean,
 )
 
-/** [NegentropyLocalIndex] over this relay's store: counts and id reads by range. */
+/**
+ * [NegentropyLocalIndex] over this relay's store: counts and id reads by range.
+ * Remove when quartz's own `StoreWindowIndex` is public.
+ */
 internal class StoreWindowIndex(
     private val store: IEventStore,
 ) : NegentropyLocalIndex {

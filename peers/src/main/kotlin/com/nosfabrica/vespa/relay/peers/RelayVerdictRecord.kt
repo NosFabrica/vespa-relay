@@ -406,6 +406,7 @@ class RelayVerdictRecord(
      * apply [add], and store it at `max(now, existing + 1)` so the replace is accepted. Bounded
      * whole by [EDIT_DEADLINE_MS], the floor under every writer. Callers serialize edits per url
      * (the passes never overlap), or two writers each keep the other's old tags.
+     * Remove when quartz's NIP-66 record edit helper is public.
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,

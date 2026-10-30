@@ -24,6 +24,7 @@ package com.nosfabrica.vespa.relay.monitor
  * Whether a failure may be published as "this relay is unreachable". Only the connection
  * itself counts (name resolution, routing, refusal, TLS): an unknown failure costs one retry,
  * a wrong record is a false public statement about someone else's server.
+ * Remove when quartz's own `Unreachability` stops taking every `UnknownHostException` as proof.
  */
 object Unreachability {
     fun proves(e: Exception): Boolean =
