@@ -116,18 +116,39 @@ function feedsChild() {
 async function publisherChild() {
   const { event, keypair } = await import("./nostr-sign.mjs");
   const url = process.argv[3]; let keys = [keypair()]; const run = Math.random().toString(36).slice(2, 8);
-  const ws = new WebSocket(url); await new Promise((r) => (ws.onopen = r));
   const okAt = new Map(); const sentAt = new Map(); const refused = [];
-  ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m[0] === "OK") { okAt.set(m[1], Date.now() - (sentAt.get(m[1]) ?? Date.now())); if (!m[2]) refused.push(m[3]); } };
+  // Reopened when the relay has closed it: a relay reaps a socket it has not heard from in a while.
+  let ws = null;
+  const connect = async () => {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    ws = new WebSocket(url);
+    ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m[0] === "OK") { okAt.set(m[1], Date.now() - (sentAt.get(m[1]) ?? Date.now())); if (!m[2]) refused.push(m[3]); } };
+    await new Promise((r) => (ws.onopen = r));
+  };
+  await connect();
+  // Signing is synchronous BigInt work; yielding between chunks lets the socket answer the relay's pings meanwhile.
+  const signAll = async (n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      out.push(event(keys[Math.floor(Math.random() * keys.length)], 1, [], `live-feeds ${run} ${seq++}`));
+      if (i % 10 === 9) await new Promise((r) => setImmediate(r));
+    }
+    return out;
+  };
   let seq = 0;
   process.on("message", async (msg) => {
     if (msg.op === "keys") {
-      keys = Array.from({ length: msg.n }, () => keypair());
+      keys = [];
+      for (let i = 0; i < msg.n; i++) {
+        keys.push(keypair());
+        if (i % 10 === 9) await new Promise((r) => setImmediate(r));
+      }
       process.send({ op: "keys", pubs: keys.map((k) => k.pub) });
     } else if (msg.op === "sign") {
-      const signed = Array.from({ length: msg.n }, () => event(keys[Math.floor(Math.random() * keys.length)], 1, [], `live-feeds ${run} ${seq++}`));
+      const signed = await signAll(msg.n);
       process.send({ op: "signed" });
       process.once("message", async (go) => {
+        await connect();
         const gap = 1000 / go.rate; const start = performance.now();
         for (let i = 0; i < signed.length; i++) {
           const wait = start + i * gap - performance.now(); if (wait > 0) await new Promise((r) => setTimeout(r, wait));
