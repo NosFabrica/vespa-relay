@@ -494,7 +494,24 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-4e2e8657819b = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 7e05038862db, below): one fix
+596c78a862be = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 4e2e8657819b, below): one fix.
+  A DOCUMENT GET NEVER LEAVES ITS DOCID SEGMENT (596c78a). The engine's event and reputation gets put
+    the id straight into the document-API url, and a kind 5's e tags reach get() having passed only
+    quartz's length check: a signed deletion naming "../../../../../search/?ranking=…&yql=…" (64
+    characters) sent the store's own GET to /search/ with an unbounded query, and a 4xx failed the
+    whole deletion. An event get now answers absent for anything but 64 hex, and both gets allow-list
+    the segment. Reachable here through every kind 5 the relay or the mirror accepts.
+  git merge-base --is-ancestor 4e2e8657819b 596c78a862be   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build at 596c78a (935 unit tests, 0 failures; DocIdPathTest failed before the
+  fix with the injected yql reaching the mock's search handler); here, ./gradlew build archTest
+  against the JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 4e2e8657819b = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 7e05038862db, below): one fix
 and one docs commit.
   A KEY IS EXACTLY 64 HEX BEFORE IT REACHES AN EXPRESSION (92a6bae). quartz's Hex.isHex64 reads only the
     first 64 characters, and every check in the engine and the store used it alone, so an author,
