@@ -530,3 +530,10 @@ writes and seeds through `BanStore.toJson`/`seedFromJson`, one consistent
 snapshot that also carries the event allow list, roles and claims, which a
 restart used to drop; the relay still refuses a quoted kind and a null
 reason before quartz reads the file, since quartz's decoder takes both.
+
+**A pubkey setting is one whole token.** `PubKeys` decodes through quartz's
+`decodePublicKeyOnlyAsHexOrNull`, which never derives a key from an nsec, but
+that decoder (like the lenient one before it) fishes a key out of surrounding
+text and takes bare hex. A setting must match an npub or nprofile, `nostr:` or
+not, with nothing around it, so `npub1…nsec1…` is refused as a private key and
+`npub1… trailing words` as junk, where both used to boot as the npub.
