@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
+import com.vitorpamplona.quartz.nip01Core.relay.server.FanoutExecutor
 import com.vitorpamplona.quartz.nip01Core.relay.server.LiveFrameSink
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
 import com.vitorpamplona.quartz.nip01Core.relay.server.SessionSink
@@ -139,7 +140,7 @@ private class NativeWebSocketUpgrade(
  */
 private class EventLoopSessions(
     private val loop: EventLoop,
-) {
+) : FanoutExecutor {
     private val dirty = ConcurrentLinkedQueue<NativeWebSocketSession>()
     private val scheduled = AtomicBoolean()
     private val drainTask = Runnable { drain() }
@@ -163,6 +164,25 @@ private class EventLoopSessions(
     private fun drain() {
         scheduled.set(false)
         while (true) dirty.poll()?.let { isolated(it) { drain() } } ?: break
+    }
+
+    /** Sessions a fan-out task wrote to, flushed once each when it ends; this loop's own. */
+    private val written = ArrayList<NativeWebSocketSession>()
+
+    /** Quartz's fan-out for this loop's subscriptions: run here, then every socket it wrote to flushed once. */
+    override fun execute(task: () -> Unit) {
+        loop.execute {
+            try {
+                task()
+            } finally {
+                for (session in written) isolated(session) { flushWritten() }
+                written.clear()
+            }
+        }
+    }
+
+    fun wrote(session: NativeWebSocketSession) {
+        written.add(session)
     }
 
     private var lastBody: String? = null
@@ -312,6 +332,8 @@ private class NativeWebSocketSession(
         session =
             relay.connect(
                 object : SessionSink, LiveFrameSink {
+                    override val liveExecutor: FanoutExecutor get() = loop
+
                     override fun message(message: Message) = raw(message.toJson())
 
                     override fun raw(json: String) = offer(json, json.length)
@@ -319,7 +341,14 @@ private class NativeWebSocketSession(
                     override fun liveEvent(
                         framePrefix: String,
                         body: String,
-                    ) = offer(LiveFrame(framePrefix, body), framePrefix.length + body.length + 1)
+                    ) {
+                        // On this socket's own loop, with nothing queued ahead, the frame goes straight to the socket.
+                        if (!closing && channel.eventLoop().inEventLoop() && outbox.isEmpty() && channel.isWritable) {
+                            writeLive(framePrefix, body)
+                        } else {
+                            offer(LiveFrame(framePrefix, body), framePrefix.length + body.length + 1)
+                        }
+                    }
                 },
             )
         reader =
@@ -400,6 +429,28 @@ private class NativeWebSocketSession(
         queuedChars.addAndGet(chars.toLong())
         outbox.add(frame)
         if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
+    }
+
+    private var flushPending = false
+
+    /** On the event loop, inside a fan-out task: the frame written now, the flush left to the task's end. */
+    private fun writeLive(
+        prefix: String,
+        body: String,
+    ) {
+        val shared = loop.sharedBody(body, context.alloc())
+        context.write(encodeLiveFrameHead(context.alloc(), prefix, shared.readableBytes()), context.voidPromise())
+        context.write(shared, context.voidPromise())
+        if (!flushPending) {
+            flushPending = true
+            loop.wrote(this)
+        }
+    }
+
+    fun flushWritten() {
+        flushPending = false
+        context.flush()
+        if (!channel.isWritable && unwritableSince == IDLE) unwritableSince = nowMs()
     }
 
     /** On the event loop: writes what is queued while the socket takes it, then flushes once. */

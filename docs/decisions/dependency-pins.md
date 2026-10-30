@@ -45,7 +45,33 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
+2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a; its JVM code is the merge of
+quartz#61, c2c73e7), 15 commits over v2.7.3. All of it is the relay server's live fan-out, written against this
+relay's measurements (docs/live-feeds.md). What this relay reaches:
+
+  FAN-OUT PER DELIVERY THREAD (159f7e5). A SessionSink may declare liveExecutor, the thread that
+    delivers its live frames; LiveEventStore keeps one FilterIndex partition per executor, and the
+    ingest thread only probes each partition and hands the event once to every executor that may
+    match. NativeWebSocket declares its event loop (EventLoopSessions is the FanoutExecutor, one
+    per loop): the match and the writes run on the loop that owns those sockets, a frame goes
+    straight to a socket with nothing queued ahead of it, and each socket a task wrote to is
+    flushed once when the task ends. The Ktor transport declares nothing and keeps the inline path.
+    Quartz's own benchmark, 12,000 feeds x 200 events on 4 loops: handing frames over cost 6,601 ns
+    a delivery on the ingest thread; with the loops declared, 80 ns.
+  THE PUBLISHER'S OK BEFORE THE FAN-OUT (358221c). The OK still waits for the write to be durable,
+    no longer for delivery to every live subscriber (quartz's paced benchmark: OK p50 80 ms ->
+    0.84 ms inline, 0.23 ms with executors).
+  REPLAY DEDUPE KEPT HONEST ACROSS EOSE (159f7e5, 839b56b). An event committed during a replay
+    but not yet fanned out is no longer delivered twice; ids still in flight at EOSE are kept and
+    released when their submission leaves.
+  Inert here: LiveSubscriptionBackend (1b21f0d), a REQ held as a registration instead of a parked
+    coroutine (about half the retained heap per idle feed in quartz's benchmark). ObserverBackend
+    wraps LiveEventStore and does not implement it, so every REQ stays on the queryRaw path; the
+    executor still reaches the store, through the RequestContext ObserverBackend passes on.
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves, 2.7.3 -> 2.8.0 (the force; the store
+    still names 2.7.3).
+
+Prev 2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
 What this relay reaches:
 
   RELAY URLS ARE THE APP'S CALL (quartz c1e23a7). isLocalHost now covers 100.64.0.0/10 (CGNAT,
