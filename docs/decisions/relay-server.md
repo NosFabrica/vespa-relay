@@ -119,12 +119,17 @@ no-lens read the gate exists to stop.
 
 **The trust notice says one thing.** The two links are a chain: with no kind
 10040 there is no service to ask about, so "we hold none of your provider's
-scores" is the same finding restated as a guess. Every `30382:rank` service is
-considered, not the first: reading only the first told a reader whose second
-provider was fully mirrored that their scores were missing, on every login,
-forever. A failed store read says nothing, because "we do not have your
-provider list" while Vespa was unreachable is a claim about the reader's own
-publishing the relay cannot support.
+scores" is the same finding restated as a guess. A failed store read says
+nothing, because "we do not have your provider list" while Vespa was
+unreachable is a claim about the reader's own publishing the relay cannot
+support.
+
+**The notice reads the chain the store follows.** It re-derived the chain here
+and counted cards from any of the first eight `30382:rank` services, while the
+store's reads resolve a list to its FIRST rank service: a reader whose first
+provider had signed nothing here got an empty ranked page and no notice. It now
+asks `lensOf` and names the gap the store reports, and so the service the reads
+use.
 
 **One ranked read per connection.** A NIP-50 search for a common word scores
 millions of postings across every match thread, so two on one socket share
@@ -486,11 +491,9 @@ through the store, and the queue holds four batches before a submit suspends.
 
 **What a reader's own data can make a sign-in cost is bounded.** A 10040 is
 the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
-service it named went into one store filter and one NOTICE. `TrustNotice`
-checks the first `MAX_RANK_SERVICES`, and when the list names more it says
-nothing about scores at all: the cards may be under a service it skipped, and
-a `restricted:` NOTICE telling a reader their ranking is broken when it works
-is a claim the check cannot support. Likewise
+service it named went into one store filter and one NOTICE. The store's
+`lensOf` reads at most one document per link and names one service, whatever
+the list holds. Likewise
 `MultiAddressAuthPolicy` remembered every identity a connection signed in as,
 and a client can mint keys without end, so it tells at most `MAX_TOLD` per
 connection and then stops telling rather than growing the set.

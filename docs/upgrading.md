@@ -23,6 +23,9 @@ schema does not move.
 - A NIP-50 `sort:` the store does not recognise (`sort:bogus`) is no longer held
   by the per-connection search lane; the store always served it as plain
   recall.
+- The sign-in NOTICE follows the store's lens: a reader whose FIRST
+  `30382:rank` provider has signed nothing here is now told so (`no kind 30382
+  from <service> here yet`), even when a later provider's cards are mirrored.
 - `/stats.json`'s `trust.scoredPubkeys` reads one to three lower: the store's
   own marker documents are no longer counted as scored pubkeys, so a store with
   no scores now shows zero and the stats page's empty-web-of-trust warning.

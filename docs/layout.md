@@ -202,11 +202,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         wrong when one is). The signer is what ranks, never the
                         card's `d` — a store full of cards ABOUT the reader
                         from services they never named ranks nothing for them —
-                        and EVERY `30382:rank` entry counts rather than the
-                        first, because the provider map credits a reader
-                        through all of them: reading one told a reader whose
-                        SECOND provider is fully mirrored that their scores
-                        were missing, on every login. Fired once per identity
+                        and the chain is the store's own (`lensOf`), so the
+                        service named is the FIRST `30382:rank` entry, the one
+                        the ranked reads use. Fired once per identity
                         per CONNECTION, since an AUTH frame stays valid for its
                         whole ten-minute window and quartz accepts every copy —
                         a replay loop would otherwise be free store reads on a
