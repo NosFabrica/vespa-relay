@@ -428,6 +428,20 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   passes the only ones writing, the record's clock says what it should. Reach for
   a per-tag stamp when a foreign writer is genuinely unavoidable, and prefer
   removing it when it is not.
+- **The first warning a process logs can be the one that kills its acceptor.**
+  Netty logs through java.util.logging (no SLF4J provider is on the classpath),
+  whose formatter asks for the system time zone, and the JDK reads its zone rules
+  from `tzdb.dat` the first time anyone asks. Nothing in the relay had asked before
+  the worst-case ramp pushed it past the sandbox's 20,000 open files: the failed
+  `accept` was logged, the rules could not be opened for want of a descriptor,
+  `ZoneRulesProvider` failed to initialise for the life of the process, and the
+  error escaped Netty's own warning and ended `eventLoopGroupProxy-1-1`, the
+  thread that accepts connections. Every socket already open kept working, which
+  is why the ramp read as a pass; nothing new ever connected again, HTTP included,
+  until a restart. `loadTimeZoneRules()` reads the rules at boot in both `main`s,
+  and `relay/tools/live-bench/fd-exhaustion.sh` floods a relay past a lowered
+  limit and asks whether it still answers. **A lazy load in an error path runs at
+  the worst moment: when the process is already out of something.**
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

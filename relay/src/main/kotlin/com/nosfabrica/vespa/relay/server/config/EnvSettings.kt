@@ -24,8 +24,6 @@ import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
-import com.nosfabrica.vespa.relay.server.Cidr
-import com.nosfabrica.vespa.relay.server.ClientAddresses
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
@@ -238,27 +236,13 @@ fun httpRelayFromEnv(
     origins: () -> List<String>,
 ): HttpRelay? {
     if (env.strictFlag("HTTP_RELAY") == false) return null
-    val header = env["HTTP_RELAY_CLIENT_HEADER"]?.trim()?.takeIf { it.isNotEmpty() }
-    val proxies =
-        env["HTTP_RELAY_TRUSTED_PROXIES"]
-            ?.split(',', ' ', '\n')
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            ?.map { Cidr.parse(it) ?: error("HTTP_RELAY_TRUSTED_PROXIES: '$it' is not an address or block (10.0.0.0/8, ::1/128).") }
-            .orEmpty()
-    // Either alone is a header nobody may set, or trust in a header nobody names.
-    if ((header == null) != proxies.isEmpty()) {
-        error("HTTP_RELAY_CLIENT_HEADER and HTTP_RELAY_TRUSTED_PROXIES go together: the header is read only from those proxies.")
-    }
     return HttpRelay(
         gate =
             HttpRelayGate(
-                perClient = env.strictInt("HTTP_RELAY_PER_CLIENT", 0..Int.MAX_VALUE) ?: HttpRelayGate.DEFAULT_PER_CLIENT,
                 total = env.strictInt("HTTP_RELAY_TOTAL", 0..Int.MAX_VALUE) ?: HttpRelayGate.DEFAULT_TOTAL,
             ),
         deadlineMs = (env.strictInt("HTTP_RELAY_DEADLINE_SECONDS", 1..MAX_DEADLINE_SECONDS) ?: HttpRelay.DEFAULT_DEADLINE_SECONDS.toInt()) * 1000L,
         origins = origins,
-        clients = ClientAddresses(header, proxies),
     )
 }
 

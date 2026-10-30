@@ -15,57 +15,21 @@
 // frames as the socket, subscription id and order included; COUNT; gzip on the wire; NIP-98 (signed in
 // without a lens, not single-use, bound to its body and the relay's url, other schemes ignored); EVENT
 // (OK, served after, duplicate, forged, stale replaceable); every refusal before a command runs (a
-// NOTICE); a deep body; NIP-86's Content-Type on the same URL; and the per-client gate under 40
-// concurrent requests, which expects the default HTTP_RELAY_PER_CLIENT.
+// NOTICE); a deep body; NIP-86's Content-Type on the same URL; and the gate under 40 concurrent
+// requests, which never refuses below the default HTTP_RELAY_TOTAL.
 //
 // It WRITES: one signed note and two kind-0s under throwaway keys, plus the signature self-check.
 // Point it at a local relay, never at staging or production (AGENTS.md: read staging, never publish).
 // BIP-340 Schnorr is the reference algorithm over BigInt, for the NIP-98 tokens and those events; the
 // first check is that the relay accepts its signature, so a bad signer cannot pass for a relay bug.
 // OBSERVER=<64-hex> ranks the lensed searches through another key.
-import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
 import { gunzipSync } from "node:zlib";
+import { event, keypair, nip98 } from "./nostr-sign.mjs";
 
 const BASE = process.argv[2] || "http://localhost:7777";
 const WS = BASE.replace(/^http/, "ws");
 const RANKER = process.env.OBSERVER || "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c";
-
-// ---------------------------------------------------------------- secp256k1 / BIP-340
-const P = 2n ** 256n - 2n ** 32n - 977n;
-const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-const G = [0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n, 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n];
-const mod = (a, m = P) => ((a % m) + m) % m;
-const pow = (b, e, m) => { let r = 1n; b = mod(b, m); while (e > 0n) { if (e & 1n) r = (r * b) % m; b = (b * b) % m; e >>= 1n; } return r; };
-const inv = (a) => pow(a, P - 2n, P);
-const add = (p1, p2) => {
-  if (!p1) return p2; if (!p2) return p1;
-  if (p1[0] === p2[0] && p1[1] !== p2[1]) return null;
-  const l = p1[0] === p2[0] ? mod(3n * p1[0] * p1[0] * inv(2n * p1[1])) : mod((p2[1] - p1[1]) * inv(p2[0] - p1[0]));
-  const x = mod(l * l - p1[0] - p2[0]);
-  return [x, mod(l * (p1[0] - x) - p1[1])];
-};
-const mul = (k, pt = G) => { let r = null; while (k > 0n) { if (k & 1n) r = add(r, pt); pt = add(pt, pt); k >>= 1n; } return r; };
-const hex = (b) => Buffer.from(b).toString("hex");
-const b32 = (n) => Buffer.from(n.toString(16).padStart(64, "0"), "hex");
-const int = (b) => BigInt("0x" + hex(b));
-const sha = (...parts) => createHash("sha256").update(Buffer.concat(parts.map((p) => Buffer.from(p)))).digest();
-const tagged = (tag, ...m) => { const t = sha(Buffer.from(tag)); return sha(t, t, ...m); };
-const keypair = () => { const d = mod(int(randomBytes(32)), N - 1n) + 1n; return { d, pub: hex(b32(mul(d)[0])) }; };
-const sign = (msg, d0) => {
-  const Pt = mul(d0); const d = Pt[1] % 2n === 0n ? d0 : N - d0;
-  const t = Buffer.from(b32(d).map((x, i) => x ^ tagged("BIP0340/aux", randomBytes(32))[i]));
-  const k0 = mod(int(tagged("BIP0340/nonce", t, b32(Pt[0]), msg)), N);
-  const R = mul(k0); const k = R[1] % 2n === 0n ? k0 : N - k0;
-  const e = mod(int(tagged("BIP0340/challenge", b32(R[0]), b32(Pt[0]), msg)), N);
-  return hex(Buffer.concat([b32(R[0]), b32(mod(k + e * d, N))]));
-};
-const event = (key, kind, tags, content, created_at = Math.floor(Date.now() / 1000)) => {
-  const id = hex(sha(JSON.stringify([0, key.pub, created_at, kind, tags, content])));
-  return { id, pubkey: key.pub, created_at, kind, tags, content, sig: sign(Buffer.from(id, "hex"), key.d) };
-};
-const nip98 = (key, url, body) =>
-  "Nostr " + Buffer.from(JSON.stringify(event(key, 27235, [["u", url], ["method", "POST"], ["payload", hex(sha(body))]], ""))).toString("base64");
 
 // ---------------------------------------------------------------- transports
 const URL_ = BASE.endsWith("/") ? BASE : BASE + "/";
@@ -236,15 +200,13 @@ for (const q of ["bitcoin", "nostr", "music", "art", "zap"]) for (const kinds of
   check(`"${q}" kinds ${JSON.stringify(kinds)}: ${ids(h.lines).length} hits, line for line the socket's`, h.status === 200 && JSON.stringify(h.lines) === JSON.stringify(w), `http ${h.lines.length} ws ${w.length} ${h.lines.at(-1)}`);
 }
 
-console.log("the per-client gate under 40 concurrent requests");
+console.log("the gate under 40 concurrent requests from one address");
 {
   const body = REQ("g", { kinds: [0, 1, 1985, 10040, 30392, 30393, 30394, 30395], limit: 5000, search: "include:spam" });
   const all = await Promise.all(Array.from({ length: 40 }, () => post(body)));
   const by = {}; for (const r of all) by[r.status] = (by[r.status] || 0) + 1;
   console.log("  statuses:", JSON.stringify(by));
-  check("every answer is a 200 or a 429 from the gate", all.every((r) => r.status === 200 || r.status === 429));
-  check("the 429s are one NOTICE rate-limited: line and the 200s end on EOSE", all.every((r) => (r.status === 429 ? r.lines[0].startsWith('["NOTICE","rate-limited:') : r.lines.at(-1) === '["EOSE","g"]')));
-  check("some were refused at the default HTTP_RELAY_PER_CLIENT", (by[429] || 0) > 0);
+  check("one address is not capped: every answer is a 200 that ends on EOSE", all.every((r) => r.status === 200 && r.lines.at(-1) === '["EOSE","g"]'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -39,7 +39,6 @@ schema does not move.
 - Search expansion serves an upper-case hex `e`/`p` member of a list
   (lowercased) where it used to drop it, and a NIP-85 card whose subject is
   upper-case hex ranks nobody (it never did; it no longer leaves a stored cell).
-
 - A NIP-50 `sort:` the store does not recognise (`sort:bogus`) is no longer held
   by the per-connection search lane; the store always served it as plain
   recall.
@@ -52,6 +51,21 @@ schema does not move.
 - The stats rollup's groupings show on `/pulse.json` as the `Aggregate`
   activity, and with `VESPA_QUERY_URLS` set they rotate across every query
   container instead of asking the first.
+
+## The image runs JDK 27 (October 2026)
+
+The runtime stage of the image moved from JDK 21 to JDK 27 (Temurin, Ubuntu 26.04); the build is unchanged.
+Nothing needs doing. What changes: compact object headers are on by default, so live heap per open connection
+is about 9% lower; a `JAVA_TOOL_OPTIONS` that names a flag JDK 27 removed would now stop the JVM, so check any
+you set beyond compose's defaults; and the boot no longer warns about Netty loading its native libraries.
+
+## HTTP commands have no per-address cap (October 2026)
+
+`HTTP_RELAY_PER_CLIENT`, `HTTP_RELAY_CLIENT_HEADER` and
+`HTTP_RELAY_TRUSTED_PROXIES` are gone; a deployment that sets them boots, says
+at startup that they do nothing, and ignores them. `HTTP_RELAY_TOTAL` is the one bound on NIP-FE commands, and a
+command past it is a `503`; nothing answers `429` any more. Raise the total if
+one busy address used to be what kept it from filling.
 
 ## The relay is the only writer (October 2026)
 

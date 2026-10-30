@@ -350,17 +350,20 @@ the last one; the route suppresses the plugin for its 200 and sync-flushes a
 `GZIPOutputStream` at each flush point, so a compressed line is a delivered one.
 Flush points are "nothing else waiting", so a store page leaves as one write.
 
-**HTTP commands are capped per address and in all, and refused rather than
-queued.** `SearchGate` holds one ranked read per connection, which HTTP defeats
-by opening a connection per request. A queued request would hold a socket and
-spend its deadline waiting, so the gate answers `429` (the address) or `503`
-(the relay) at once. Behind a proxy every client is the proxy, so the address
-comes from `HTTP_RELAY_CLIENT_HEADER`, read only when the socket's peer is one
-of `HTTP_RELAY_TRUSTED_PROXIES`: from anyone else the header is the client's
-own claim, and honouring it let one client take every slot by naming a new
-address per request. Its last entry, across every line of it, because that is
-the one the proxy wrote. The gate runs before NIP-98 is verified, since the
-verifier spends the token and a refused request would otherwise burn it.
+**HTTP commands are capped in all, and refused rather than queued.**
+`SearchGate` holds one ranked read per connection, which HTTP defeats by opening
+a connection per request. A queued request would hold a socket and spend its
+deadline waiting, so the gate answers `503` at once. The gate runs before NIP-98
+is verified, since the verifier spends the token and a refused request would
+otherwise burn it.
+
+**There is no per-address cap.** One was served (`HTTP_RELAY_PER_CLIENT`, two
+at a time, keyed behind a proxy by `HTTP_RELAY_CLIENT_HEADER` from
+`HTTP_RELAY_TRUSTED_PROXIES`), and removed: an address is not a person. Every
+`.onion` request arrives from the one Tor container, so the third onion reader
+in the world was a `429`; Tor exits, carrier NAT and office networks share
+theirs the same way. The websocket never had one. `HTTP_RELAY_TOTAL` is the
+bound.
 
 **The deadline is checked between frames and never interrupts a write.**
 Cancelling a write mid-way could leave half a line, or with gzip send buffered

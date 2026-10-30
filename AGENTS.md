@@ -3,7 +3,7 @@
 A Nostr relay with trust-ranked NIP-50 search: quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays into the same
-store. Six Gradle modules, JVM only (toolchain 21), two processes:
+store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), two processes:
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
 - `:sync` — the mirror, and the process that hosts the monitor beside it, so
@@ -204,7 +204,10 @@ web/…/relay/web/
 web/src/test/js/              the plain-node suite (run.mjs); web/src/test/browser/ holds the Chromium probes
 relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pull a corpus off the live relay, fetch-slice.mjs
                               one kind mix of it, fetch-verdicts.mjs its monitor's 30166 records; read-mix.mjs is a seeded client read load; nipfe-e2e.mjs
-                              drives NIP-FE against a running relay, every answer checked against its socket
+                              drives NIP-FE against a running relay, every answer checked against its socket;
+                              live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher, and live-bench/ boots the relay
+                              under it to read CPU, memory, churn, stalled clients and a JFR profile (docs/live-feeds.md);
+                              nostr-sign.mjs is the BIP-340 signer the publishing tools share
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives
 ```
@@ -212,7 +215,7 @@ tools/                        record-cds-classlists.sh re-records relay/ and syn
 `docs/configuration.md` documents every environment variable (`.env.example`
 is the copyable start), `docs/router.md` the two config files' format,
 `docs/migrations.md` the schema changes a store bump can need on a cluster that
-already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, and `docs/search-latency.md` what a search costs.
+already holds data, `docs/upgrading.md` what an operator does and sees moving to a release, `docs/search-latency.md` what a search costs, and `docs/live-feeds.md` what holding open feeds costs.
 
 ## How the router works
 
@@ -401,6 +404,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
+- Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.
 - Quartz/amethyst is multiplatform: no commas in backticked test names, no `java.util` in shared code.
 

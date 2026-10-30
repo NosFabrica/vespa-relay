@@ -73,7 +73,7 @@ release's Package.swift, 22 commits over v2.8.0). It makes public what this rela
     to an nsec, so PubKeys requires one whole npub/nprofile token (the old code also took trailing junk);
     seedFromJson takes a quoted kind and a null reason, so BanListFile refuses both first. FullAuthPolicy
     accepting any naming relay tag matches what MultiAddressAuthPolicy already did. Unreachability lacks
-    musl's "Name does not resolve", as the copy did; the image is glibc (noble).
+    musl's "Name does not resolve", as the copy did; the image is glibc (Ubuntu resolute).
   UPSTREAMPUSH IS NegentropyStoreSync. Up only, no deletion settle, over the pass's gated snapshot
     (syncGroup with localEntries, not shareSnapshots), uploads beside the session, PUSH_WINDOW = 4
     awaiting their OK, one interval's uploadDeadlineMs per url (counted from the reconcile's start).
@@ -82,17 +82,36 @@ release's Package.swift, 22 commits over v2.8.0). It makes public what this rela
     the graph showed `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`, the force winning; the store at
     9fc501742650 (vespaEventStore) names 2.9.0 itself, and no arrow is left.
 
-Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
-relay server's live fan-out only (FanoutExecutor, LiveFrameSink, LiveSubscriptionBackend, RelaySession and
-LiveEventStore reworked). What this relay reaches:
+Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a; its JVM code is the merge of
+quartz#61, c2c73e7), 15 commits over v2.7.3. All of it is the relay server's live fan-out, written against this
+relay's measurements (docs/live-feeds.md). What this relay reaches:
 
-  A REQ'S LIVE TAIL IS A REGISTRATION. RelaySession prefers LiveSubscriptionBackend.openSubscription over
-    a parked queryRaw, but only for a backend that implements it; ObserverBackend implemented plain
-    SessionBackend and would have stayed on the parked path, one coroutine per open REQ, without a test
-    noticing. It implements it now, gating the live listener and wrapping replay/replayRaw
-    (docs/decisions/relay-server.md); LiveGateDeliveryTest fails if the registration skips the gate.
-  Inert here: FanoutExecutor and LiveFrameSink (RelayWebSocket's sink is a plain thread-safe queue and
-    declares no liveExecutor; a cold-author check still posts to one if a sink ever does).
+  FAN-OUT PER DELIVERY THREAD (159f7e5). A SessionSink may declare liveExecutor, the thread that
+    delivers its live frames; LiveEventStore keeps one FilterIndex partition per executor, and the
+    ingest thread only probes each partition and hands the event once to every executor that may
+    match. NativeWebSocket declares its event loop (EventLoopSessions is the FanoutExecutor, one
+    per loop): the match and the writes run on the loop that owns those sockets, a frame goes
+    into a socket's one buffer when nothing is queued ahead of it, and that buffer is written by a
+    flush task queued behind the fan-outs already on the loop (one write per socket per flush, not
+    per event: a flush per event missed the target at 50 events/s). The Ktor transport declares
+    nothing and keeps the inline path.
+    Quartz's own benchmark, 12,000 feeds x 200 events on 4 loops: handing frames over cost 6,601 ns
+    a delivery on the ingest thread; with the loops declared, 80 ns. Measured here (docs/live-feeds.md):
+    the same CPU at 12,000 feeds x 5 events/s, the work moved rather than shrunk; with every note to
+    every feed, delivery p99 at 128,000 feeds 449 ms against 2.7.3's 787 ms.
+  THE PUBLISHER'S OK BEFORE THE FAN-OUT (358221c). The OK still waits for the write to be durable,
+    no longer for delivery to every live subscriber (quartz's paced benchmark: OK p50 80 ms ->
+    0.84 ms inline, 0.23 ms with executors). Here the OK p50 stayed 17-18 ms from 32,000 to 144,000
+    feeds matching every note, where 2.7.3's grew from 87 ms to 408 ms.
+  REPLAY DEDUPE KEPT HONEST ACROSS EOSE (159f7e5, 839b56b). An event committed during a replay
+    but not yet fanned out is no longer delivered twice; ids still in flight at EOSE are kept and
+    released when their submission leaves.
+  A REQ'S LIVE TAIL IS A REGISTRATION (1b21f0d). RelaySession prefers
+    LiveSubscriptionBackend.openSubscription over a parked queryRaw, but only for a backend that
+    implements it; ObserverBackend implemented plain SessionBackend and would have stayed on the
+    parked path, one coroutine per open REQ, without a test noticing. It implements it now, gating
+    the live listener and wrapping replay/replayRaw (docs/decisions/relay-server.md);
+    LiveGateDeliveryTest fails if the registration skips the gate.
   RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. With the store at fec452107fe8 the graph
     showed `com.vitorpamplona.quartz:quartz:2.7.3 -> 2.8.0`, the force winning; the store at
     7e05038862db (vespaEventStore) names 2.8.0 itself, and no arrow is left.
@@ -112,8 +131,13 @@ What this relay reaches:
   PARSERS KEEP LOCAL RELAYS; the filtered accessors (readRelaysNorm, writeRelaysNorm, the DM and
     KeyPackage relays()) are deprecated and keep filtering until 3.0.0. Nothing here calls them:
     discovery reads raw tags through RelayDiscovery.
-  Inert here: drss.io kinds and the kind-30054 split (the store's own pin note), FilterMatcher and
-    FilterIndex live fan-out speedups, LiveFrameSink.
+  CHEAPER LIVE FAN-OUT (4f7f84d, 2e83e22; written against this relay's measurements,
+    docs/live-feeds.md). FilterMatcher matches kinds without boxing the event's kind; FilterIndex
+    returns a lone bucket's subscriber set uncopied instead of a fresh LinkedHashSet per event; and
+    LiveFrameSink hands a live EVENT frame to a sink as its prefix and the event's body, one String
+    instance across every subscription, which NativeWebSocket encodes once per event loop. Together
+    about a fifth off the relay's user CPU per live frame at 12,000 feeds.
+  Inert here: drss.io kinds and the kind-30054 split (the store's own pin note).
   RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. With the store at 493fe01d9ea7 the graph
     showed `com.vitorpamplona.quartz:quartz:2.4.0 -> 2.7.3`, the force winning; the store at
     fec452107fe8 (vespaEventStore) names 2.7.3 itself, and no arrow is left.

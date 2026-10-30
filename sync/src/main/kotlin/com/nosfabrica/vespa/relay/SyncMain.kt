@@ -62,6 +62,7 @@ import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
+import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
@@ -160,6 +161,7 @@ private fun refuseAnotherRelayKey(
  */
 fun main() {
     cacheDnsBriefly()
+    loadTimeZoneRules()
     BootClock.main("sync")
     exitOnBootFailure()
     val env = System.getenv()

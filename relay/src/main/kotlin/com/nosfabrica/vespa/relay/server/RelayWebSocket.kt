@@ -35,19 +35,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** Outbound frames queued for one connection before it is treated as a slow consumer. */
-private const val MAX_OUTGOING_BUFFER = 8192
+internal const val MAX_OUTGOING_BUFFER = 8192
 
 /** Outbound characters a connection may hold queued without question; past it, only a stalled writer is a slow consumer. */
-private const val MAX_OUTGOING_CHARS = 16L * 1024 * 1024
+internal const val MAX_OUTGOING_CHARS = 16L * 1024 * 1024
 
 /** How long the writer may wait on one frame before a connection over [MAX_OUTGOING_CHARS] is a slow consumer. */
-private const val WRITER_STALL_MS = 30_000L
+internal const val WRITER_STALL_MS = 30_000L
 
 /** How often a connection's writer is checked for a stall. */
 private const val STALL_CHECK_MS = 1_000L
 
 /** How long a slow consumer's close frame gets before the session is torn down anyway. */
-private const val CLOSE_GRACE_MS = 5_000L
+internal const val CLOSE_GRACE_MS = 5_000L
+
+/** The ping that makes a peer that walked off NAT detectable, and the silence after which its session is reaped. */
+internal const val PING_PERIOD_MS = 30_000L
+internal const val SILENCE_TIMEOUT_MS = 60_000L
 
 /**
  * [Frame.Text]'s text as Ktor's `readText` reads it, malformed bytes replaced, without its copy
@@ -58,13 +62,16 @@ internal fun Frame.Text.utf8Text(): String {
     return String(data, Charsets.UTF_8)
 }
 
+/** Encoded by the JDK's String.getBytes; Ktor's Frame.Text(String) runs a CharsetEncoder a character at a time. */
+internal fun textFrame(text: String): Frame.Text = Frame.Text(true, text.toByteArray(Charsets.UTF_8))
+
 /** The relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
         // One writer drains a bounded queue; a slow consumer is disconnected rather than having frames
         // dropped, which would break NIP-01.
         val outQueue = OutboundQueue()
-        val writer = launch { outQueue.drain { text -> outgoing.send(Frame.Text(text)) } }
+        val writer = launch { outQueue.drain { text -> outgoing.send(textFrame(text)) } }
         val disconnecting = AtomicBoolean()
 
         fun disconnectSlowConsumer() {

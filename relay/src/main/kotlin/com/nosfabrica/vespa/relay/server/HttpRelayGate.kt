@@ -21,32 +21,25 @@
 package com.nosfabrica.vespa.relay.server
 
 /**
- * How many HTTP commands may run at once, per client address and in all. Refuses rather than queues:
- * a queued request holds a socket and a deadline for nothing, and a refusal tells the client to back off.
+ * How many HTTP commands may run at once across the relay. Refuses rather than queues: a queued
+ * request holds a socket and a deadline for nothing, and a refusal tells the client to back off.
  */
 class HttpRelayGate(
-    /** Commands one client address may run at once. 0 lifts the per-client cap. */
-    val perClient: Int,
-    /** Commands the whole relay may run at once. 0 lifts the total cap. */
+    /** Commands the whole relay may run at once. 0 lifts the cap. */
     val total: Int,
 ) {
-    /** Why [through] did not run a command. */
-    enum class Refusal { CLIENT_BUSY, RELAY_BUSY }
-
-    private val byClient = HashMap<String, Int>()
     private var running = 0
 
-    /** Runs [block] when [client] has a slot, otherwise answers [refused] with why it has none. */
+    /** Runs [block] when a slot is free, otherwise answers [refused]. */
     suspend fun <T> through(
-        client: String,
-        refused: suspend (Refusal) -> T,
+        refused: suspend () -> T,
         block: suspend () -> T,
     ): T {
-        enter(client)?.let { return refused(it) }
+        if (!enter()) return refused()
         try {
             return block()
         } finally {
-            leave(client)
+            leave()
         }
     }
 
@@ -55,24 +48,18 @@ class HttpRelayGate(
         @Synchronized get() = running
 
     @Synchronized
-    private fun enter(client: String): Refusal? {
-        val mine = byClient[client] ?: 0
-        if (perClient > 0 && mine >= perClient) return Refusal.CLIENT_BUSY
-        if (total > 0 && running >= total) return Refusal.RELAY_BUSY
-        byClient[client] = mine + 1
+    private fun enter(): Boolean {
+        if (total > 0 && running >= total) return false
         running++
-        return null
+        return true
     }
 
     @Synchronized
-    private fun leave(client: String) {
+    private fun leave() {
         running--
-        val left = (byClient[client] ?: 1) - 1
-        if (left <= 0) byClient.remove(client) else byClient[client] = left
     }
 
     companion object {
-        const val DEFAULT_PER_CLIENT = 2
         const val DEFAULT_TOTAL = 64
     }
 }

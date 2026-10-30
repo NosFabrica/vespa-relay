@@ -31,7 +31,6 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.http.content.suppressCompression
-import io.ktor.server.plugins.origin
 import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
@@ -58,7 +57,6 @@ class HttpRelay(
     val gate: HttpRelayGate,
     val deadlineMs: Long,
     val origins: () -> List<String>,
-    val clients: ClientAddresses = ClientAddresses(),
     /** How long an admitted request may take to upload its body; a trickle holds its gate slot no longer. */
     val bodyTimeoutMs: Long = DEFAULT_BODY_TIMEOUT_MS,
 ) {
@@ -114,7 +112,7 @@ private suspend fun ApplicationCall.answer(
     // The engine counts characters and a UTF-8 character is up to three bytes, so the handler says how much to read.
     val cap = handler.maxBodyBytes ?: (defaultMaxMessageLength * 3L)
     // The gate first, before the upload: a refused request neither buffers its body nor reaches the NIP-98 check.
-    settings.gate.through(settings.clients.of(this), refused = { respondBusy(it, settings.gate) }) {
+    settings.gate.through(refused = { respondBusy(settings.gate) }) {
         val body =
             try {
                 withTimeout(settings.bodyTimeoutMs) { receiveBounded(cap) }
@@ -226,18 +224,7 @@ private suspend fun ApplicationCall.respondNotice(
     status: HttpStatusCode,
 ) = respondFrames(HttpRelayHandler.notice(reason), status)
 
-private suspend fun ApplicationCall.respondBusy(
-    refusal: HttpRelayGate.Refusal,
-    gate: HttpRelayGate,
-) = when (refusal) {
-    HttpRelayGate.Refusal.CLIENT_BUSY -> {
-        respondNotice("rate-limited: ${gate.perClient} HTTP commands are already running from this address", HttpStatusCode.TooManyRequests)
-    }
-
-    HttpRelayGate.Refusal.RELAY_BUSY -> {
-        respondNotice("rate-limited: the relay is running its limit of ${gate.total} HTTP commands", HttpStatusCode.ServiceUnavailable)
-    }
-}
+private suspend fun ApplicationCall.respondBusy(gate: HttpRelayGate) = respondNotice("rate-limited: the relay is running its limit of ${gate.total} HTTP commands", HttpStatusCode.ServiceUnavailable)
 
 /** The body, or null when it is over [max]. The +1 read catches a lying Content-Length and chunked uploads. */
 internal suspend fun ApplicationCall.receiveBounded(max: Long): ByteArray? {
@@ -274,85 +261,4 @@ internal fun acceptsGzip(header: String?): Boolean {
             }
     val q = weights["gzip"] ?: weights["*"] ?: return false
     return q > 0
-}
-
-/**
- * Where a request came from, for the gate: the nearest address in [header] that is not one of
- * [trustedProxies], read right to left while the hop that added it is trusted; the socket's peer
- * when that is not a trusted proxy. An IPv6 client is keyed by its /64, which one subscriber holds.
- */
-class ClientAddresses(
-    val header: String? = null,
-    val trustedProxies: List<Cidr> = emptyList(),
-) {
-    fun of(call: ApplicationCall): String {
-        val peer = call.request.origin.remoteAddress
-        val name = header ?: return key(peer)
-        if (!trusted(peer)) return key(peer)
-        val hops =
-            call.request.headers
-                .getAll(name)
-                .orEmpty()
-                .flatMap { it.split(',') }
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-        return key(hops.lastOrNull { !trusted(it) } ?: hops.firstOrNull() ?: peer)
-    }
-
-    private fun trusted(address: String): Boolean {
-        val bytes = Cidr.literalBytes(address) ?: return false
-        return trustedProxies.any { it.contains(bytes) }
-    }
-
-    private fun key(address: String): String {
-        val bytes = Cidr.literalBytes(address)?.takeIf { it.size == 16 } ?: return address
-        return bytes.copyOf(8).joinToString("", postfix = "::/64") { "%02x".format(it) }
-    }
-}
-
-/** An address block, `10.0.0.0/8` or `::1/128`; a bare address is its own block. Literals only, never a hostname. */
-class Cidr private constructor(
-    private val network: ByteArray,
-    private val prefix: Int,
-) {
-    fun contains(address: String): Boolean = literalBytes(address)?.let(::contains) ?: false
-
-    /** [contains] over an address already parsed, so a caller matching many blocks parses it once. */
-    fun contains(bytes: ByteArray): Boolean {
-        if (bytes.size != network.size) return false
-        val whole = prefix / 8
-        for (i in 0 until whole) if (bytes[i] != network[i]) return false
-        val rest = prefix % 8
-        if (rest == 0) return true
-        val mask = (0xFF shl (8 - rest)) and 0xFF
-        return (bytes[whole].toInt() and mask) == (network[whole].toInt() and mask)
-    }
-
-    override fun toString(): String = "${java.net.InetAddress.getByAddress(network).hostAddress}/$prefix"
-
-    companion object {
-        /** [spec] as a block, or null when it is not an address literal with an in-range prefix. */
-        fun parse(spec: String): Cidr? {
-            val address = spec.substringBefore('/').trim()
-            val bytes = literalBytes(address) ?: return null
-            val prefix =
-                if ('/' in spec) spec.substringAfter('/').trim().toIntOrNull() ?: return null else bytes.size * 8
-            if (prefix !in 0..bytes.size * 8) return null
-            return Cidr(bytes, prefix)
-        }
-
-        /** An address literal's bytes. IPv4 is parsed here, so a malformed one is never sent to DNS as a name. */
-        internal fun literalBytes(address: String): ByteArray? {
-            val bare = address.removePrefix("[").removeSuffix("]")
-            if (':' in bare) {
-                return runCatching {
-                    java.net.InetAddress
-                        .getByName(bare)
-                        .address
-                }.getOrNull()
-            }
-            val octets = bare.split('.').map { it.toIntOrNull()?.takeIf { o -> o in 0..255 && it.length <= 3 } ?: return null }
-            return if (octets.size == 4) ByteArray(4) { octets[it].toByte() } else null
-        }
-    }
 }

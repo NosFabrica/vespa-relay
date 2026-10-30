@@ -10,7 +10,10 @@ COPY . .
 # artifacts are slow to re-download from scratch.
 RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon :relay:installDist :sync:installDist
 
-FROM eclipse-temurin:21.0.12.1_1-jre-noble
+# The runtime is JDK 27 while the build stays on the 21 toolchain: 27 turns compact object headers on by
+# default, about 9% less heap per open connection, and its CPU and latency matched 21 (docs/live-feeds.md).
+# Pinned by digest, since 27 publishes only moving tags so far: Temurin 27+35 on Ubuntu 26.04.
+FROM eclipse-temurin:27-jre-resolute@sha256:7520762e9fac9c34ae0ef3a898ff0e9fc652b019860ab859728b17df41f2b497
 WORKDIR /app
 COPY --from=build /src/relay/build/install/vespa-relay /app/relay
 COPY --from=build /src/sync/build/install/vespa-sync /app/sync
@@ -28,7 +31,7 @@ COPY relay/cds.classlist /app/relay/cds.classlist
 COPY sync/cds.classlist /app/sync/cds.classlist
 RUN for app in relay sync; do \
       cp=$(sed -n "/^CLASSPATH=/{s/^CLASSPATH=//;s#\$APP_HOME#/app/$app#g;p}" "/app/$app/bin/vespa-$app"); \
-      java -Xshare:dump -Xmx1g -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
+      java -Xshare:dump -Xmx1g --enable-native-access=ALL-UNNAMED -XX:SharedClassListFile=/app/$app/cds.classlist -XX:SharedArchiveFile=/app/$app/$app.jsa \
         -Xlog:cds=error -cp "$cp" > /tmp/$app-cds.log 2>&1 || { cat /tmp/$app-cds.log; exit 1; }; \
     done && rm -f /tmp/*-cds.log
 # Both processes face the network, so neither runs as root. The state directory is theirs; a

@@ -28,49 +28,47 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class HttpRelayGateTest {
-    /** Holds a slot for [client] until [release] completes; answers how the gate decided. */
+    /** Holds a slot until [release] completes; answers how the gate decided. */
     private fun kotlinx.coroutines.CoroutineScope.hold(
         gate: HttpRelayGate,
-        client: String,
         release: CompletableDeferred<Unit>,
-    ) = async { gate.through(client, refused = { it.name }) { release.await().let { "ran" } } }
+    ) = async { gate.through(refused = { "refused" }) { release.await().let { "ran" } } }
 
-    private suspend fun HttpRelayGate.tryOnce(client: String) = through(client, refused = { it.name }) { "ran" }
+    private suspend fun HttpRelayGate.tryOnce() = through(refused = { "refused" }) { "ran" }
 
     @Test
-    fun `one client is capped at its share and the relay at its total`() =
+    fun `the relay is capped at its total`() =
         runBlocking {
-            val gate = HttpRelayGate(perClient = 2, total = 3)
+            val gate = HttpRelayGate(total = 3)
             val release = CompletableDeferred<Unit>()
-            val held = listOf(hold(gate, "a", release), hold(gate, "a", release), hold(gate, "b", release))
+            val held = (1..3).map { hold(gate, release) }
             while (gate.inFlight < 3) yield()
 
-            assertEquals("CLIENT_BUSY", gate.tryOnce("a"), "a third read from one address")
-            assertEquals("RELAY_BUSY", gate.tryOnce("c"), "a fresh address past the total")
+            assertEquals("refused", gate.tryOnce(), "a fourth command past the total")
 
             release.complete(Unit)
             assertEquals(listOf("ran", "ran", "ran"), held.map { it.await() })
             assertEquals(0, gate.inFlight)
-            assertEquals("ran", gate.tryOnce("a"), "every slot frees when its read ends")
+            assertEquals("ran", gate.tryOnce(), "every slot frees when its command ends")
         }
 
     @Test
-    fun `zero lifts a cap`() =
+    fun `zero lifts the cap`() =
         runBlocking {
-            val gate = HttpRelayGate(perClient = 0, total = 0)
+            val gate = HttpRelayGate(total = 0)
             val release = CompletableDeferred<Unit>()
-            val held = (1..10).map { hold(gate, "a", release) }
+            val held = (1..10).map { hold(gate, release) }
             while (gate.inFlight < 10) yield()
-            assertEquals("ran", async { gate.tryOnce("a") }.await())
+            assertEquals("ran", async { gate.tryOnce() }.await())
             release.complete(Unit)
             held.forEach { it.await() }
         }
 
     @Test
-    fun `a read that throws still frees its slot`() =
+    fun `a command that throws still frees its slot`() =
         runBlocking {
-            val gate = HttpRelayGate(perClient = 1, total = 1)
-            runCatching { gate.through("a", refused = { "refused" }) { error("boom") } }
-            assertEquals("ran", gate.tryOnce("a"))
+            val gate = HttpRelayGate(total = 1)
+            runCatching { gate.through(refused = { "refused" }) { error("boom") } }
+            assertEquals("ran", gate.tryOnce())
         }
 }

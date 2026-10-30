@@ -99,6 +99,15 @@ services:
     # FTS reindex — not the negentropy id snapshots, which were what needed
     # 12g. Those went with the sync process, and this dropped to 6g.
     mem_limit: ${RELAY_MEM_LIMIT:-6g}
+    # Every client socket is a file. Without this the container takes whatever
+    # limit the Docker engine was started with, which varies by host and engine
+    # version; out of files, the relay refuses new connections until some close.
+    # An engine that cannot grant it (rootless Docker past the user's own hard
+    # limit) fails to create the container: lower RELAY_NOFILE there.
+    ulimits:
+      nofile:
+        soft: ${RELAY_NOFILE:-524288}
+        hard: ${RELAY_NOFILE:-524288}
     depends_on:
       vespa:
         condition: service_healthy
@@ -161,14 +170,11 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
-      # NIP-FE: a client frame POSTed to the relay's URL. Behind a proxy, set the client
-      # header and the proxy's addresses, or every caller shares one cap.
+      NATIVE_WEBSOCKET: ${NATIVE_WEBSOCKET:-}
+      # NIP-FE: a client frame POSTed to the relay's URL.
       HTTP_RELAY: ${HTTP_RELAY:-}
-      HTTP_RELAY_PER_CLIENT: ${HTTP_RELAY_PER_CLIENT:-}
       HTTP_RELAY_TOTAL: ${HTTP_RELAY_TOTAL:-}
       HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
-      HTTP_RELAY_CLIENT_HEADER: ${HTTP_RELAY_CLIENT_HEADER:-}
-      HTTP_RELAY_TRUSTED_PROXIES: ${HTTP_RELAY_TRUSTED_PROXIES:-}
       # ORE-05 search backend for Brainstorm's server, public; off by default.
       ORE_ENABLED: ${ORE_ENABLED:-}
       ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}

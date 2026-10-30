@@ -102,6 +102,7 @@ import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
+import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
@@ -129,6 +130,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 fun main() {
     cacheDnsBriefly()
+    loadTimeZoneRules()
     BootClock.main("relay")
     exitOnBootFailure()
     val env = System.getenv()
@@ -199,6 +201,7 @@ private class Boot(
     val requireReadLens: Boolean,
     val openRanking: OpenRankingConfig?,
     val httpRelay: HttpRelay?,
+    val nativeWebSocket: Boolean,
     val searchExpansion: SearchExpansionLimits,
     val nip11: Nip11Info,
     val adminPubkeys: Set<String>,
@@ -230,6 +233,9 @@ private class Pulse(
     val icon: String?,
 )
 
+/** The per-address cap's settings, gone with it (docs/upgrading.md); set, the boot names them as doing nothing. */
+private val REMOVED_HTTP_RELAY_SETTINGS = listOf("HTTP_RELAY_PER_CLIENT", "HTTP_RELAY_CLIENT_HEADER", "HTTP_RELAY_TRUSTED_PROXIES")
+
 /** Reads and checks every setting, saying what is set but inert; a bad value stops the boot here. */
 private fun readSettings(env: Map<String, String>): Boot {
     refuseSyncConfig(env)
@@ -258,6 +264,9 @@ private fun readSettings(env: Map<String, String>): Boot {
     val httpRelay = httpRelayFromEnv(env) { listOf(endpoint.http) + addresses.alternates().map { it.url.httpFromWs() } }
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
+    }
+    REMOVED_HTTP_RELAY_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
+        System.err.println("relay: ${it.joinToString()} were removed and do nothing — HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
     }
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
@@ -294,6 +303,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
+        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: false,
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,
@@ -569,6 +579,7 @@ private fun serve(
         statsJson = statsSnapshot,
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
+        nativeWebSocket = boot.nativeWebSocket,
         // Once the port is bound: printed before the server started, this line claimed a port that
         // refused connections for another second or more.
         onReady = {

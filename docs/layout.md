@@ -243,8 +243,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         gate, the headers, the sync-flushed gzip sink, and
                         relayPosts, which shares POST / with the NIP-86 rpc by
                         Content-Type.
-                        ClientAddresses and Cidr key the gate behind a proxy
-    HttpRelayGate.kt    HTTP_RELAY_PER_CLIENT / HTTP_RELAY_TOTAL — the search
+    HttpRelayGate.kt    HTTP_RELAY_TOTAL — the search
                         gate is per connection, and here every request is one
     Nip86Route.kt       the management API
     OpenRankingRoutes.kt  ORE-05 POST /search/pubkeys, the public backend
