@@ -90,6 +90,7 @@ node web/src/test/browser/csp.probe.mjs          # every public page under the s
 ./gradlew :monitor:test --tests '*MonitorProfileProbe*' -DprofileProbe=true -DprofileRecords=v30166.jsonl -DprofileOut=out -DprofileHosts=1500 -PtestHeap=6g --rerun -i   # where a sweep's dial permits go, per pass and stage, over 30166 records pulled off a relay; -DprofileCold=true, -DprofileDirect=true where the JVM's proxy cannot carry a websocket
 ./gradlew :sync:test --tests '*RelayPagesLiveProbe*' -DpagesProbe=true -DpagesUrl=wss://nos.lol --rerun -i  # does the abort sampler fire; wants a busy relay
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
+./gradlew :sync:test --tests '*LiveFleetProbe*' -DfleetProbe=true -DfleetUrls=prime.txt -PtestHeap=3g --rerun -i   # one live REQ held on every url at once, then sockets broken from below; -DfleetSockets=4096 -DfleetChaos='reset:1.0:3,blackhole:0.25:5' -DfleetPingSeconds=120 -DfleetDirect=true
 ./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)
 ./gradlew :sync:test --tests '*UnpageableLegLiveProbe*' -DunpageableProbe=true --rerun -i                   # the mirror's catch-up leg through quartz's own pager; -DunpageableLegs='wss://a=<coveredTo>,wss://b=<coveredTo>'
 ./gradlew :monitor:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i                    # pins that the client has a NIP-42 responder; -DauthGatedUrl='wss://relay.example'
@@ -157,7 +158,7 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 1,024-socket dispatcher, Tor, NIP-42), RelaySockets,
+  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
@@ -376,6 +377,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A fix to the filter has to reach every path that sends it; `FilterWidths` is built once in `SyncEngine`, and `ClientWindowSync` takes it with no default.
 - A completeness number needs the denominator the work uses: `RelayStatusReport` joins on the unit's owed asks (`RosterBuilder.UnitAsks.identity`), not on the bands present.
 - `SCAN_PAGE` (10,000) must stay under the deployed `maxHits` / `VESPA_UNBOUNDED_HITS`, or every discovery pass fails with "could not derive".
+- The sync's websocket readers are virtual threads, which `jcmd <pid> Thread.print` does not list; `jcmd <pid> Thread.dump_to_file -format=json <file>` does.
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.

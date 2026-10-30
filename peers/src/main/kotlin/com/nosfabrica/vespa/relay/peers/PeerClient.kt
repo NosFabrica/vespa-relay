@@ -26,13 +26,16 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
+import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.SurgeDns
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CoroutineScope
 import okhttp3.Dispatcher
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
+import java.util.concurrent.Executors
 
 /**
  * How this process talks to other relays: one websocket client, one socket budget, one Tor
@@ -55,20 +58,7 @@ class PeerClient(
     /** How every upstream frame is read. */
     decoder: MessageDecoder = MessageDecoder.Default,
 ) : AutoCloseable {
-    // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.
-    private val okhttp =
-        OkHttpClient
-            .Builder()
-            // An open websocket holds a dispatcher slot for its whole life, so the budget must
-            // exceed static upstreams plus every stream's `concurrency`.
-            .dispatcher(
-                Dispatcher().apply {
-                    maxRequests = MAX_CONCURRENT_SOCKETS
-                    maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
-                },
-            ).pingInterval(Duration.ofSeconds(120))
-            .connectTimeout(Duration.ofSeconds(connectionTimeoutSec))
-            .build()
+    private val okhttp = relayHttpBuilder(connectionTimeoutSec, relayDns()).build()
 
     /**
      * Calls running against [MAX_CONCURRENT_SOCKETS] and calls queued behind it; `queued` above
@@ -141,7 +131,41 @@ class PeerClient(
     }
 
     companion object {
-        const val MAX_CONCURRENT_SOCKETS = 1024
+        /** Above every prime relay held live at once; each open socket is also one (virtual) reader thread. */
+        const val MAX_CONCURRENT_SOCKETS = 4096
         const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
+
+        /** A dead path is noticed between one and two intervals after it goes quiet. */
+        const val PING_SECONDS = 30L
+
+        /** Names resolved at once; a resolver handed the whole fleet in one burst drops a share of it. */
+        const val MAX_CONCURRENT_LOOKUPS = 64
+
+        /**
+         * The clearnet client every upstream dial goes through. An open websocket holds a
+         * dispatcher slot and a thread for its whole life, so the budget must exceed every socket
+         * held live, and the threads are virtual: the dispatcher starts one inside each dial's
+         * caller, and a platform thread's start serialized a fleet's dials behind it.
+         */
+        fun relayHttpBuilder(
+            connectionTimeoutSec: Long,
+            dns: Dns,
+        ): OkHttpClient.Builder =
+            OkHttpClient
+                .Builder()
+                .dispatcher(
+                    Dispatcher(Executors.newVirtualThreadPerTaskExecutor()).apply {
+                        maxRequests = MAX_CONCURRENT_SOCKETS
+                        maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
+                    },
+                )
+                // The ping surfaces half-open connections as a failed pong, which routes into quartz's reconnect.
+                .pingInterval(Duration.ofSeconds(PING_SECONDS))
+                .connectTimeout(Duration.ofSeconds(connectionTimeoutSec))
+                // A SOCKS proxy is handed the name unresolved, so the Tor client inheriting this still resolves inside Tor.
+                .dns(dns)
+
+        /** Cached past the JVM's 30s so a reconnect storm resolves nothing, and bounded for the cold start. */
+        fun relayDns(maxConcurrentLookups: Int = MAX_CONCURRENT_LOOKUPS): Dns = SurgeDns(BoundedDns(Dns.SYSTEM, maxConcurrentLookups))
     }
 }

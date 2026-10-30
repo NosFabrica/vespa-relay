@@ -46,7 +46,9 @@ internal interface RelayReads {
 
     /**
      * Holds a live subscription on [url] under [subId], delivering only that relay's events:
-     * one listener can be fed by several relays.
+     * one listener can be fed by several relays. Called again under the same [subId], it replaces
+     * the filters; a `since` that only moved forward is stored without a new REQ and asked from
+     * on the next connection.
      */
     suspend fun tail(
         subId: String,

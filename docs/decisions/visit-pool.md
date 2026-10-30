@@ -264,3 +264,17 @@ abort itself is cleared. The verdict is persisted, so a restart does not spend t
 learn it again. It lapses after a day, one REQ against a policy that rarely moves, and then the
 next standing refusal restores it, since the strikes are kept until a clean read.
 `UnreadableAskTest` pins it, and fails without the skip.
+
+**A tail's stored `since` follows its deliveries.** quartz replays a
+subscription's stored filters on every reconnect, so a tail opened at
+`now - TAIL_OVERLAP_SECONDS` and left alone re-asked everything since its
+open each time its socket came back, hours of events for a tail held hours,
+on the relays that drop us every minute most of all. Once a minute
+(`TAIL_ADVANCE_MS`) `TailBook.advance` re-stores each tail's filters at its
+last delivered event less the overlap; quartz sends nothing for a `since` that
+only moved forward (`FiltersChanged`), so the change costs no REQ and the next
+reconnect asks from there. Only a delivered event moves it: on the clock alone
+a tail whose socket died quietly would hide its own gap from the reconnect
+that should fill it. This is Amethyst's EOSE-manager pattern with an overlap a
+mirror needs and an app does not. Quartz does not do it itself because only
+the owner knows whether a `since` is a live edge or a deliberate history.

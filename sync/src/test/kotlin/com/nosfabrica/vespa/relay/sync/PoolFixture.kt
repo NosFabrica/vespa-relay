@@ -63,6 +63,9 @@ internal class PoolFixture(
     val store = NostrSemanticsStore(index)
     val processors = Processors()
     val tails = ConcurrentHashMap<String, List<Filter>>()
+
+    /** Each tail's delivery path, so a test can play the relay sending it an event. */
+    val deliverers = ConcurrentHashMap<String, suspend (Event) -> Unit>()
     val asked = java.util.concurrent.CopyOnWriteArrayList<Filter>()
 
     override suspend fun page(
@@ -82,10 +85,12 @@ internal class PoolFixture(
         onEvent: suspend (Event) -> Unit,
     ) {
         tails[subId] = filters
+        deliverers[subId] = onEvent
     }
 
     override fun untail(subId: String) {
         tails.remove(subId)
+        deliverers.remove(subId)
     }
 
     /** The pool's visit counters by name. */

@@ -204,8 +204,12 @@ internal class VisitPool(
         scope.launch {
             repeatEvery(PHASE_FLUSH_MS, "phase flush") { if (phasesDirty.getAndSet(false)) status.flushPhases() }
         }
+        scope.launch { repeatEvery(TAIL_ADVANCE_MS, "tail advance") { advanceTails() } }
         repeat(workers) { launchWorker() }
     }
+
+    /** One pass of the loop that moves each tail's stored `since` up to its deliveries. */
+    internal suspend fun advanceTails() = tails.advance()
 
     /** Workers currently drawing units, and how many were replaced after dying. */
     internal fun workerHealth(): WorkerHealth = WorkerHealth(queue.workersAlive, workers, workersRespawned.get())
@@ -1192,5 +1196,8 @@ internal class VisitPool(
 
         /** Events land at a relay after their `created_at`, so a tail opened at `now` would miss some. */
         const val TAIL_OVERLAP_SECONDS = 60L
+
+        /** How often a tail's stored `since` follows its deliveries; at most this much more is re-asked on a reconnect. */
+        const val TAIL_ADVANCE_MS = 60_000L
     }
 }
