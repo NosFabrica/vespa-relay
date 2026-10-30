@@ -55,7 +55,31 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
+2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (vitorpamplona/quartz main @ 1813390,
+22 commits over v2.8.0). It makes public what this relay had copied. What this relay reaches:
+
+  THE LOCAL COPIES, RETIRED OR WRAPPED. Deleted for quartz's: DefaultPort.withoutDefaultPort (the
+    normalizer drops wss:443 / ws:80), the monitor's Unreachability (quartz's reads the same words and
+    walks the cause chain for our own side), Nip86Route's precheck (Nip86HttpHandler.preauthorize),
+    AdminGate's second verifier (Nip98AuthVerifier.verify(..., acceptsAuthor)), MultiAddressAuthPolicy's
+    restated relay check (OptionalAuthPolicy over a set), the 64-hex checks (Hex.isHexKey). Moved onto
+    quartz and kept as thin wrappers: RelayVerdictRecord.edit (RelayDiscoveryEvent.edit, nextCreatedAt),
+    RelayFacts / RelayDocument (the NIP-66 tag codecs, RequirementTag.fromNip11), StoreWindowIndex
+    (NegentropyLocalIndex.of(store), still booked on StoreCalls), BanListFile (BanStore.toJson /
+    seedFromJson; the file now also keeps the event allow list, roles and claims), PubKeys
+    (decodePublicKeyOnlyAsHexOrNull). Kept, pointers updated: RelayPages and AliasProbe (PageReport
+    counts only the page's subscription and does not split off-kind from off-window), FilterWidths.
+  STRICTER WHERE QUARTZ IS LOOSER. decodePublicKeyOnlyAsHexOrNull takes bare hex, prose and an npub glued
+    to an nsec, so PubKeys requires one whole npub/nprofile token (the old code also took trailing junk);
+    seedFromJson takes a quoted kind and a null reason, so BanListFile refuses both first. FullAuthPolicy
+    accepting any naming relay tag matches what MultiAddressAuthPolicy already did. Unreachability lacks
+    musl's "Name does not resolve", as the copy did; the image is glibc (noble).
+  UPSTREAMPUSH IS NegentropyStoreSync. Up only, no deletion settle, over the pass's gated snapshot
+    (syncGroup with localEntries, not shareSnapshots), uploads beside the session, PUSH_WINDOW = 4
+    awaiting their OK, one interval's uploadDeadlineMs per url (counted from the reconcile's start).
+    `pushed` now counts events an upstream accepted, not events sent; the log names what was left.
+
+Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
 relay server's live fan-out only (FanoutExecutor, LiveFrameSink, LiveSubscriptionBackend, RelaySession and
 LiveEventStore reworked). What this relay reaches:
 
