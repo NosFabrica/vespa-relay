@@ -49,3 +49,11 @@ were installed world-writable, into a linked worktree's private gitdir (which
 git never reads hooks from), and on every compile in CI and image builds.
 pre-push runs `check`, so `archTest` and `jsTest` gate a push the way CI does.
 
+**The image runs JDK 27; the build stays on 21.** Bytecode for 21 runs unchanged on a newer JVM, so only the
+Dockerfile's runtime stage moved. 27 turns compact object headers on by default, and with them a live feed's
+heap fell from 7.65 to 6.97 KB per idle connection. CPU per frame and delivery latency on 21, 25 and 27,
+with headers on and off, were within each other's noise (docs/live-feeds.md). 27 had published only moving
+tags, so the image is pinned by digest. `--enable-native-access=ALL-UNNAMED` is in both start scripts and in
+the CDS dump: Netty loads its own native libraries, which JDK 24+ warns about at every boot without it, and
+the archive is dumped under the module options it runs with.
+

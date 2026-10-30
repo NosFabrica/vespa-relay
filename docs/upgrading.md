@@ -4,6 +4,13 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The image runs JDK 27 (October 2026)
+
+The runtime stage of the image moved from JDK 21 to JDK 27 (Temurin, Ubuntu 26.04); the build is unchanged.
+Nothing needs doing. What changes: compact object headers are on by default, so live heap per open connection
+is about 9% lower; a `JAVA_TOOL_OPTIONS` that names a flag JDK 27 removed would now stop the JVM, so check any
+you set beyond compose's defaults; and the boot no longer warns about Netty loading its native libraries.
+
 ## HTTP commands have no per-address cap (October 2026)
 
 `HTTP_RELAY_PER_CLIENT`, `HTTP_RELAY_CLIENT_HEADER` and

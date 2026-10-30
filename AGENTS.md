@@ -3,7 +3,7 @@
 A Nostr relay with trust-ranked NIP-50 search: quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays into the same
-store. Six Gradle modules, JVM only (toolchain 21), two processes:
+store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), two processes:
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
 - `:sync` — the mirror, and the process that hosts the monitor beside it, so
