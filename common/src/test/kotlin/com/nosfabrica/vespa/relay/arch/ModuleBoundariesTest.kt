@@ -255,7 +255,6 @@ class ModuleBoundariesTest {
                     setOf("$ENGINE.client.EngineResources", "$ENGINE.metrics.CostLedger", "$ENGINE.metrics.IngestStats"),
                 "common:pulse/StoreMetricsLog.kt" to setOf("$ENGINE.metrics.CostLedger", "$ENGINE.metrics.IngestStats"),
                 "common:pulse/TrustDocument.kt" to setOf("$ENGINE.metrics.DegradedReads"),
-                "common:store/SchemaDeploy.kt" to setOf("$ENGINE.app.SchemaDeployer", "$ENGINE.app.VespaApp"),
                 // EngineReads.group's own parameter type: the store's facade names it.
                 "relay:maintenance/StatsVespa.kt" to setOf("$ENGINE.query.EventQuery"),
                 "peers:ingest/IngestPipeline.kt" to

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.nosfabrica.vespa.eventstore.SchemaDeploy
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
@@ -138,7 +139,7 @@ fun main() {
     val store = openStore(boot)
     BootClock.mark("relay: store open")
     // Before the first write, the maintenance's included: see deployBundledSchema.
-    converging?.await()
+    if (converging?.await() == true) BootClock.mark("relay: every Vespa service runs the package")
     // The pulse page states its totals over this window, which opens with the store, not the process.
     val storeOpenedAt = System.currentTimeMillis()
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
@@ -339,14 +340,15 @@ private fun deploySchema(boot: Boot): BootTask<Boolean>? {
         System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
         return null
     }
-    return deployBundledSchema(boot.vespaUrl, boot.configUrl)
+    return deployBundledSchema(boot.vespaUrl, boot.configUrl, boot.storeTuning)
 }
 
 private fun openStore(boot: Boot): VespaEventStore =
     VespaEventStore.open(
         boot.vespaUrl,
         relay = boot.endpoint.ws,
-        autoDeploy = false,
+        // Deployed, or deliberately not, by deploySchema above.
+        schema = SchemaDeploy.NEVER,
         feedEndpoints = boot.vespa.feed,
         queryEndpoints = boot.vespa.query,
         configUrl = boot.configUrl,
