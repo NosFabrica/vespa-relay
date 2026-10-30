@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
 import java.io.EOFException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -50,6 +51,14 @@ class UnreachabilityTest {
         // A failed lookup the JVM answers from its cache carries the name and no reason.
         assertFalse(proves(UnknownHostException("relay.example")))
         assertTrue(Unreachability.ourSide(UnknownHostException("relay.example: Temporary failure in name resolution")))
+    }
+
+    @Test
+    fun `our own route failing under a dial wrapper is still ours`() {
+        // OkHttp rethrows a dial failure as its own exception, the socket's as the cause.
+        val wrapped = ConnectException("Failed to connect to relay.example/203.0.113.7:443").apply { initCause(ConnectException("Network is unreachable")) }
+        assertTrue(Unreachability.ourSide(wrapped))
+        assertFalse(proves(wrapped))
     }
 
     @Test

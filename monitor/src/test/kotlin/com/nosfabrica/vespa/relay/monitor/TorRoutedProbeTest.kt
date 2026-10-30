@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request

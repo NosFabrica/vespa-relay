@@ -629,3 +629,11 @@ port where none is written, so `ws://` and `wss://` on one host stay apart) now
 takes that `dead` with its evidence, after the TLS and dark-network guards, so
 it inherits only proof that survived them. Production held 597 urls on 39
 servers this way.
+
+**`Unreachability` is quartz's.** Quartz 2.9.0's copy reads the same words
+(glibc's, macOS's, Windows'; the image is glibc, so musl's "Name does not
+resolve" is missing from both) and walks the cause chain for our own side,
+so an OkHttp dial wrapper around `Network is unreachable` stays quiet.
+`RelayFacts` writes through quartz's NIP-66 tag codecs and `RelayDocument`
+maps NIP-11 limits through `RequirementTag.fromNip11`, each key still read
+on its own; `RelayVerdictRecord.edit` is `RelayDiscoveryEvent.edit`.

@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

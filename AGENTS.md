@@ -169,7 +169,7 @@ monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
-  ReachabilityProbe, Silence, Unreachability, RelayDocument   what a quiet socket said, what may be published, NIP-11
+  ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
   sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool

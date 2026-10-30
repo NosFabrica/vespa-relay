@@ -20,11 +20,17 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
+import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation.RelayInformationLimitation
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.tags.NetworkTypeTag
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.tags.RequirementTag
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.tags.RttTag
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.tags.RttType
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.tags.SupportedNipTag
+
 /**
  * The NIP-66 payload proper: what the relay is, as opposed to the verdict, which is what this
  * deployment decided about it. Each field is either measured on the fitness dial or read off
  * the relay's NIP-11 document, which is a claim the relay makes about itself.
- * Remove the hand-written tags when quartz's NIP-66 record edit helper is public.
  */
 data class RelayFacts(
     /** `clearnet` / `tor`, from the transport that would carry this url, not from the document. */
@@ -45,55 +51,52 @@ data class RelayFacts(
     val supportedNips: List<Int> = emptyList(),
 ) {
     /**
-     * The tags, in NIP-66's spelling. An absent fact writes nothing, and since the writer owns
-     * all of these, absence also clears whatever the last pass wrote.
+     * The tags, through quartz's NIP-66 codecs. An absent fact writes nothing, and since the writer
+     * owns all of these, absence also clears whatever the last pass wrote.
      */
     fun tags(): List<Array<String>> =
         buildList {
             network?.let { add(arrayOf(NETWORK_TAG, it)) }
-            rttOpenMs?.let { add(arrayOf(RTT_OPEN_TAG, it.toString())) }
-            rttReadMs?.let { add(arrayOf(RTT_READ_TAG, it.toString())) }
+            rttOpenMs?.let { add(RttTag.assemble(RttType.OPEN, it)) }
+            rttReadMs?.let { add(RttTag.assemble(RttType.READ, it)) }
             for (requirement in requirements) add(arrayOf(REQUIREMENT_TAG, requirement))
             software?.let {
-                // The version rides as a third element, which a reader of `["s", <software>]` ignores.
+                // NIP-66 has no software tag; the version rides third, which a reader of `["s", <software>]` ignores.
                 if (version.isNullOrBlank()) add(arrayOf(SOFTWARE_TAG, it)) else add(arrayOf(SOFTWARE_TAG, it, version))
             }
-            for (nip in supportedNips) add(arrayOf(SUPPORTED_NIP_TAG, nip.toString()))
+            for (nip in supportedNips) add(SupportedNipTag.assemble(nip))
         }
 
     companion object {
-        const val NETWORK_TAG = "n"
+        const val NETWORK_TAG = NetworkTypeTag.TAG_NAME
 
-        const val RTT_OPEN_TAG = "rtt-open"
+        val RTT_OPEN_TAG = RttType.OPEN.tagName
 
-        const val RTT_READ_TAG = "rtt-read"
+        val RTT_READ_TAG = RttType.READ.tagName
 
         /** Never written; named so the writer can clear one left by an older pass. */
-        const val RTT_WRITE_TAG = "rtt-write"
+        val RTT_WRITE_TAG = RttType.WRITE.tagName
 
-        const val REQUIREMENT_TAG = "R"
+        const val REQUIREMENT_TAG = RequirementTag.TAG_NAME
 
         const val SOFTWARE_TAG = "s"
 
-        const val SUPPORTED_NIP_TAG = "N"
+        const val SUPPORTED_NIP_TAG = SupportedNipTag.TAG_NAME
 
         /** Every tag the fitness writer replaces on each pass. */
         val OWNED =
             setOf(NETWORK_TAG, RTT_OPEN_TAG, RTT_READ_TAG, RTT_WRITE_TAG, REQUIREMENT_TAG, SOFTWARE_TAG, SUPPORTED_NIP_TAG)
 
         /** NIP-66's requirement vocabulary; the negative form is how most records say "open to read". */
-        const val REQUIREMENT_AUTH = "auth"
-
-        const val REQUIREMENT_PAYMENT = "payment"
-
-        const val REQUIREMENT_POW = "pow"
-
-        const val REQUIREMENT_WRITES = "writes"
+        const val REQUIREMENT_AUTH = RequirementTag.AUTH
 
         fun requirement(
             name: String,
             required: Boolean,
-        ): String = if (required) name else "!$name"
+        ): String = RequirementTag.assemble(name, negated = !required)[1]
+
+        /** NIP-11's `limitation` block as requirement strings, in quartz's mapping ([RequirementTag.fromNip11]). */
+        fun requirementsOf(limitation: RelayInformationLimitation?): List<String> = RequirementTag.fromNip11(limitation).map { RequirementTag.assemble(it)[1] }
 
         /** The key a requirement is about, with any `!` stripped. */
         fun subjectOf(requirement: String): String = requirement.removePrefix("!")
