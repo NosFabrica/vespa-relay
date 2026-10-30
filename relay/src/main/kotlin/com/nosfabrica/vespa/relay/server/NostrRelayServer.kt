@@ -20,9 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
-import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -151,7 +150,7 @@ class NostrRelayServer(
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, liveGatesOf(store), coldChecks)
+        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
@@ -563,11 +562,3 @@ internal class ColdAuthorChecks(
         private const val SAY_EVERY_MS = 60_000L
     }
 }
-
-/** The live gate of the store behind [store], when it is this repo's store; null for any other. */
-private fun liveGatesOf(store: IEventStore): (suspend (List<Filter>) -> LiveGate?)? =
-    when (store) {
-        is VespaEventStore -> store.store::liveGate
-        is NostrSemanticsStore -> store::liveGate
-        else -> null
-    }

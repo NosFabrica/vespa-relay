@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.writeDurably
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -38,7 +38,7 @@ import java.io.File
  */
 fun launchFtsReindex(
     scope: CoroutineScope,
-    store: VespaEventStore,
+    store: LensedEventStore,
     cursorFile: String,
     kinds: List<Int>? = null,
 ) {
@@ -75,12 +75,7 @@ fun launchFtsReindex(
                 while (progress == null) {
                     progress =
                         runCatching {
-                            if (kinds == null) {
-                                store.reindexFullTextSearch(cursor)
-                            } else {
-                                // The kinds overload is the concrete store's, not IEventStore's.
-                                store.store.reindexFullTextSearch(kinds, cursor)
-                            }
+                            if (kinds == null) store.reindexFullTextSearch(cursor) else store.reindexFullTextSearch(kinds, cursor)
                         }.onFailure { e ->
                             // A shutdown mid-page is not a failed page.
                             if (e is CancellationException) throw e

@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
-import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
@@ -113,7 +113,7 @@ object RelayDiscovery {
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
             // One indexed walk per source answering every select it carries, never the store's
             // tags projection, whose cost is the corpus rather than the answer.
-            val aggregate = if (aggregable(dynamic, source)) (store as? VespaEventStore)?.store else null
+            val aggregate = if (aggregable(dynamic, source)) store as? LensedEventStore else null
             val stillPaged = if (aggregate != null) emptyList() else source.selects
             if (aggregate != null) {
                 // The urls come back raw, so they take the same `normalize` the paged path applies.
