@@ -144,6 +144,57 @@ The release matches the prototype: user CPU 22–30% lower, latency a little
 better, kernel time unchanged. The remaining gap to strfry, about 1.35× per
 frame, is all user space, and our median delivery is 5× faster.
 
+## On quartz 2.8.0
+
+Quartz 2.8.0 fans a live event out on the thread that delivers it. The native
+websocket declares each socket's event loop (`liveExecutor`): the ingest thread
+hands an event once to every loop that holds a match, and the loop matches and
+writes its own sockets, flushing each once per event. The publisher's OK no
+longer waits for the fan-out. Ktor's path declares nothing and stays inline.
+
+At 12,000 feeds and 5 events/s, JDK 27, each build twice and alternated:
+
+| build | user CPU | kernel CPU | delivery p50 | p99 |
+|---|---:|---:|---:|---:|
+| quartz 2.7.3 | 0.31–0.33 cores | 0.61–0.65 | 78–89 ms | 154–273 ms |
+| quartz 2.8.0, fan-out per event loop | 0.31–0.33 | 0.59–0.65 | 80–88 ms | 143–178 ms |
+
+The same CPU: the work moved to the loops, it did not shrink. What moves is
+the worst case, every note to every feed at 8 feeds a socket (`ramp.sh`,
+alternated, the same day):
+
+| feeds | 2.7.3 p99 | its OK p50 | 2.8.0 p99 | its OK p50 | relay CPU, 2.7.3 / 2.8.0 |
+|---:|---:|---:|---:|---:|---:|
+| 32,000 | 267 ms | 87 ms | 160 ms | 18 ms | 0.18 / 0.18 cores |
+| 64,000 | 248 ms | 180 ms | 223 ms | 17 ms | 0.31 / 0.30 |
+| 96,000 | 410 ms | 247 ms | 328 ms | 18 ms | 0.46 / 0.43 |
+| 128,000 | 787 ms | 378 ms | 449 ms | 17 ms | 0.69 / 0.58 |
+| 144,000 | 622 ms | 408 ms | 697 ms | 17 ms | 0.71 / 0.67 |
+
+- **The publisher's OK no longer grows with the audience**: 17–18 ms at every
+  step, where 2.7.3's waited for every delivery and reached 408 ms.
+- **Delivery holds the target 32,000 feeds further**, to 128,000 (p99 449 ms
+  against 787). At 144,000 both miss with the relay under 0.7 cores: four Node
+  processes parsing 144,000 frames a second on the same four cores are the
+  bound there, so this box cannot say where 2.8.0's own limit is.
+- **At 16 feeds a socket** 2.8.0 delivered 144,000 feeds at p99 402 ms
+  (0.51 cores), 192,000 at 549 ms and 256,000 at 724 ms (0.92 cores).
+- **Both builds left a few replays unanswered.** From 96,000 feeds on, 1–6
+  sockets of up to 18,000 still waited for an EOSE after 60 s, and 2–7 REQs
+  were closed with `error: Expected start of the object '{', but had 'EOF'`:
+  the store's `/search/` path takes a 2xx with an empty body and fails to
+  decode it (vespa-eventstore `VespaEventIndex.queryBody`), seen only with the
+  replay queue 20–60 s deep. `live-feeds.mjs` used to count a socket still
+  waiting as neither open nor failed; it counts as a failure now, so in these
+  runs `ramp.sh`'s strict capacity is 64,000 feeds for 2.7.3 (2 sockets
+  unanswered at 96,000; the earlier run under Capacity had none) and 96,000
+  for 2.8.0.
+- **The first ramp past 20,000 sockets found a bug older than both builds**:
+  out of file descriptors, the relay stopped accepting connections for good
+  ([docs/traps.md](traps.md); `live-bench/fd-exhaustion.sh` checks it). The
+  relay now loads the JDK's zone rules at boot, and a production host needs a
+  `nofile` limit above the sockets it means to hold.
+
 ## io_uring, tried and not taken
 
 Netty 4.2's io_uring transport, handed to Ktor through the server bootstrap
@@ -191,7 +242,8 @@ p99 under 500 ms. JDK 27, the 2.7.3 build, 30 s of publishing per step, the
 first step a warm-up. The sandbox caps a process near 19,000 sockets, so feeds
 are stacked several to a socket.
 
-Every note to every feed (`kinds:[1]`), 1 event/s, 8 feeds a socket:
+Every note to every feed (`kinds:[1]`), 1 event/s, 8 feeds a socket (quartz
+2.7.3; 2.8.0 is above):
 
 | feeds | p50 | p99 | relay CPU |
 |---:|---:|---:|---:|
@@ -213,10 +265,10 @@ of feeds; 10 events/s, 25 feeds a socket:
 
 - **Holding feeds is not the limit.** 400,000 follow-list feeds passed with room
   to spare; that step was the most this box can open (16,000 sockets × 25).
-- **The worst case is bounded by fan-out on one thread.** Latency grows with the
+- **The worst case was bounded by fan-out on one thread.** Latency grows with the
   feeds one event matches while CPU stays low: about 3 µs per matching feed on
-  the ingest thread, and the publisher's OK waits for it. Fan-out per event
-  loop, in quartz, is what moves this.
+  the ingest thread, and the publisher's OK waits for it. Quartz 2.8.0 fans out
+  per event loop and moved this (above).
 - **Opening feeds is the bottleneck to design for.** Every new subscription's
   replay is a Vespa query; at a few thousand REQs a second the EOSE took 15-60 s.
   A reconnect storm is that, all at once.

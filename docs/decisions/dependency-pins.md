@@ -57,10 +57,13 @@ relay's measurements (docs/live-feeds.md). What this relay reaches:
     straight to a socket with nothing queued ahead of it, and each socket a task wrote to is
     flushed once when the task ends. The Ktor transport declares nothing and keeps the inline path.
     Quartz's own benchmark, 12,000 feeds x 200 events on 4 loops: handing frames over cost 6,601 ns
-    a delivery on the ingest thread; with the loops declared, 80 ns.
+    a delivery on the ingest thread; with the loops declared, 80 ns. Measured here (docs/live-feeds.md):
+    the same CPU at 12,000 feeds x 5 events/s, the work moved rather than shrunk; with every note to
+    every feed, delivery p99 at 128,000 feeds 449 ms against 2.7.3's 787 ms.
   THE PUBLISHER'S OK BEFORE THE FAN-OUT (358221c). The OK still waits for the write to be durable,
     no longer for delivery to every live subscriber (quartz's paced benchmark: OK p50 80 ms ->
-    0.84 ms inline, 0.23 ms with executors).
+    0.84 ms inline, 0.23 ms with executors). Here the OK p50 stayed 17-18 ms from 32,000 to 144,000
+    feeds matching every note, where 2.7.3's grew from 87 ms to 408 ms.
   REPLAY DEDUPE KEPT HONEST ACROSS EOSE (159f7e5, 839b56b). An event committed during a replay
     but not yet fanned out is no longer delivered twice; ids still in flight at EOSE are kept and
     released when their submission leaves.
@@ -68,8 +71,8 @@ relay's measurements (docs/live-feeds.md). What this relay reaches:
     coroutine (about half the retained heap per idle feed in quartz's benchmark). ObserverBackend
     wraps LiveEventStore and does not implement it, so every REQ stays on the queryRaw path; the
     executor still reaches the store, through the RequestContext ObserverBackend passes on.
-  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves, 2.7.3 -> 2.8.0 (the force; the store
-    still names 2.7.3).
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. The store at fec452107fe8 still names
+    2.7.3, and the graph shows `com.vitorpamplona.quartz:quartz:2.7.3 -> 2.8.0`, the force winning.
 
 Prev 2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
 What this relay reaches:
