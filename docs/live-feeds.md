@@ -160,3 +160,66 @@ the io_uring servers that gained elsewhere batch whole passes of sends into
 one submission themselves, which the stock transport does not do for us.
 Native epoll measured no different from NIO either (above).
 
+
+## JVM settings and runtimes
+
+The quartz 2.7.3 build, native websocket, 12,000 feeds at 5 events/s, each
+setting run twice and alternated with the others (`live-bench/compare.sh`):
+
+| setting | user CPU | kernel CPU | total | delivery p99 |
+|---|---:|---:|---:|---:|
+| G1, `-Xms2g -Xmx4g` | 0.31–0.32 cores | 0.62–0.71 | 0.94–1.02 | 186–234 ms |
+| G1, fixed and pre-touched 4 GB | 0.34 | 0.64–0.67 | 0.98–1.01 | 170–190 ms |
+| ParallelGC | 0.31–0.32 | 0.66–0.67 | 0.97–0.99 | 171–195 ms |
+| generational ZGC | 0.38–0.39 | 0.64–0.68 | 1.02–1.07 | 179–186 ms |
+| G1, `-UsePerfData`, `UseSystemMemoryBarrier` | 0.33–0.36 | 0.66–0.68 | 0.99–1.04 | 173–189 ms |
+
+ZGC costs a fifth more user CPU for nothing at this size; the rest are one
+another's noise, though a fixed, pre-touched heap trims the tail a little.
+
+The same build on JDK 21, 25 and 27, each with compact object headers off and
+on, matched within noise for CPU (0.30–0.35 cores user) and delivery. Memory
+did not: live heap per idle feed was 7.65 KB on 21 and 25, and 6.95 KB with
+compact headers, which JDK 27 turns on by default (6.97 KB with no flag). The
+image runs 27 for that (docs/decisions/build.md).
+
+## Capacity
+
+`live-bench/ramp.sh` adds feeds on one relay until a step misses the target:
+every socket open, none dropped, at least 99.9% of owed frames delivered, and
+p99 under 500 ms. JDK 27, the 2.7.3 build, 30 s of publishing per step, the
+first step a warm-up. The sandbox caps a process near 19,000 sockets, so feeds
+are stacked several to a socket.
+
+Every note to every feed (`kinds:[1]`), 1 event/s, 8 feeds a socket:
+
+| feeds | p50 | p99 | relay CPU |
+|---:|---:|---:|---:|
+| 32,000 | 94 ms | 207 ms | 0.22 cores |
+| 64,000 | 188 ms | 359 ms | 0.42 |
+| 96,000 | 257 ms | 457 ms | 0.55 |
+| 128,000 | 306 ms | 598 ms (fails) | 0.68 |
+
+Follow lists: each feed follows 20 of 1,000 authors, so a note reaches about 2%
+of feeds; 10 events/s, 25 feeds a socket:
+
+| feeds | p50 | p99 | relay CPU |
+|---:|---:|---:|---:|
+| 50,000 | 19 ms | 32 ms | 0.25 cores |
+| 100,000 | 23 ms | 41 ms | 0.37 |
+| 200,000 | 39 ms | 77 ms | 0.69 |
+| 300,000 | 49 ms | 106 ms | 1.07 |
+| 400,000 | 62 ms | 186 ms | 1.17 |
+
+- **Holding feeds is not the limit.** 400,000 follow-list feeds passed with room
+  to spare; that step was the most this box can open (16,000 sockets × 25).
+- **The worst case is bounded by fan-out on one thread.** Latency grows with the
+  feeds one event matches while CPU stays low: about 3 µs per matching feed on
+  the ingest thread, and the publisher's OK waits for it. Fan-out per event
+  loop, in quartz, is what moves this.
+- **Opening feeds is the bottleneck to design for.** Every new subscription's
+  replay is a Vespa query; at a few thousand REQs a second the EOSE took 15-60 s.
+  A reconnect storm is that, all at once.
+- **Feeds sharing a socket are cheaper.** 96,000 frames/s cost 0.55 cores at 8
+  feeds a socket, against about 1 core for 60,000 at one: a socket's frames go
+  out in one write.
