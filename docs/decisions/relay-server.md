@@ -228,6 +228,12 @@ An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
 at once, refused with a `503` rather than queued, since a queue is what a
 stolen admin token would fill.
 
+**The pre-body check is quartz's since 2.9.0.** `Nip86HttpHandler.preauthorize`
+runs the same checks (`Nip98AuthVerifier.preverify`, then the allow list) and
+records nothing, so the hand-written decode went. Its refusal reasons are
+quartz's wording now; which tokens are refused is unchanged, and `handle`
+keeps admins' replay ids apart from everyone else's.
+
 **The admin slot covers the upload, not the handling.** It was held through
 quartz's dispatch, which awaits the purge behind a ban (`store.delete`), so a
 purge that took minutes turned every other admin call, reads included, into a

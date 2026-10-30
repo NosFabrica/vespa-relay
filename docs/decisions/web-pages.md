@@ -212,6 +212,12 @@ asks for the pulse port without naming who may read it, because "no admins" and 
 admin" are one implementation mistake apart and only one of them is survivable for this
 document. There is no unauthenticated mode and no switch that creates one.
 
+**One verifier, quartz's replay split.** A bounded replay set a stranger could
+roll over made a used admin token replayable, so the gate kept two verifiers and
+routed on the token's claimed author. Quartz 2.9.0's `verify(…, acceptsAuthor)`
+keeps the accepted authors' ids apart itself and routes on the verified author,
+so the gate holds one; `AdminGateTest` is the flood that would replay it.
+
 **One signature opens a session; the session carries the polls.** NIP-98 tokens are single-use
 (quartz's verifier remembers ids), which is what makes them a proof rather than a bearer
 credential, and it means a page polling every two seconds would need an extension popup every
