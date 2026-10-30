@@ -55,8 +55,8 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (vitorpamplona/quartz main @ 1813390,
-22 commits over v2.8.0). It makes public what this relay had copied. What this relay reaches:
+2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (9b070bd: main @ 1813390 plus the
+release's Package.swift, 22 commits over v2.8.0). It makes public what this relay had copied. What this relay reaches:
 
   THE LOCAL COPIES, RETIRED OR WRAPPED. Deleted for quartz's: DefaultPort.withoutDefaultPort (the
     normalizer drops wss:443 / ws:80), the monitor's Unreachability (quartz's reads the same words and
@@ -78,6 +78,9 @@ The relay application's version (image tag / --version display).
     (syncGroup with localEntries, not shareSnapshots), uploads beside the session, PUSH_WINDOW = 4
     awaiting their OK, one interval's uploadDeadlineMs per url (counted from the reconcile's start).
     `pushed` now counts events an upstream accepted, not events sent; the log names what was left.
+  RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move. The store at 596c78a862be
+    (vespaEventStore) still names 2.8.0, so the graph shows `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`,
+    the force winning; it goes once the store pin names 2.9.0.
 
 Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
 relay server's live fan-out only (FanoutExecutor, LiveFrameSink, LiveSubscriptionBackend, RelaySession and
