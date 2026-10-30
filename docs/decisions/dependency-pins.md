@@ -55,7 +55,22 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
+2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
+relay server's live fan-out only (FanoutExecutor, LiveFrameSink, LiveSubscriptionBackend, RelaySession and
+LiveEventStore reworked). What this relay reaches:
+
+  A REQ'S LIVE TAIL IS A REGISTRATION. RelaySession prefers LiveSubscriptionBackend.openSubscription over
+    a parked queryRaw, but only for a backend that implements it; ObserverBackend implemented plain
+    SessionBackend and would have stayed on the parked path, one coroutine per open REQ, without a test
+    noticing. It implements it now, gating the live listener and wrapping replay/replayRaw
+    (docs/decisions/relay-server.md); LiveGateDeliveryTest fails if the registration skips the gate.
+  Inert here: FanoutExecutor and LiveFrameSink (RelayWebSocket's sink is a plain thread-safe queue and
+    declares no liveExecutor; a cold-author check still posts to one if a sink ever does).
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. With the store at fec452107fe8 the graph
+    showed `com.vitorpamplona.quartz:quartz:2.7.3 -> 2.8.0`, the force winning; the store at
+    7e05038862db (vespaEventStore) names 2.8.0 itself, and no arrow is left.
+
+Prev 2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
 What this relay reaches:
 
   RELAY URLS ARE THE APP'S CALL (quartz c1e23a7). isLocalHost now covers 100.64.0.0/10 (CGNAT,

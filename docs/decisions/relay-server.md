@@ -145,6 +145,20 @@ caps its `samples` field at the gate it answers: uncapped it was a lifetime
 query counter, and polling it twice handed anyone the relay's
 queries-per-second.
 
+**A REQ's live tail is a registration, and the gate wraps both halves.**
+Quartz 2.8.0's `RelaySession` takes `LiveSubscriptionBackend.openSubscription`
+over a parked `queryRaw` when, and only when, the backend implements it, so an
+`ObserverBackend` still implementing plain `SessionBackend` would have kept one
+parked coroutine per open REQ. It implements it now and wraps both things it
+hands back: the subscription (the replay runs under the connection's lens
+context, the search lane and the pressure sample, exactly as `queryRaw` does)
+and the listener (live events wait until the replay has read the `LiveGate`,
+then go through it). An event accepted between registration and replay is held,
+never sent ungated, and the cold-author checks run in a scope the
+subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
+more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
+the screened replay, and fails if `openSubscription` forwards past the gate.
+
 **The reference expansion moved into the store.** It lived here as an
 `IEventStore` decorator until store `a9ce0d254c`. The reader's enrolment had
 to be cached with a TTL, because a relay cannot see the sync process feeding
