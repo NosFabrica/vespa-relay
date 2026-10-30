@@ -4,6 +4,16 @@ Why each pin in `gradle/libs.versions.toml` is what it is, moved out of the
 catalog so a bump is a one-line diff. Newest notes first within each pin, as
 they were written. The rule that matters on every bump is the first section.
 
+## Building against a local checkout
+
+`-PvespaEventStoreDir` and `-PquartzDir` (`settings.gradle.kts`) include that
+checkout as a composite build and substitute its projects for the pinned
+coordinates, both group spellings, as quartz's own `-PcryptoKmpDir` does. That
+is how a change wanted from upstream is compiled and tested here before a pin
+can name it. Both apply together, and the quartz checkout then also stands in
+for the store's quartz. Neither moves a pin: a bump is still the catalog line
+and the store's integration gate.
+
 ## The two JitPack pins carry no order (and `kotlin`, after this note)
 
 ```text

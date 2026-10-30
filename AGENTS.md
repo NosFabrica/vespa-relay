@@ -61,6 +61,8 @@ it reads, and every reference it makes is document-relative (`./web/…`,
 ./gradlew :sync:test --tests "*SyncBands*"
 ./gradlew spotlessApply            # fix formatting; the pre-commit hook runs spotlessCheck
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
+./gradlew -PvespaEventStoreDir=../vespa-eventstore build   # against a local store checkout instead of the pin
+./gradlew -PquartzDir=../quartz build                      # against a local quartz; needs its Android SDK (sdk.dir in its local.properties)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 ./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
 node web/src/test/js/run.mjs       # the same suite, run directly
