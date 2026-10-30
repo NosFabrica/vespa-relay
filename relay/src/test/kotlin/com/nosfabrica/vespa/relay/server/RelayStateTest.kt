@@ -54,6 +54,21 @@ class RelayStateTest {
         }
     }
 
+    /** An admin told `allowevent` applied is still told the truth after a restart. */
+    @Test
+    fun `an event allow-listed by an admin survives a restart, as a ban does`() {
+        val file = File.createTempFile("relay-state-allowed", ".json").apply { delete() }
+        try {
+            openBanStore(file.path).allowEvent(a, "false positive")
+            val reloaded = openBanStore(file.path)
+            assertTrue(reloaded.isAllowedEvent(a))
+            assertFalse(reloaded.isBannedEvent(a))
+        } finally {
+            file.delete()
+            File(file.path + ".tmp").delete()
+        }
+    }
+
     /** The NIP-86 call is answered after the ban applies; a disk that refuses the write may not undo either. */
     @Test
     fun `a write the disk refuses keeps the ban in force and the previous file whole`() {
@@ -93,6 +108,10 @@ class RelayStateTest {
             """{"bannedPubkeys":[$good,{"reason":"no value"}]}""" to "bannedPubkeys[1]",
             """{"bannedPubkeys":[$good],"allowedKinds":[1,"seven"]}""" to "allowedKinds[1] is not a kind number",
             """{"bannedPubkeys":[$good],"disallowedKinds":[4,1.5]}""" to "disallowedKinds[1] is not a kind number",
+            // Quartz's decoder takes both of these; the file is refused on them as it always was.
+            """{"allowedKinds":["1"]}""" to "allowedKinds[0] is not a kind number",
+            """{"bannedPubkeys":[{"value":"$a","reason":null}]}""" to "bannedPubkeys[0]",
+            """{"allowedEvents":[{"value":""}]}""" to "allowedEvents[0]",
         )) {
             val file = File.createTempFile("relay-state-corrupt", ".json")
             try {

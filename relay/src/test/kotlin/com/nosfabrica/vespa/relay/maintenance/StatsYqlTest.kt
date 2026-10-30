@@ -299,10 +299,7 @@ class StatsYqlTest {
         assertEquals("wss://nos.lol", canonical)
     }
 
-    /**
-     * `wss://nos.lol:443` stays distinct: quartz's normalizer keeps an explicit
-     * port, and a relay is identified by the url a client AUTH'd against.
-     */
+    /** A path, a port and a scheme each name another endpoint; only the scheme's own default port folds, as the router dials. */
     @Test
     fun `a path, a port and a scheme are not normalised away`() {
         val distinct =
@@ -311,10 +308,10 @@ class StatsYqlTest {
                 "wss://relay.nos.lol",
                 "wss://nos.lol/nostr",
                 "wss://nos.lol:444",
-                "wss://nos.lol:443",
                 "ws://nos.lol",
             ).map { canonicalRelay(it) }
-        assertEquals(distinct.size, distinct.toSet().size, "these are six different endpoints: $distinct")
+        assertEquals(distinct.size, distinct.toSet().size, "these are five different endpoints: $distinct")
+        assertEquals(canonicalRelay("wss://nos.lol"), canonicalRelay("wss://nos.lol:443"))
     }
 
     /** Dropping unparseable urls would make `total` a count of the well-formed ones. */

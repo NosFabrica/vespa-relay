@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.config
 
-import com.nosfabrica.vespa.relay.util.withoutDefaultPort
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -75,7 +74,7 @@ class RelayExcludes(
                 if (entry.any { it in REGEX_MARKERS }) {
                     patterns += Regex(entry, RegexOption.IGNORE_CASE)
                 } else {
-                    RelayUrlNormalizer.normalizeOrNull(entry)?.let { urls += it.withoutDefaultPort() } ?: onInvalidUrl(entry)
+                    RelayUrlNormalizer.normalizeOrNull(entry)?.let { urls += it } ?: onInvalidUrl(entry)
                 }
             }
             return RelayExcludes(urls, patterns)

@@ -521,3 +521,12 @@ nine times a second. `-XX:InitialRAMPercentage=35` gives the young generation ro
 start: on 20,000 seeded reads (`relay/tools/read-mix.mjs`), 238 collections and 2.7 s of pause
 became 23 and 0.4 s, with the same bytes allocated. The memory was already the heap's to take;
 the sync keeps the shared default until its own workload is measured.
+
+**Quartz 2.9.0 took three local copies.** `MultiAddressAuthPolicy` is quartz's
+`OptionalAuthPolicy` built over every address (any `relay` tag naming one
+accepts, as the restated check did; both sides normalized, which now folds a
+default port) and reaches the client through `sendToClient`. `BanListFile`
+writes and seeds through `BanStore.toJson`/`seedFromJson`, one consistent
+snapshot that also carries the event allow list, roles and claims, which a
+restart used to drop; the relay still refuses a quoted kind and a null
+reason before quartz reads the file, since quartz's decoder takes both.

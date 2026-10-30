@@ -155,6 +155,9 @@ The relay's NIP-42 check folded the same ports with a copy of its own, so the
 one function now lives in `:common` (`util/DefaultPort.kt`), the lowest module
 both see, until quartz's normalizer does it.
 
+Quartz 2.9.0's normalizer drops the port itself (`wss` 443, `ws` 80), so the
+function is gone; `DefaultPortTest` pins the normalizer.
+
 **Negative `since`, `until` and `limit` are refused at parse time.** Measured
 across the five `indexers`: strfry kills the subscription (`CLOSED: bad req`),
 three answer a NOTICE and never EOSE so every page burns an idle timeout, and

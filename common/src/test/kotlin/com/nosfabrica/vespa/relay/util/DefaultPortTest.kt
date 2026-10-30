@@ -20,14 +20,16 @@
  */
 package com.nosfabrica.vespa.relay.util
 
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** A scheme's default port names the same endpoint as no port, and nothing else does. */
+/**
+ * A scheme's default port names the same endpoint as no port, and nothing else does. Quartz's
+ * normalizer folds it since 2.9.0; every relay url here goes through it, so this pins that.
+ */
 class DefaultPortTest {
-    private fun folded(raw: String) = RelayUrlNormalizer.normalize(raw).withoutDefaultPort().url
+    private fun folded(raw: String) = RelayUrlNormalizer.normalize(raw).url
 
     @Test
     fun `each scheme's own default port folds away`() {
@@ -50,7 +52,7 @@ class DefaultPortTest {
     }
 
     @Test
-    fun `a url that is not a socket is left alone`() {
-        assertEquals("https://relay.example:443", NormalizedRelayUrl("https://relay.example:443").withoutDefaultPort().url)
+    fun `an onion's spelled-out port is the same address`() {
+        assertEquals(folded("ws://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion"), folded("ws://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion:80"))
     }
 }

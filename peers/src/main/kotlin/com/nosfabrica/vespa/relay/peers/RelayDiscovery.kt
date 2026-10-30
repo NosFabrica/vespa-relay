@@ -470,7 +470,7 @@ object RelayDiscovery {
     ): Boolean =
         when {
             dest == "kinds" -> value.toIntOrNull() != null
-            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> value.length == 64 && Hex.isHex64(value)
+            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> Hex.isHexKey(value)
             else -> true
         }
 

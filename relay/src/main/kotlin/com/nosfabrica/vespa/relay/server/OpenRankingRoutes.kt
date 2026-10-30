@@ -193,13 +193,13 @@ private fun parseSearch(body: String): SearchAsk {
         // House Observer: this relay keeps none of its own.
         RELEVANCE -> {
             val house = obj.string("observer") ?: return unprocessable("Algorithm '$RELEVANCE' requires the proxy's 'observer' pubkey")
-            val key = house.lowercase().takeIf(::isPubkey) ?: return unprocessable("observer is not a valid 64-character lowercase hex pubkey")
+            val key = house.lowercase().takeIf(Hex::isHexKey) ?: return unprocessable("observer is not a valid 64-character lowercase hex pubkey")
             SearchAsk.Valid(query, null, limit, key)
         }
 
         RELEVANCE_POV -> {
             val pov = obj.string("pov") ?: return unprocessable("Algorithm '$RELEVANCE_POV' requires a 'pov' pubkey")
-            val key = pov.lowercase().takeIf(::isPubkey) ?: return unprocessable("pov is not a valid 64-character lowercase hex pubkey")
+            val key = pov.lowercase().takeIf(Hex::isHexKey) ?: return unprocessable("pov is not a valid 64-character lowercase hex pubkey")
             SearchAsk.Valid(query, key, limit, key)
         }
 
@@ -208,9 +208,6 @@ private fun parseSearch(body: String): SearchAsk {
         }
     }
 }
-
-/** quartz's isHex64 reads the first 64 characters and ignores the rest, so the length is checked here. */
-private fun isPubkey(key: String): Boolean = key.length == 64 && Hex.isHex64(key)
 
 private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
