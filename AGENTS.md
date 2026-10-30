@@ -364,6 +364,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A fix to the filter has to reach every path that sends it; `FilterWidths` is built once in `SyncEngine`, and `ClientWindowSync` takes it with no default.
 - A completeness number needs the denominator the work uses: `RelayStatusReport` joins on the unit's owed asks (`RosterBuilder.UnitAsks.identity`), not on the bands present.
 - `SCAN_PAGE` (10,000) must stay under the deployed `maxHits` / `VESPA_UNBOUNDED_HITS`, or every discovery pass fails with "could not derive".
+- The sync's websocket readers are virtual threads, which `jcmd <pid> Thread.print` does not list; `jcmd <pid> Thread.dump_to_file -format=json <file>` does.
 - A malformed NIP-77 frame wedges the relay's event loop; `NEG_MAX_SESSIONS_PER_CONNECTION=0` is the operator switch, and `jcmd <pid> Thread.print` shows it in `MessageConsumer.decodeVarInt`.
 - A backticked test name with a non-ASCII character crashes the compiler once its body builds a lambda; keep such names ASCII.
 - A JitPack version is a commit hash, and hashes have no order; ancestry is `git merge-base --is-ancestor A B`.

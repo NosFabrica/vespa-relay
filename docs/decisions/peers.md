@@ -283,3 +283,17 @@ documentation and multicast literals and names that cannot be a host (`wss://wss
 pasted twice). Every url `decide` sees comes from someone else's relay list; the urls a deployment
 declares in `sync.conf` never pass through it, so `ws://localhost:7777` still works as a stream's
 own upstream.
+
+**Websocket reader threads are virtual.** OkHttp runs each websocket's reader
+loop on a dispatcher thread for the socket's life and starts that thread inside
+the dial's caller, so a fleet's dials queued behind one platform thread start
+each: 1,382 dials took 1,839ms to start against a silent local server, and
+3.6s live. On `Executors.newVirtualThreadPerTaskExecutor()` the same dials
+start in 318ms locally and 1.2s live, with no platform thread per socket.
+OkHttp 5 locks with `ReentrantLock`, not `synchronized`, so a reader blocked
+in a read does not pin its carrier; `LiveFleetProbe` split the fleet between
+the two models under `-Djdk.tracePinnedThreads=short` and saw no pinning and
+the same drops (198 on 102 relays against 180 on 97). Opening the sockets is
+another matter: the sandbox admitted ~55 connections a second, so there the
+fleet still took ~28s to open either way.
+
