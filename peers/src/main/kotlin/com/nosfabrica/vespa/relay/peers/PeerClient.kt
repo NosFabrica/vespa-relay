@@ -35,6 +35,7 @@ import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
+import java.util.concurrent.Executors
 
 /**
  * How this process talks to other relays: one websocket client, one socket budget, one Tor
@@ -130,7 +131,7 @@ class PeerClient(
     }
 
     companion object {
-        /** Above every prime relay held live at once; each open socket is also one reader thread. */
+        /** Above every prime relay held live at once; each open socket is also one (virtual) reader thread. */
         const val MAX_CONCURRENT_SOCKETS = 4096
         const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
 
@@ -142,7 +143,9 @@ class PeerClient(
 
         /**
          * The clearnet client every upstream dial goes through. An open websocket holds a
-         * dispatcher slot for its whole life, so the budget must exceed every socket held live.
+         * dispatcher slot and a thread for its whole life, so the budget must exceed every socket
+         * held live, and the threads are virtual: the dispatcher starts one inside each dial's
+         * caller, and a platform thread's start serialized a fleet's dials behind it.
          */
         fun relayHttpBuilder(
             connectionTimeoutSec: Long,
@@ -151,7 +154,7 @@ class PeerClient(
             OkHttpClient
                 .Builder()
                 .dispatcher(
-                    Dispatcher().apply {
+                    Dispatcher(Executors.newVirtualThreadPerTaskExecutor()).apply {
                         maxRequests = MAX_CONCURRENT_SOCKETS
                         maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
                     },
