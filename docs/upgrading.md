@@ -23,6 +23,12 @@ schema does not move.
 - A NIP-50 `sort:` the store does not recognise (`sort:bogus`) is no longer held
   by the per-connection search lane; the store always served it as plain
   recall.
+- `/stats.json`'s `trust.scoredPubkeys` reads one to three lower: the store's
+  own marker documents are no longer counted as scored pubkeys, so a store with
+  no scores now shows zero and the stats page's empty-web-of-trust warning.
+- The stats rollup's groupings show on `/pulse.json` as the `Aggregate`
+  activity, and with `VESPA_QUERY_URLS` set they rotate across every query
+  container instead of asking the first.
 
 ## The relay is the only writer (October 2026)
 

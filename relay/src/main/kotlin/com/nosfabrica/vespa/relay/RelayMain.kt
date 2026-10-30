@@ -144,7 +144,7 @@ fun main() {
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
     val maintenance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     startMaintenance(boot, store, maintenance)
-    val statsSnapshot = startStats(boot, maintenance)
+    val statsSnapshot = startStats(boot, store, maintenance)
     val profile = startProfile(boot, store, maintenance)
     val servingPressure = ServingPressure(thresholdMs = boot.pressureThresholdMs)
     // Its own scope: shutdown stops the writers after the connections, never before.
@@ -381,6 +381,7 @@ private fun startMaintenance(
 /** The `/stats.json` rollups, counters first so a fresh relay has totals within seconds of boot. */
 private fun startStats(
     boot: Boot,
+    store: VespaEventStore,
     scope: CoroutineScope,
 ): StatsSnapshot {
     // Seeded from the state file so a restart serves the last document until the first rollup.
@@ -390,7 +391,7 @@ private fun startStats(
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
         return snapshot
     }
-    val rollup = StatsRollup(StatsVespa(boot.vespa.queryUrl(boot.vespaUrl)), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
+    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
     if (counters > 0) {
         launchStatsRollup(scope, rollup, snapshot, StatsTier.COUNTERS, counters)
     } else {

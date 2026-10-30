@@ -32,31 +32,24 @@ import java.time.YearMonth
 import java.time.ZoneOffset
 
 /**
- * The dashboard's aggregation queries: the YQL this relay asks Vespa for its own corpus
- * statistics, and the readers for what comes back, both testable without an engine. [UNRANKED]
- * and [params] are the two settings that yield a plausible wrong number rather than an error.
+ * The dashboard's aggregation pipelines, the [Scope] each runs over, and the readers for what comes
+ * back, all testable without an engine. The store sends them ([StatsVespa]): unranked, group
+ * ceilings off, a degraded answer refused.
  */
 internal object StatsYql {
-    /** The rank profile every aggregation uses: a recency profile's match phase caps the match set. */
-    const val UNRANKED = "unranked"
-
-    /**
-     * Vespa's "no ceiling" for the grouping limits sent per query; without them a pipeline returns
-     * a default number of groups and no error. `grouping.globalMaxGroups` lives in the query profile.
-     */
-    const val UNLIMITED_GROUPS = "-1"
-
-    /** The query parameters every aggregation below carries. */
-    val params: Map<String, String> =
-        mapOf(
-            "grouping.defaultMaxGroups" to UNLIMITED_GROUPS,
-            "grouping.defaultMaxHits" to UNLIMITED_GROUPS,
-        )
-
     // ---- pipelines ----------------------------------------------------------
 
     /** Documents in the match set. Exact, not a `totalCount` estimate. */
     const val TOTAL = "all(output(count()))"
+
+    /**
+     * Reputation documents by key length. The store keeps its own markers there under keys that are
+     * not 64 hex, so only [scoredPubkeys]'s group of 64 is the scored population.
+     */
+    const val KEY_LENGTHS = "all(group(strlen(pubkey)) each(output(count())))"
+
+    /** The scored pubkeys in a [KEY_LENGTHS] answer: 0 when no key is 64 long. */
+    fun scoredPubkeys(root: JsonElement): Long = topGroups(root).firstOrNull { valueOf(it) == "64" }?.let { aggOf(it, "count()") } ?: 0L
 
     /** Distinct values of [field]: `count()` on the group list, so the values are never materialised. */
     fun distinct(field: String) = "all(group($field) output(count()))"
@@ -179,26 +172,33 @@ internal object StatsYql {
         letter: Char,
     ): String? = if (pair.length > 2 && pair[0] == letter && pair[1] == ':') pair.substring(2) else null
 
-    // ---- the query ----------------------------------------------------------
+    // ---- the scope ---------------------------------------------------------
 
-    /** One complete aggregation. No `order by`: attribute sorting trips the match phase [UNRANKED] avoids. */
-    fun query(
-        pipeline: String,
-        where: String = "true",
-        source: String = EVENTS,
-    ) = "select * from $source where $where limit 0 | $pipeline"
+    /** Which events an aggregation reads: [kinds] (empty is every kind) signed within [since]..[until], inclusive. */
+    data class Scope(
+        val kinds: List<Int> = emptyList(),
+        val since: Long? = null,
+        val until: Long? = null,
+    ) {
+        override fun toString(): String =
+            listOfNotNull(
+                kinds.takeIf { it.isNotEmpty() }?.let { "kind in (${it.joinToString(", ")})" },
+                since?.let { "created_at >= $it" },
+                until?.let { "created_at <= $it" },
+            ).joinToString(" and ").ifEmpty { "every event" }
+    }
 
-    /** The stored events, every aggregation here except the trust one. */
-    const val EVENTS = "event"
-
-    /** The trust projection's parent documents, one per scored pubkey. Counted only: the scores are tensors. */
-    const val REPUTATION = "reputation"
+    /** The whole corpus. */
+    val ALL = Scope()
 
     /**
      * A bare aggregate with no grouping level, `all(output(max(created_at)))`, fails with HTTP 500;
      * only `count()` works at that level. Wrap anything else in a `group(...) each(...)`.
      */
     const val NO_BARE_AGGREGATES = "group(...) each(output(...)) — see NO_BARE_AGGREGATES"
+
+    /** One kind, every signing time. */
+    fun ofKind(kind: Int) = Scope(kinds = listOf(kind))
 
     /**
      * `created_at` within [since]..[until], inclusive. The upper bound matters: `created_at` is
@@ -207,26 +207,13 @@ internal object StatsYql {
     fun window(
         since: Long,
         until: Long,
-    ) = "created_at >= $since and created_at <= $until"
-
-    /** [window], narrowed to one kind. */
-    fun windowOfKind(
-        kind: Int,
-        since: Long,
-        until: Long,
-    ) = "kind = $kind and ${window(since, until)}"
+    ) = Scope(since = since, until = until)
 
     /** Everything signed no later than [until], so "the newest event" is not the worst-dated spam. */
-    fun upTo(until: Long) = "created_at <= $until"
+    fun upTo(until: Long) = Scope(until = until)
 
     /** Events signed for a time that has not happened: clock skew and spam. */
-    fun after(instant: Long) = "created_at > $instant"
-
-    /** One kind, bounded to the past. */
-    fun kindUpTo(
-        kind: Int,
-        until: Long,
-    ) = "kind = $kind and ${upTo(until)}"
+    fun after(instant: Long) = Scope(since = instant + 1)
 
     // ---- readers ------------------------------------------------------------
 

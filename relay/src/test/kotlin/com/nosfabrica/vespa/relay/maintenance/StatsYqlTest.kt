@@ -324,26 +324,14 @@ class StatsYqlTest {
         assertEquals("", canonicalRelay(""))
     }
 
-    // ---- the queries --------------------------------------------------------
-
+    /** The store keeps markers among the reputation documents; a scored-pubkey count of them hid an empty web of trust. */
     @Test
-    fun `every aggregation is unranked, unlimited and unsorted`() {
-        val q = StatsYql.query(StatsYql.countsBy("kind"), StatsYql.window(100, 200))
-        assertEquals("select * from event where created_at >= 100 and created_at <= 200 limit 0 | all(group(kind) each(output(count())))", q)
-        // `order by` would reintroduce the match phase unranked avoids; a capped match set undercounts.
-        assertTrue(!q.contains("order by"))
-        assertEquals("-1", StatsYql.params["grouping.defaultMaxGroups"])
-        assertEquals("-1", StatsYql.params["grouping.defaultMaxHits"])
+    fun `scored pubkeys count only 64-character keys`() {
+        assertEquals(2L, StatsYql.scoredPubkeys(Json.parseToJsonElement(KEY_LENGTHS)))
+        assertEquals(0L, StatsYql.scoredPubkeys(Json.parseToJsonElement(MARKERS_ONLY)), "markers alone are no web of trust")
     }
 
-    @Test
-    fun `an aggregation can name the document type it runs over`() {
-        assertEquals("select * from event where true limit 0 | ${StatsYql.TOTAL}", StatsYql.query(StatsYql.TOTAL))
-        assertEquals(
-            "select * from reputation where true limit 0 | ${StatsYql.TOTAL}",
-            StatsYql.query(StatsYql.TOTAL, source = StatsYql.REPUTATION),
-        )
-    }
+    // ---- the scopes ---------------------------------------------------------
 
     /**
      * `created_at` is author-signed, so an unbounded `max(created_at)` reports
@@ -351,21 +339,34 @@ class StatsYqlTest {
      */
     @Test
     fun `freshness excludes the future, and the future is its own question`() {
-        assertEquals("created_at <= 500", StatsYql.upTo(500))
-        assertEquals("created_at > 500", StatsYql.after(500))
-        assertEquals("kind = 1 and created_at <= 500", StatsYql.kindUpTo(1, 500))
+        val past = StatsYql.upTo(500)
+        val future = StatsYql.after(500)
         // The two partition the corpus at one instant, so a total reassembles from the pair.
-        assertTrue(StatsYql.upTo(500).contains("<= 500") && StatsYql.after(500).contains("> 500"))
+        for (t in listOf(499L, 500L, 501L)) {
+            val inPast = past.since == null && t <= past.until!!
+            val inFuture = future.until == null && t >= future.since!!
+            assertTrue(inPast != inFuture, "second $t is in exactly one of the two")
+        }
+        assertEquals(emptyList(), past.kinds + future.kinds, "neither narrows the kinds")
     }
 
     @Test
     fun `the window is closed at both ends`() {
         // The upper bound keeps a future-dated event from opening a bucket years out.
-        assertEquals("created_at >= 10 and created_at <= 20", StatsYql.window(10, 20))
-        assertEquals("kind = 1 and created_at >= 10 and created_at <= 20", StatsYql.windowOfKind(1, 10, 20))
+        assertEquals(StatsYql.Scope(since = 10, until = 20), StatsYql.window(10, 20))
+        assertEquals(StatsYql.Scope(kinds = listOf(1)), StatsYql.ofKind(1))
+        assertEquals("kind in (1) and created_at >= 10 and created_at <= 20", StatsYql.window(10, 20).copy(kinds = listOf(1)).toString())
     }
 
     private companion object {
+        // Vespa 8.763.13, `all(group(strlen(pubkey)) each(output(count())))` over two 64-hex keys and two of the store's markers.
+        const val KEY_LENGTHS =
+            """{"id":"toplevel","relevance":1.0,"fields":{"totalCount":4},"coverage":{"coverage":100,"documents":4,"full":true,"nodes":1,"results":1,"resultsFull":1},"children":[{"id":"group:root:0","relevance":1.0,"continuation":{"this":""},"children":[{"id":"grouplist:strlen(pubkey)","relevance":1.0,"label":"strlen(pubkey)","children":[{"id":"group:long:16","relevance":0.0,"value":"16","fields":{"count()":1}},{"id":"group:long:27","relevance":0.0,"value":"27","fields":{"count()":1}},{"id":"group:long:64","relevance":0.0,"value":"64","fields":{"count()":2}}]}]}]}"""
+
+        // The same pipeline over the two markers alone.
+        const val MARKERS_ONLY =
+            """{"id":"toplevel","relevance":1.0,"fields":{"totalCount":2},"coverage":{"coverage":100,"documents":2,"full":true,"nodes":1,"results":1,"resultsFull":1},"children":[{"id":"group:root:0","relevance":1.0,"continuation":{"this":""},"children":[{"id":"grouplist:strlen(pubkey)","relevance":1.0,"label":"strlen(pubkey)","children":[{"id":"group:long:16","relevance":0.0,"value":"16","fields":{"count()":1}},{"id":"group:long:27","relevance":0.0,"value":"27","fields":{"count()":1}}]}]}]}"""
+
         // Vespa 8.733, `all(output(count()))`.
         const val TOTAL =
             """{"id":"toplevel","relevance":1.0,"fields":{"totalCount":602},"coverage":{"coverage":100,"documents":602,"full":true,"nodes":1,"results":1,"resultsFull":1},"children":[{"id":"group:root:0","relevance":1.0,"continuation":{"this":""},"fields":{"count()":602}}]}"""

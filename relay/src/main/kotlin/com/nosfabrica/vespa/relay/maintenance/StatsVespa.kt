@@ -20,34 +20,25 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
+import com.nosfabrica.vespa.eventstore.EngineReads
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.put
-import java.io.IOException
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.time.Duration
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
-/** Somewhere to send a [StatsYql] pipeline; the seam [StatsRollup] depends on instead of the engine. */
+/** Somewhere to send a [StatsYql] pipeline; the seam [StatsRollup] depends on instead of the store. */
 internal interface StatsQueries {
-    /** Run [pipeline] over the [source] documents [where] selects and return Vespa's `root`. */
+    /** Run [pipeline] over the [source] documents [scope] selects and return Vespa's `root`. */
     suspend fun group(
         pipeline: String,
-        where: String = "true",
-        source: String = StatsYql.EVENTS,
+        scope: StatsYql.Scope = StatsYql.ALL,
+        source: EngineReads.Source = EngineReads.Source.EVENTS,
     ): JsonObject
 }
 
-/** A failed statistic whose message is safe to publish: our own words and YQL, never the engine's. */
+/** A failed statistic whose message is safe to publish: our own words and pipeline, never the engine's. */
 internal class StatsQueryFailed(
     message: String,
 ) : IllegalStateException(message)
@@ -59,92 +50,41 @@ internal class StatsQueryFailed(
 internal fun publicReason(e: Throwable): String = (e as? StatsQueryFailed)?.message ?: "${e::class.simpleName ?: "error"} (detail in the relay log)"
 
 /**
- * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to `/search/`, refuse a
- * degraded answer, hand back the parsed root.
+ * The one place the dashboard reaches the engine: the store's metered grouping read, which rotates
+ * the query endpoints and refuses a degraded answer. Every failure is logged whole and rethrown as
+ * a [StatsQueryFailed], since the store's message can quote Vespa's response body.
  */
 internal class StatsVespa(
-    vespaUrl: String,
-    private val http: HttpClient =
-        HttpClient
-            .newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build(),
+    private val read: suspend (pipeline: String, query: EventQuery, source: EngineReads.Source) -> JsonObject,
     private val requestTimeout: Duration = REQUEST_TIMEOUT,
 ) : StatsQueries {
-    private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
+    constructor(engine: EngineReads) : this(engine::group)
 
-    /**
-     * Throws on anything that is not a complete answer: a thrown aggregation shows on the page as
-     * a named failure, a swallowed one as a wrong chart.
-     */
     override suspend fun group(
         pipeline: String,
-        where: String,
-        source: String,
+        scope: StatsYql.Scope,
+        source: EngineReads.Source,
     ): JsonObject {
-        val yql = StatsYql.query(pipeline, where, source)
-        val body =
-            buildJsonObject {
-                put("yql", yql)
-                put("hits", "0")
-                put("ranking", StatsYql.UNRANKED)
-                StatsYql.params.forEach { (k, v) -> put(k, v) }
-            }.toString()
-
-        val response =
+        val query = EventQuery(kinds = scope.kinds, since = scope.since, until = scope.until)
+        val root =
             try {
-                withContext(Dispatchers.IO) {
-                    http.send(
-                        HttpRequest
-                            .newBuilder(searchUrl)
-                            .header("Content-Type", "application/json")
-                            .timeout(requestTimeout)
-                            .POST(HttpRequest.BodyPublishers.ofString(body))
-                            .build(),
-                        HttpResponse.BodyHandlers.ofString(),
-                    )
-                }
-            } catch (e: IOException) {
-                // The transport's message can name the engine's host and port.
-                failed("vespa did not answer (${e::class.simpleName})", yql, e.toString())
+                withTimeoutOrNull(requestTimeout) { read(pipeline, query, source) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed("the store's grouping read failed (${e::class.simpleName})", pipeline, scope, e.toString())
             }
-        if (response.statusCode() >= 400) failed("vespa ${response.statusCode()}", yql, response.body())
-        // Parsed apart from the shape check: a parse error quotes the body it choked on.
-        val parsed =
-            try {
-                Json.parseToJsonElement(response.body()) as? JsonObject
-            } catch (_: SerializationException) {
-                null
-            } ?: failed("vespa answered with something that is not a JSON object", yql, response.body())
-        val root = parsed["root"] as? JsonObject ?: failed("vespa answered with no root", yql, response.body())
-        root.requireUndegraded(yql)
-        return root
+        return root ?: failed("vespa did not answer within $requestTimeout", pipeline, scope, "timed out")
     }
 
-    /**
-     * Refuse a partial answer by Vespa's own `isDegraded()` test, `coverage` at 100 with no
-     * `degraded` block, not by the `full` flag, which uses a different denominator.
-     */
-    private fun JsonObject.requireUndegraded(yql: String) {
-        val coverage = this["coverage"]?.jsonObject ?: return
-        val pct = coverage["coverage"]?.let { (it as? JsonPrimitive)?.intOrNull } ?: 100
-        val degraded = coverage["degraded"]?.jsonObject
-        if (pct < 100 || degraded != null) {
-            failed("vespa searched only $pct% of the corpus — refusing a partial statistic", yql, "degraded: ${degraded ?: "unspecified"}")
-        }
-    }
-
-    /**
-     * Log the whole failure, throw a message safe to publish in `/stats.json`: Vespa's body names
-     * hosts and ports and stays in the log.
-     */
     private fun failed(
         summary: String,
-        yql: String,
+        pipeline: String,
+        scope: StatsYql.Scope,
         detail: String,
     ): Nothing {
-        System.err.println("stats: $summary for `$yql` — ${detail.take(500)}")
-        throw StatsQueryFailed("$summary for `$yql` (engine detail in the relay log)")
+        System.err.println("stats: $summary for `$pipeline` over $scope — ${detail.take(500)}")
+        throw StatsQueryFailed("$summary for `$pipeline` over $scope (engine detail in the relay log)")
     }
 
     companion object {
@@ -152,6 +92,6 @@ internal class StatsVespa(
          * Far past any aggregation that finishes, since Vespa's own deadline is what keeps a slow one
          * whole: this catches an engine that stopped answering, which would otherwise hold the tier.
          */
-        val REQUEST_TIMEOUT: Duration = Duration.ofMinutes(20)
+        val REQUEST_TIMEOUT: Duration = 20.minutes
     }
 }

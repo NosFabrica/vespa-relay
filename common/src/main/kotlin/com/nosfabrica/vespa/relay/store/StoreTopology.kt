@@ -82,9 +82,6 @@ class VespaEndpoints(
     val feed: List<String>,
     val query: List<String>,
 ) {
-    /** Where this process sends a `/search/` of its own (the stats rollup): the first query container, else [fallback]. */
-    fun queryUrl(fallback: String): String = query.firstOrNull() ?: fallback
-
     /** One boot-log line when either list is set, null when `VESPA_URL` serves both roles. */
     fun describe(): String? =
         if (feed.isEmpty() && query.isEmpty()) {
