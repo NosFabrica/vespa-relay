@@ -64,9 +64,15 @@ schema field names. Each copy drifts on the next bump without a test noticing,
 and two already disagreed with their upstream. So the rule is to search
 upstream first, and a copy that has to stay names the upstream change that
 retires it. The store's `engine` package is its internal layer, reached through
-its escape hatches "for ops and benchmarks"; seven main files import from it,
+its escape hatches "for ops and benchmarks"; seven main files imported from it,
 and `ModuleBoundariesTest.ENGINE_ALLOWED` lists exactly those names, failing on
-a new one and on a stale entry, so the list can only shrink. Reach-through via
+a new one and on a stale entry, so the list can only shrink. The store's facade
+release retired two (`StoreProbes`, `SchemaDeploy`) and admitted one,
+`StatsVespa`'s `EventQuery`, because `EngineReads.group` takes it as its own
+parameter; what remains is the engine types the facade itself names
+(`StoreTelemetry`'s members, the ledger's snapshot) and the write-path helpers
+with no facade form (`IngestPipeline`'s `mapBounded`, `QUERY_FANOUT` and
+`IngestStats.timed`, `SyncEngine`'s stage reads). Reach-through via
 `VespaEventStore.store` is not guarded: `store` is the name of every
 `IEventStore` here, and source text cannot tell the hatch from the interface.
 

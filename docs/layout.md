@@ -20,7 +20,7 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
                             process adopt()s the polled mean and yields on it
   util/QuartzLogLevel.kt    QUARTZ_LOG_LEVEL, split from ParseAudit — the one
                             piece of it both processes read
-  store/SchemaDeploy.kt     the every-boot Vespa schema deploy (both processes)
+  store/SchemaDeploy.kt     the relay's every-boot schema deploy over the store's IF_CHANGED
   store/StoreTopology.kt    STORE_WRITERS, the one writer topology both open
   util/Format.kt            fmtDuration — the one formatter both processes print
   (test) arch/              the guards that read the checkout instead of
