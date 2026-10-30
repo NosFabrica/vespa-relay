@@ -40,6 +40,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -97,6 +98,8 @@ class LiveFleetProbe {
         val sinceSeconds = System.getProperty("fleetSinceSeconds")?.toLong() ?: 5L
         // `split` runs both arms at once, by url hash, so they share one network and one moment.
         val advanceMode = System.getProperty("fleetAdvance") ?: "on"
+        val threadsMode = System.getProperty("fleetThreads") ?: "virtual"
+        require(threadsMode in setOf("virtual", "platform", "split")) { "fleetThreads must be virtual, platform or split, got $threadsMode" }
         require(advanceMode in setOf("on", "off", "split")) { "fleetAdvance must be on, off or split, got $advanceMode" }
         // Unset is PeerClient's own resolver; 0 is the bare system resolver, the arm before it.
         val dnsConcurrency = System.getProperty("fleetDnsConcurrency")?.toInt() ?: PeerClient.MAX_CONCURRENT_LOOKUPS
@@ -110,8 +113,19 @@ class LiveFleetProbe {
                 .socketFactory(sockets)
                 .build()
                 .apply { dispatcher.maxRequests = maxSockets }
+        // The same client on platform reader threads, for the arm that runs without PeerClient's virtual ones.
+        val platform =
+            okhttp
+                .newBuilder()
+                .dispatcher(
+                    Dispatcher().apply {
+                        maxRequests = maxSockets
+                        maxRequestsPerHost = PeerClient.MAX_CONCURRENT_SOCKETS_PER_HOST
+                    },
+                ).build()
+        val clients = listOf(okhttp, platform)
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-        val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
+        val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> if (fleet.tracks[url]?.virtual == false) platform else okhttp }, scope)
         client.addConnectionListener(fleet.listener)
 
         println("=".repeat(120))
@@ -122,7 +136,14 @@ class LiveFleetProbe {
         )
         println("=".repeat(120))
 
-        urls.forEach { url -> fleet.track(url, advances = advanceMode == "on" || (advanceMode == "split" && Math.floorMod(url.hashCode(), 2) == 0)) }
+        urls.forEach { url ->
+            fleet.track(
+                url,
+                advances = advanceMode == "on" || (advanceMode == "split" && Math.floorMod(url.hashCode(), 2) == 0),
+                // A different bit than the advance split, so the two arms do not coincide.
+                virtual = threadsMode == "virtual" || (threadsMode == "split" && Math.floorMod(url.hashCode() / 2, 2) == 0),
+            )
+        }
         fleet.startMs = System.currentTimeMillis()
         val since = fleet.startMs / 1000 - sinceSeconds
         fleet.tracks.values.forEach { it.sinceAsked = since }
@@ -131,7 +152,7 @@ class LiveFleetProbe {
         // TailBook's rule: each minute, a relay's stored since follows its last delivered event, less the overlap.
         var advancedAtMs = fleet.startMs
         val ticker =
-            Ticker(fleet, client, okhttp, urls.size) {
+            Ticker(fleet, client, clients, urls.size) {
                 if (System.currentTimeMillis() - advancedAtMs >= VisitPool.TAIL_ADVANCE_MS) {
                     advancedAtMs = System.currentTimeMillis()
                     fleet.advance()
@@ -160,7 +181,7 @@ class LiveFleetProbe {
         runCatching { client.unsubscribe(SUB) }
         runCatching { client.disconnect() }
         scope.cancel()
-        okhttp.dispatcher.executorService.shutdownNow()
+        clients.forEach { it.dispatcher.executorService.shutdownNow() }
     }
 
     /** One way to break a live socket, how much of the fleet it hits, and how long recovery is watched. */
@@ -209,6 +230,19 @@ class LiveFleetProbe {
         val opens = AtomicInteger()
         val reqsSent = AtomicInteger()
 
+        /** Whether this relay's reader thread is virtual (PeerClient's) or a platform thread. */
+        @Volatile var virtual = true
+
+        @Volatile var lastFailureMs = 0L
+
+        /** Why each organic drop happened: the failure reported with it, or a close the relay made. */
+        val dropReasons = ConcurrentLinkedQueue<String>()
+
+        /** The first reopen and the first EOSE after a chaos break, not a later flap's. */
+        @Volatile var firstReopenMs = 0L
+
+        @Volatile var firstReEoseMs = 0L
+
         /** Whether this relay's stored since follows its deliveries, and the since it holds. */
         @Volatile var advances = false
 
@@ -245,8 +279,13 @@ class LiveFleetProbe {
         fun track(
             url: NormalizedRelayUrl,
             advances: Boolean,
+            virtual: Boolean,
         ) {
-            tracks[url] = Track().also { it.advances = advances }
+            tracks[url] =
+                Track().also {
+                    it.advances = advances
+                    it.virtual = virtual
+                }
         }
 
         fun advance() {
@@ -262,6 +301,8 @@ class LiveFleetProbe {
         ) = hit.forEach { url ->
             tracks[url]?.let {
                 it.noticedMs = 0L
+                it.firstReopenMs = 0L
+                it.firstReEoseMs = 0L
                 it.chaosAtMs = atMs
             }
         }
@@ -286,6 +327,7 @@ class LiveFleetProbe {
                         t.droppedAtMs = 0L
                     }
                     t.lastOpenMs = now
+                    if (t.chaosAtMs > 0L && t.firstReopenMs == 0L) t.firstReopenMs = now
                     // Only a reconnect re-asks anything; the first open is the subscription itself.
                     if (t.opens.incrementAndGet() > 1) {
                         t.replayed.set(0)
@@ -328,6 +370,7 @@ class LiveFleetProbe {
                             if (msg.subId != SUB) return
                             if (t.eoseMs == 0L) t.eoseMs = now
                             t.lastEoseMs = now
+                            if (t.firstReopenMs > 0L && t.firstReEoseMs == 0L) t.firstReEoseMs = now
                             if (t.replaying) {
                                 t.replaying = false
                                 t.replays.add(t.replayed.get())
@@ -351,6 +394,8 @@ class LiveFleetProbe {
                         if (t.chaosAtMs == 0L) {
                             t.naturalDowns.incrementAndGet()
                             t.droppedAtMs = now
+                            val reported = t.lastFailure?.takeIf { now - t.lastFailureMs < 1_000 }
+                            t.dropReasons.add(reported?.let(::dropClass) ?: "closed by the relay")
                         }
                     }
                     if (t.chaosAtMs > 0L && t.noticedMs == 0L) t.noticedMs = now
@@ -364,6 +409,7 @@ class LiveFleetProbe {
                     val t = tracks[relay.url] ?: return
                     t.failures.incrementAndGet()
                     t.lastFailure = errorMessage
+                    t.lastFailureMs = System.currentTimeMillis()
                 }
             }
 
@@ -397,8 +443,8 @@ class LiveFleetProbe {
             atMs: Long,
         ) {
             val ts = hit.mapNotNull { tracks[it] }
-            val reopened = ts.map { if (it.lastOpenMs > atMs) it.lastOpenMs else 0L }
-            val reEosed = ts.map { if (it.lastEoseMs > atMs) it.lastEoseMs else 0L }
+            val reopened = ts.map { it.firstReopenMs }
+            val reEosed = ts.map { it.firstReEoseMs }
             val reEvents = ts.map { if (it.lastEventMs > atMs) it.lastEventMs else 0L }
             println("RECOVERY ${round.kind} — ${ts.size} url(s) hit, measured from the break:")
             pct("noticed (disconnected)", ts.map { it.noticedMs }, atMs)
@@ -418,6 +464,24 @@ class LiveFleetProbe {
                 "ORGANIC CHURN over the whole run — ${all.sumOf { it.naturalDowns.get() }} drop(s) on ${all.count { it.naturalDowns.get() > 0 }} relay(s), " +
                     "${back.size} reopened; reopen p50 ${at(back, 0.5)} p90 ${at(back, 0.9)} max ${back.lastOrNull()?.let { "${it}ms" } ?: "-"}",
             )
+            for ((arm, ts) in all.groupBy { if (it.virtual) "virtual reader threads" else "platform reader threads" }) {
+                val reasons = ts.flatMap { it.dropReasons }
+                println(
+                    "  %-24s %4d relay(s): %4d drop(s) on %4d relay(s) — %s".format(
+                        arm,
+                        ts.size,
+                        reasons.size,
+                        ts.count { it.naturalDowns.get() > 0 },
+                        reasons
+                            .groupingBy { it }
+                            .eachCount()
+                            .entries
+                            .sortedByDescending { it.value }
+                            .take(5)
+                            .joinToString { "${it.key}=${it.value}" },
+                    ),
+                )
+            }
             val flappers =
                 tracks.entries
                     .sortedByDescending { it.value.downs.get() }
@@ -481,7 +545,7 @@ class LiveFleetProbe {
     private class Ticker(
         val fleet: Fleet,
         val client: NostrClient,
-        val okhttp: OkHttpClient,
+        val okhttp: List<OkHttpClient>,
         val total: Int,
         /** Runs once per tick, on the probe's own thread. */
         val onTick: () -> Unit = {},
@@ -504,8 +568,8 @@ class LiveFleetProbe {
                             ts.count { it.events.get() > 0 },
                             fleet.frames.get(),
                             fleet.uniqueIds.size,
-                            okhttp.dispatcher.runningCallsCount(),
-                            okhttp.dispatcher.queuedCallsCount(),
+                            okhttp.sumOf { it.dispatcher.runningCallsCount() },
+                            okhttp.sumOf { it.dispatcher.queuedCallsCount() },
                             ManagementFactory.getThreadMXBean().threadCount,
                             heap,
                         ),
@@ -650,6 +714,9 @@ class LiveFleetProbe {
                 .replaceFirst(Regex("^ws"), "http")
                 .toHttpUrl()
                 .let { "${it.host}:${it.port}" }
+
+        /** A drop's reason, with the ping timeout told apart: it is the one a slow reader thread would cause. */
+        fun dropClass(message: String): String = if ("didn't receive pong" in message) "ping timeout" else failureClass(message)
 
         /** quartz's failure lines end in the exception's class; that, plus the HTTP code if any, is the class. */
         fun failureClass(message: String): String {

@@ -43,6 +43,7 @@ tasks.test {
         "fleetProbe",
         "fleetSinceSeconds",
         "fleetSockets",
+        "fleetThreads",
         "fleetUrls",
         "pagesProbe",
         "pagesUrl",
