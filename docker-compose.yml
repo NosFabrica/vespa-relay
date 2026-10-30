@@ -567,7 +567,7 @@ services:
       # A circuit and a rendezvous, not a TCP handshake — the clearnet
       # `connectionTimeout = 20` in sync.conf is far too short to size this.
       SYNC_TOR_CONNECT_TIMEOUT_SECONDS: ${SYNC_TOR_CONNECT_TIMEOUT_SECONDS:-}
-      # Tor builds a circuit per stream; this is not the 1024-socket clearnet
+      # Tor builds a circuit per stream; this is not the 4096-socket clearnet
       # budget, and it is deliberately its own dispatcher so onion dials
       # cannot draw the fan-out's slots down.
       SYNC_TOR_MAX_SOCKETS: ${SYNC_TOR_MAX_SOCKETS:-}

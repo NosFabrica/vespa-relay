@@ -40,7 +40,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -59,7 +58,6 @@ import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.net.SocketFactory
@@ -93,27 +91,22 @@ class LiveFleetProbe {
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
         val urls = listed.filterNot { ".onion" in it }.map { RelayUrlNormalizer.normalize(it) }.distinct()
         val maxSockets = System.getProperty("fleetSockets")?.toInt() ?: PeerClient.MAX_CONCURRENT_SOCKETS
-        val pingSeconds = System.getProperty("fleetPingSeconds")?.toLong() ?: PING_SECONDS
+        val pingSeconds = System.getProperty("fleetPingSeconds")?.toLong() ?: PeerClient.PING_SECONDS
         val connectMinutes = System.getProperty("fleetConnectMinutes")?.toDouble() ?: 3.0
         val chaos = Chaos.parse(System.getProperty("fleetChaos") ?: "reset:1.0:3,blackhole:0.25:5")
         val sinceSeconds = System.getProperty("fleetSinceSeconds")?.toLong() ?: 5L
-        val dnsConcurrency = System.getProperty("fleetDnsConcurrency")?.toInt() ?: 0
+        // Unset is PeerClient's own resolver; 0 is the bare system resolver, the arm before it.
+        val dnsConcurrency = System.getProperty("fleetDnsConcurrency")?.toInt() ?: PeerClient.MAX_CONCURRENT_LOOKUPS
 
         val sockets = ChaosSockets()
         val fleet = Fleet()
         val okhttp =
-            OkHttpClient
-                .Builder()
-                .dispatcher(
-                    Dispatcher().apply {
-                        maxRequests = maxSockets
-                        maxRequestsPerHost = PeerClient.MAX_CONCURRENT_SOCKETS_PER_HOST
-                    },
-                ).pingInterval(Duration.ofSeconds(pingSeconds))
-                .connectTimeout(Duration.ofSeconds(CONNECT_SEC))
+            PeerClient
+                .relayHttpBuilder(CONNECT_SEC, if (dnsConcurrency > 0) PeerClient.relayDns(dnsConcurrency) else Dns.SYSTEM)
+                .pingInterval(Duration.ofSeconds(pingSeconds))
                 .socketFactory(sockets)
-                .apply { if (dnsConcurrency > 0) dns(BoundedDns(dnsConcurrency)) }
                 .build()
+                .apply { dispatcher.maxRequests = maxSockets }
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         client.addConnectionListener(fleet.listener)
@@ -122,7 +115,7 @@ class LiveFleetProbe {
         println(
             "LIVE-FLEET — ${urls.size} url(s) (${listed.size - urls.size} .onion skipped, no Tor here), " +
                 "dispatcher $maxSockets socket(s), ping ${pingSeconds}s, " +
-                "dns ${if (dnsConcurrency > 0) "$dnsConcurrency at a time" else "unbounded"}, since now-${sinceSeconds}s, chaos $chaos",
+                "dns ${if (dnsConcurrency > 0) "cached, $dnsConcurrency lookups at a time" else "system, unbounded"}, since now-${sinceSeconds}s, chaos $chaos",
         )
         println("=".repeat(120))
 
@@ -155,22 +148,6 @@ class LiveFleetProbe {
         runCatching { client.disconnect() }
         scope.cancel()
         okhttp.dispatcher.executorService.shutdownNow()
-    }
-
-    /** The system resolver, asked at most [permits] names at once: a fleet dialled at once is a burst of lookups. */
-    private class BoundedDns(
-        permits: Int,
-    ) : Dns {
-        private val gate = Semaphore(permits)
-
-        override fun lookup(hostname: String): List<InetAddress> {
-            gate.acquire()
-            try {
-                return Dns.SYSTEM.lookup(hostname)
-            } finally {
-                gate.release()
-            }
-        }
     }
 
     /** One way to break a live socket, how much of the fleet it hits, and how long recovery is watched. */
@@ -595,8 +572,6 @@ class LiveFleetProbe {
         const val BLACKHOLE = "blackhole"
         const val CONNECT_SEC = 10L
 
-        /** `PeerClient`'s own interval. */
-        const val PING_SECONDS = 120L
         const val TICK_MS = 10_000L
 
         /** The host and port OkHttp dials for [url], as [ChaosSockets] keys its sockets. */

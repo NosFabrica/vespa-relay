@@ -6,12 +6,36 @@ The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`,
 the code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.
 
-**The OkHttp dispatcher is 1,024 wide, not the stock 64.** An open websocket
+**The OkHttp dispatcher is 4,096 wide, not the stock 64.** An open websocket
 holds a dispatcher slot for its whole life, so at 64 every stream's
 `concurrency` silently stopped meaning anything: a 20,340-relay cycle
 projected an ETA of 330 hours. `PeerClient.socketLoad` publishes the queued
 count because `queued > 0` is the one direct sign the budget is the
 constraint; everything else about a slow mirror looks alike from throughput.
+
+**4,096, because the prime list outgrew 1,024.** `LiveFleetProbe` held one
+live REQ on every clearnet prime relay at once (1,382 of production's 1,527
+in October 2026). At 1,024 the dispatcher filled and the rest queued forever:
+1,088 ever opened, and after a quarter of the servers went silent only 1 of
+240 came back, because the slots they freed went to dials queued ahead of
+them. At 4,096, 1,334 opened and 324 of 325 came back. A socket is also one
+reader thread for its life, so the budget is a thread budget too.
+
+**DNS is cached and bounded (`PeerClient.relayDns`).** Dialling the fleet at
+once sends ~1,300 lookups at the resolver together; in a sandbox resolving
+through 8.8.8.8 a burst of 1,267 failed 326 of them, while the same names 128
+at a time failed none and took the same 25 seconds. quartz reads any
+`UnknownHostException` as a gone domain and waits five minutes, so after a
+reset of every socket 366 of 1,024 relays stayed down for that long. quartz's
+`SurgeDns` (what Amethyst's relay pool and CLI use) caches answers for a day
+and serves stale while it refreshes, so a reconnect storm resolves nothing;
+`BoundedDns` under it keeps the cold start from being the burst.
+
+**The ping is 30 seconds, not 120.** The ping is the only thing that notices
+a path that went quiet without closing; at 120s a blackholed relay took p50
+192s to notice, its events lost all along. Amethyst's 120s is a battery
+trade-off a server does not make, and its study of relay idle timeouts found
+a ~60s tier that only a shorter ping keeps open.
 
 **There is no passive NIP-66 writer.** quartz's `RelayMonitor` used to hang
 off the shared client and sign a kind-30166 for every socket the fan-out
