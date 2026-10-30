@@ -232,11 +232,13 @@ Each build twice, alternated, JDK 27:
   12,000 × 5 read 0.29–0.31, so the gain there is within the runs' spread of
   about ±0.03 cores.
 - **At 8 feeds a socket**, every note to every feed, 128,000 feeds held the
-  target (p99 482–484 ms against 544 ms). The ramp's 96,000 step, here a
-  jump from 2,000 sockets to 12,000, left 118 to 5,421 sockets waiting for
-  their replay past 60 s on every build: 80,000 replays queued at once, each
-  waiting 20 s on average for the store, with Vespa on the same four cores.
-  Delivery to the sockets that were answered stayed in target (p99 394 ms).
+  target in all three runs (p99 482–491 ms; flushing per event, 544 ms). The
+  ramp's 96,000 step, here a jump from 2,000 sockets to 12,000, queues
+  80,000 replays at once, each waiting 20 s on average for the store with
+  Vespa on the same four cores: two runs left 2,709 and 5,421 sockets
+  without an EOSE past 60 s (flushing per event, 118), and the third had
+  every socket answered and passed, p99 459 ms. Delivery to the sockets that
+  were answered stayed in target.
 - **What is left on the loops is mostly cache misses.** The profile at
   12,000 × 5 puts 25–28% in Netty's pipeline write and the rest spread over
   the first touch of each socket's objects in an event: 21% landed on
