@@ -494,7 +494,36 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-fec452107fe8 = vespa-eventstore main @ 2026-10-29, the merge of PR #189 (over 493fe01d9ea7, below):
+7e05038862db = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over fec452107fe8, below): the
+facade this relay's engine reach-throughs asked for, and quartz 2.8.0 (b5a8b12), which this relay forces
+in the same release. What this relay reaches, each in its own commit after this bump:
+  EngineReads.newestVersions (a31772a): the stored winner per (kind, author), one attribute-only
+    grouping per 500 authors, for StoreProbes' replaceable drop; existingIds now books to the
+    BatchInsert activity, so the mirror's dedup probes show on /pulse.json where they read as nothing.
+  LensedEventStore (4458669): liveGate, scoredProfileSearch, the kind-scoped reindex,
+    distinctTagValues and lensOf on both handles, so `as? LensedEventStore` replaces each switch.
+  ReadShape (5db3c33): the mapping's own reading of a filter's lens and ranking.
+  EngineTuning (01cd643): every VESPA_* setting, typed, with a strict fromEnv; open(tuning =) pins six
+    per-process knobs. deriveConfigUrl is public.
+  EngineReads.group (23fcef8): a metered, coverage-checked grouping read over an EventQuery.
+  SchemaDeploy and deploySchema (8afbe69): the relay's compare-deploy-converge, in the store.
+  lensOf / TrustChain (37c4cf7, 0cfec0e) and telemetry() / StoreTelemetry (07537e9).
+  Not reached: authorsMissingOutbox from author scans (8e17c5e; nothing here calls it), and two
+    refactors onto quartz (7854025 FilterMatcher, f97694b MemberTagFields.score), which the store
+    holds equal to the code they replace.
+  git merge-base --is-ancestor fec452107fe8 7e05038862db   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED, the store at 7e05038862db itself: its integration suite against a real Vespa, 51 tests,
+  0 failures, 1 skipped (StagingCorpusIT, which needs a STAGING_CORPUS export). JitPack built the
+  commit (store-7e05038862db.jar, 962 KB, and engine; the POM names quartz-jvm 2.8.0). Here,
+  ./gradlew test against it before any call site moved: 1,674 tests, 2 skipped, 0 failures; runtime
+  classpath (:relay, :sync) otherwise identical, no `->` on a quartz or eventstore line.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev fec452107fe8 = vespa-eventstore main @ 2026-10-29, the merge of PR #189 (over 493fe01d9ea7, below):
 the store takes quartz 2.7.3, which this relay already forced, so the graph carries one quartz with
 no arrow. Also on main since 493fe01d9ea7:
   A DENSE created_at SECOND IS SPLIT BY ID PREFIX, NOT SCANNED (#186, e8bc99c, 2c1bd5e). A second
