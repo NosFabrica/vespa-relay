@@ -125,7 +125,7 @@ itself — is the engine's cost of the word, which no page can change and the
 next two sections are about.
 
 **The relay** (`server/SearchGate.kt`, `SEARCH_CONCURRENCY_PER_CONNECTION`):
-a connection's ranked reads — terms, a phrase, a `sort:`, and the COUNTs of
+a connection's ranked reads — terms, a phrase, a `sort:` the store knows, and the COUNTs of
 either — run one at a time in arrival order; plain reads and lens-only filters
 are never held; another connection is another lane. So no client, ours or
 anybody's, can stack ranked reads on one socket and make every one of them

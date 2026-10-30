@@ -402,10 +402,9 @@ class RelayVerdictRecord(
         )
 
     /**
-     * Edit a replaceable record: read what is there, keep every tag this writer does not [owns],
-     * apply [add], and store it at `max(now, existing + 1)` so the replace is accepted. Bounded
-     * whole by [EDIT_DEADLINE_MS], the floor under every writer. Callers serialize edits per url
-     * (the passes never overlap), or two writers each keep the other's old tags.
+     * Read this url's record, rewrite it through quartz's [RelayDiscoveryEvent.edit] (every tag this
+     * writer does not [owns] kept, [add] appended, stamped strictly newer), sign and store it. Bounded
+     * whole by [EDIT_DEADLINE_MS]. Callers serialize edits per url (the passes never overlap).
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
@@ -424,11 +423,8 @@ class RelayVerdictRecord(
                     editFailed(url, "read", e)
                     return@withTimeoutOrNull null
                 }
-            val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
-            val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
             val template =
-                RelayDiscoveryEvent.build(url, current?.content.orEmpty(), at) {
-                    for (tag in kept) add(tag)
+                RelayDiscoveryEvent.edit(url, current?.asDiscovery(), owns, createdAt = nowSeconds()) {
                     for (tag in add) add(tag)
                 }
             // The deadlines work by cancellation, which must propagate.
@@ -492,6 +488,9 @@ class RelayVerdictRecord(
         val measuredAt = tag.getOrNull(MEASURED_AT_INDEX)?.toLongOrNull() ?: return false
         return measuredAt >= floor
     }
+
+    /** [this] as the typed record quartz edits; a store that hands back a plain [Event] still keeps every tag. */
+    private fun Event.asDiscovery(): RelayDiscoveryEvent = this as? RelayDiscoveryEvent ?: RelayDiscoveryEvent(id, pubKey, createdAt, tags, content, sig)
 
     /** This url's current record, null when nothing holds one, and a throw when the store cannot answer. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {

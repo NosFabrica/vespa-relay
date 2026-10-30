@@ -212,6 +212,12 @@ asks for the pulse port without naming who may read it, because "no admins" and 
 admin" are one implementation mistake apart and only one of them is survivable for this
 document. There is no unauthenticated mode and no switch that creates one.
 
+**One verifier, quartz's replay split.** A bounded replay set a stranger could
+roll over made a used admin token replayable, so the gate kept two verifiers and
+routed on the token's claimed author. Quartz 2.9.0's `verify(…, acceptsAuthor)`
+keeps the accepted authors' ids apart itself and routes on the verified author,
+so the gate holds one; `AdminGateTest` is the flood that would replay it.
+
 **One signature opens a session; the session carries the polls.** NIP-98 tokens are single-use
 (quartz's verifier remembers ids), which is what makes them a proof rather than a bearer
 credential, and it means a page polling every two seconds would need an extension popup every
@@ -273,6 +279,15 @@ page's whole method is differencing two consecutive polls, and this is admin-onl
 document lambda runs only after the request is admitted, so an anonymous poller cannot even
 make the process walk its counters, and a process with no metered store answers 503 rather than
 a document of zeros.
+
+**The pulse, the trust page and the metrics line read one `telemetry()`.**
+They assembled the store's ledger and four process-wide engine registries
+(`IngestStats`' stages, holds and blocked split, `DegradedReads`) by name, each
+read when the page's code got to it, so the lock table and the stage table
+described different moments. `VespaEventStore.telemetry()` reads them back to
+back after its one I/O, the cached headroom probe, and the documents render
+that snapshot. The shapes did not move: `PulseDocumentTest` holds the snapshot's
+document equal to its parts'.
 
 **The 403 echoes the refused pubkey.** A verified non-administrator is told so and shown its
 own key: saying "you are not on the list" to somebody who just proved who they are costs

@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
-import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.relay.config.BindingSlot
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelaySelect
@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired it with.
@@ -79,6 +80,17 @@ object RelayDiscovery {
                 it.tag != null && it.tag.length == 1 && it.urlIndex == 1 && it.where.isEmpty() && it.bindings.isEmpty()
             }
 
+    /** [filter] narrowed to [select]'s kind, as the paged walk reads it; null when [filter] cannot match that kind. */
+    private fun scopedTo(
+        filter: Filter,
+        select: RelaySelect,
+    ): Filter? =
+        when {
+            select.kind == null -> filter
+            filter.kinds?.let { select.kind !in it } == true -> null
+            else -> filter.copy(kinds = listOf(select.kind))
+        }
+
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
         store: IEventStore,
@@ -101,13 +113,14 @@ object RelayDiscovery {
                 if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
             // One indexed walk per source answering every select it carries, never the store's
             // tags projection, whose cost is the corpus rather than the answer.
-            val aggregate = if (aggregable(dynamic, source)) (store as? VespaEventStore)?.store else null
+            val aggregate = if (aggregable(dynamic, source)) store as? LensedEventStore else null
             val stillPaged = if (aggregate != null) emptyList() else source.selects
             if (aggregate != null) {
                 // The urls come back raw, so they take the same `normalize` the paged path applies.
                 for (select in source.selects) {
+                    val scoped = scopedTo(bounded, select) ?: continue
                     aggregate
-                        .distinctTagValues(bounded, select.tag!!, unconditional = true)
+                        .distinctTagValues(scoped, select.tag!!, unconditional = true)
                         .forEach { raw -> normalize(raw, allowOnion)?.let { found += it } }
                 }
             }
@@ -457,11 +470,9 @@ object RelayDiscovery {
     ): Boolean =
         when {
             dest == "kinds" -> value.toIntOrNull() != null
-            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> isHex64(value)
+            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> Hex.isHexKey(value)
             else -> true
         }
-
-    private fun isHex64(v: String): Boolean = v.length == 64 && v.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
     /** A tag value as a dialable url, or null; the rules live in [RelayUrlCache.decide]. */
     private fun normalize(

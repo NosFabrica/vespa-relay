@@ -20,13 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.vitorpamplona.quartz.nip01Core.core.OptimizedJsonMapper
-import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import com.vitorpamplona.quartz.nip86RelayManagement.server.Nip86HttpHandler
 import com.vitorpamplona.quartz.nip86RelayManagement.server.Nip86Server
-import com.vitorpamplona.quartz.nip98HttpAuth.HTTPAuthorizationEvent
 import com.vitorpamplona.quartz.nip98HttpAuth.Nip98AuthVerifier
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -37,7 +34,6 @@ import io.ktor.server.response.respondText
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
-import kotlin.math.abs
 
 /**
  * The NIP-86 configuration. [banStore] is shared with the server's BanListPolicy; [purge] removes
@@ -62,7 +58,7 @@ class Nip86Admin(
 
 /**
  * The NIP-86 admin RPC, answered on `POST /` beside NIP-FE's commands ([relayPosts]). The token's
- * signer is checked before the body is read; parsing, full NIP-98 auth and dispatch are quartz's.
+ * signer is checked before the body is read; that check, parsing, full NIP-98 auth and dispatch are quartz's.
  */
 fun nip86Answer(
     admin: Nip86Admin,
@@ -75,18 +71,14 @@ fun nip86Answer(
             admin.purge,
             admin.adminPubkeys,
         )
-    val handler = Nip86HttpHandler(server, admin.relayHttpUrl, Nip98AuthVerifier(), Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES)
+    val handler = Nip86HttpHandler(server, admin.relayHttpUrl, Nip98AuthVerifier(now = admin.nowSeconds), Nip86HttpHandler.DEFAULT_MAX_BODY_BYTES)
     val rpcType = ContentType.parse(Nip86HttpHandler.CONTENT_TYPE)
     val slots = Semaphore(admin.concurrency)
 
     return ret@{ call ->
         val auth = call.request.headers[HttpHeaders.Authorization]
-        when (val pre = admin.precheck(auth)) {
-            Precheck.Missing -> return@ret call.respondUnauthorized("Missing NIP-98 Authorization")
-            is Precheck.Bad -> return@ret call.respondUnauthorized(pre.reason)
-            Precheck.NotAdmin -> return@ret call.respondText("Not an admin", status = HttpStatusCode.Forbidden)
-            Precheck.Admin -> Unit
-        }
+        // Every check but the payload hash and replay, before a byte of the body is read.
+        handler.preauthorize(auth)?.let { return@ret call.respond(it, rpcType) }
         // The slot bounds uploads only: a purge that takes minutes must not turn every other admin call into a 503.
         if (!slots.tryAcquire()) {
             call.response.header(HttpHeaders.RetryAfter, "1")
@@ -132,43 +124,3 @@ private suspend fun ApplicationCall.respondUnauthorized(reason: String) {
     response.header(HttpHeaders.WWWAuthenticate, Nip86HttpHandler.WWW_AUTHENTICATE)
     respondText(reason, status = HttpStatusCode.Unauthorized)
 }
-
-/** What the `Authorization` header says before any body is read. */
-internal sealed interface Precheck {
-    data object Missing : Precheck
-
-    data class Bad(
-        val reason: String,
-    ) : Precheck
-
-    data object NotAdmin : Precheck
-
-    data object Admin : Precheck
-}
-
-/**
- * The token's every check but the payload hash and replay, which need the body and are quartz's
- * after it: a stranger, or a stale or forged token, is refused without the relay reading a byte.
- */
-internal fun Nip86Admin.precheck(header: String?): Precheck {
-    if (header.isNullOrBlank()) return Precheck.Missing
-    if (!header.startsWith(Nip98AuthVerifier.SCHEME)) return Precheck.Bad("expected 'Nostr <base64>' header")
-    val event =
-        runCatching {
-            OptimizedJsonMapper.fromJson(
-                kotlin.io.encoding.Base64
-                    .decode(header.substring(Nip98AuthVerifier.SCHEME.length).trim())
-                    .decodeToString(),
-            )
-        }.getOrNull() ?: return Precheck.Bad("token does not decode to a Nostr event")
-    if (event.kind != HTTPAuthorizationEvent.KIND) return Precheck.Bad("token is not a kind ${HTTPAuthorizationEvent.KIND} event")
-    if (abs(nowSeconds() - event.createdAt) > NIP98_TOLERANCE_SECONDS) return Precheck.Bad("token is not fresh")
-    val token = HTTPAuthorizationEvent(event.id, event.pubKey, event.createdAt, event.tags, event.content, event.sig)
-    if (!token.method().equals("POST", ignoreCase = true)) return Precheck.Bad("token is not for a POST")
-    if (token.url() != relayHttpUrl) return Precheck.Bad("token is for another url")
-    if (!event.verify()) return Precheck.Bad("bad event signature or id")
-    return if (event.pubKey in adminPubkeys) Precheck.Admin else Precheck.NotAdmin
-}
-
-/** Quartz's own NIP-98 window, so nothing it would accept is refused here first. */
-private const val NIP98_TOLERANCE_SECONDS = 60L

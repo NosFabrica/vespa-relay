@@ -30,6 +30,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  * One relay's newest [target] events, as the set of ids in them: the measurement [RelayAliases]
  * folds on. Paged from one shared `anchor`, so every url of a group walks the same window. Null
  * is a url that never spoke, empty a relay that answered with nothing, throughout.
+ * Remove the hand-written page walk when quartz's `fetchAllPages` hands a page's off-filter events to its caller.
  */
 class AliasProbe(
     /**

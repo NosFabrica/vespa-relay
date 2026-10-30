@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.identity
 
-import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
+import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyOnlyAsHexOrNull
 
 /**
  * Parses every pubkey setting: a bech32 public key, converted to lowercase hex. Bare hex is
@@ -28,7 +28,7 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
  * a dropped entry looks like the feature not working.
  */
 object PubKeys {
-    /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */
+    /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key and nothing else. */
     fun decode(
         raw: String,
         varName: String,
@@ -39,18 +39,17 @@ object PubKeys {
                 .trim()
                 .removeSurrounding("\"")
                 .let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
-        val hex =
-            when {
-                // Quartz would decode an nsec to its public key, leaving a private key in a public setting.
-                trimmed.startsWith("nsec1") -> null
-
-                trimmed.startsWith("n") -> decodePublicKeyAsHexOrNull(trimmed)
-
-                else -> null
-            }
+        // Quartz's decoder finds a key inside prose and takes bare hex; a setting is one whole token.
+        val hex = if (WHOLE_PUBLIC_KEY.matches(trimmed)) decodePublicKeyOnlyAsHexOrNull(trimmed) else null
         return hex?.takeIf { it.length == 64 }
             ?: throw IllegalArgumentException("$varName must be an npub1…, got ${describe(trimmed)}")
     }
+
+    /**
+     * An npub or nprofile, `nostr:` or not, and nothing around it. An npub is exactly 58 characters
+     * past its prefix because quartz reads that many and takes whatever follows as trailing text.
+     */
+    private val WHOLE_PUBLIC_KEY = Regex("^(nostr:)?(npub1[02-9ac-hj-np-z]{58}|nprofile1[02-9ac-hj-np-z]+)$")
 
     /** Null or blank stays null; anything else must parse. */
     fun decodeOrNull(
@@ -74,7 +73,7 @@ object PubKeys {
     /** Enough to spot the mistake without echoing a whole mistyped key back. */
     private fun describe(value: String): String =
         when {
-            value.startsWith("nsec1") -> {
+            "nsec1" in value -> {
                 "an nsec — that is a PRIVATE key, and it does not belong in this setting"
             }
 
@@ -82,8 +81,8 @@ object PubKeys {
                 "a ${value.takeWhile { it.isLetter() }} that does not decode to a public key"
             }
 
-            value.startsWith("npub1") -> {
-                "an npub that would not decode — recopy it"
+            value.startsWith("npub1") || value.startsWith("nostr:npub1") -> {
+                if (WHOLE_PUBLIC_KEY.matches(value)) "an npub that would not decode — recopy it" else "an npub with something else around it — one key per entry"
             }
 
             value.length == 64 -> {

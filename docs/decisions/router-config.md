@@ -151,6 +151,12 @@ both: on this store 861 discovered urls carried a redundant default port and
 362 of them duplicated a portless url already in the set, each costing a dial,
 a cursor band and a set of NIP-66 records. Dropping 443 on `wss` and 80 on `ws`
 needs no evidence; the alias fold is for urls only measurement can prove equal.
+The relay's NIP-42 check folded the same ports with a copy of its own, so the
+one function now lives in `:common` (`util/DefaultPort.kt`), the lowest module
+both see, until quartz's normalizer does it.
+
+Quartz 2.9.0's normalizer drops the port itself (`wss` 443, `ws` 80), so the
+function is gone; `DefaultPortTest` pins the normalizer.
 
 **Negative `since`, `until` and `limit` are refused at parse time.** Measured
 across the five `indexers`: strfry kills the subscription (`CLOSED: bad req`),

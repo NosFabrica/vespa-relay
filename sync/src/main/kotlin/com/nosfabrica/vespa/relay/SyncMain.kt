@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.nosfabrica.vespa.eventstore.SchemaDeploy
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
@@ -43,9 +45,7 @@ import com.nosfabrica.vespa.relay.status.StatusRollup
 import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
-import com.nosfabrica.vespa.relay.store.awaitServedSchema
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
-import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.KeyVerdict
 import com.nosfabrica.vespa.relay.sync.PressurePoller
@@ -172,8 +172,10 @@ fun main() {
         RelayUrlNormalizer.normalizeOrNull(relayUrlRaw)
             ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
 
+    // Strict, and every bad VESPA_* setting named in one refusal; the store would read them leniently.
+    val storeTuning = EngineTuning.fromEnv(env)
     val config =
-        RouterConfigLoader.fromEnv(env)
+        RouterConfigLoader.fromEnv(env, storeTuning)
             ?: error("SYNC_CONFIG or SYNC_CONFIG_FILE is required — this process only mirrors; without streams it has no job.")
 
     // Checked before anything slow: a `.onion` upstream with no transport looks like a
@@ -240,11 +242,12 @@ fun main() {
         }
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
-    // The relay owns the schema: this process waits for it rather than deploying one (awaitServedSchema).
-    val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
+    // The relay owns the schema: this process waits for it rather than deploying one (SchemaDeploy.AWAIT).
+    val configUrl = env["VESPA_CONFIG_URL"] ?: VespaEventStore.deriveConfigUrl(vespaUrl)
     // Read only to say it is the relay's: a shared .env sets it for both services.
     if (env["AUTO_DEPLOY"] != null) System.err.println("schema: AUTO_DEPLOY is the relay's alone; this process never deploys")
-    awaitServedSchema(vespaUrl)
+    System.err.println("schema: waiting until an application serves at $vespaUrl — the relay deploys it (up to 10 min)")
+    VespaEventStore.deploySchema(vespaUrl, configUrl, SchemaDeploy.AWAIT, storeTuning)
     BootClock.mark("sync: Vespa serves the schema")
 
     // Read before the store opens: the slow-read ring is a constructor setting.
@@ -271,7 +274,7 @@ fun main() {
         VespaEventStore.open(
             vespaUrl,
             relay = relayUrl,
-            autoDeploy = false,
+            schema = SchemaDeploy.AWAIT,
             configUrl = configUrl,
             feedEndpoints = vespa.feed,
             queryEndpoints = vespa.query,
@@ -280,6 +283,7 @@ fun main() {
             providerRefreshSeconds = providerRefresh,
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
             readOnly = true,
+            tuning = storeTuning,
         )
     BootClock.mark("sync: store open (read-only)")
     // When the counters start; the page states every total as cumulative over this window.

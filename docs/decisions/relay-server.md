@@ -119,12 +119,17 @@ no-lens read the gate exists to stop.
 
 **The trust notice says one thing.** The two links are a chain: with no kind
 10040 there is no service to ask about, so "we hold none of your provider's
-scores" is the same finding restated as a guess. Every `30382:rank` service is
-considered, not the first: reading only the first told a reader whose second
-provider was fully mirrored that their scores were missing, on every login,
-forever. A failed store read says nothing, because "we do not have your
-provider list" while Vespa was unreachable is a claim about the reader's own
-publishing the relay cannot support.
+scores" is the same finding restated as a guess. A failed store read says
+nothing, because "we do not have your provider list" while Vespa was
+unreachable is a claim about the reader's own publishing the relay cannot
+support.
+
+**The notice reads the chain the store follows.** It re-derived the chain here
+and counted cards from any of the first eight `30382:rank` services, while the
+store's reads resolve a list to its FIRST rank service: a reader whose first
+provider had signed nothing here got an empty ranked page and no notice. It now
+asks `lensOf` and names the gap the store reports, and so the service the reads
+use.
 
 **One ranked read per connection.** A NIP-50 search for a common word scores
 millions of postings across every match thread, so two on one socket share
@@ -138,12 +143,34 @@ the store call to EOSE, not to the end of the call, because a REQ parks at its
 live tail. A searching COUNT is gated too; it ran the same match set at about
 15x the search it summarizes.
 
+**The relay reads a filter's lens and ranking off the store's `ReadShape`.**
+`LensRequiredPolicy` and `SearchGate` parsed the search string themselves, and
+the gate disagreed with the store: any `sort:` counted as ranked, while the
+store ignores a value it does not recognise and serves plain recall, so
+`sort:bogus` queued behind a connection's real searches for nothing.
+`ReadShape.of(filter)` is derived by the mapping the query compiler uses, so the
+two cannot drift; `sort:bogus` is no longer held.
+
 **Pressure is sampled to EOSE, never to the end of the call.** A REQ parks
 until the client closes it, so timing the whole call recorded subscription
 lifetimes as read latency and pinned the ingest backoff at max. `/pressure`
 caps its `samples` field at the gate it answers: uncapped it was a lifetime
 query counter, and polling it twice handed anyone the relay's
 queries-per-second.
+
+**A REQ's live tail is a registration, and the gate wraps both halves.**
+Quartz 2.8.0's `RelaySession` takes `LiveSubscriptionBackend.openSubscription`
+over a parked `queryRaw` when, and only when, the backend implements it, so an
+`ObserverBackend` still implementing plain `SessionBackend` would have kept one
+parked coroutine per open REQ. It implements it now and wraps both things it
+hands back: the subscription (the replay runs under the connection's lens
+context, the search lane and the pressure sample, exactly as `queryRaw` does)
+and the listener (live events wait until the replay has read the `LiveGate`,
+then go through it). An event accepted between registration and replay is held,
+never sent ungated, and the cold-author checks run in a scope the
+subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
+more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
+the screened replay, and fails if `openSubscription` forwards past the gate.
 
 **The reference expansion moved into the store.** It lived here as an
 `IEventStore` decorator until store `a9ce0d254c`. The reader's enrolment had
@@ -200,6 +227,12 @@ An admitted call reads its body under `Nip86Admin.bodyTimeoutMs` (a `408` with
 `Connection: close`, as NIP-FE does) and at most `Nip86Admin.concurrency` run
 at once, refused with a `503` rather than queued, since a queue is what a
 stolen admin token would fill.
+
+**The pre-body check is quartz's since 2.9.0.** `Nip86HttpHandler.preauthorize`
+runs the same checks (`Nip98AuthVerifier.preverify`, then the allow list) and
+records nothing, so the hand-written decode went. Its refusal reasons are
+quartz's wording now; which tokens are refused is unchanged, and `handle`
+keeps admins' replay ids apart from everyone else's.
 
 **The admin slot covers the upload, not the handling.** It was held through
 quartz's dispatch, which awaits the purge behind a ban (`store.delete`), so a
@@ -467,11 +500,9 @@ through the store, and the queue holds four batches before a submit suspends.
 
 **What a reader's own data can make a sign-in cost is bounded.** A 10040 is
 the reader's to write and may carry up to `MAX_EVENT_TAGS` tags; every rank
-service it named went into one store filter and one NOTICE. `TrustNotice`
-checks the first `MAX_RANK_SERVICES`, and when the list names more it says
-nothing about scores at all: the cards may be under a service it skipped, and
-a `restricted:` NOTICE telling a reader their ranking is broken when it works
-is a claim the check cannot support. Likewise
+service it named went into one store filter and one NOTICE. The store's
+`lensOf` reads at most one document per link and names one service, whatever
+the list holds. Likewise
 `MultiAddressAuthPolicy` remembered every identity a connection signed in as,
 and a client can mint keys without end, so it tells at most `MAX_TOLD` per
 connection and then stops telling rather than growing the set.
@@ -493,3 +524,19 @@ nine times a second. `-XX:InitialRAMPercentage=35` gives the young generation ro
 start: on 20,000 seeded reads (`relay/tools/read-mix.mjs`), 238 collections and 2.7 s of pause
 became 23 and 0.4 s, with the same bytes allocated. The memory was already the heap's to take;
 the sync keeps the shared default until its own workload is measured.
+
+**Quartz 2.9.0 took three local copies.** `MultiAddressAuthPolicy` is quartz's
+`OptionalAuthPolicy` built over every address (any `relay` tag naming one
+accepts, as the restated check did; both sides normalized, which now folds a
+default port) and reaches the client through `sendToClient`. `BanListFile`
+writes and seeds through `BanStore.toJson`/`seedFromJson`, one consistent
+snapshot that also carries the event allow list, roles and claims, which a
+restart used to drop; the relay still refuses a quoted kind and a null
+reason before quartz reads the file, since quartz's decoder takes both.
+
+**A pubkey setting is one whole token.** `PubKeys` decodes through quartz's
+`decodePublicKeyOnlyAsHexOrNull`, which never derives a key from an nsec, but
+that decoder (like the lenient one before it) fishes a key out of surrounding
+text and takes bare hex. A setting must match an npub or nprofile, `nostr:` or
+not, with nothing around it, so `npub1…nsec1…` is refused as a private key and
+`npub1… trailing words` as junk, where both used to boot as the npub.

@@ -20,35 +20,24 @@
  */
 package com.nosfabrica.vespa.relay.store
 
-import java.time.Duration
-import java.util.concurrent.atomic.AtomicInteger
+import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.nosfabrica.vespa.eventstore.SchemaDeployException
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
+import kotlin.test.assertNull
 
-/** The sync's wait for the relay's schema, which replaced its own deploy. */
+/** Which failed deploys the relay's boot survives. */
 class SchemaDeployTest {
     @Test
-    fun `an application already serving costs one check`() {
-        val asked = AtomicInteger()
-        awaitServedSchema("http://vespa:8080", isServing = { asked.incrementAndGet() > 0 })
-        assertEquals(1, asked.get())
+    fun `a failed deploy is survived while an old schema serves`() {
+        val left = deployBundledSchema("http://vespa:8080", "http://vespa:19071", EngineTuning()) { throw SchemaDeployException("refused", null, serving = true) }
+        assertNull(left, "nothing left to await: the old package keeps serving")
     }
 
     @Test
-    fun `it waits for the relay's deploy, however many checks that takes`() {
-        val asked = AtomicInteger()
-        awaitServedSchema("http://vespa:8080", poll = Duration.ofMillis(1), isServing = { asked.incrementAndGet() >= 4 })
-        assertEquals(4, asked.get())
-    }
-
-    @Test
-    fun `nothing serving within the timeout stops the boot, naming who deploys`() {
-        val e =
-            assertFailsWith<IllegalStateException> {
-                awaitServedSchema("http://vespa:8080", timeout = Duration.ofMillis(20), poll = Duration.ofMillis(1), isServing = { false })
-            }
-        assertTrue("relay deploys" in e.message.orEmpty(), e.message)
+    fun `a failed deploy on a Vespa serving nothing stops the boot`() {
+        assertFailsWith<SchemaDeployException> {
+            deployBundledSchema("http://vespa:8080", "http://vespa:19071", EngineTuning()) { throw SchemaDeployException("refused", null, serving = false) }
+        }
     }
 }

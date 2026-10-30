@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.listeners.RelayConnectionListener
 import com.vitorpamplona.quartz.nip01Core.relay.client.single.IRelayClient
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
@@ -31,9 +32,9 @@ import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The last thing each relay said when it would not answer: the `CLOSED` or `NOTICE` sentence
- * `PagedFetchResult` has no room for. A NOTICE counts as a CLOSED, since a relay refusing a
- * wide filter often answers with a bare NOTICE and never EOSEs.
+ * The last thing each relay said when it would not answer, for the sentence a walk's
+ * `PagedFetchResult.message` does not carry: a relay refusing a wide filter often answers with a
+ * bare NOTICE and never EOSEs, so a NOTICE counts as a CLOSED.
  */
 internal interface RelayComplaints {
     /**
@@ -68,6 +69,18 @@ internal interface RelayComplaints {
 
         /** How often [awaitSince] checks inside that grace. */
         const val POLL_MS = 10L
+
+        /**
+         * The relay's own words on [walked], trimmed and bounded as a heard sentence is. A
+         * transport error is not the relay speaking, so `CANNOT_CONNECT` carries none.
+         */
+        fun saidIn(walked: PagedFetchResult): String? {
+            if (walked.end == PagedFetchResult.End.CANNOT_CONNECT) return null
+            return walked.message
+                ?.trim()
+                ?.take(ClientRelayComplaints.MAX_SAID)
+                ?.ifEmpty { null }
+        }
 
         /** Hears nothing: the probes, and any pool built without a client to listen on. */
         val DEAF: RelayComplaints =

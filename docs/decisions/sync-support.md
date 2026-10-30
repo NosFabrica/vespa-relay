@@ -113,6 +113,14 @@ Measured: the narrowing got three sentences of three from `git.cloistr.xyz`
 and lost the race on the second attempt against `purplerelay.com`, stopping
 at 69 kinds and aborting a relay that was one halving from working.
 
+**The walk's own result speaks first.** Quartz's `PagedFetchResult.message`
+carries a `CLOSED`'s text (and an `auth-required:` one's), set before the walk's
+end is signalled, so it cannot lose the race the grace exists for. A refusal
+reads it first (`VisitPool.saidAbout`) and waits on the listener only when it
+is empty: an idle walk after a bare NOTICE, which nothing but a connection
+listener hears. A `CANNOT_CONNECT` message is the transport's error, not the
+relay's sentence, and is not taken.
+
 **Complaints are bounded at 4,096 relays and 200 characters.** The listener
 sits on the client both planes share, and a probe pass dials every url
 discovery ever named (20,340 on one cycle) against a roster of hundreds (678
@@ -208,6 +216,31 @@ its own copy of a possibly multi-GB id set through up to eight rounds and the
 paced publish, all at once. The stream now takes one snapshot per interval and
 pushes it to its urls in turn, so the live snapshots are bounded by the number
 of `up` streams; a url that fails still leaves the rest their turn.
+
+**A url's push is quartz's `NegentropyStoreSync` group.** Quartz 2.9.0 gave it
+the options this needed, and `syncGroup(relay, filter, snapshot)` takes the
+pass's own gated snapshot, so `shareSnapshots` (which reads outside the gate and
+lets waiting groups inherit a failed read) is not used. Up only, no deletion
+settle (its `applyDown` writes a relay's kind 5, and this process's store is
+read-only), uploads beside the session as the paced loop did. What changed:
+an event counts as pushed when the upstream's `OK` accepts it, not when it was
+sent; the push is paced by those answers (`PUSH_WINDOW` awaiting at once)
+rather than a fixed 40 ms; one reconcile per url, since the rounds existed to
+re-find what an unconfirmed send lost; a relay that stops answering stalls the
+push once; and each url has one interval's budget, the rest counted as
+`uploadsLeft` for the next pass. That budget starts with the reconcile, which
+quartz's `uploadDeadlineMs` counts.
+
+**The pager's store index is quartz's, booked here.** `StoreWindowIndex` wraps
+`NegentropyLocalIndex.of(store)` in `storeCall`. Quartz turns a failed count
+into null, so the wrapper carries that null through the call as a failure,
+or `store` would book a refused count as answered.
+
+**`RelayPages` and `AliasProbe` keep their own reading of the socket.** Quartz
+2.9.0's `PageReport` counts a page's unmatched and above-`until` events on the
+page's own subscription; the sampler names the kinds and stamps that crossed
+every subscription of the socket, and the probe grades off-kind and
+off-window separately, so neither moved.
 
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before

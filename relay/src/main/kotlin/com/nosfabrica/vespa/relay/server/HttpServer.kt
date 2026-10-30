@@ -91,7 +91,7 @@ fun serveRelay(
     observerStatsPage: String? = null,
     statsPage: String? = null,
     trustPage: String? = null,
-    trustJson: (() -> kotlinx.serialization.json.JsonObject)? = null,
+    trustJson: (suspend () -> kotlinx.serialization.json.JsonObject)? = null,
     trustExplain: (suspend (String) -> kotlinx.serialization.json.JsonObject)? = null,
     // When set, POST /search/pubkeys: the ORE-05 backend Brainstorm's server proxies to.
     openRanking: OpenRanking? = null,
@@ -234,7 +234,7 @@ internal fun Route.corpusStats(
  */
 internal fun Route.trustHealth(
     page: IconedPage?,
-    document: (() -> JsonObject)?,
+    document: (suspend () -> JsonObject)?,
     explain: ExplainGate?,
 ) {
     page?.let { get("/trust.html") { call.respondPage(it.page) } }

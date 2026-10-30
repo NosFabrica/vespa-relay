@@ -4,6 +4,16 @@ Why each pin in `gradle/libs.versions.toml` is what it is, moved out of the
 catalog so a bump is a one-line diff. Newest notes first within each pin, as
 they were written. The rule that matters on every bump is the first section.
 
+## Building against a local checkout
+
+`-PvespaEventStoreDir` and `-PquartzDir` (`settings.gradle.kts`) include that
+checkout as a composite build and substitute its projects for the pinned
+coordinates, both group spellings, as quartz's own `-PcryptoKmpDir` does. That
+is how a change wanted from upstream is compiled and tested here before a pin
+can name it. Both apply together, and the quartz checkout then also stands in
+for the store's quartz. Neither moves a pin: a bump is still the catalog line
+and the store's integration gate.
+
 ## The two JitPack pins carry no order (and `kotlin`, after this note)
 
 ```text
@@ -45,7 +55,34 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a; its JVM code is the merge of
+2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (9b070bd: main @ 1813390 plus the
+release's Package.swift, 22 commits over v2.8.0). It makes public what this relay had copied. What this relay reaches:
+
+  THE LOCAL COPIES, RETIRED OR WRAPPED. Deleted for quartz's: DefaultPort.withoutDefaultPort (the
+    normalizer drops wss:443 / ws:80), the monitor's Unreachability (quartz's reads the same words and
+    walks the cause chain for our own side), Nip86Route's precheck (Nip86HttpHandler.preauthorize),
+    AdminGate's second verifier (Nip98AuthVerifier.verify(..., acceptsAuthor)), MultiAddressAuthPolicy's
+    restated relay check (OptionalAuthPolicy over a set), the 64-hex checks (Hex.isHexKey). Moved onto
+    quartz and kept as thin wrappers: RelayVerdictRecord.edit (RelayDiscoveryEvent.edit, nextCreatedAt),
+    RelayFacts / RelayDocument (the NIP-66 tag codecs, RequirementTag.fromNip11), StoreWindowIndex
+    (NegentropyLocalIndex.of(store), still booked on StoreCalls), BanListFile (BanStore.toJson /
+    seedFromJson; the file now also keeps the event allow list, roles and claims), PubKeys
+    (decodePublicKeyOnlyAsHexOrNull). Kept, pointers updated: RelayPages and AliasProbe (PageReport
+    counts only the page's subscription and does not split off-kind from off-window), FilterWidths.
+  STRICTER WHERE QUARTZ IS LOOSER. decodePublicKeyOnlyAsHexOrNull takes bare hex, prose and an npub glued
+    to an nsec, so PubKeys requires one whole npub/nprofile token (the old code also took trailing junk);
+    seedFromJson takes a quoted kind and a null reason, so BanListFile refuses both first. FullAuthPolicy
+    accepting any naming relay tag matches what MultiAddressAuthPolicy already did. Unreachability lacks
+    musl's "Name does not resolve", as the copy did; the image is glibc (Ubuntu resolute).
+  UPSTREAMPUSH IS NegentropyStoreSync. Up only, no deletion settle, over the pass's gated snapshot
+    (syncGroup with localEntries, not shareSnapshots), uploads beside the session, PUSH_WINDOW = 4
+    awaiting their OK, one interval's uploadDeadlineMs per url (counted from the reconcile's start).
+    `pushed` now counts events an upstream accepted, not events sent; the log names what was left.
+  RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move. With the store at 596c78a862be
+    the graph showed `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`, the force winning; the store at
+    9fc501742650 and since d75be63d9db0 (vespaEventStore) names 2.9.0 itself, and no arrow is left.
+
+Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a; its JVM code is the merge of
 quartz#61, c2c73e7), 15 commits over v2.7.3. All of it is the relay server's live fan-out, written against this
 relay's measurements (docs/live-feeds.md). What this relay reaches:
 
@@ -69,12 +106,15 @@ relay's measurements (docs/live-feeds.md). What this relay reaches:
   REPLAY DEDUPE KEPT HONEST ACROSS EOSE (159f7e5, 839b56b). An event committed during a replay
     but not yet fanned out is no longer delivered twice; ids still in flight at EOSE are kept and
     released when their submission leaves.
-  Inert here: LiveSubscriptionBackend (1b21f0d), a REQ held as a registration instead of a parked
-    coroutine (about half the retained heap per idle feed in quartz's benchmark). ObserverBackend
-    wraps LiveEventStore and does not implement it, so every REQ stays on the queryRaw path; the
-    executor still reaches the store, through the RequestContext ObserverBackend passes on.
-  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. The store at fec452107fe8 still names
-    2.7.3, and the graph shows `com.vitorpamplona.quartz:quartz:2.7.3 -> 2.8.0`, the force winning.
+  A REQ'S LIVE TAIL IS A REGISTRATION (1b21f0d). RelaySession prefers
+    LiveSubscriptionBackend.openSubscription over a parked queryRaw, but only for a backend that
+    implements it; ObserverBackend implemented plain SessionBackend and would have stayed on the
+    parked path, one coroutine per open REQ, without a test noticing. It implements it now, gating
+    the live listener and wrapping replay/replayRaw (docs/decisions/relay-server.md);
+    LiveGateDeliveryTest fails if the registration skips the gate.
+  RUNTIME CLASSPATH (:relay, :sync): quartz alone moves. With the store at fec452107fe8 the graph
+    showed `com.vitorpamplona.quartz:quartz:2.7.3 -> 2.8.0`, the force winning; the store at
+    7e05038862db (vespaEventStore) names 2.8.0 itself, and no arrow is left.
 
 Prev 2.7.3 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.7.3 (fbe0912), 81 commits over v2.4.0.
 What this relay reaches:
@@ -505,7 +545,106 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-fec452107fe8 = vespa-eventstore main @ 2026-10-29, the merge of PR #189 (over 493fe01d9ea7, below):
+d75be63d9db0 = vespa-eventstore main @ 2026-10-30, the merge of PR #190 (parents fec452107fe8, main before,
+and 9fc501742650, below). Its tree is 9fc501742650's (git diff 9fc5017 d75be63 is empty), so nothing a
+deployment runs moves; the pin is on main's history, where a branch hash is not promised to stay.
+  git merge-base --is-ancestor 9fc501742650 d75be63d9db0   # verified
+
+DEPLOY: nothing moves.
+
+GATED: the tree is the one gated at 9fc501742650 (below); here, ./gradlew build archTest against the
+  JitPack jar of d75be63d9db0.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 9fc501742650 = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 596c78a862be, below): the store on
+quartz 2.9.0, its local copies retired for quartz's.
+  QUARTZ 2.9.0 (29d63b9), the same release as this relay's quartz pin. The store's HexKeys.isHexKey,
+    Event.addressOrNull, boundedRank, the NIP-85 subject and provider walks, search expansion's References
+    and the observer:/language: readers give way to Hex.isHexKey, addressTagOrNull, the NIP-85 accessors,
+    SubjectReferences and SearchQuery. docIdSegment and the StemText.LANGUAGES gate stay the store's.
+  WHAT THIS RELAY CAN SEE. A 30382 subject must be 64 lowercase hex (an upper-case d never ranked anyone;
+    the reconciler now reports such a stored cell as an orphan). Search expansion serves upper-case e/p
+    list members, lowercased, where it used to look them up and drop them. A NIP-62 vanish naming
+    wss://relay:443 now covers a store opened as wss://relay (quartz's url normalizer).
+  PARITY IS QUARTZ'S BATTERY. ParityCheck gives way to StoreConformance over ConformanceCorpus; NostrCorpus
+    stays as the benchmarks' workload.
+  git merge-base --is-ancestor 596c78a862be 9fc501742650   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build at 9fc5017 (engine 371, store 572, benchmark 22 unit tests, 0 failures) and its
+  integration gate against Vespa in Docker, with quartz 2.9.0 from Central (29 run, 0 failures, 1 skipped
+  for want of a STAGING_CORPUS export; parity 155/155); here, ./gradlew build archTest against the
+  JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 596c78a862be = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 4e2e8657819b, below): one fix.
+  A DOCUMENT GET NEVER LEAVES ITS DOCID SEGMENT (596c78a). The engine's event and reputation gets put
+    the id straight into the document-API url, and a kind 5's e tags reach get() having passed only
+    quartz's length check: a signed deletion naming "../../../../../search/?ranking=…&yql=…" (64
+    characters) sent the store's own GET to /search/ with an unbounded query, and a 4xx failed the
+    whole deletion. An event get now answers absent for anything but 64 hex, and both gets allow-list
+    the segment. Reachable here through every kind 5 the relay or the mirror accepts.
+  git merge-base --is-ancestor 4e2e8657819b 596c78a862be   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build at 596c78a (935 unit tests, 0 failures; DocIdPathTest failed before the
+  fix with the injected yql reaching the mock's search handler); here, ./gradlew build archTest
+  against the JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 4e2e8657819b = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 7e05038862db, below): one fix
+and one docs commit.
+  A KEY IS EXACTLY 64 HEX BEFORE IT REACHES AN EXPRESSION (92a6bae). quartz's Hex.isHex64 reads only the
+    first 64 characters, and every check in the engine and the store used it alone, so an author,
+    owner or trust key of 64 hex plus a tail passed the injection rule and was quoted into a document
+    selection, a trust-cell YQL or a putIfNewer condition; a NIP-85 d tag "<pk>:v2" counted as a
+    subject. The store's isHexKey adds the length check. This relay's own checks
+    (RelayDiscovery, OpenRankingRoutes, common's isHex64) already tested the length.
+  The copied quartz skills are queued to give way to quartz's distributed skill (4e2e865, docs only).
+  git merge-base --is-ancestor 7e05038862db 4e2e8657819b   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build (engine and store unit suites) at 92a6bae, with the two failing tests it
+  adds; here, ./gradlew build archTest against the JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 7e05038862db = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over fec452107fe8, below): the
+facade this relay's engine reach-throughs asked for, and quartz 2.8.0 (b5a8b12), which this relay forces
+in the same release. What this relay reaches, each in its own commit after this bump:
+  EngineReads.newestVersions (a31772a): the stored winner per (kind, author), one attribute-only
+    grouping per 500 authors, for StoreProbes' replaceable drop; existingIds now books to the
+    BatchInsert activity, so the mirror's dedup probes show on /pulse.json where they read as nothing.
+  LensedEventStore (4458669): liveGate, scoredProfileSearch, the kind-scoped reindex,
+    distinctTagValues and lensOf on both handles, so `as? LensedEventStore` replaces each switch.
+  ReadShape (5db3c33): the mapping's own reading of a filter's lens and ranking.
+  EngineTuning (01cd643): every VESPA_* setting, typed, with a strict fromEnv; open(tuning =) pins six
+    per-process knobs. deriveConfigUrl is public.
+  EngineReads.group (23fcef8): a metered, coverage-checked grouping read over an EventQuery.
+  SchemaDeploy and deploySchema (8afbe69): the relay's compare-deploy-converge, in the store.
+  lensOf / TrustChain (37c4cf7, 0cfec0e) and telemetry() / StoreTelemetry (07537e9).
+  Not reached: authorsMissingOutbox from author scans (8e17c5e; nothing here calls it), and two
+    refactors onto quartz (7854025 FilterMatcher, f97694b MemberTagFields.score), which the store
+    holds equal to the code they replace.
+  git merge-base --is-ancestor fec452107fe8 7e05038862db   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED, the store at 7e05038862db itself: its integration suite against a real Vespa, 51 tests,
+  0 failures, 1 skipped (StagingCorpusIT, which needs a STAGING_CORPUS export). JitPack built the
+  commit (store-7e05038862db.jar, 962 KB, and engine; the POM names quartz-jvm 2.8.0). Here,
+  ./gradlew test against it before any call site moved: 1,674 tests, 2 skipped, 0 failures; runtime
+  classpath (:relay, :sync) otherwise identical, no `->` on a quartz or eventstore line.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev fec452107fe8 = vespa-eventstore main @ 2026-10-29, the merge of PR #189 (over 493fe01d9ea7, below):
 the store takes quartz 2.7.3, which this relay already forced, so the graph carries one quartz with
 no arrow. Also on main since 493fe01d9ea7:
   A DENSE created_at SECOND IS SPLIT BY ID PREFIX, NOT SCANNED (#186, e8bc99c, 2c1bd5e). A second

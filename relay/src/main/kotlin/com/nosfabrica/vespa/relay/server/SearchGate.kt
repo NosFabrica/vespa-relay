@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.ReadShape
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
-import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -46,8 +46,8 @@ class SearchGate(
 
     private val lanes = ConcurrentHashMap<Long, Lane>()
 
-    /** Whether any of [filters] would be held by this gate. */
-    fun gates(filters: List<Filter>): Boolean = permits > 0 && filters.any(Filter::isRankedRead)
+    /** Whether any of [filters] would be held by this gate: one the store ranks by relevance ([ReadShape.ranked]). */
+    fun gates(filters: List<Filter>): Boolean = permits > 0 && filters.any { ReadShape.of(it).ranked }
 
     /**
      * Runs [block] under the connection's lane when [filters] rank. The permit is released at the
@@ -101,10 +101,4 @@ class SearchGate(
         /** A page never benefits from two ranked reads on one socket. */
         const val DEFAULT_PERMITS = 1
     }
-}
-
-/** Whether this filter ranks: terms, a phrase, or a `sort:`, the shapes the store ranks by relevance. */
-internal fun Filter.isRankedRead(): Boolean {
-    val parsed = SearchQuery.parse(search?.takeIf { it.isNotBlank() } ?: return false)
-    return parsed.hasText || parsed.extension("sort") != null
 }

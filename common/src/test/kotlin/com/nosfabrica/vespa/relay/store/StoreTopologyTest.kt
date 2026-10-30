@@ -56,29 +56,16 @@ class StoreTopologyTest {
     }
 
     @Test
-    fun `the feed batch is checked before the store reads it`() {
-        assertEquals(null, feedBatch(emptyMap()), "unset: the store's own default")
-        assertEquals(100, feedBatch(mapOf(FEED_BATCH_ENV to "100")))
-        assertEquals(0, feedBatch(mapOf(FEED_BATCH_ENV to "0")), "0 is off, not an error")
-        // The store would read these as off, silently.
-        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to "1OO")) }
-        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to "-1")) }
-        assertFailsWith<IllegalStateException> { feedBatch(mapOf(FEED_BATCH_ENV to (MAX_FEED_BATCH + 1).toString())) }
-    }
-
-    @Test
     fun `the container lists are read comma-separated, and unset means VESPA_URL`() {
         val none = vespaEndpoints(emptyMap())
         assertEquals(emptyList(), none.feed)
         assertEquals(emptyList(), none.query)
         assertEquals(null, none.describe(), "nothing to say about a single cluster")
-        assertEquals("http://vespa:8080", none.queryUrl("http://vespa:8080"))
         assertEquals(emptyList(), vespaEndpoints(mapOf(FEED_URLS_ENV to "  ")).feed, "blank is unset")
 
         val split = vespaEndpoints(mapOf(FEED_URLS_ENV to " http://feed-0:8080/, http://feed-1:8080", QUERY_URLS_ENV to "https://query-0"))
         assertEquals(listOf("http://feed-0:8080", "http://feed-1:8080"), split.feed, "trimmed, trailing slash dropped")
         assertEquals(listOf("https://query-0"), split.query)
-        assertEquals("https://query-0", split.queryUrl("http://vespa:8080"), "the stats rollup queries a query container")
         assertEquals("feed through 2 container(s), queries through 1 container(s)", split.describe())
         assertEquals("feed through 1 container(s), queries through VESPA_URL", vespaEndpoints(mapOf(FEED_URLS_ENV to "http://feed-0:8080")).describe())
     }

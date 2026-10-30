@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.pulse
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import kotlinx.coroutines.runBlocking
 
 /**
  * The pulse's operational numbers on the log, for a deployment that cannot open the gated page.
@@ -36,8 +37,8 @@ object StoreMetricsLog {
     fun line(
         role: String,
         metrics: CostLedger.Snapshot,
-        stages: Map<String, IngestStats.Stage> = IngestStats.snapshot(),
-        held: List<IngestStats.Held> = IngestStats.heldAll(),
+        stages: Map<String, IngestStats.Stage>,
+        held: List<IngestStats.Held>,
     ): String {
         val activities =
             metrics.ports
@@ -77,8 +78,9 @@ object StoreMetricsLog {
     ): Thread? {
         if (everySeconds <= 0) return null
         return every(role, everySeconds * 1000L) {
-            println(line(role, store.metrics()))
-            store.backgroundStatus().takeIf { it.isNotBlank() }?.let { println("store-background[$role] $it") }
+            val t = runBlocking { store.telemetry() }
+            println(line(role, t.metrics, t.stages, t.held))
+            t.background.takeIf { it.isNotBlank() }?.let { println("store-background[$role] $it") }
         }
     }
 

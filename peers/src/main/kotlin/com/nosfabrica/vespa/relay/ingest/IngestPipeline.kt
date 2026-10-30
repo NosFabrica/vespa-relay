@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
@@ -998,8 +999,8 @@ data class AddressVersion(
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,
-    /** Ids per dedup probe query: the store's own knob, so a widened stage B is matched here. */
-    val dedupChunk: Int = DEFAULT_DEDUP_CHUNK,
+    /** Ids per dedup probe query: the store's own knob (`EngineTuning.dedupChunk`), so a widened stage B is matched here. */
+    val dedupChunk: Int = EngineTuning.DEFAULT_DEDUP_CHUNK,
     /**
      * Events that may wait in the channel; null is the mirror's sizing (four batches, at least
      * 4,096), deep enough to ride out a download's bursts. A relay's publishes are already
@@ -1014,8 +1015,4 @@ data class IngestTuning(
      * a flood of such events take the heap. One event over the budget is still admitted alone.
      */
     val queueBytes: Long? = null,
-) {
-    companion object {
-        const val DEFAULT_DEDUP_CHUNK = 500
-    }
-}
+)

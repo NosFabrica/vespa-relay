@@ -20,81 +20,71 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.sun.net.httpserver.HttpServer
+import com.nosfabrica.vespa.eventstore.EngineReads
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.InetSocketAddress
-import java.net.http.HttpTimeoutException
-import java.time.Duration
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
+import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.time.Duration.Companion.milliseconds
 
-/** What the stats tiers see of an engine that accepted a query and never answered it. */
+/** What the stats tiers see of the store's grouping read, and what `/stats.json` may repeat of it. */
 class StatsVespaTest {
     @Test
     fun `an engine that stops answering fails the query instead of holding the tier`() {
-        val never = CountDownLatch(1)
-        val engine =
-            HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-                createContext("/search/") { never.await() }
-                executor = Executors.newCachedThreadPool()
-                start()
+        val vespa = StatsVespa({ _, _, _ -> awaitCancellation() }, requestTimeout = 300.milliseconds)
+        runBlocking {
+            withTimeout(10_000) {
+                val failed = assertFailsWith<StatsQueryFailed> { vespa.group(StatsYql.TOTAL) }
+                assertContains(publicReason(failed), "did not answer")
             }
-        try {
-            val vespa = StatsVespa("http://127.0.0.1:${engine.address.port}", requestTimeout = Duration.ofMillis(300))
-            runBlocking {
-                withTimeout(10_000) {
-                    val failed = assertFailsWith<StatsQueryFailed> { vespa.group(StatsYql.TOTAL) }
-                    assertContains(failed.message.orEmpty(), HttpTimeoutException::class.simpleName!!)
-                }
-            }
-        } finally {
-            never.countDown()
-            engine.stop(0)
         }
     }
 
-    /** `/stats.json` is public; a proxy's error page or the engine's own body names hosts and ports. */
+    /** `/stats.json` is public; the store's message can quote Vespa's body, which names hosts and ports. */
     @Test
-    fun `what the engine or a proxy answered never reaches the published message`() {
+    fun `what the engine answered never reaches the published message`() {
         val secret = "content-node-7.internal:19107"
-        for ((status, body) in listOf(
-            200 to "<html>bad gateway at $secret</html>",
-            200 to """["not an object", "$secret"]""",
-            200 to """{"no-root": "$secret"}""",
-            502 to "upstream $secret refused",
-        )) {
-            val engine =
-                HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-                    createContext("/search/") { exchange ->
-                        val bytes = body.encodeToByteArray()
-                        exchange.sendResponseHeaders(status, bytes.size.toLong())
-                        exchange.responseBody.use { it.write(bytes) }
-                    }
-                    start()
-                }
-            try {
-                val failed = assertFailsWith<StatsQueryFailed> { runBlocking { StatsVespa("http://127.0.0.1:${engine.address.port}").group(StatsYql.TOTAL) } }
-                val published = publicReason(failed)
-                assertFalse(secret in published, "leaked: $published")
-                assertContains(published, "engine detail in the relay log")
-            } finally {
-                engine.stop(0)
-            }
-        }
+        val vespa = StatsVespa({ _, _, _ -> throw IllegalStateException("vespa 502: upstream $secret refused") })
+        val failed = assertFailsWith<StatsQueryFailed> { runBlocking { vespa.group(StatsYql.TOTAL) } }
+        val published = publicReason(failed)
+        assertFalse(secret in published, "leaked: $published")
+        assertContains(published, "engine detail in the relay log")
+        assertEquals("IllegalArgumentException (detail in the relay log)", publicReason(IllegalArgumentException("/var/lib/secret")))
     }
 
     @Test
-    fun `an engine that cannot be reached is named by the failure's class, not its message`() {
-        val closed = java.net.ServerSocket(0).use { it.localPort }
-        val failed = assertFailsWith<StatsQueryFailed> { runBlocking { StatsVespa("http://127.0.0.1:$closed").group(StatsYql.TOTAL) } }
-        assertFalse("127.0.0.1" in publicReason(failed), publicReason(failed))
-        assertContains(publicReason(failed), "did not answer")
-        assertEquals("IllegalArgumentException (detail in the relay log)", publicReason(IllegalArgumentException("/var/lib/secret")))
+    fun `a shutdown is not a failed statistic`() {
+        val vespa = StatsVespa({ _, _, _ -> throw CancellationException("shutting down") })
+        assertFailsWith<CancellationException> { runBlocking { vespa.group(StatsYql.TOTAL) } }
+    }
+
+    @Test
+    fun `a scope reaches the store as the same window and kinds, inclusive at both ends`() {
+        val seen = mutableListOf<Pair<EventQuery, EngineReads.Source>>()
+        val vespa =
+            StatsVespa({ _, query, source ->
+                seen += query to source
+                JsonObject(emptyMap())
+            })
+        runBlocking {
+            vespa.group(StatsYql.TOTAL, StatsYql.window(10, 20).copy(kinds = listOf(1, 7)))
+            vespa.group(StatsYql.TOTAL, StatsYql.after(500))
+            vespa.group(StatsYql.TOTAL, source = EngineReads.Source.REPUTATION)
+        }
+        assertEquals(
+            listOf(
+                EventQuery(kinds = listOf(1, 7), since = 10, until = 20) to EngineReads.Source.EVENTS,
+                EventQuery(since = 501) to EngineReads.Source.EVENTS,
+                EventQuery() to EngineReads.Source.REPUTATION,
+            ),
+            seen,
+        )
     }
 }

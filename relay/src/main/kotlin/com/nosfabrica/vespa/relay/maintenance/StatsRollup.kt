@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import com.nosfabrica.vespa.eventstore.EngineReads
 import com.nosfabrica.vespa.relay.util.canonicalRelay
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.vitorpamplona.quartz.kinds.KindNames
@@ -209,10 +210,10 @@ internal class StatsRollup(
                     "trust scores people whose events this relay may not hold, and holds events from people nobody " +
                     "has scored. Compare their magnitudes, not their quotient.",
         ) { attempts ->
-            val scored = attempt(attempts, "scoredPubkeys") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, source = StatsYql.REPUTATION)) }
-            val observers = attempt(attempts, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_OBSERVER")) }
-            val providers = attempt(attempts, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_SCORE")) }
-            val scores = attempt(attempts, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_SCORE")) }
+            val scored = attempt(attempts, "scoredPubkeys") { StatsYql.scoredPubkeys(vespa.group(StatsYql.KEY_LENGTHS, source = EngineReads.Source.REPUTATION)) }
+            val observers = attempt(attempts, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), StatsYql.ofKind(KIND_OBSERVER))) }
+            val providers = attempt(attempts, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), StatsYql.ofKind(KIND_SCORE))) }
+            val scores = attempt(attempts, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.ofKind(KIND_SCORE))) }
             buildJsonObject {
                 scored?.let { put("scoredPubkeys", it) }
                 observers?.let { put("observers", it) }
@@ -324,7 +325,7 @@ internal class StatsRollup(
                     "walk over kind $KIND_RELAY_LIST.",
         ) { attempts ->
             val pairs =
-                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = $KIND_RELAY_LIST") }
+                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), StatsYql.ofKind(KIND_RELAY_LIST)) }
                     ?: return@section buildJsonObject { }
             // Summed per canonical url: the grouping returns one row per distinct string, and a
             // trailing slash makes two strings for one relay.
@@ -365,11 +366,11 @@ internal class StatsRollup(
         ) { attempts ->
             val now = nowSeconds()
             val window = StatsYql.window(now - windowDays * DAY_SECONDS, now)
-            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_ZAP_RECEIPT")) }
-            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_ZAP_RECEIPT")) }
+            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.ofKind(KIND_ZAP_RECEIPT))) }
+            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), StatsYql.ofKind(KIND_ZAP_RECEIPT))) }
             val days =
                 attempt(attempts, "days") {
-                    bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = $KIND_ZAP_RECEIPT and $window", StatsYql::isoDay, distinct = false)
+                    bucketed(StatsYql.countsBy(StatsYql.DAY), window.copy(kinds = listOf(KIND_ZAP_RECEIPT)), StatsYql::isoDay, distinct = false)
                 }
             buildJsonObject {
                 receipts?.let { put("receipts", it) }
@@ -401,7 +402,7 @@ internal class StatsRollup(
                 attempt(attempts, "series") {
                     nestedBuckets(
                         StatsYql.nested("kind", StatsYql.DAY),
-                        "kind in (${topByEvents.joinToString(", ")}) and ${StatsYql.window(since, now)}",
+                        StatsYql.window(since, now).copy(kinds = topByEvents),
                         StatsYql::isoDay,
                     )
                 }.orEmpty()
@@ -450,8 +451,8 @@ internal class StatsRollup(
         var authorsWhole = true
         for (slice in slices) {
             val key = slice.key?.let { "$name.$it" } ?: name
-            val where = StatsYql.window(slice.since, slice.until)
-            val counts = attempt(attempts, "$key.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) }
+            val scope = StatsYql.window(slice.since, slice.until)
+            val counts = attempt(attempts, "$key.events") { bucketed(StatsYql.countsBy(bucket), scope, decode, distinct = false) }
             if (counts == null) {
                 authorsWhole = false
                 continue
@@ -463,7 +464,7 @@ internal class StatsRollup(
             // Empty is not zero: [bucketed] drops a group it cannot read, and zero-filling an
             // unreadable shape would claim no authors.
             val byLabel =
-                attempt(attempts, "$key.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+                attempt(attempts, "$key.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), scope, decode, distinct = true) }
                     ?.takeIf { it.isNotEmpty() }
             if (byLabel == null) {
                 authorsWhole = false
@@ -573,9 +574,9 @@ internal class StatsRollup(
 
     private suspend fun longsByGroup(
         pipeline: String,
-        where: String = "true",
+        scope: StatsYql.Scope = StatsYql.ALL,
     ): Map<String, Long> {
-        val root = vespa.group(pipeline, where)
+        val root = vespa.group(pipeline, scope)
         return StatsYql
             .topGroups(root)
             .mapNotNull { g ->
@@ -588,10 +589,10 @@ internal class StatsRollup(
     /** A two-level pipeline: outer value -> inner label -> count. The inner labels go through [decode]. */
     private suspend fun nestedBuckets(
         pipeline: String,
-        where: String,
+        scope: StatsYql.Scope,
         decode: (String) -> String?,
     ): Map<String, Map<String, Long>> {
-        val root = vespa.group(pipeline, where)
+        val root = vespa.group(pipeline, scope)
         return StatsYql
             .topGroups(root)
             .mapNotNull { outer ->
@@ -614,11 +615,11 @@ internal class StatsRollup(
      */
     private suspend fun bucketed(
         pipeline: String,
-        where: String,
+        scope: StatsYql.Scope,
         decode: (String) -> String?,
         distinct: Boolean,
     ): Map<String, Long> {
-        val root = vespa.group(pipeline, where)
+        val root = vespa.group(pipeline, scope)
         return StatsYql
             .topGroups(root)
             .mapNotNull { g ->
@@ -630,9 +631,9 @@ internal class StatsRollup(
 
     private suspend fun spansByGroup(
         pipeline: String,
-        where: String = "true",
+        scope: StatsYql.Scope = StatsYql.ALL,
     ): Map<String, Pair<Long, Long>> {
-        val root = vespa.group(pipeline, where)
+        val root = vespa.group(pipeline, scope)
         return StatsYql
             .topGroups(root)
             .mapNotNull { g ->

@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation.RelayInformationLimitation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -213,17 +214,19 @@ class RelayDocument(
         }
 
         /**
-         * NIP-11's `limitation` block in NIP-66's vocabulary. `min_pow_difficulty = 0` is `!pow`,
-         * not silence.
+         * NIP-11's `limitation` block in NIP-66's vocabulary, by quartz's mapping. Each key is read
+         * on its own, so one malformed key costs only itself.
          */
         private fun requirementsOf(root: JsonObject): List<String> {
             val limitation = runCatching { root["limitation"]?.jsonObject }.getOrNull() ?: return emptyList()
-            return buildList {
-                limitation.boolean("auth_required")?.let { add(RelayFacts.requirement(RelayFacts.REQUIREMENT_AUTH, it)) }
-                limitation.boolean("payment_required")?.let { add(RelayFacts.requirement(RelayFacts.REQUIREMENT_PAYMENT, it)) }
-                limitation.boolean("restricted_writes")?.let { add(RelayFacts.requirement(RelayFacts.REQUIREMENT_WRITES, it)) }
-                limitation.int("min_pow_difficulty")?.let { add(RelayFacts.requirement(RelayFacts.REQUIREMENT_POW, it > 0)) }
-            }
+            return RelayFacts.requirementsOf(
+                RelayInformationLimitation(
+                    auth_required = limitation.boolean("auth_required"),
+                    payment_required = limitation.boolean("payment_required"),
+                    restricted_writes = limitation.boolean("restricted_writes"),
+                    min_pow_difficulty = limitation.int("min_pow_difficulty"),
+                ),
+            )
         }
 
         private fun JsonObject.string(key: String): String? =

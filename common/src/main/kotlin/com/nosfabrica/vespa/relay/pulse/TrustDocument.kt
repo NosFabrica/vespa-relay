@@ -46,7 +46,7 @@ object TrustDocument {
     fun reader(
         store: VespaEventStore,
         scope: String,
-    ): () -> JsonObject = { of(store.trustHealth(), DegradedReads.snapshot(), scope, providerPassAgeSecs = store.trustProviderAgeSecs()) }
+    ): suspend () -> JsonObject = { of(store.trustHealth(), store.telemetry().degraded, scope, providerPassAgeSecs = store.trustProviderAgeSecs()) }
 
     fun of(
         health: TrustHealth,

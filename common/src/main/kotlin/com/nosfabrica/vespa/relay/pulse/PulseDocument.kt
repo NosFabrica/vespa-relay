@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
+import com.nosfabrica.vespa.eventstore.StoreTelemetry
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.client.EngineResources
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
@@ -33,9 +34,9 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 
 /**
- * This process's store resources as one document for the pulse page: the store's `metrics()`
- * and the ingest pipeline's stage split. Every total is a cumulative counter the page differences
- * between two polls; `gauges` are instantaneous and named apart so nobody differences them.
+ * This process's store resources as one document for the pulse page, off one [StoreTelemetry]
+ * snapshot. Every total is a cumulative counter the page differences between two polls; `gauges`
+ * are instantaneous and named apart so nobody differences them.
  */
 object PulseDocument {
     /** Bumped when a member changes meaning; the page says so rather than misreading it. */
@@ -52,19 +53,28 @@ object PulseDocument {
         scope: String,
         startedAtMillis: Long,
         clientDerived: Boolean = false,
-        nowMillis: Long = System.currentTimeMillis(),
+    ): JsonObject = of(store.telemetry(), title, scope, startedAtMillis, clientDerived)
+
+    /** [telemetry] as the document; a failed headroom probe arrives as a null reading, never a failed page. */
+    fun of(
+        telemetry: StoreTelemetry,
+        title: String,
+        scope: String,
+        startedAtMillis: Long,
+        clientDerived: Boolean = false,
     ): JsonObject =
         of(
-            store.metrics(),
-            store.runCatching { feedStatus() }.getOrNull(),
+            telemetry.metrics,
+            telemetry.feed,
             title,
             scope,
             startedAtMillis,
             clientDerived,
-            nowMillis,
-            // A probe that fails must not take the page with it: the moment
-            // headroom matters most is the moment the engine can least answer.
-            headroom = runCatching { store.engineHeadroom() }.getOrNull(),
+            nowMillis = telemetry.atMillis,
+            headroom = telemetry.headroom,
+            held = telemetry.held,
+            stages = telemetry.stages,
+            blocked = telemetry.blocked,
         )
 
     /**
@@ -87,13 +97,12 @@ object PulseDocument {
         title: String,
         scope: String,
         startedAtMillis: Long,
-        clientDerived: Boolean = false,
-        nowMillis: Long = System.currentTimeMillis(),
-        // Read once here rather than three times below, so every lock member describes one instant.
-        headroom: EngineResources.Usage? = null,
-        held: List<IngestStats.Held> = IngestStats.heldAll(),
-        stages: Map<String, IngestStats.Stage> = IngestStats.snapshot(),
-        blocked: Map<String, Map<String, Long>> = IngestStats.blockedSplit(),
+        clientDerived: Boolean,
+        nowMillis: Long,
+        headroom: EngineResources.Usage?,
+        held: List<IngestStats.Held>,
+        stages: Map<String, IngestStats.Stage>,
+        blocked: Map<String, Map<String, Long>>,
     ): JsonObject =
         buildJsonObject {
             put("schema", SCHEMA)

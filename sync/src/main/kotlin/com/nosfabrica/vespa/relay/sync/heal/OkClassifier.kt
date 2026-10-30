@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.sync.heal
 
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
+
 /** What one relay's answer to one repair means. */
 enum class PushVerdict {
     /** Took it. Whether it also dropped the stale copy is next cycle's question. */
@@ -57,19 +59,19 @@ object OkClassifier {
     ): PushVerdict {
         if (accepted) return PushVerdict.ACCEPTED
         if (transportFailure) return PushVerdict.SILENT
-        val reason = message.trim().lowercase()
-        val prefix = reason.substringBefore(':', missingDelimiterValue = "")
-        return when (prefix) {
-            "restricted", "blocked" -> PushVerdict.CLOSED
+        return when (MachineReadablePrefix.parse(message.trim().lowercase())) {
+            MachineReadablePrefix.RESTRICTED, MachineReadablePrefix.BLOCKED -> PushVerdict.CLOSED
 
-            "auth-required" -> PushVerdict.AUTH
+            MachineReadablePrefix.AUTH_REQUIRED -> PushVerdict.AUTH
 
-            "rate-limited", "error" -> PushVerdict.RETRY
+            MachineReadablePrefix.RATE_LIMITED, MachineReadablePrefix.ERROR -> PushVerdict.RETRY
 
-            "invalid", "pow", "duplicate" -> PushVerdict.IGNORE
+            MachineReadablePrefix.INVALID, MachineReadablePrefix.POW, MachineReadablePrefix.DUPLICATE,
+            MachineReadablePrefix.UNSUPPORTED,
+            -> PushVerdict.IGNORE
 
             // NIP-01 asks for a prefix; a relay that gives none has told us nothing to act on.
-            else -> PushVerdict.IGNORE
+            null -> PushVerdict.IGNORE
         }
     }
 }

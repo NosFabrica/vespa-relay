@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
-import com.nosfabrica.vespa.relay.ingest.IngestTuning
+import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -1020,9 +1020,9 @@ class RouterConfigTest {
         val tuned = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "VESPA_DEDUP_CHUNK" to "2000"))
         assertEquals(2000, tuned!!.ingestTuning().dedupChunk)
         val stock = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig))
-        assertEquals(IngestTuning.DEFAULT_DEDUP_CHUNK, stock!!.ingestTuning().dedupChunk)
+        assertEquals(EngineTuning.DEFAULT_DEDUP_CHUNK, stock!!.ingestTuning().dedupChunk)
         val e =
-            assertFailsWith<IllegalStateException> {
+            assertFailsWith<IllegalArgumentException> {
                 RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "VESPA_DEDUP_CHUNK" to "0"))
             }
         assertTrue("VESPA_DEDUP_CHUNK='0'" in e.message.orEmpty(), e.message)

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.pulse
 
+import com.nosfabrica.vespa.eventstore.StoreTelemetry
 import com.nosfabrica.vespa.eventstore.engine.client.EngineResources
 import com.nosfabrica.vespa.eventstore.engine.metrics.Activity
 import com.nosfabrica.vespa.eventstore.engine.metrics.CostLedger
@@ -340,4 +341,44 @@ class PulseDocumentTest {
     }
 
     private fun kotlinx.serialization.json.JsonPrimitive.int(): Int = content.toInt()
+
+    /**
+     * The store's snapshot is what production renders; it has to be the same document as the
+     * parts it carries, or the page's contract would hold only for the form this file asserts.
+     * Built reflectively, since only the store may construct one.
+     */
+    @Test
+    fun `a telemetry snapshot renders exactly the document of its parts`() {
+        val ledger = CostLedger()
+        ledger.port(Activity.Query, PortCall.Search, 5_000_000L, docs = 3)
+        val metrics = ledger.snapshot()
+        val held = listOf(IngestStats.Held("lock.gate.hold", 1L, "derive 500 subject(s)", "trustGate"))
+        val stages = mapOf("dedup" to IngestStats.Stage(totalNanos = 41_000_000, calls = 12, maxNanos = 20_000_000))
+        val blocked = mapOf("ingest" to mapOf("dedup" to 3L))
+        val headroom = EngineResources.Usage(nodes = listOf(EngineResources.NodeUsage(host = "vespa-0", memory = 0.5, disk = 0.4, feedBlocked = false)), atMillis = 1_060_000L)
+        val telemetry =
+            StoreTelemetry::class.java.declaredConstructors
+                .single()
+                .newInstance(1_060_000L, metrics, stages, held, blocked, emptyList<Any>(), "feed ok", "", headroom) as StoreTelemetry
+        val fromSnapshot = PulseDocument.of(telemetry, "Eventstore pulse", "a test", 1_000_000L)
+        val fromParts =
+            PulseDocument.of(
+                metrics = metrics,
+                feed = "feed ok",
+                title = "Eventstore pulse",
+                scope = "a test",
+                startedAtMillis = 1_000_000L,
+                clientDerived = false,
+                nowMillis = 1_060_000L,
+                headroom = headroom,
+                held = held,
+                stages = stages,
+                blocked = blocked,
+            )
+
+        // A hold's age is read off the clock at render time, so it is the one member two renders differ in.
+        fun withoutAges(doc: JsonObject) = doc.toString().replace(Regex("""\"heldMs\":\d+"""), "")
+        assertEquals(withoutAges(fromParts), withoutAges(fromSnapshot))
+        assertTrue("\"heldMs\"" in fromSnapshot.toString(), "the hold reached the snapshot's document")
+    }
 }

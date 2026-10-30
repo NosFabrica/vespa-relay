@@ -20,14 +20,16 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.TrustChain
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryReputationIndex
+import com.nosfabrica.vespa.eventstore.trust.TrustProjection
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -42,11 +44,14 @@ import kotlin.test.assertTrue
 
 /**
  * What a reader is told at sign-in, and what they are not. Asserted over the
- * finished walk rather than the wire, because silence is one of the answers.
+ * finished check rather than the wire, because silence is one of the answers.
  */
 class TrustNoticeTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
-    private val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+
+    private fun newStore() = NostrSemanticsStore(TrustProjection(InMemoryEventIndex(), InMemoryReputationIndex()), relay = relayUrl)
+
+    private val store = newStore()
     private val notice = TrustNotice(store, CoroutineScope(SupervisorJob()))
 
     private val reader = NostrSignerSync()
@@ -80,7 +85,7 @@ class TrustNoticeTest {
     fun `a reader whose provider has not been mirrored is told which one`() =
         runBlocking {
             store.insert(providerList())
-            assertEquals(listOf(TrustNotice.noScores(listOf(service.pubKey))), notice.notices(reader.pubKey))
+            assertEquals(listOf(TrustNotice.noScores(service.pubKey)), notice.notices(reader.pubKey))
         }
 
     @Test
@@ -98,7 +103,7 @@ class TrustNoticeTest {
             store.insert(providerList())
             store.insert(scoreCard(by = stranger, about = reader.pubKey))
             assertEquals(
-                listOf(TrustNotice.noScores(listOf(service.pubKey))),
+                listOf(TrustNotice.noScores(service.pubKey)),
                 notice.notices(reader.pubKey),
                 "a card ABOUT the reader, signed by a service they did not name, ranks nothing for them",
             )
@@ -118,7 +123,7 @@ class TrustNoticeTest {
                     "private (NIP-44), unreadable here" to arrayOf("p", service.pubKey),
                 )
             for ((why, tag) in cases) {
-                val own = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+                val own = newStore()
                 own.insert(providerList(tag = tag))
                 assertEquals(
                     listOf(TrustNotice.NO_RANK_SERVICE),
@@ -128,9 +133,9 @@ class TrustNoticeTest {
             }
         }
 
-    /** The store credits the reader through every named rank service, so either one's cards mean ranking works. */
+    /** The store's reads rank through the first named rank service, so its cards are the ones that matter. */
     @Test
-    fun `either of two named rank services is enough`() =
+    fun `of two named rank services the notice follows the one the reads use`() =
         runBlocking {
             val second = NostrSignerSync()
             store.insert(
@@ -143,37 +148,12 @@ class TrustNoticeTest {
                         ),
                 ),
             )
-            assertEquals(
-                listOf(TrustNotice.noScores(listOf(service.pubKey, second.pubKey))),
-                notice.notices(reader.pubKey),
-                "neither one's cards are here, and the notice names both",
-            )
-
-            // Only the second is mirrored.
+            // Only the second is mirrored: the reader's ranked page is still empty.
             store.insert(scoreCard(by = second))
-            assertEquals(emptyList(), notice.notices(reader.pubKey))
-        }
+            assertEquals(listOf(TrustNotice.noScores(service.pubKey)), notice.notices(reader.pubKey))
 
-    /** A 10040 is the reader's to write, so its size is too: one check costs one bounded filter and one short NOTICE. */
-    @Test
-    fun `a list naming more rank services than the cap is checked on the first few and claims nothing about the rest`() =
-        runBlocking {
-            val asked = Collections.synchronizedList(mutableListOf<Filter>())
-            val watched =
-                object : IEventStore by store {
-                    override suspend fun <T : Event> query(filter: Filter): List<T> {
-                        asked += filter
-                        return store.query(filter)
-                    }
-                }
-            // The only service with cards here is past the cap, so the reader's ranking does work.
-            val many = List(TrustNotice.MAX_RANK_SERVICES + 4) { "%064x".format(it + 1) } + service.pubKey
-            store.insert(providerList(by = reader, tags = many.map { arrayOf("30382:rank", it, relayUrl.url) }))
-            store.insert(scoreCard())
-            val said = TrustNotice(watched, CoroutineScope(SupervisorJob())).notices(reader.pubKey)
-            assertEquals(emptyList(), said, "no restriction claimed over services it did not check")
-            val cardAsk = asked.single { it.kinds == listOf(30382) }
-            assertEquals(TrustNotice.MAX_RANK_SERVICES, cardAsk.authors?.size)
+            store.insert(scoreCard(by = service))
+            assertEquals(emptyList(), notice.notices(reader.pubKey))
         }
 
     @Test
@@ -188,16 +168,14 @@ class TrustNoticeTest {
     @Test
     fun `an unanswerable check says nothing rather than guessing`() =
         runBlocking {
-            store.insert(providerList())
-            val blindToLists = TrustNotice(FailingKind(store, kind = 10040), CoroutineScope(SupervisorJob()))
-            assertEquals(emptyList(), blindToLists.notices(reader.pubKey), "the 10040 read threw; nothing is claimed about it")
-
-            // The second leg the same way: the list was read, the cards were not.
-            val blindToCards = TrustNotice(FailingKind(store, kind = 30382), CoroutineScope(SupervisorJob()))
-            assertEquals(emptyList(), blindToCards.notices(reader.pubKey))
+            val blind =
+                object : LensedEventStore by store {
+                    override suspend fun lensOf(pubkey: String): TrustChain = throw IllegalStateException("vespa unreachable")
+                }
+            assertEquals(emptyList(), TrustNotice(blind, CoroutineScope(SupervisorJob())).notices(reader.pubKey))
         }
 
-    /** Every fresh key that signs in starts a store walk; a burst of them may not start a burst of walks. */
+    /** Every fresh key that signs in starts a store read; a burst of them may not start a burst of reads. */
     @Test
     fun `a burst of sign-ins runs a bounded number of checks`() =
         runBlocking {
@@ -220,22 +198,8 @@ class TrustNoticeTest {
         }
 
     @Test
-    fun `each ask is addressed to exactly one key`() {
-        val provider = TrustNotice.providerListFilter(reader.pubKey)
-        assertEquals(listOf(10040), provider.kinds)
-        assertEquals(listOf(reader.pubKey), provider.authors, "their OWN list — a 10040 someone else signed says nothing about them")
-        assertEquals(1, provider.limit, "the current version; nothing here reads history")
-
-        val scores = TrustNotice.scoreCardFilter(listOf(service.pubKey))
-        assertEquals(listOf(30382), scores.kinds)
-        assertEquals(listOf(service.pubKey), scores.authors, "the services the 10040 named, not the reader")
-        assertEquals(null, scores.tags, "not narrowed to cards about the reader: it is the signer that ranks")
-        assertEquals(1, scores.limit)
-    }
-
-    @Test
     fun `every notice names the kind it is about, and stops`() {
-        val all = listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_RANK_SERVICE, TrustNotice.noScores(listOf(service.pubKey)))
+        val all = listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_RANK_SERVICE, TrustNotice.noScores(service.pubKey))
         assertTrue(all.any { "10040" in it } && all.any { "30382" in it }, "the reader who can act on this reads kinds, not prose")
         assertTrue(all.all { it.length <= 120 }, "a NOTICE is a line in somebody's console: $all")
         assertTrue(
@@ -244,28 +208,17 @@ class TrustNoticeTest {
         )
     }
 
-    /** A store whose reads wait for [open]; [entered] counts the reads that started. */
+    /** A store whose trust-chain reads wait for [open]; [entered] counts the reads that started. */
     private class Stalled(
-        private val inner: IEventStore,
-    ) : IEventStore by inner {
+        private val inner: LensedEventStore,
+    ) : LensedEventStore by inner {
         val open = CompletableDeferred<Unit>()
         val entered = AtomicInteger()
 
-        override suspend fun <T : Event> query(filter: Filter): List<T> {
+        override suspend fun lensOf(pubkey: String): TrustChain {
             entered.incrementAndGet()
             open.await()
-            return inner.query(filter)
-        }
-    }
-
-    /** A store whose reads for one kind throw; everything else is the real thing. */
-    private class FailingKind(
-        private val inner: IEventStore,
-        private val kind: Int,
-    ) : IEventStore by inner {
-        override suspend fun <T : Event> query(filter: Filter): List<T> {
-            if (filter.kinds?.contains(kind) == true) throw IllegalStateException("vespa unreachable")
-            return inner.query(filter)
+            return inner.lensOf(pubkey)
         }
     }
 }

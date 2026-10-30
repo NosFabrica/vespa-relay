@@ -306,11 +306,30 @@ failing pauses (`ProbeTrouble`: 5s, doubling to 5 minutes, reset by an answer)
 rather than costing every batch a round trip to a store that is already
 struggling, which is exactly when probes fail.
 
+**The version probe asks the store for the winner.** It read every stored
+version of every author in the batch as a full document, with no limit, and
+picked the newest here by NIP-01's rule, a second copy of the tiebreak the
+store applies on write, booked to no activity. `EngineReads.newestVersions`
+answers the same question from one attribute-only grouping per 500 authors,
+with the engine's own tiebreak, and books it (and the id probe) to
+`BatchInsert` on `/pulse.json`.
+
 **`VESPA_DEDUP_CHUNK` is read with the rest of the ingest sizing.** It was
 read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
 `ExceptionInInitializerError` on the first batch rather than a boot refusal,
 and a test could not set it. It now rides `IngestTuning` from
-`RouterConfigLoader.fromEnv`.
+`RouterConfigLoader.fromEnv`, and its value is the store's own: both processes
+read every store variable once, through `EngineTuning.fromEnv`, and hand that
+tuning to `open()` and to ingest alike.
+
+**The store's settings are read strictly, by the store, before the network.**
+The store read its two dozen `VESPA_*` variables leniently, where each was used,
+so `VESPA_FEED_BATCH=off` silently turned batching off; this repo re-parsed the
+two it cared about with its own copies of the ranges (`MAX_FEED_BATCH`,
+`DEFAULT_DEDUP_CHUNK`). `EngineTuning.fromEnv(System.getenv())` reads all of
+them, refuses every bad one in one message, and goes to `open(tuning =)`; the
+copies are gone. Six of them are process-wide and pinned by that `open()`, and
+each process opens one store.
 
 **`ParseAudit` keeps at most 256 distinct findings.** Its key is quartz's
 message normalized, and quartz's templates quote the offending field's value,
@@ -487,13 +506,23 @@ backfill's throughput; see "The writer sends a whole batch at once" below for wh
 boot deploy (`AUTO_DEPLOY`) lost its reason, which was that its writes were the ones a drifted
 schema dropped, and kept a hazard: a package deploys whole, so a sync of another build would
 replace the relay's schema and the relay's writes would be refused until its next boot. The sync
-now waits for an application to serve (`awaitServedSchema`, `/ApplicationStatus` on the query
-endpoint, up to 10 minutes) and never deploys. Its key check gave up after a minute so a relay
+now waits for an application to serve (the store's `SchemaDeploy.AWAIT`, `/ApplicationStatus`
+on the query endpoint, up to 10 minutes) and never deploys. Its key check gave up after a minute so a relay
 that is down does not hold the mirror's reads; but the relay signs in any key and only its own
 takes the mirror lane, so a relay that came up afterwards with another key took every write on the
 publishers' lane with `signedIn` true and nothing flagged (reproduced against a real socket). The
 boot now leaves a watch behind (`watchRelayKey`, every 30s until the relay answers once) that stops
 the process with the boot's own refusal.
+
+**The deploy modes are the store's; which failures to survive is ours.** The
+relay's compare, deploy on a difference and wait for every service, and the
+sync's wait for someone else's deploy, were built here on the engine's
+deployer. They are the store's `deploySchema(IF_CHANGED)` and `AWAIT` now. The
+relay still calls the deploy itself, before `open(schema = NEVER)`, for the two
+pieces the store leaves to its caller: a `SchemaDeployException` whose
+`serving` is true is logged and survived, since yesterday's schema still
+serves, and an unchanged package's convergence wait runs beside the next boot
+steps and is awaited before the first write.
 
 **The writer sends a whole batch at once.** Measured on the 200k slice with a batch-size histogram,
 the mirror lane's writes averaged about 290 events, not the 43 an earlier reading of the store's

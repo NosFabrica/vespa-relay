@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server.config
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
@@ -162,7 +163,10 @@ data class RelayIngest(
     val batch: Int,
 )
 
-fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
+fun relayIngestFromEnv(
+    env: Map<String, String>,
+    engine: EngineTuning = EngineTuning.fromEnv(env),
+): RelayIngest =
     when (env.strictChoice("RELAY_INGEST", setOf("pipeline", "queue")) ?: "pipeline") {
         "queue" -> {
             // Read anyway: a malformed value stops the boot in either mode, like every strict setting.
@@ -179,10 +183,8 @@ fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
             // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
             // And a byte bound over waiting plus in-pass events, because a count is no bound on
             // bytes when every publish may be a full frame.
-            // The store's probe width, read as the mirror reads it, since both processes probe one store.
-            val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
             RelayIngest(
-                IngestTuning(concurrency, batch, dedupChunk = dedupChunk, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L),
+                IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L),
                 batch,
             )
         }
@@ -196,13 +198,18 @@ fun relayIngestFromEnv(env: Map<String, String>): RelayIngest =
  * moving the write here changes where it runs, not its shape. Queue depth is one batch per worker,
  * as for publishes: the sync's forwarding window is its own backpressure.
  */
-fun mirrorIngestFromEnv(env: Map<String, String>): IngestTuning {
+fun mirrorIngestFromEnv(
+    env: Map<String, String>,
+    engine: EngineTuning = EngineTuning.fromEnv(env),
+): IngestTuning {
     val batch = env.strictInt("RELAY_MIRROR_INGEST_BATCH", 1..20_000) ?: DEFAULT_PIPELINE_BATCH
     val concurrency = env.strictInt("RELAY_MIRROR_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
     val queueMb = env.strictInt("RELAY_MIRROR_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
-    val dedupChunk = env.strictInt("VESPA_DEDUP_CHUNK", 1..Int.MAX_VALUE) ?: IngestTuning.DEFAULT_DEDUP_CHUNK
-    return IngestTuning(concurrency, batch, dedupChunk = dedupChunk, queue = batch * concurrency, queueBytes = queueMb * 1_048_576L)
+    return IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L)
 }
+
+/** The store's dedup probe width, which both pipelines chunk their id probes by, since both probe one store. */
+private fun EngineTuning.dedupWidth(): Int = dedupChunk ?: EngineTuning.DEFAULT_DEDUP_CHUNK
 
 /** The mirror's own defaults (`RouterConfig`), so one store sees one write shape. */
 private const val DEFAULT_PIPELINE_BATCH = 1_000

@@ -61,6 +61,8 @@ it reads, and every reference it makes is document-relative (`./web/…`,
 ./gradlew :sync:test --tests "*SyncBands*"
 ./gradlew spotlessApply            # fix formatting; the pre-commit hook runs spotlessCheck
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
+./gradlew -PvespaEventStoreDir=../vespa-eventstore build   # against a local store checkout instead of the pin
+./gradlew -PquartzDir=../quartz build                      # against a local quartz; needs its Android SDK (sdk.dir in its local.properties)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 ./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
 node web/src/test/js/run.mjs       # the same suite, run directly
@@ -136,8 +138,9 @@ package below it belongs to exactly one module, so a package name says which
 module holds the file. The root package itself holds the two entrypoints and
 nothing else. `ModuleBoundariesTest` (in `:common`, beside the other guards that
 read the checkout rather than run it) fails the build on both, on a dependency
-that points the wrong way along the include order, on one nothing imports, and
-on Ktor or the store crossing the `/stats.json` seam. The long form, file by
+that points the wrong way along the include order, on one nothing imports,
+on Ktor or the store crossing the `/stats.json` seam, and on a main source
+importing the store's `engine` off its list (`ENGINE_ALLOWED`, which only shrinks). The long form, file by
 file with the reasoning, is [docs/layout.md](docs/layout.md).
 
 ```
@@ -166,7 +169,7 @@ monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe, RelayAliases                     which urls are one server
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
-  ReachabilityProbe, Silence, Unreachability, RelayDocument   what a quiet socket said, what may be published, NIP-11
+  ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
   sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool
@@ -352,6 +355,13 @@ for env vars and a boot warning for config keys, never silently.
 **A configured component must never be silently inert.** If a flag needs
 something else to be true, make it true and say so.
 
+**What is not ours goes upstream.** Before writing protocol code, search
+quartz; before writing YQL or naming a Vespa schema field or rank profile,
+search vespa-eventstore. A local copy of an upstream behaviour carries a
+one-line KDoc pointer to the upstream change that retires it ("Remove when
+quartz …"). What stays here is deployment: thresholds, what to publish, env
+vars, wiring.
+
 **Don't publish claims you can't support.** Negative NIP-66 records are signed
 and public; `Unreachability.proves()` stays quiet on an unknown failure, because
 silence costs a retry and being wrong costs a false statement about someone
@@ -361,7 +371,7 @@ else's server.
 
 One line each; the evidence is in [docs/traps.md](docs/traps.md).
 
-- A relay's sentence arrives on a connection listener after the refusal ends the walk; `RelayComplaints.awaitSince` gives it 250ms.
+- A relay's sentence arrives on a connection listener after the refusal ends the walk: read `PagedFetchResult.message` first; `RelayComplaints.awaitSince` gives a NOTICE-only refusal 250ms.
 - A fallback that returns a count cannot tell empty from refused: `WindowSync.page` returns `PagedFetchResult`, guarded on `refusedOutright`.
 - A fix to the filter has to reach every path that sends it; `FilterWidths` is built once in `SyncEngine`, and `ClientWindowSync` takes it with no default.
 - A completeness number needs the denominator the work uses: `RelayStatusReport` joins on the unit's owed asks (`RosterBuilder.UnitAsks.identity`), not on the bands present.

@@ -9,6 +9,8 @@ dependencies {
     // The pulse document is built here, above the store and below Ktor: :web
     // owns the route and deliberately does not depend on this module.
     api(libs.kotlinx.serialization.json)
+    // StoreMetricsLog's thread reads the store's suspend telemetry().
+    implementation(libs.kotlinx.coroutines)
 }
 
 /** The package holding the guards that read the checkout rather than run it. */

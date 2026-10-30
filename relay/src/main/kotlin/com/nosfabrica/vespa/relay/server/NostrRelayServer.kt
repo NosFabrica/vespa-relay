@@ -20,9 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
-import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -36,6 +35,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveListener
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveSubscription
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.LiveSubscriptionBackend
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.SessionBackend
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
@@ -55,9 +57,11 @@ import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
@@ -146,7 +150,7 @@ class NostrRelayServer(
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, liveGatesOf(store), coldChecks)
+        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
@@ -169,9 +173,9 @@ class NostrRelayServer(
 internal fun ingestCapacity(batch: Int): Int = (batch * 4).coerceAtLeast(IngestQueue.DEFAULT_CAPACITY)
 
 /**
- * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [queryRaw] and
- * [sealedNegentropyStorage] included, or the interface defaults would rebuild what the engine
- * optimized away. An authenticated read runs in a [StoreQueryContext] carrying the caller's pubkey.
+ * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [openSubscription],
+ * [queryRaw] and [sealedNegentropyStorage] included, or quartz would fall back to a path this class
+ * does not gate. An authenticated read runs in a [StoreQueryContext] carrying the caller's pubkey.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
@@ -191,7 +195,136 @@ internal class ObserverBackend(
     private val liveGates: (suspend (List<Filter>) -> LiveGate?)? = null,
     /** Shared by every subscription, so a burst of cold authors costs a bounded number of store reads. */
     private val coldChecks: ColdAuthorChecks = ColdAuthorChecks(),
-) : SessionBackend {
+) : LiveSubscriptionBackend {
+    /** Quartz's REQ path: [inner]'s registration, its replay run like [queryRaw]'s and its live events held to the gate. */
+    override fun openSubscription(
+        ctx: RequestContext,
+        filters: List<Filter>,
+        onLive: LiveListener,
+    ): LiveSubscription {
+        val held = HeldLive(ctx, onLive)
+        return GatedSubscription(ctx, filters, held, inner.openSubscription(ctx, filters, held))
+    }
+
+    private inner class GatedSubscription(
+        private val ctx: RequestContext,
+        private val filters: List<Filter>,
+        private val live: HeldLive,
+        private val registered: LiveSubscription,
+    ) : LiveSubscription {
+        override suspend fun replayRaw(
+            onEachStored: (RawEvent) -> Unit,
+            onEose: () -> Unit,
+        ) = replayGated(onEose) { eose -> registered.replayRaw(onEachStored, eose) }
+
+        override suspend fun replay(
+            onEach: (Event) -> Unit,
+            onEose: () -> Unit,
+        ) = replayGated(onEose) { eose -> registered.replay(onEach, eose) }
+
+        /** The gate is read before the stored rows, in the connection's context, as [gatedLive] reads it. */
+        private suspend fun replayGated(
+            onEose: () -> Unit,
+            block: suspend (eose: () -> Unit) -> Unit,
+        ) = ranked(ctx) {
+            timedEose(onEose) { onReplayed ->
+                gate.through(ctx, filters, onReplayed) { eose ->
+                    live.open(liveGates?.invoke(filters), currentCoroutineContext())
+                    block(eose)
+                }
+            }
+        }
+
+        override fun cancel() {
+            registered.cancel()
+            live.close()
+        }
+    }
+
+    /**
+     * A registered subscription's live listener. Events wait here until [open] has the gate, in
+     * arrival order; after that each is sent, dropped, or judged by [coldChecks] in this
+     * subscription's own scope, which [close] cancels.
+     */
+    private inner class HeldLive(
+        private val ctx: RequestContext,
+        private val onLive: LiveListener,
+    ) : LiveListener {
+        private val lock = Any()
+        private var waiting: ArrayList<Pair<Event, String>>? = ArrayList()
+        private var checks: CoroutineScope? = null
+
+        @Volatile
+        private var admit: ((Event, String) -> Unit)? = null
+
+        @Volatile
+        private var closed = false
+
+        override fun onLive(
+            event: Event,
+            body: String,
+        ) {
+            val decide =
+                admit ?: synchronized(lock) {
+                    waiting?.let { held ->
+                        held.add(event to body)
+                        return
+                    }
+                    admit
+                } ?: return
+            decide(event, body)
+        }
+
+        fun open(
+            live: LiveGate?,
+            context: CoroutineContext,
+        ) = synchronized(lock) {
+            if (closed) return
+            val decide = if (live == null) ::send else judge(live, CoroutineScope(context.minusKey(Job) + SupervisorJob()).also { checks = it })
+            // Drained and switched under the lock, so a live event cannot overtake the ones held.
+            waiting?.forEach { (event, body) -> decide(event, body) }
+            waiting = null
+            admit = decide
+        }
+
+        fun close() {
+            val scope =
+                synchronized(lock) {
+                    closed = true
+                    waiting = null
+                    checks
+                }
+            scope?.cancel()
+        }
+
+        private fun judge(
+            live: LiveGate,
+            scope: CoroutineScope,
+        ): (Event, String) -> Unit =
+            { event, body ->
+                when (live.admitsNow(event)) {
+                    true -> send(event, body)
+                    false -> Unit
+                    null -> coldChecks.start(scope, event.pubKey, { live.admitsNow(event) }, { live.admits(event) }) { sendFromCheck(event, body) }
+                }
+            }
+
+        private fun send(
+            event: Event,
+            body: String,
+        ) {
+            if (!closed) onLive.onLive(event, body)
+        }
+
+        /** A cold check answers on a coroutine, and the connection may take its live frames on its own thread. */
+        private fun sendFromCheck(
+            event: Event,
+            body: String,
+        ) {
+            ctx.liveExecutor?.execute { send(event, body) } ?: send(event, body)
+        }
+    }
+
     override suspend fun query(
         ctx: RequestContext,
         filters: List<Filter>,
@@ -429,11 +562,3 @@ internal class ColdAuthorChecks(
         private const val SAY_EVERY_MS = 60_000L
     }
 }
-
-/** The live gate of the store behind [store], when it is this repo's store; null for any other. */
-private fun liveGatesOf(store: IEventStore): (suspend (List<Filter>) -> LiveGate?)? =
-    when (store) {
-        is VespaEventStore -> store.store::liveGate
-        is NostrSemanticsStore -> store::liveGate
-        else -> null
-    }

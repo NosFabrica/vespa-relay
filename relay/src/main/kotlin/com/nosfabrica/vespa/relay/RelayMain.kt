@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.nosfabrica.vespa.eventstore.SchemaDeploy
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.search.SearchExpansionLimits
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
@@ -93,9 +95,7 @@ import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
 import com.nosfabrica.vespa.relay.store.VespaEndpoints
 import com.nosfabrica.vespa.relay.store.deployBundledSchema
-import com.nosfabrica.vespa.relay.store.feedBatch
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
-import com.nosfabrica.vespa.relay.store.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
@@ -141,13 +141,13 @@ fun main() {
     val store = openStore(boot)
     BootClock.mark("relay: store open")
     // Before the first write, the maintenance's included: see deployBundledSchema.
-    converging?.await()
+    if (converging?.await() == true) BootClock.mark("relay: every Vespa service runs the package")
     // The pulse page states its totals over this window, which opens with the store, not the process.
     val storeOpenedAt = System.currentTimeMillis()
     // Runs behind the server and is awaited nowhere; blocking the port on it makes a restart an outage.
     val maintenance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     startMaintenance(boot, store, maintenance)
-    val statsSnapshot = startStats(boot, maintenance)
+    val statsSnapshot = startStats(boot, store, maintenance)
     val profile = startProfile(boot, store, maintenance)
     val servingPressure = ServingPressure(thresholdMs = boot.pressureThresholdMs)
     // Its own scope: shutdown stops the writers after the connections, never before.
@@ -186,6 +186,7 @@ fun main() {
 private class Boot(
     val vespaUrl: String,
     val vespa: VespaEndpoints,
+    val storeTuning: EngineTuning,
     val configUrl: String,
     val autoDeploy: Boolean,
     val port: Int,
@@ -244,6 +245,8 @@ private fun readSettings(env: Map<String, String>): Boot {
     val vespaUrl = env["VESPA_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: "http://localhost:8080"
     val vespa = vespaEndpoints(env)
     vespa.describe()?.let { System.err.println("relay: the store sends its $it") }
+    // Strict, and every bad VESPA_* setting named in one refusal; the store would read them leniently.
+    val storeTuning = EngineTuning.fromEnv(env)
     val endpoint = relayEndpointFromEnv(env)
     // Read first so a malformed key stops the boot here. Unset is an anonymous relay.
     val identity = RelayIdentity.fromEnv { env[it] }
@@ -279,14 +282,14 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     val files = relayFilesFromEnv(env)
     val adminPubkeys = adminPubkeysFromEnv(env)
-    // The store reads it; checked here so a typo stops the boot instead of quietly turning batching off.
-    feedBatch(env)?.let { n ->
+    storeTuning.feedBatch?.let { n ->
         System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
     }
     return Boot(
         vespaUrl = vespaUrl,
         vespa = vespa,
-        configUrl = env["VESPA_CONFIG_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: vespaConfigUrlFor(vespaUrl),
+        storeTuning = storeTuning,
+        configUrl = env["VESPA_CONFIG_URL"]?.trim()?.takeIf { it.isNotEmpty() } ?: VespaEventStore.deriveConfigUrl(vespaUrl),
         autoDeploy = env.strictFlag("AUTO_DEPLOY") ?: true,
         port = env.strictInt("RELAY_PORT", 1..65_535) ?: 7777,
         endpoint = endpoint,
@@ -315,8 +318,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         kindAllow = allowKindsFromEnv(env),
         kindDeny = denyKindsFromEnv(env),
         searchConcurrency = searchConcurrencyPerConnectionFromEnv(env),
-        ingest = relayIngestFromEnv(env),
-        mirrorIngest = mirrorIngestFromEnv(env),
+        ingest = relayIngestFromEnv(env, storeTuning),
+        mirrorIngest = mirrorIngestFromEnv(env, storeTuning),
         pressureThresholdMs = env.strictLong("SERVING_PRESSURE_THRESHOLD_MS", 100L..Long.MAX_VALUE) ?: ServingPressure.DEFAULT_THRESHOLD_MS,
         expirationSweepSeconds = expirationSweepSecondsFromEnv(env),
         pulse = pulseFromEnv(env, adminPubkeys),
@@ -347,14 +350,15 @@ private fun deploySchema(boot: Boot): BootTask<Boolean>? {
         System.err.println("schema: AUTO_DEPLOY=false — not deploying; Vespa serves the application package it already has")
         return null
     }
-    return deployBundledSchema(boot.vespaUrl, boot.configUrl)
+    return deployBundledSchema(boot.vespaUrl, boot.configUrl, boot.storeTuning)
 }
 
 private fun openStore(boot: Boot): VespaEventStore =
     VespaEventStore.open(
         boot.vespaUrl,
         relay = boot.endpoint.ws,
-        autoDeploy = false,
+        // Deployed, or deliberately not, by deploySchema above.
+        schema = SchemaDeploy.NEVER,
         feedEndpoints = boot.vespa.feed,
         queryEndpoints = boot.vespa.query,
         configUrl = boot.configUrl,
@@ -362,6 +366,7 @@ private fun openStore(boot: Boot): VespaEventStore =
         providerRefreshSeconds = boot.providerRefreshSeconds,
         searchExpansion = boot.searchExpansion,
         slowQueryThresholdMillis = boot.pulse.slowReadMs,
+        tuning = boot.storeTuning,
     )
 
 /** The background repairs and the metrics line, each only when switched on. */
@@ -388,6 +393,7 @@ private fun startMaintenance(
 /** The `/stats.json` rollups, counters first so a fresh relay has totals within seconds of boot. */
 private fun startStats(
     boot: Boot,
+    store: VespaEventStore,
     scope: CoroutineScope,
 ): StatsSnapshot {
     // Seeded from the state file so a restart serves the last document until the first rollup.
@@ -397,7 +403,7 @@ private fun startStats(
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
         return snapshot
     }
-    val rollup = StatsRollup(StatsVespa(boot.vespa.queryUrl(boot.vespaUrl)), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
+    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
     if (counters > 0) {
         launchStatsRollup(scope, rollup, snapshot, StatsTier.COUNTERS, counters)
     } else {
@@ -569,7 +575,7 @@ private fun serve(
         trustPage = resourceText("/trust.html"),
         trustJson = TrustDocument.reader(store, "This relay's trust projection"),
         trustExplain = { key -> TrustDocument.explain(store, key) },
-        openRanking = boot.openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.store.scoredProfileSearch(q, observer, limit) }, config, pressure = pressure) },
+        openRanking = boot.openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.scoredProfileSearch(q, observer, limit) }, config, pressure = pressure) },
         statsJson = statsSnapshot,
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,

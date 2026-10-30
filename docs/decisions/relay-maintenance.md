@@ -102,7 +102,8 @@ page-wide outage.
 
 ## StatsYql
 
-**Aggregations run under the `unranked` profile.** The recency profiles' match
+**Aggregations run under the `unranked` profile** (the store's `group` sends it,
+as it sends the two ceilings below). The recency profiles' match
 phase caps the match set on a large corpus, and a ranked grouping under-counted
 by 10x or more (`EventYql.buildCount`). Attribute `order by` trips the same
 phase, so no query here sorts.
@@ -140,11 +141,24 @@ levels breaks on an upgrade with an empty chart rather than an error.
 only as a fallback, because an unconditional descent finds nothing on the shape
 this deployment returns.
 
-**The queries are not built on the store's `EventYql`.** Its builder is private
-and its pipelines a fixed set, so every new chart would cost a store release
-plus a JitPack pin bump. The proven shapes (store 95ded7b3de kept `buildCount`
-and `buildDistinctAuthors`) are copied verbatim; the duplication is the WHERE
-clause.
+**The pipelines are ours; the query around them is the store's.** They were
+kept off the store's `EventYql` because its builder was private and its
+pipelines a fixed set, so every new chart would have cost a store release.
+`EngineReads.group` answers that objection: it takes our pipeline as text and
+compiles only the WHERE clause, from an `EventQuery` (kinds and an inclusive
+`created_at` window, the only filters a chart uses; `since = now + 1` is "signed
+in the future"), so the pipelines, the readers and a new chart stay here. The
+hand-written WHERE strings, the HTTP POST, the unranked profile and the group
+ceilings went to the store with it, which also meters the read (`Aggregate` on
+`/pulse.json`) and rotates the query endpoints, where the rollup used to ask
+only the first.
+
+**Scored pubkeys are the reputation documents keyed by 64 characters.** The
+store keeps its own markers among them (the keying migration's, the projection
+ledger's) under keys that are not hex, so a bare `count()` read one to three
+too high, and a store with no scores at all showed one: the page's "web of
+trust is empty" warning keys on zero. `group(strlen(pubkey))` costs what the
+count did and keeps the 64 group only.
 
 ## StatsVespa
 
@@ -152,15 +166,17 @@ clause.
 `full`.** `full` is `docs == active`, an exact equality; `coverage` rounds
 `docs/targetActive`. A node a hair short of its target is `full: false` at 100%
 (refusing it refuses every query while the node settles); a node holding
-documents not yet active anywhere is `full: true` at any percentage. Mirrors
-`SearchCoverage.undegraded` in the store. At 100% at most 0.5% of the target
+documents not yet active anywhere is `full: true` at any percentage. The
+store's `group` refuses by the same rule (`SearchCoverage.undegraded`) now. At 100% at most 0.5% of the target
 went unsearched, which is the accuracy the page can claim.
 
 **Vespa's response body goes to the log, never into the published message.**
 `/stats.json` is public and a failed section carries the exception's message;
 the body names content nodes, container hostnames and internal ports, all of
-which rode out on the first failed aggregation. The YQL stays in the message
-because it is our own and is the whole diagnostic value.
+which rode out on the first failed aggregation. The store's own exceptions can
+quote that body too, so every one is logged whole and rethrown as a
+`StatsQueryFailed` naming its class, the pipeline and the scope, which are our
+own and the whole diagnostic value.
 
 **Only a `StatsQueryFailed` message is published; anything else is its class.**
 Routing Vespa's body through `failed()` left three other ways out: a transport

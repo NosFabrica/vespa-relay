@@ -4,6 +4,54 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The store reads its own settings (October 2026)
+
+vespa-eventstore `d75be63d9db0` and quartz 2.9.0. Nothing to deploy: the
+schema does not move.
+
+### Do before the first boot
+
+- **Check every `VESPA_*` setting parses.** Both processes now read all of the
+  store's variables strictly at boot ([configuration.md](configuration.md),
+  "Ranges the boot enforces"), where the store used to read most of them
+  leniently: `VESPA_VISIT_STREAM=no` was read as on (only `0` and `false`
+  turned it off) and now means off, and a value no reading fits stops the
+  boot, with every bad variable named in one line.
+- **Check `ALLOW_PUBKEYS`, `DENY_PUBKEYS` and `RELAY_CONTACT_PUBKEY`.** Each
+  entry must now be one whole `npub1…` (or `nprofile1…`), optionally behind
+  `nostr:`. Trailing characters after the key, or an `nsec` pasted onto it,
+  used to be read past and now stop the boot naming the setting.
+
+### What you will see
+
+- **`RELAY_STATE_FILE` keeps more.** The NIP-86 event allow list, roles and
+  claims now survive a restart beside the bans; an `allowevent` used to be lost
+  on restart. The file the old relay wrote reads as before.
+- **The upstream push waits for each `OK`.** An `up`/`both` stream sends four
+  events at a time and waits for the upstream's answer, where it used to send
+  at a fixed 25 per second without one; one reconcile per upstream per pass,
+  budgeted to one `SYNC_UP_INTERVAL_SECONDS`. `pushed N event(s) upstream`
+  now counts events the upstream accepted, and the log line names what was
+  left for the next pass.
+- **`wss://host:443` and `ws://host:80` are `wss://host` and `ws://host`**
+  everywhere, the stats rollup included, so a relay listed both ways counts
+  once; a NIP-62 vanish naming the relay with its default port now covers it.
+- Search expansion serves an upper-case hex `e`/`p` member of a list
+  (lowercased) where it used to drop it, and a NIP-85 card whose subject is
+  upper-case hex ranks nobody (it never did; it no longer leaves a stored cell).
+- A NIP-50 `sort:` the store does not recognise (`sort:bogus`) is no longer held
+  by the per-connection search lane; the store always served it as plain
+  recall.
+- The sign-in NOTICE follows the store's lens: a reader whose FIRST
+  `30382:rank` provider has signed nothing here is now told so (`no kind 30382
+  from <service> here yet`), even when a later provider's cards are mirrored.
+- `/stats.json`'s `trust.scoredPubkeys` reads one to three lower: the store's
+  own marker documents are no longer counted as scored pubkeys, so a store with
+  no scores now shows zero and the stats page's empty-web-of-trust warning.
+- The stats rollup's groupings show on `/pulse.json` as the `Aggregate`
+  activity, and with `VESPA_QUERY_URLS` set they rotate across every query
+  container instead of asking the first.
+
 ## The image runs JDK 27 (October 2026)
 
 The runtime stage of the image moved from JDK 21 to JDK 27 (Temurin, Ubuntu 26.04); the build is unchanged.

@@ -141,7 +141,7 @@ class RelayOnionAuthTest {
         }
     }
 
-    /** A hidden service is published on port 80, and the normalizer keeps `:80` and no port apart. */
+    /** A hidden service is published on port 80, and a client may sign it with the port spelled out. */
     @Test
     fun `the default port spelled out is the same address`() {
         val server = relayServing { setOf(onion) }

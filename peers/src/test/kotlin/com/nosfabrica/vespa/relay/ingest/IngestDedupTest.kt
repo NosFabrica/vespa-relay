@@ -21,9 +21,7 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
-import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -94,16 +92,7 @@ class IngestDedupTest {
                         if (!probe) {
                             null
                         } else {
-                            { kind, authors ->
-                                index
-                                    .search(EventQuery(kinds = listOf(kind), authors = authors))
-                                    .groupBy { it.pubkey }
-                                    .mapValues { (_, docs) ->
-                                        docs
-                                            .maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
-                                            .let { AddressVersion(it.createdAt, it.id) }
-                                    }
-                            }
+                            { kind, authors -> index.newestVersions(kind, authors).mapValues { AddressVersion(it.value.createdAt, it.value.id) } }
                         },
                     refusals = refusals,
                     writer = writer?.invoke(store) ?: StoreWriter.local(store),

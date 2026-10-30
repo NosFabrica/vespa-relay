@@ -41,3 +41,27 @@ include(":peers")
 include(":monitor")
 include(":relay")
 include(":sync")
+
+// Local checkouts in place of the pins, to build against an upstream change before it is released:
+//   ./gradlew -PvespaEventStoreDir=../vespa-eventstore :relay:compileKotlin
+//   ./gradlew -PquartzDir=../quartz :relay:compileKotlin
+providers.gradleProperty("vespaEventStoreDir").orNull?.let { dir ->
+    includeBuild(dir) {
+        dependencySubstitution {
+            for (group in listOf("com.github.NosFabrica.vespa-eventstore", "com.github.nosfabrica.vespa-eventstore")) {
+                substitute(module("$group:store")).using(project(":store"))
+                substitute(module("$group:engine")).using(project(":engine"))
+            }
+        }
+    }
+}
+providers.gradleProperty("quartzDir").orNull?.let { dir ->
+    includeBuild(dir) {
+        dependencySubstitution {
+            for (group in listOf("com.vitorpamplona.quartz", "com.github.vitorpamplona.quartz")) {
+                substitute(module("$group:quartz")).using(project(":quartz"))
+                substitute(module("$group:quartz-jvm")).using(project(":quartz"))
+            }
+        }
+    }
+}

@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
+import com.nosfabrica.vespa.eventstore.EngineReads
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -48,16 +49,16 @@ class StatsRollupTest {
     ) : StatsQueries {
         data class Ask(
             val pipeline: String,
-            val where: String,
-            val source: String,
+            val where: StatsYql.Scope,
+            val source: EngineReads.Source,
         )
 
         val asked = mutableListOf<Ask>()
 
         override suspend fun group(
             pipeline: String,
-            where: String,
-            source: String,
+            where: StatsYql.Scope,
+            source: EngineReads.Source,
         ): JsonObject {
             asked += Ask(pipeline, where, source)
             if (pipeline in failing) error("vespa 400 — refused `$pipeline`")
@@ -100,10 +101,10 @@ class StatsRollupTest {
             for ((pipeline, where, source) in queries.asked) {
                 assertFalse(pipeline.contains(StatsYql.TAG), "tag_index is a per-tag emission, not a counter: `$pipeline`")
                 assertFalse(pipeline.contains("each(all(group("), "a set per bucket is the shape that OOMs: `$pipeline`")
-                assertFalse(source == StatsYql.REPUTATION, "the reputation store holds a document per scored pubkey: `$pipeline`")
+                assertFalse(source == EngineReads.Source.REPUTATION, "the reputation store holds a document per scored pubkey: `$pipeline`")
                 // A count() materialises nothing but still walks every document it matches.
-                val windowed = where.contains("created_at >=")
-                val kinds = KIND_FILTER.findAll(where).map { it.groupValues[1].toInt() }.toSet()
+                val windowed = where.since != null
+                val kinds = where.kinds.toSet()
                 assertTrue(windowed || kinds.isNotEmpty(), "a grouping over the whole store cannot run every minute: `$pipeline` where `$where`")
                 if (!windowed) {
                     assertTrue(
@@ -123,19 +124,19 @@ class StatsRollupTest {
             val asked = queries.asked
 
             assertTrue(
-                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where == "true" },
+                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where == StatsYql.ALL },
                 "the store's distinct authors are counted here, once every slow pass",
             )
-            assertTrue(asked.any { it.pipeline == StatsYql.countsBy("kind") && it.where == "true" }, "the kind histogram walks the whole store")
-            assertTrue(asked.any { it.pipeline == StatsYql.TOTAL && it.where == "true" }, "the event total walks the whole store")
+            assertTrue(asked.any { it.pipeline == StatsYql.countsBy("kind") && it.where == StatsYql.ALL }, "the kind histogram walks the whole store")
+            assertTrue(asked.any { it.pipeline == StatsYql.TOTAL && it.where == StatsYql.ALL }, "the event total walks the whole store")
             assertTrue(
-                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where.contains("kind = 30382") },
+                asked.any { it.pipeline == StatsYql.distinct("pubkey") && 30382 in it.where.kinds },
                 "the score providers walk every stored score",
             )
             assertTrue(asked.any { it.pipeline.contains("each(all(group(pubkey)") }, "distinct authors per bucket is a charts cost")
             assertTrue(asked.any { it.pipeline.contains(StatsYql.TAG) }, "the relay distribution groups tag_index")
             assertTrue(
-                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where.contains("kind = 9735") },
+                asked.any { it.pipeline == StatsYql.distinct("pubkey") && 9735 in it.where.kinds },
                 "the zap wallets walk every receipt in the store to return a handful of services",
             )
         }
@@ -285,8 +286,6 @@ class StatsRollupTest {
 
     private companion object {
         const val NOW = 1_800_000_000L
-
-        val KIND_FILTER = Regex("""kind = (\d+)""")
 
         /**
          * The kinds a counters query may lean on as its only bound. A kind filter bounds the

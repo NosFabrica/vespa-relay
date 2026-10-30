@@ -74,28 +74,12 @@ class RelayExcludes(
                 if (entry.any { it in REGEX_MARKERS }) {
                     patterns += Regex(entry, RegexOption.IGNORE_CASE)
                 } else {
-                    RelayUrlNormalizer.normalizeOrNull(entry)?.let { urls += withoutDefaultPort(it) } ?: onInvalidUrl(entry)
+                    RelayUrlNormalizer.normalizeOrNull(entry)?.let { urls += it } ?: onInvalidUrl(entry)
                 }
             }
             return RelayExcludes(urls, patterns)
         }
     }
-}
-
-/**
- * Drops the scheme's default port (`:443` on `wss`, `:80` on `ws`), which the normalizer
- * keeps, so a list naming both spellings costs one dial.
- */
-internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
-    val default = if (url.url.startsWith("wss://", true)) ":443" else ":80"
-    val scheme = url.url.substringBefore("://", "") + "://"
-    val rest = url.url.removePrefix(scheme)
-    val authority = rest.substringBefore('/')
-    // An IPv6 literal's colons live inside brackets; only a port sits after the closing one.
-    if (authority.startsWith("[") && !authority.substringAfter(']').startsWith(":")) return url
-    if (!authority.endsWith(default)) return url
-    val trimmed = scheme + authority.removeSuffix(default) + rest.substring(authority.length)
-    return RelayUrlNormalizer.normalizeOrNull(trimmed) ?: url
 }
 
 /**

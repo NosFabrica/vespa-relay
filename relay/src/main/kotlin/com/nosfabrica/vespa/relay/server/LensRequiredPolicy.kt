@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.vitorpamplona.quartz.nip01Core.core.HexKey
+import com.nosfabrica.vespa.eventstore.ReadShape
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix.AUTH_REQUIRED
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.Command
@@ -30,13 +30,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PassThroughPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyResult
-import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * Every read says whose eyes it is read through: an unauthenticated REQ or COUNT is answered only
  * if every filter names a lens (`observer:<64-hex>`) or waives one (`include:spam`), because a
  * subscription's filters are ORed. NIP-77 passes through the same gate. A NIP-98 read counts as signed in.
+ * The filter is read by the store's own [ReadShape], so `observer:npub1…` declares nothing here as it ranks nothing there.
  */
 class LensRequiredPolicy : PassThroughPolicy() {
     /** This connection's context; `@Volatile` because the REQ can land on another coroutine. */
@@ -62,7 +61,7 @@ class LensRequiredPolicy : PassThroughPolicy() {
             // Signed in: the connection's own pubkey is the lens, applied by ObserverBackend.
             scope?.authenticatedUsers?.isNotEmpty() == true -> PolicyResult.Accepted(cmd)
 
-            filters.all(Filter::declaresLens) -> PolicyResult.Accepted(cmd)
+            filters.all { ReadShape.of(it).declaresLens } -> PolicyResult.Accepted(cmd)
 
             else -> PolicyResult.Rejected(NO_LENS)
         }
@@ -77,22 +76,3 @@ class LensRequiredPolicy : PassThroughPolicy() {
             )
     }
 }
-
-/** Whether this filter names a usable lens or waives one. */
-internal fun Filter.declaresLens(): Boolean {
-    val parsed = SearchQuery.parse(search ?: return false)
-    return parsed.includeSpam || observerLens() != null
-}
-
-/**
- * The pubkey this filter names as its lens, or null. Must be 64 hex, the store's own acceptance
- * test, or `observer:npub1…` would pass here and rank nothing there.
- */
-internal fun Filter.observerLens(): HexKey? =
-    search
-        ?.takeIf { it.isNotEmpty() }
-        ?.let { SearchQuery.parse(it).extension(OBSERVER) }
-        ?.lowercase()
-        ?.takeIf { it.length == 64 && Hex.isHex64(it) }
-
-private const val OBSERVER = "observer"
