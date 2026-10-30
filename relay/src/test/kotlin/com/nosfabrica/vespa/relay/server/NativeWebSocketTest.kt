@@ -73,6 +73,20 @@ class NativeWebSocketTest {
         }
     }
 
+    @Test
+    fun `a live frame's head and its shared body, written apart, are read as one frame`() {
+        val alloc = UnpooledByteBufAllocator.DEFAULT
+        val body = "{\"content\":\"" + "z".repeat(70_000) + "\"}]"
+        val shared = alloc.buffer().also { ByteBufUtil.writeUtf8(it, body) }
+        val client = EmbeddedChannel(WebSocket08FrameDecoder(false, false, 1 shl 20))
+        client.writeInbound(encodeLiveFrameHead(alloc, "[\"EVENT\",\"a\",", shared.readableBytes()), shared.retainedDuplicate())
+        val frame = client.readInbound<TextWebSocketFrame>()
+        assertEquals("[\"EVENT\",\"a\"," + body, frame.text())
+        frame.release()
+        client.finishAndReleaseAll()
+        shared.release()
+    }
+
     /** The status line [request] gets from a relay serving the native websocket. */
     private fun statusLine(
         port: Int,

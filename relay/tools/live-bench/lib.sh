@@ -77,3 +77,11 @@ relay_cpu() {
 }
 
 feeds() { node "$REPO/relay/tools/live-feeds.mjs" "$RELAY_WS" "$@"; }
+
+# Stops process $1 and everything it started: a backgrounded `feeds` is a subshell, and node forks its own children.
+kill_tree() {
+  local c
+  for c in $(pgrep -P "$1"); do kill_tree "$c"; done
+  kill "$1" 2> /dev/null
+  return 0
+}

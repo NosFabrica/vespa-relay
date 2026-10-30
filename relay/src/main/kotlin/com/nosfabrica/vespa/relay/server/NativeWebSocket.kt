@@ -70,6 +70,9 @@ import java.util.concurrent.atomic.AtomicLong
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
 private const val KTOR_HTTP1 = "http1"
 
+/** Live bodies up to this size are copied into a socket's batch; larger ones are written as a shared duplicate. */
+private const val LIVE_COPY_MAX_BYTES = 4_096
+
 /** The keepalive tick, and the ping period in ticks; the slow-consumer and silence rules are the Ktor path's (RelayWebSocket.kt). */
 private const val TICK_MS = 1_000L
 private const val PING_EVERY_TICKS = (PING_PERIOD_MS / TICK_MS).toInt()
@@ -166,26 +169,23 @@ private class EventLoopSessions(
         while (true) dirty.poll()?.let { isolated(it) { drain() } } ?: break
     }
 
-    /** Sessions fan-out tasks wrote to since the last flush; this loop's own. */
+    /** Sessions written to since the last flush; this loop's own. */
     private val written = ArrayList<NativeWebSocketSession>()
     private var flushQueued = false
     private val flushTask = Runnable { flushWritten() }
 
+    /** Quartz's fan-out for this loop's subscriptions, run here. */
+    override fun execute(task: () -> Unit) = loop.execute(task)
+
     /**
-     * Quartz's fan-out for this loop's subscriptions, run here. The sockets it wrote to are flushed by a task queued
-     * behind it: on an idle loop that runs next, and under load it waits out the fan-outs already queued, so a socket
-     * those events reach takes them in one write rather than one per event.
+     * Flushes [session] from a task queued behind the work already on the loop: on an idle loop that runs next, and
+     * under load it waits out the fan-outs queued ahead of it, so a socket those events reach takes them in one write.
      */
-    override fun execute(task: () -> Unit) {
-        loop.execute {
-            try {
-                task()
-            } finally {
-                if (written.isNotEmpty() && !flushQueued) {
-                    flushQueued = true
-                    loop.execute(flushTask)
-                }
-            }
+    fun wrote(session: NativeWebSocketSession) {
+        written.add(session)
+        if (!flushQueued) {
+            flushQueued = true
+            loop.execute(flushTask)
         }
     }
 
@@ -195,17 +195,13 @@ private class EventLoopSessions(
         written.clear()
     }
 
-    fun wrote(session: NativeWebSocketSession) {
-        written.add(session)
-    }
-
     private var lastBody: String? = null
     private var lastBodyBytes: ByteBuf? = null
 
     /**
      * [body] and the frame's closing `]` as bytes, encoded once per event however many of this loop's sockets
      * it reaches: fan-out hands every subscription the same string, so identity finds it. The loop's own buffer,
-     * valid until the next event: copy from it, never keep it.
+     * valid until the next event: copy it or take a retained duplicate, never keep it.
      */
     fun sharedBody(
         body: String,
@@ -275,6 +271,20 @@ internal fun appendLiveFrame(
     out.writeBytes(body, body.readerIndex(), body.readableBytes())
 }
 
+/** The header and [prefix] of a live frame whose body, `]` included, is [bodyBytes] long and written after it. */
+internal fun encodeLiveFrameHead(
+    alloc: ByteBufAllocator,
+    prefix: String,
+    bodyBytes: Int,
+): ByteBuf {
+    val prefixBytes = ByteBufUtil.utf8Bytes(prefix)
+    val length = prefixBytes + bodyBytes
+    val head = alloc.ioBuffer(frameHeaderSize(length) + prefixBytes)
+    writeFrameHeader(head, length)
+    ByteBufUtil.writeUtf8(head, prefix)
+    return head
+}
+
 /** [appendLiveFrame] into a buffer of its own. */
 internal fun encodeLiveFrame(
     alloc: ByteBufAllocator,
@@ -318,9 +328,9 @@ private class LiveFrame(
 )
 
 /**
- * One relay connection over an upgraded channel. Frames from any thread join a lock-free queue that its event
- * loop's [EventLoopSessions] drains while the socket takes writes, so a fan-out costs an enqueue, never a coroutine.
- * Commands are read in order by one coroutine per connection.
+ * One relay connection over an upgraded channel. Live frames from its own loop's fan-out join a batch its
+ * [EventLoopSessions] flushes; frames from any other thread join a lock-free queue it drains while the socket takes
+ * writes. Commands are read in order by one coroutine per connection.
  */
 private class NativeWebSocketSession(
     private val relay: NostrRelayServer,
@@ -353,6 +363,7 @@ private class NativeWebSocketSession(
         context = ctx
         channel = ctx.channel()
         loop = EventLoopSessions.of(channel.eventLoop())
+        batchLimit = channel.config().writeBufferHighWaterMark
         session =
             relay.connect(
                 object : SessionSink, LiveFrameSink {
@@ -366,9 +377,14 @@ private class NativeWebSocketSession(
                         framePrefix: String,
                         body: String,
                     ) {
-                        // On this socket's own loop, with nothing queued ahead, the frame goes straight to the socket.
+                        // On this socket's own loop, with nothing queued ahead, the frame joins the batch the loop flushes.
                         if (!closing && channel.eventLoop().inEventLoop() && outbox.isEmpty() && channel.isWritable) {
-                            writeLive(framePrefix, body)
+                            // Quartz logs and skips a sink that throws; this connection ends instead of losing the event.
+                            try {
+                                writeLive(framePrefix, body)
+                            } catch (e: Throwable) {
+                                fail(e)
+                            }
                         } else {
                             offer(LiveFrame(framePrefix, body), framePrefix.length + body.length + 1)
                         }
@@ -455,28 +471,63 @@ private class NativeWebSocketSession(
         if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
     }
 
-    /** This socket's live frames from the fan-out tasks since its loop last flushed, written as one buffer. */
+    /** This socket's live frames since its loop last flushed, in one buffer not yet handed to the socket. */
     private var pendingLive: ByteBuf? = null
 
-    /** On the event loop, inside a fan-out task: the frame joins this socket's buffer; the write is left to the loop's flush. */
+    /** Set when this socket was written to since its loop last flushed. */
+    private var flushOwed = false
+
+    /** The channel's write high-water mark, read once: past it a batch goes to the socket without waiting for the flush. */
+    private var batchLimit = 0
+
+    /**
+     * On the event loop, inside a fan-out task: the frame joins this socket's batch, and the flush is left to the loop.
+     * A batch past the socket's high-water mark, or a body too large to copy, is handed to the socket now, so its
+     * writability, and with it the outbox's slow-consumer limits, govern what follows.
+     */
     private fun writeLive(
         prefix: String,
         body: String,
     ) {
         val shared = loop.sharedBody(body, context.alloc())
-        val pending = pendingLive
-        if (pending != null) {
-            appendLiveFrame(pending, prefix, shared)
+        if (shared.readableBytes() > LIVE_COPY_MAX_BYTES) {
+            writePendingLive()
+            writeLiveFrame(prefix, shared)
         } else {
-            pendingLive = encodeLiveFrame(context.alloc(), prefix, shared)
+            val pending = pendingLive
+            if (pending == null) {
+                pendingLive = encodeLiveFrame(context.alloc(), prefix, shared)
+            } else {
+                appendLiveFrame(pending, prefix, shared)
+                if (pending.readableBytes() >= batchLimit) writePendingLive()
+            }
+        }
+        if (!flushOwed) {
+            flushOwed = true
             loop.wrote(this)
         }
     }
 
     fun flushWritten() {
-        if (!writePendingLive()) return
+        if (!flushOwed) return
+        flushOwed = false
+        if (closing) return
+        writePendingLive()
         context.flush()
         if (!channel.isWritable && unwritableSince == IDLE) unwritableSince = nowMs()
+    }
+
+    /** One live frame to the socket, unflushed: a small body copied in with its head, a large one shared after it. */
+    private fun writeLiveFrame(
+        prefix: String,
+        shared: ByteBuf,
+    ) {
+        if (shared.readableBytes() > LIVE_COPY_MAX_BYTES) {
+            context.write(encodeLiveFrameHead(context.alloc(), prefix, shared.readableBytes()), context.voidPromise())
+            context.write(shared.retainedDuplicate(), context.voidPromise())
+        } else {
+            context.write(encodeLiveFrame(context.alloc(), prefix, shared), context.voidPromise())
+        }
     }
 
     /** Hands the socket the live frames held for the loop's flush, ahead of anything queued after them; false if none. */
@@ -487,7 +538,7 @@ private class NativeWebSocketSession(
         return true
     }
 
-    /** On the event loop: writes what is queued while the socket takes it, then flushes once. */
+    /** On the event loop: writes the live batch, then what is queued while the socket takes it, then flushes once. */
     fun drain() {
         drainScheduled.set(false)
         var wrote = writePendingLive()
@@ -497,7 +548,7 @@ private class NativeWebSocketSession(
             // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
             if (frame is LiveFrame) {
                 queuedChars.addAndGet(-(frame.prefix.length + frame.body.length + 1).toLong())
-                context.write(encodeLiveFrame(context.alloc(), frame.prefix, loop.sharedBody(frame.body, context.alloc())), context.voidPromise())
+                writeLiveFrame(frame.prefix, loop.sharedBody(frame.body, context.alloc()))
             } else {
                 val text = frame as String
                 queuedChars.addAndGet(-text.length.toLong())

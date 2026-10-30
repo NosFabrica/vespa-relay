@@ -26,7 +26,7 @@ load=$!
 # Before it, the publisher signs the step's events, minutes of it at high RATE: give up only after an hour, and
 # never read a sample outside the step.
 for _ in $(seq 1 1800); do [ "$(grep -c 'publishing for' "$log")" -ge 2 ] && break; sleep 2; done
-[ "$(grep -c 'publishing for' "$log")" -ge 2 ] || { echo "live-bench: the measured step never started; see $log" >&2; kill $load; docker rm -f live-bench-strfry > /dev/null 2>&1; exit 1; }
+[ "$(grep -c 'publishing for' "$log")" -ge 2 ] || { echo "live-bench: the measured step never started; see $log" >&2; kill_tree $load; docker rm -f live-bench-strfry > /dev/null 2>&1; exit 1; }
 sleep 10
 read -r user kernel < <(relay_cpu 30)
 rss=$(awk '/VmRSS/ {print int($2 / 1024)}' "/proc/$RELAY_PID/status")

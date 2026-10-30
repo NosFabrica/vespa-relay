@@ -207,13 +207,19 @@ whatever had queued for a socket, held 126–144 ms. Now:
 - **A live frame is one buffer**: header, prefix and a copy of the event's
   bytes, which each loop still encodes once. It was a head and a retained
   duplicate of the body, two entries for the socket's write queue to track
-  and release.
+  and release. Bodies over 4 KiB keep the shared duplicate: a long-form
+  event reaching thousands of sockets is not copied into each.
 - **A socket's live frames wait for its loop's flush, in one buffer.** The
   flush is a task queued behind the fan-out: on an idle loop it runs next,
   and under load it waits out the fan-outs already queued, so the events
   those carry reach a socket in one write. Nothing waits on a timer.
   A drain writes the held frames ahead of anything queued after them, and a
   closing socket releases them.
+- **A batch is bounded by the socket's high-water mark.** Past it the batch
+  goes to the socket unflushed, so the socket turns unwritable and what
+  follows takes the outbox, whose slow-consumer limits apply; held frames
+  are invisible to those limits, so without the bound a burst queued on a
+  loop could grow one socket's batch without end.
 
 Each build twice, alternated, JDK 27:
 
