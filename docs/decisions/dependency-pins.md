@@ -54,8 +54,10 @@ relay's measurements (docs/live-feeds.md). What this relay reaches:
     ingest thread only probes each partition and hands the event once to every executor that may
     match. NativeWebSocket declares its event loop (EventLoopSessions is the FanoutExecutor, one
     per loop): the match and the writes run on the loop that owns those sockets, a frame goes
-    straight to a socket with nothing queued ahead of it, and each socket a task wrote to is
-    flushed once when the task ends. The Ktor transport declares nothing and keeps the inline path.
+    into a socket's one buffer when nothing is queued ahead of it, and that buffer is written by a
+    flush task queued behind the fan-outs already on the loop (one write per socket per flush, not
+    per event: a flush per event missed the target at 50 events/s). The Ktor transport declares
+    nothing and keeps the inline path.
     Quartz's own benchmark, 12,000 feeds x 200 events on 4 loops: handing frames over cost 6,601 ns
     a delivery on the ingest thread; with the loops declared, 80 ns. Measured here (docs/live-feeds.md):
     the same CPU at 12,000 feeds x 5 events/s, the work moved rather than shrunk; with every note to

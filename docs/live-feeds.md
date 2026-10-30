@@ -149,7 +149,8 @@ frame, is all user space, and our median delivery is 5× faster.
 Quartz 2.8.0 fans a live event out on the thread that delivers it. The native
 websocket declares each socket's event loop (`liveExecutor`): the ingest thread
 hands an event once to every loop that holds a match, and the loop matches and
-writes its own sockets, flushing each once per event. The publisher's OK no
+writes its own sockets, flushing each once per event (since batched, see
+[One write per socket per flush](#one-write-per-socket-per-flush)). The publisher's OK no
 longer waits for the fan-out. Ktor's path declares nothing and stays inline.
 
 At 12,000 feeds and 5 events/s, JDK 27, each build twice and alternated:
@@ -194,6 +195,76 @@ alternated, the same day):
   ([docs/traps.md](traps.md); `live-bench/fd-exhaustion.sh` checks it). The
   relay now loads the JDK's zone rules at boot, and a production host needs a
   `nofile` limit above the sockets it means to hold.
+
+## One write per socket per flush
+
+2.8.0 as first adopted flushed every socket at the end of each event's
+fan-out: one `write()` per socket per event. At 2,000 feeds and 50 events/s
+that is 100,000 writes a second, and delivery missed the target in all four
+runs (p99 409, 479, 629, 785 ms) where 2.7.3, whose one drain task took
+whatever had queued for a socket, held 126–144 ms. Now:
+
+- **A live frame is one buffer**: header, prefix and a copy of the event's
+  bytes, which each loop still encodes once. It was a head and a retained
+  duplicate of the body, two entries for the socket's write queue to track
+  and release.
+- **A socket's live frames wait for its loop's flush, in one buffer.** The
+  flush is a task queued behind the fan-out: on an idle loop it runs next,
+  and under load it waits out the fan-outs already queued, so the events
+  those carry reach a socket in one write. Nothing waits on a timer.
+  A drain writes the held frames ahead of anything queued after them, and a
+  closing socket releases them.
+
+Each build twice, alternated, JDK 27:
+
+| load | build | user CPU | kernel CPU | delivery p50 | p99 |
+|---|---|---:|---:|---:|---:|
+| 12,000 × 5/s | flush per event | 0.32–0.33 cores | 0.64–0.70 | 91–94 ms | 176–194 ms |
+| | one write per flush | 0.26–0.31 | 0.63–0.66 | 86–95 ms | 158–177 ms |
+| 2,000 × 20/s | flush per event | 0.31–0.33 | 0.35 | 26 ms | 46–52 ms |
+| | one write per flush | 0.27–0.30 | 0.34 | 25–26 ms | 49–79 ms |
+| 2,000 × 50/s | flush per event | 0.48–0.51 | 0.73–0.81 | 267–338 ms | 629–785 ms |
+| | one write per flush | 0.44–0.47 | 0.67–0.68 | 66 ms | 164–174 ms |
+
+- **The 50 events/s regression is gone**: p99 4× lower, back near 2.7.3's,
+  and kernel time lower with fewer writes.
+- **User CPU is 5–20% lower** at the rates below it; a third pair of runs at
+  12,000 × 5 read 0.29–0.31, so the gain there is within the runs' spread of
+  about ±0.03 cores.
+- **At 8 feeds a socket**, every note to every feed, 128,000 feeds held the
+  target (p99 482–484 ms against 544 ms). The ramp's 96,000 step, here a
+  jump from 2,000 sockets to 12,000, left 118 to 5,421 sockets waiting for
+  their replay past 60 s on every build: 80,000 replays queued at once, each
+  waiting 20 s on average for the store, with Vespa on the same four cores.
+  Delivery to the sockets that were answered stayed in target (p99 394 ms).
+- **What is left on the loops is mostly cache misses.** The profile at
+  12,000 × 5 puts 25–28% in Netty's pipeline write and the rest spread over
+  the first touch of each socket's objects in an event: 21% landed on
+  `context.alloc()`, the first read of each socket's context and channel
+  config. Keeping the allocator in the session moved those samples to the
+  next touch (`liveEvent`, quartz's `sendLive`) and the CPU did not change, so
+  it is not kept. Writing past the pipeline would skip Ktor's handlers and
+  the handshaker's encoder that sit in it.
+
+### Against strfry at higher rates
+
+strfry 1.1.2-148, the same tool and day (not alternated with the build
+above; vespa-relay figures from the table above):
+
+| load | | user CPU | kernel CPU | delivery p50 | p99 |
+|---|---|---:|---:|---:|---:|
+| 2,000 × 20/s | strfry | 0.06 cores | 0.28 | 114 ms | 218 ms |
+| | vespa-relay | 0.27–0.30 | 0.34 | 25–26 ms | 49–79 ms |
+| 2,000 × 50/s | strfry | 0.10 | 0.60 | 359 ms | 621 ms |
+| | vespa-relay | 0.44–0.47 | 0.67–0.68 | 66 ms | 164–174 ms |
+
+- strfry's user space stays 4–5× smaller; kernel time is within 10–20%, and
+  our delivery is 4–5× faster, as at 5 events/s.
+- **4,000 × 50/s (200,000 frames a second) is past the load generator**,
+  whose four Node processes read about 144,000 frames a second here. Both
+  relays fell behind there and neither number is the relay's: strfry kept
+  every socket and buffered (242 MB, 58% delivered, p50 15.5 s); vespa-relay
+  closed the readers that stopped reading (75.7% delivered before it did).
 
 ## io_uring, tried and not taken
 

@@ -166,19 +166,33 @@ private class EventLoopSessions(
         while (true) dirty.poll()?.let { isolated(it) { drain() } } ?: break
     }
 
-    /** Sessions a fan-out task wrote to, flushed once each when it ends; this loop's own. */
+    /** Sessions fan-out tasks wrote to since the last flush; this loop's own. */
     private val written = ArrayList<NativeWebSocketSession>()
+    private var flushQueued = false
+    private val flushTask = Runnable { flushWritten() }
 
-    /** Quartz's fan-out for this loop's subscriptions: run here, then every socket it wrote to flushed once. */
+    /**
+     * Quartz's fan-out for this loop's subscriptions, run here. The sockets it wrote to are flushed by a task queued
+     * behind it: on an idle loop that runs next, and under load it waits out the fan-outs already queued, so a socket
+     * those events reach takes them in one write rather than one per event.
+     */
     override fun execute(task: () -> Unit) {
         loop.execute {
             try {
                 task()
             } finally {
-                for (session in written) isolated(session) { flushWritten() }
-                written.clear()
+                if (written.isNotEmpty() && !flushQueued) {
+                    flushQueued = true
+                    loop.execute(flushTask)
+                }
             }
         }
+    }
+
+    private fun flushWritten() {
+        flushQueued = false
+        for (session in written) isolated(session) { flushWritten() }
+        written.clear()
     }
 
     fun wrote(session: NativeWebSocketSession) {
@@ -190,7 +204,8 @@ private class EventLoopSessions(
 
     /**
      * [body] and the frame's closing `]` as bytes, encoded once per event however many of this loop's sockets
-     * it reaches: fan-out hands every subscription the same string, so identity finds it.
+     * it reaches: fan-out hands every subscription the same string, so identity finds it. The loop's own buffer,
+     * valid until the next event: copy from it, never keep it.
      */
     fun sharedBody(
         body: String,
@@ -204,7 +219,7 @@ private class EventLoopSessions(
             lastBody = body
             lastBodyBytes = bytes
         }
-        return lastBodyBytes!!.retainedDuplicate()
+        return lastBodyBytes!!
     }
 
     // A copy, since a tick can close a connection and so leave this set mid-walk.
@@ -244,19 +259,28 @@ internal fun encodeTextFrame(
     return frame
 }
 
-/** The header and [prefix] of a live frame whose shared body, `]` included, is [bodyBytes] long. */
-internal fun encodeLiveFrameHead(
+/**
+ * A live frame appended to [out]: its header, [prefix], and a copy of [body], the event's shared bytes with the
+ * closing `]`. One buffer whole, so a frame costs the socket one write, not a head and a body to track and release.
+ */
+internal fun appendLiveFrame(
+    out: ByteBuf,
+    prefix: String,
+    body: ByteBuf,
+) {
+    val length = ByteBufUtil.utf8Bytes(prefix) + body.readableBytes()
+    out.ensureWritable(frameHeaderSize(length) + length)
+    writeFrameHeader(out, length)
+    ByteBufUtil.writeUtf8(out, prefix)
+    out.writeBytes(body, body.readerIndex(), body.readableBytes())
+}
+
+/** [appendLiveFrame] into a buffer of its own. */
+internal fun encodeLiveFrame(
     alloc: ByteBufAllocator,
     prefix: String,
-    bodyBytes: Int,
-): ByteBuf {
-    val prefixBytes = ByteBufUtil.utf8Bytes(prefix)
-    val length = prefixBytes + bodyBytes
-    val head = alloc.ioBuffer(frameHeaderSize(length) + prefixBytes)
-    writeFrameHeader(head, length)
-    ByteBufUtil.writeUtf8(head, prefix)
-    return head
-}
+    body: ByteBuf,
+): ByteBuf = alloc.ioBuffer(prefix.length + body.readableBytes() + 10).also { appendLiveFrame(it, prefix, body) }
 
 private fun frameHeaderSize(length: Int): Int =
     when {
@@ -431,41 +455,49 @@ private class NativeWebSocketSession(
         if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
     }
 
-    private var flushPending = false
+    /** This socket's live frames from the fan-out tasks since its loop last flushed, written as one buffer. */
+    private var pendingLive: ByteBuf? = null
 
-    /** On the event loop, inside a fan-out task: the frame written now, the flush left to the task's end. */
+    /** On the event loop, inside a fan-out task: the frame joins this socket's buffer; the write is left to the loop's flush. */
     private fun writeLive(
         prefix: String,
         body: String,
     ) {
         val shared = loop.sharedBody(body, context.alloc())
-        context.write(encodeLiveFrameHead(context.alloc(), prefix, shared.readableBytes()), context.voidPromise())
-        context.write(shared, context.voidPromise())
-        if (!flushPending) {
-            flushPending = true
+        val pending = pendingLive
+        if (pending != null) {
+            appendLiveFrame(pending, prefix, shared)
+        } else {
+            pendingLive = encodeLiveFrame(context.alloc(), prefix, shared)
             loop.wrote(this)
         }
     }
 
     fun flushWritten() {
-        flushPending = false
+        if (!writePendingLive()) return
         context.flush()
         if (!channel.isWritable && unwritableSince == IDLE) unwritableSince = nowMs()
+    }
+
+    /** Hands the socket the live frames held for the loop's flush, ahead of anything queued after them; false if none. */
+    private fun writePendingLive(): Boolean {
+        val pending = pendingLive ?: return false
+        pendingLive = null
+        context.write(pending, context.voidPromise())
+        return true
     }
 
     /** On the event loop: writes what is queued while the socket takes it, then flushes once. */
     fun drain() {
         drainScheduled.set(false)
-        var wrote = false
+        var wrote = writePendingLive()
         while (channel.isWritable) {
             val frame = outbox.poll() ?: break
             queuedFrames.decrementAndGet()
             // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
             if (frame is LiveFrame) {
                 queuedChars.addAndGet(-(frame.prefix.length + frame.body.length + 1).toLong())
-                val body = loop.sharedBody(frame.body, context.alloc())
-                context.write(encodeLiveFrameHead(context.alloc(), frame.prefix, body.readableBytes()), context.voidPromise())
-                context.write(body, context.voidPromise())
+                context.write(encodeLiveFrame(context.alloc(), frame.prefix, loop.sharedBody(frame.body, context.alloc())), context.voidPromise())
             } else {
                 val text = frame as String
                 queuedChars.addAndGet(-text.length.toLong())
@@ -502,6 +534,7 @@ private class NativeWebSocketSession(
         closing = true
         channel.eventLoop().execute {
             outbox.clear()
+            releasePendingLive()
             channel.writeAndFlush(CloseWebSocketFrame(WebSocketCloseStatus.TRY_AGAIN_LATER, "slow consumer: outbound buffer full"))
             channel.eventLoop().schedule({ channel.close() }, CLOSE_GRACE_MS, TimeUnit.MILLISECONDS)
         }
@@ -540,8 +573,14 @@ private class NativeWebSocketSession(
         closing = true
         loop.leave(this)
         outbox.clear()
+        releasePendingLive()
         inbox.close()
         reader.cancel()
+    }
+
+    private fun releasePendingLive() {
+        pendingLive?.release()
+        pendingLive = null
     }
 
     private fun nowMs() = System.nanoTime() / 1_000_000

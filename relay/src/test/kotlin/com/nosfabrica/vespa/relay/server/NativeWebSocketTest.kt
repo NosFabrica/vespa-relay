@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.UnpooledByteBufAllocator
 import io.netty.channel.embedded.EmbeddedChannel
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
@@ -47,6 +48,28 @@ class NativeWebSocketTest {
             assertEquals(text, frame.text())
             frame.release()
             client.finishAndReleaseAll()
+        }
+    }
+
+    @Test
+    fun `live frames appended to one buffer are read as those frames, and the shared body stays whole`() {
+        val alloc = UnpooledByteBufAllocator.DEFAULT
+        val bodies = listOf("{\"content\":\"日本 🌍\"}", "{\"content\":\"" + "y".repeat(70_000) + "\"}")
+        for (body in bodies) {
+            val shared = alloc.buffer().also { ByteBufUtil.writeUtf8(it, body + "]") }
+            val prefixes = listOf("[\"EVENT\",\"a\",", "[\"EVENT\",\"é-${"s".repeat(130)}\",")
+            val out = encodeLiveFrame(alloc, prefixes[0], shared)
+            appendLiveFrame(out, prefixes[1], shared)
+            assertEquals(body + "]", shared.toString(Charsets.UTF_8), "the shared body is copied, never consumed")
+            val client = EmbeddedChannel(WebSocket08FrameDecoder(false, false, 1 shl 20))
+            client.writeInbound(out)
+            for (prefix in prefixes) {
+                val frame = client.readInbound<TextWebSocketFrame>()
+                assertEquals(prefix + body + "]", frame.text())
+                frame.release()
+            }
+            client.finishAndReleaseAll()
+            shared.release()
         }
     }
 
