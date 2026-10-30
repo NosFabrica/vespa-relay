@@ -274,6 +274,12 @@ services:
       # Read by whichever process deploys the schema, never by Vespa: `disabled`
       # stops the container logging one line per fed document (.env.example).
       VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
+      # Write limits on every published event, the mirror's included: a
+      # refusal is final, so at the defaults a follow list over 2,000 follows
+      # is never stored (.env.example). Empty keeps quartz's defaults.
+      MAX_EVENT_TAGS: ${MAX_EVENT_TAGS:-}
+      MAX_CONTENT_LENGTH: ${MAX_CONTENT_LENGTH:-}
+      MAX_MESSAGE_LENGTH: ${MAX_MESSAGE_LENGTH:-}
       # The writer behind published EVENTs: `pipeline` (the mirror's
       # IngestPipeline, the default) or `queue` (quartz's IngestQueue), and its
       # shape. Empty keeps the code defaults (docs/configuration.md).
