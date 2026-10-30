@@ -494,7 +494,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-7e05038862db = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over fec452107fe8, below): the
+4e2e8657819b = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 7e05038862db, below): one fix
+and one docs commit.
+  A KEY IS EXACTLY 64 HEX BEFORE IT REACHES AN EXPRESSION (92a6bae). quartz's Hex.isHex64 reads only the
+    first 64 characters, and every check in the engine and the store used it alone, so an author,
+    owner or trust key of 64 hex plus a tail passed the injection rule and was quoted into a document
+    selection, a trust-cell YQL or a putIfNewer condition; a NIP-85 d tag "<pk>:v2" counted as a
+    subject. The store's isHexKey adds the length check. This relay's own checks
+    (RelayDiscovery, OpenRankingRoutes, common's isHex64) already tested the length.
+  The copied quartz skills are queued to give way to quartz's distributed skill (4e2e865, docs only).
+  git merge-base --is-ancestor 7e05038862db 4e2e8657819b   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build (engine and store unit suites) at 92a6bae, with the two failing tests it
+  adds; here, ./gradlew build archTest against the JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 7e05038862db = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over fec452107fe8, below): the
 facade this relay's engine reach-throughs asked for, and quartz 2.8.0 (b5a8b12), which this relay forces
 in the same release. What this relay reaches, each in its own commit after this bump:
   EngineReads.newestVersions (a31772a): the stored winner per (kind, author), one attribute-only
