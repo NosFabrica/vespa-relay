@@ -102,6 +102,7 @@ import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
+import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
@@ -129,6 +130,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 fun main() {
     cacheDnsBriefly()
+    loadTimeZoneRules()
     BootClock.main("relay")
     exitOnBootFailure()
     val env = System.getenv()

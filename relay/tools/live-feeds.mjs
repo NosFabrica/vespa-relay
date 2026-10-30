@@ -64,8 +64,10 @@ function feedsChild() {
   };
   const open = () => new Promise((resolve) => {
     const ws = new WebSocket(urls[nextUrl++ % urls.length]);
-    const s = { ws, subs: perSocket, alive: false, gotEose: 0, counted: false, authors: pool ? Array.from({ length: perSocket }, sample) : null };
-    let settled = false; const settle = (ok) => { if (!settled) { settled = true; if (ok) { s.alive = true; live++; } else failed++; resolve(); } };
+    const s = { ws, subs: perSocket, alive: false, settled: false, answered: 0, counted: false, authors: pool ? Array.from({ length: perSocket }, sample) : null };
+    const settle = (ok) => { if (!s.settled) { s.settled = true; if (ok) { s.alive = true; live++; } else failed++; resolve(); } };
+    // Open once every REQ has its answer: an EOSE, or a CLOSED (that feed is gone; the socket's others still count).
+    const answered = () => { if (++s.answered === perSocket) { eose.push(performance.now() - s.sent); settle(s.subs > 0); } };
     ws.onopen = () => {
       const sent = performance.now();
       s.sent = sent;
@@ -75,8 +77,11 @@ function feedsChild() {
       const m = JSON.parse(e.data);
       // Only feeds live when the window opened are owed its events, so only theirs count.
       if (m[0] === "EVENT") { if (windowOpen && s.counted) record(m[2].id, Date.now()); }
-      else if (m[0] === "EOSE") { if (++s.gotEose === perSocket) { eose.push(performance.now() - s.sent); settle(true); } }
-      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { const why = String(m.at(-1)).slice(0, 80); closedWhy[why] = (closedWhy[why] || 0) + 1; if (m[0] === "CLOSED") s.subs--; }
+      else if (m[0] === "EOSE") answered();
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") {
+        const why = String(m.at(-1)).slice(0, 80); closedWhy[why] = (closedWhy[why] || 0) + 1;
+        if (m[0] === "CLOSED") { s.subs--; if (!s.settled) answered(); }
+      }
     };
     ws.onerror = () => {};
     ws.onclose = () => { if (s.alive) { s.alive = false; live--; dropped++; } settle(false); };
@@ -92,7 +97,9 @@ function feedsChild() {
       const want = msg.sockets - sockets.length; const gap = 1000 / msg.openRate; const pending = [];
       for (let i = 0; i < want; i++) { pending.push(open()); await new Promise((r) => setTimeout(r, gap)); }
       await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, 60000))]);
-      process.send({ op: "grown", live, failed, eose: [...eose], closedWhy: { ...closedWhy }, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
+      // A socket still unanswered after the wait never opened as far as this step goes: it fails, not vanishes.
+      const unanswered = sockets.filter((s) => !s.settled).length;
+      process.send({ op: "grown", live, failed: failed + unanswered, eose: [...eose], closedWhy: { ...closedWhy }, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "window") {
       pubAt = new Map(); early = new Map(); hist.fill(0); received = 0; dropped = 0; owed = 0; windowOpen = true;
       for (const s of sockets) s.counted = s.alive;
