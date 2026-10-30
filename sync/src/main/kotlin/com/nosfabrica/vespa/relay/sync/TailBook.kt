@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.sync.VisitPool.VisitKey
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
@@ -61,11 +62,21 @@ internal class TailBook(
         val openedMs: Long = System.currentTimeMillis(),
         /** The live permit, held for the tail's life and released by [drop]. */
         val hold: PoolLimits.Hold,
+        /** The asks the tail carries, rebuilt at a later `since` by [advance]. */
+        val asks: List<RosterBuilder.Ask> = emptyList(),
+        /** The `since` the stored filters carry: what a reconnect asks from. */
+        @Volatile var sinceAsked: Long = 0L,
     ) {
         val events = AtomicLong()
 
         @Volatile var lastEventMs: Long = openedMs
+
+        /** The one delivery path, handed back to quartz unchanged when the filters are re-stored. */
+        @Volatile var deliver: (suspend (Event) -> Unit)? = null
     }
+
+    /** Re-stored filters, since boot: each one shortened what a reconnect of that tail asks again. */
+    val advances = AtomicLong()
 
     private val tails = ConcurrentHashMap<VisitKey, Tail>()
     private val tailSeq = AtomicInteger()
@@ -167,7 +178,7 @@ internal class TailBook(
         val hold = limits.trySpare(key.stream, VisitPool.POOL_LIVE) ?: (if (mayEvict) earn(key) else null) ?: return
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // Built before the listener closes over it, so the first burst lands on the counters.
-        val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold)
+        val tail = Tail(subId, wantsNow, capAtOpen = capNow, hold = hold, asks = live, sinceAsked = since)
 
         // Every way out before the publish hands back exactly what was taken.
         fun abandon(untail: Boolean = false) {
@@ -179,7 +190,7 @@ internal class TailBook(
         sockets.claim(url)
         try {
             val filters = VisitPool.tailFilters(live, since)
-            reads.tail(subId, url, widths.chunkAll(url, filters)) { event ->
+            val deliver: suspend (Event) -> Unit = { event ->
                 onArrived()
                 credit(url)
                 tail.events.incrementAndGet()
@@ -198,6 +209,8 @@ internal class TailBook(
                 }
                 if (any) ingest.submit(event, allTrusted, IngestOrigin(url, healContent, healRetractions))
             }
+            tail.deliver = deliver
+            reads.tail(subId, url, widths.chunkAll(url, filters), deliver)
         } catch (e: CancellationException) {
             abandon()
             throw e
@@ -216,6 +229,28 @@ internal class TailBook(
             return
         }
         onChange()
+    }
+
+    /**
+     * Moves each tail's stored `since` up to its last delivered event, less the overlap, so a
+     * reconnect asks from there instead of from the open. quartz re-sends nothing for a `since`
+     * that only moved forward. Only a delivered event moves it: a socket that died quietly
+     * delivers nothing, and its reconnect still asks from before the silence.
+     */
+    suspend fun advance() {
+        for ((key, tail) in tails) {
+            val deliver = tail.deliver ?: continue
+            if (tail.events.get() == 0L) continue
+            val since = tail.lastEventMs / 1000 - VisitPool.TAIL_OVERLAP_SECONDS
+            if (since <= tail.sinceAsked) continue
+            // A changed cap re-opens the tail at its next visit; the old chunking stays until then.
+            if (widths.capFor(key.url) != tail.capAtOpen) continue
+            reads.tail(tail.subId, key.url, widths.chunkAll(key.url, VisitPool.tailFilters(tail.asks, since)), deliver)
+            tail.sinceAsked = since
+            advances.incrementAndGet()
+            // Dropped while re-stored: the drop's unsubscribe may have run first, so run it again.
+            if (tails[key] !== tail) reads.untail(tail.subId)
+        }
     }
 
     /**

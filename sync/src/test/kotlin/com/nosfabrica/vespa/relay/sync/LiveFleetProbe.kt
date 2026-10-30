@@ -95,6 +95,9 @@ class LiveFleetProbe {
         val connectMinutes = System.getProperty("fleetConnectMinutes")?.toDouble() ?: 3.0
         val chaos = Chaos.parse(System.getProperty("fleetChaos") ?: "reset:1.0:3,blackhole:0.25:5")
         val sinceSeconds = System.getProperty("fleetSinceSeconds")?.toLong() ?: 5L
+        // `split` runs both arms at once, by url hash, so they share one network and one moment.
+        val advanceMode = System.getProperty("fleetAdvance") ?: "on"
+        require(advanceMode in setOf("on", "off", "split")) { "fleetAdvance must be on, off or split, got $advanceMode" }
         // Unset is PeerClient's own resolver; 0 is the bare system resolver, the arm before it.
         val dnsConcurrency = System.getProperty("fleetDnsConcurrency")?.toInt() ?: PeerClient.MAX_CONCURRENT_LOOKUPS
 
@@ -119,12 +122,22 @@ class LiveFleetProbe {
         )
         println("=".repeat(120))
 
-        urls.forEach { fleet.track(it) }
+        urls.forEach { url -> fleet.track(url, advances = advanceMode == "on" || (advanceMode == "split" && Math.floorMod(url.hashCode(), 2) == 0)) }
         fleet.startMs = System.currentTimeMillis()
         val since = fleet.startMs / 1000 - sinceSeconds
+        fleet.tracks.values.forEach { it.sinceAsked = since }
         client.subscribe(SUB, urls.associateWith { listOf(Filter(since = since)) }, null)
 
-        val ticker = Ticker(fleet, client, okhttp, urls.size)
+        // TailBook's rule: each minute, a relay's stored since follows its last delivered event, less the overlap.
+        var advancedAtMs = fleet.startMs
+        val ticker =
+            Ticker(fleet, client, okhttp, urls.size) {
+                if (System.currentTimeMillis() - advancedAtMs >= VisitPool.TAIL_ADVANCE_MS) {
+                    advancedAtMs = System.currentTimeMillis()
+                    fleet.advance()
+                    client.subscribe(SUB, fleet.tracks.mapValues { (_, t) -> listOf(Filter(since = t.sinceAsked)) }, null)
+                }
+            }
         ticker.runFor((connectMinutes * 60_000).toLong())
         fleet.connectReport(urls.size)
 
@@ -194,6 +207,17 @@ class LiveFleetProbe {
 
         val events = AtomicLong()
         val opens = AtomicInteger()
+        val reqsSent = AtomicInteger()
+
+        /** Whether this relay's stored since follows its deliveries, and the since it holds. */
+        @Volatile var advances = false
+
+        @Volatile var sinceAsked = 0L
+
+        /** Events between a reconnect's open and its EOSE: what that reconnect re-downloaded. */
+        @Volatile var replaying = false
+        val replayed = AtomicLong()
+        val replays = ConcurrentLinkedQueue<Long>()
         val downs = AtomicInteger()
         val failures = AtomicInteger()
 
@@ -218,8 +242,18 @@ class LiveFleetProbe {
 
         @Volatile var startMs = 0L
 
-        fun track(url: NormalizedRelayUrl) {
-            tracks[url] = Track()
+        fun track(
+            url: NormalizedRelayUrl,
+            advances: Boolean,
+        ) {
+            tracks[url] = Track().also { it.advances = advances }
+        }
+
+        fun advance() {
+            for (t in tracks.values) {
+                if (!t.advances || t.events.get() == 0L) continue
+                t.sinceAsked = maxOf(t.sinceAsked, t.lastEventMs / 1000 - VisitPool.TAIL_OVERLAP_SECONDS)
+            }
         }
 
         fun mark(
@@ -252,7 +286,11 @@ class LiveFleetProbe {
                         t.droppedAtMs = 0L
                     }
                     t.lastOpenMs = now
-                    t.opens.incrementAndGet()
+                    // Only a reconnect re-asks anything; the first open is the subscription itself.
+                    if (t.opens.incrementAndGet() > 1) {
+                        t.replayed.set(0)
+                        t.replaying = true
+                    }
                 }
 
                 override fun onSent(
@@ -261,7 +299,11 @@ class LiveFleetProbe {
                     cmd: Command,
                     success: Boolean,
                 ) {
-                    if (cmd is ReqCmd && cmd.subId == SUB && success) tracks[relay.url]?.reqSentMs = System.currentTimeMillis()
+                    if (cmd is ReqCmd && cmd.subId == SUB && success) {
+                        val t = tracks[relay.url] ?: return
+                        t.reqSentMs = System.currentTimeMillis()
+                        t.reqsSent.incrementAndGet()
+                    }
                 }
 
                 override suspend fun onIncomingMessage(
@@ -277,6 +319,7 @@ class LiveFleetProbe {
                             frames.incrementAndGet()
                             uniqueIds.add(msg.event.id)
                             t.events.incrementAndGet()
+                            if (t.replaying) t.replayed.incrementAndGet()
                             if (t.firstEventMs == 0L) t.firstEventMs = now
                             t.lastEventMs = now
                         }
@@ -285,6 +328,10 @@ class LiveFleetProbe {
                             if (msg.subId != SUB) return
                             if (t.eoseMs == 0L) t.eoseMs = now
                             t.lastEoseMs = now
+                            if (t.replaying) {
+                                t.replaying = false
+                                t.replays.add(t.replayed.get())
+                            }
                         }
 
                         is ClosedMessage -> {
@@ -377,6 +424,26 @@ class LiveFleetProbe {
                     .take(8)
                     .filter { it.value.downs.get() > 1 }
             flappers.forEach { (url, t) -> println("  flapping ${url.url}: ${t.downs.get()} drop(s), ${t.opens.get()} open(s), last: ${t.lastFailure?.take(90)}") }
+            println("REPLAY on reconnect — events between a reconnect's open and its EOSE, per arm:")
+            for ((arm, ts) in all.groupBy { if (it.advances) "since follows deliveries" else "since fixed at subscribe" }) {
+                val r = ts.flatMap { it.replays }.sorted()
+                println(
+                    "  %-26s %4d relay(s), %5d reconnect(s) measured: total %8d, mean %7.1f, p50 %6s p90 %6s p99 %6s max %6s;  REQs sent %5d for %5d socket opens"
+                        .format(
+                            arm,
+                            ts.size,
+                            r.size,
+                            r.sum(),
+                            if (r.isEmpty()) 0.0 else r.sum().toDouble() / r.size,
+                            r.getOrNull(r.size / 2) ?: "-",
+                            r.getOrNull((r.size * 0.9).toInt()) ?: "-",
+                            r.getOrNull((r.size * 0.99).toInt()) ?: "-",
+                            r.lastOrNull() ?: "-",
+                            ts.sumOf { it.reqsSent.get() },
+                            ts.sumOf { it.opens.get() },
+                        ),
+                )
+            }
             println("TOTAL events: ${frames.get()} frame(s), ${uniqueIds.size} unique")
         }
 
@@ -416,11 +483,14 @@ class LiveFleetProbe {
         val client: NostrClient,
         val okhttp: OkHttpClient,
         val total: Int,
+        /** Runs once per tick, on the probe's own thread. */
+        val onTick: () -> Unit = {},
     ) {
         fun runFor(ms: Long) {
             val end = System.currentTimeMillis() + ms
             while (System.currentTimeMillis() < end) {
                 Thread.sleep(minOf(TICK_MS, end - System.currentTimeMillis()).coerceAtLeast(1))
+                onTick()
                 val ts = fleet.tracks.values
                 val heap = Runtime.getRuntime().let { (it.totalMemory() - it.freeMemory()) / (1 shl 20) }
                 println(

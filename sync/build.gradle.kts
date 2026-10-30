@@ -34,6 +34,7 @@ tasks.test {
         "enforceLocalRelay",
         "enforceProbe",
         "enforceProviderRelay",
+        "fleetAdvance",
         "fleetChaos",
         "fleetConnectMinutes",
         "fleetDirect",
