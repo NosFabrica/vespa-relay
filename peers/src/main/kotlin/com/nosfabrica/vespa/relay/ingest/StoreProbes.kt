@@ -21,8 +21,6 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
-import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import kotlinx.coroutines.CoroutineScope
@@ -30,16 +28,8 @@ import kotlinx.coroutines.CoroutineScope
 /** A pure membership read, which is all ingest needs to skip verifying a duplicate. */
 fun VespaEventStore.knownIdsProbe(): suspend (List<String>) -> Set<String> = engine::existingIds
 
-/** The newest stored version per author of one kind; the winner rule is the store's stage D: newest `created_at`, ties to the lower id. */
-fun VespaEventStore.newestVersionsProbe(): suspend (Int, List<String>) -> Map<String, AddressVersion> =
-    { kind, authors ->
-        engine
-            .search(EventQuery(kinds = listOf(kind), authors = authors))
-            .groupBy { it.pubkey }
-            .mapValues { (_, docs) ->
-                docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
-            }
-    }
+/** The stored winner per author of one plain replaceable kind, by the store's own NIP-01 rule. */
+fun VespaEventStore.newestVersionsProbe(): suspend (Int, List<String>) -> Map<String, AddressVersion> = { kind, authors -> engine.newestVersions(kind, authors).mapValues { AddressVersion(it.value.createdAt, it.value.id) } }
 
 /** The pipeline over [store] with both drop-probes wired, as both processes run it. Not started. */
 fun probedIngestPipeline(

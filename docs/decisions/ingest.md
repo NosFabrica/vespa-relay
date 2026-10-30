@@ -306,6 +306,14 @@ failing pauses (`ProbeTrouble`: 5s, doubling to 5 minutes, reset by an answer)
 rather than costing every batch a round trip to a store that is already
 struggling, which is exactly when probes fail.
 
+**The version probe asks the store for the winner.** It read every stored
+version of every author in the batch as a full document, with no limit, and
+picked the newest here by NIP-01's rule, a second copy of the tiebreak the
+store applies on write, booked to no activity. `EngineReads.newestVersions`
+answers the same question from one attribute-only grouping per 500 authors,
+with the engine's own tiebreak, and books it (and the id probe) to
+`BatchInsert` on `/pulse.json`.
+
 **`VESPA_DEDUP_CHUNK` is read with the rest of the ingest sizing.** It was
 read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
 `ExceptionInInitializerError` on the first batch rather than a boot refusal,

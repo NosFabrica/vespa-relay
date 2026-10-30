@@ -258,7 +258,6 @@ class ModuleBoundariesTest {
                 "common:store/SchemaDeploy.kt" to setOf("$ENGINE.app.SchemaDeployer", "$ENGINE.app.VespaApp"),
                 "peers:ingest/IngestPipeline.kt" to
                     setOf("$ENGINE.async.QUERY_FANOUT", "$ENGINE.async.mapBounded", "$ENGINE.metrics.IngestStats"),
-                "peers:ingest/StoreProbes.kt" to setOf("$ENGINE.doc.EventDoc", "$ENGINE.query.EventQuery"),
                 "sync:sync/SyncEngine.kt" to setOf("$ENGINE.metrics.IngestStats"),
             )
 
