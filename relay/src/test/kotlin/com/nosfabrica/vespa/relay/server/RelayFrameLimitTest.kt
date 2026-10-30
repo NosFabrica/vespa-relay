@@ -45,12 +45,21 @@ import kotlin.test.fail
 class RelayFrameLimitTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
+    /** Each transport in turn: Ktor's websocket, then the native one, which must enforce the same cap. */
+    private fun bothTransports(
+        limits: RelayLimits,
+        block: (Socket, Int) -> Unit,
+    ) {
+        for (native in listOf(false, true)) serving(limits, native, block)
+    }
+
     private fun <T> serving(
         limits: RelayLimits,
+        nativeWebSocket: Boolean,
         block: (Socket, Int) -> T,
     ): T {
         val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl)
-        val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), limits = limits, wait = false)
+        val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), limits = limits, nativeWebSocket = nativeWebSocket, wait = false)
         return try {
             val port =
                 runBlocking {
@@ -142,7 +151,7 @@ class RelayFrameLimitTest {
     @Test
     fun `a frame declaring more than the cap is refused from its header`() {
         val limits = relayLimitsFromEnv(emptyMap())
-        serving(limits) { socket, port ->
+        bothTransports(limits) { socket, port ->
             // One byte over the cap, a handful sent: a server without the cap would sit waiting for the
             // rest, so a timeout is the failure. A 1009 close or a dropped connection is the refusal.
             socket.getOutputStream().textFrame("[\"REQ\"".toByteArray(), declared = maxFrameBytes(limits) + 1)
@@ -175,7 +184,7 @@ class RelayFrameLimitTest {
     fun `a message at the engine's length in three-byte characters is still read`() {
         val subId = "€".repeat(200)
         val req = """["REQ","$subId",{"ids":["${"0".repeat(64)}"],"#t":["${"€".repeat(250)}"],"search":"include:spam"}]"""
-        serving(relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to req.length.toString()))) { socket, _ ->
+        bothTransports(relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to req.length.toString()))) { socket, _ ->
             socket.getOutputStream().textFrame(req.toByteArray(Charsets.UTF_8))
             val input = DataInputStream(socket.getInputStream())
             while (true) {

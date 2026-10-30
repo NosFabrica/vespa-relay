@@ -39,6 +39,7 @@ import io.ktor.server.application.ServerReady
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
@@ -106,6 +107,8 @@ fun serveRelay(
     selfIconUrl: String? = null,
     // When set, a POST to the relay's URL answers one command frame without a socket (NIP-FE).
     httpRelay: HttpRelay? = null,
+    // Serves the websocket on Netty directly instead of through Ktor (NativeWebSocket.kt).
+    nativeWebSocket: Boolean = false,
     // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
     onReady: () -> Unit = {},
     wait: Boolean = true,
@@ -126,7 +129,11 @@ fun serveRelay(
             onInfoChanged(doc)
         }
 
-    return embeddedServer(Netty, port = port) {
+    val engine: NettyApplicationEngine.Configuration.() -> Unit = {
+        connector { this.port = port }
+        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation) }
+    }
+    return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }
         installPageDefaults()
 
@@ -142,9 +149,8 @@ fun serveRelay(
         )
 
         install(WebSockets) {
-            // The ping makes a peer that walked off NAT detectable; the timeout reaps its session.
-            pingPeriodMillis = 30_000
-            timeoutMillis = 60_000
+            pingPeriodMillis = PING_PERIOD_MS
+            timeoutMillis = SILENCE_TIMEOUT_MS
             maxFrameSize = maxFrameBytes(limits)
         }
         routing {
