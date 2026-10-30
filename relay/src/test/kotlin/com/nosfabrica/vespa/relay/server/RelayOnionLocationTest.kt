@@ -42,6 +42,7 @@ class RelayOnionLocationTest {
     private fun <T> serving(
         advertise: () -> String?,
         landingPage: String? = null,
+        nativeWebSocket: Boolean = false,
         block: (port: Int) -> T,
     ): T {
         val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = clearnet), clearnet)
@@ -53,6 +54,7 @@ class RelayOnionLocationTest {
                 nip11 = Nip11Info(),
                 landingPage = landingPage,
                 onionLocation = advertise,
+                nativeWebSocket = nativeWebSocket,
                 wait = false,
             )
         return try {
@@ -131,6 +133,19 @@ class RelayOnionLocationTest {
             val headers = headersOf(port, "localhost:$port", upgrade = true)
             assertTrue(headers.first().contains("101"), "the upgrade still happens: ${headers.first()}")
             assertEquals(onion, headers.header("Onion-Location"), "a client that only opens the socket must still learn it")
+        }
+    }
+
+    /** The native transport answers the upgrade itself, so it carries the header itself. */
+    @Test
+    fun `the native websocket handshake advertises the hidden service, but not on the onion`() {
+        serving({ onion }, nativeWebSocket = true) { port ->
+            val clearnetHandshake = headersOf(port, "localhost:$port", upgrade = true)
+            assertTrue(clearnetHandshake.first().contains("101"), "upgraded: ${clearnetHandshake.first()}")
+            assertEquals(onion, clearnetHandshake.header("Onion-Location"))
+            val onionHandshake = headersOf(port, "${"n".repeat(56)}.onion:80", upgrade = true)
+            assertTrue(onionHandshake.first().contains("101"), "upgraded: ${onionHandshake.first()}")
+            assertNull(onionHandshake.header("Onion-Location"))
         }
     }
 

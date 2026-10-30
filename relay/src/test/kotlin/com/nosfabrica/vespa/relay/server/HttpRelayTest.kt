@@ -101,9 +101,8 @@ class HttpRelayTest {
     private val client = HttpClient.newHttpClient()
 
     private fun serving(
-        gate: HttpRelayGate = HttpRelayGate(0, 0),
+        gate: HttpRelayGate = HttpRelayGate(0),
         deadlineMs: Long = 10_000,
-        clients: ClientAddresses = ClientAddresses(),
         commands: Boolean = true,
         admin: Nip86Admin? = null,
         bodyTimeoutMs: Long = HttpRelay.DEFAULT_BODY_TIMEOUT_MS,
@@ -114,7 +113,7 @@ class HttpRelayTest {
                 relay = relay,
                 port = 0,
                 nip11 = Nip11Info(),
-                httpRelay = if (commands) HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, clients = clients, bodyTimeoutMs = bodyTimeoutMs) else null,
+                httpRelay = if (commands) HttpRelay(gate, deadlineMs, origins = { listOf(origin, onion) }, bodyTimeoutMs = bodyTimeoutMs) else null,
                 admin = admin,
                 wait = false,
             )
@@ -169,7 +168,6 @@ class HttpRelayTest {
         url: String,
         body: String,
         authorization: String? = null,
-        forwardedFor: List<String> = emptyList(),
         contentType: String? = null,
         from: String? = null,
     ): Answer {
@@ -180,7 +178,6 @@ class HttpRelayTest {
                 .apply { contentType?.let { header("Content-Type", it) } }
                 .apply { from?.let { header("Origin", it) } }
                 .apply { authorization?.let { header("Authorization", it) } }
-                .apply { forwardedFor.forEach { header("X-Forwarded-For", it) } }
                 .build()
         val raw = client.send(request, HttpResponse.BodyHandlers.ofString())
         return Answer(raw.statusCode(), raw.headers(), raw.body())
@@ -523,59 +520,26 @@ class HttpRelayTest {
     }
 
     @Test
-    fun `a client over its share is refused while another client is served`() {
-        val stall = """{"kinds":[$STALLED_KIND],"search":"include:spam"}"""
-        val quick = """{"kinds":[1],"search":"include:spam"}"""
-        val gate = HttpRelayGate(perClient = 1, total = 0)
-        val viaProxy = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!))
-        serving(gate = gate, deadlineMs = 3_000, clients = viaProxy) { base ->
-            // The proxy's own hop is the last entry across every line; what the client wrote before it is its own claim.
-            val stalled = Thread { post(base, req(stall), forwardedFor = listOf("10.0.0.9", "10.0.0.1")) }.also { it.start() }
+    fun `past the relay's total a command is refused until a slot frees`() {
+        val quick = req("""{"kinds":[1],"search":"include:spam"}""")
+        val gate = HttpRelayGate(total = 1)
+        serving(gate = gate, deadlineMs = 3_000) { base ->
+            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}""")) }.also { it.start() }
             awaitInFlight(gate, 1)
 
-            val refused = post(base, req(quick), forwardedFor = listOf("10.0.0.7, 10.0.0.1"))
-            assertEquals(429, refused.status, refused.body)
+            val refused = post(base, quick)
+            assertEquals(503, refused.status, refused.body)
+            assertEquals("1", refused.header("Retry-After"))
             assertTrue(refused.lines.single().startsWith("""["NOTICE","rate-limited:"""), refused.body)
-            assertEquals(200, post(base, req(quick), forwardedFor = listOf("10.0.0.2")).status, "another address has its own share")
 
             stalled.join()
-            assertEquals(200, post(base, req(quick), forwardedFor = listOf("10.0.0.1")).status, "the slot frees when the command ends")
+            assertEquals(200, post(base, quick).status, "the slot frees when the command ends")
         }
     }
 
     @Test
-    fun `behind two trusted proxies the client is the address before them`() {
-        val gate = HttpRelayGate(perClient = 1, total = 0)
-        val twoHops = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!, Cidr.parse("10.0.0.0/8")!!))
-        val stall = req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}""")
-        val quick = req("""{"kinds":[1],"search":"include:spam"}""")
-        serving(gate = gate, deadlineMs = 3_000, clients = twoHops) { base ->
-            // The load balancer (10.0.0.5) appended the client; nginx (the socket's peer) appended the balancer.
-            val stalled = Thread { post(base, stall, forwardedFor = listOf("203.0.113.5, 10.0.0.5")) }.also { it.start() }
-            awaitInFlight(gate, 1)
-            assertEquals(200, post(base, quick, forwardedFor = listOf("198.51.100.7, 10.0.0.5")).status, "another client behind the same balancer")
-            assertEquals(429, post(base, quick, forwardedFor = listOf("203.0.113.5, 10.0.0.5")).status, "the same client is still the same")
-            stalled.join()
-        }
-    }
-
-    @Test
-    fun `an IPv6 client is one client across its 64`() {
-        val gate = HttpRelayGate(perClient = 1, total = 0)
-        val viaProxy = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("127.0.0.1")!!))
-        val quick = req("""{"kinds":[1],"search":"include:spam"}""")
-        serving(gate = gate, deadlineMs = 3_000, clients = viaProxy) { base ->
-            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}"""), forwardedFor = listOf("2001:db8:1:2::1")) }.also { it.start() }
-            awaitInFlight(gate, 1)
-            assertEquals(429, post(base, quick, forwardedFor = listOf("2001:db8:1:2::abcd")).status, "a fresh address in the same /64 is the same client")
-            assertEquals(200, post(base, quick, forwardedFor = listOf("2001:db8:1:3::1")).status, "the next /64 is another")
-            stalled.join()
-        }
-    }
-
-    @Test
-    fun `a slow upload holds its client's slot and is dropped at the body timeout`() {
-        val gate = HttpRelayGate(perClient = 1, total = 0)
+    fun `a slow upload holds its slot and is dropped at the body timeout`() {
+        val gate = HttpRelayGate(total = 1)
         serving(gate = gate, bodyTimeoutMs = 700) { base ->
             java.net.Socket("127.0.0.1", URI(base).port).use { socket ->
                 socket.soTimeout = 10_000
@@ -583,7 +547,7 @@ class HttpRelayTest {
                 socket.getOutputStream().apply { write("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 200\r\n\r\n[\"REQ\",\"q\"".encodeToByteArray()) }.flush()
                 awaitInFlight(gate, 1)
                 val busy = post(base, req("""{"kinds":[1],"search":"include:spam"}"""))
-                assertEquals(429, busy.status, "the upload holds the slot, so it counts against the cap: ${busy.body}")
+                assertEquals(503, busy.status, "the upload holds the slot, so it counts against the cap: ${busy.body}")
                 val input = java.io.BufferedInputStream(socket.getInputStream())
                 val head = generateSequence { readLine(input) }.takeWhile { it.isNotEmpty() }.toList()
                 assertTrue(head.first().contains(" 408 "), head.toString())
@@ -603,27 +567,14 @@ class HttpRelayTest {
     }
 
     @Test
-    fun `a forwarded-for header from a peer that is not a trusted proxy is ignored`() {
-        val gate = HttpRelayGate(perClient = 1, total = 0)
-        val trustsElsewhere = ClientAddresses("X-Forwarded-For", listOf(Cidr.parse("10.9.9.9")!!))
-        serving(gate = gate, deadlineMs = 3_000, clients = trustsElsewhere) { base ->
-            val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}"""), forwardedFor = listOf("10.0.0.1")) }.also { it.start() }
-            awaitInFlight(gate, 1)
-            val spoofed = post(base, req("""{"kinds":[1],"search":"include:spam"}"""), forwardedFor = listOf("10.0.0.2"))
-            assertEquals(429, spoofed.status, "a made-up address is still the socket's peer: ${spoofed.body}")
-            stalled.join()
-        }
-    }
-
-    @Test
     fun `a refusal at the gate does not spend the caller's token`() {
-        val gate = HttpRelayGate(perClient = 1, total = 0)
+        val gate = HttpRelayGate(total = 1)
         serving(gate = gate, deadlineMs = 3_000) { base ->
             val stalled = Thread { post(base, req("""{"kinds":[$STALLED_KIND],"search":"include:spam"}""")) }.also { it.start() }
             awaitInFlight(gate, 1)
             val body = """{"kinds":[1]}"""
             val signed = token(req(body))
-            assertEquals(429, post(base, req(body), signed).status)
+            assertEquals(503, post(base, req(body), signed).status)
             stalled.join()
             val retried = post(base, req(body), signed)
             assertEquals(200, retried.status, "the same token, once the slot is free: ${retried.body}")
@@ -710,7 +661,7 @@ class HttpRelayTest {
     fun `a reader that stops reading holds the relay's writes, not its heap`() {
         val big = bigNotes(4000)
         publish(*big.toTypedArray())
-        val gate = HttpRelayGate(0, 0)
+        val gate = HttpRelayGate(0)
         serving(gate = gate, deadlineMs = 30_000) { base ->
             for (gzip in listOf(false, true)) {
                 val lines =
