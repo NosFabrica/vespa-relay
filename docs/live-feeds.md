@@ -193,8 +193,9 @@ alternated, the same day):
 - **The first ramp past 20,000 sockets found a bug older than both builds**:
   out of file descriptors, the relay stopped accepting connections for good
   ([docs/traps.md](traps.md); `live-bench/fd-exhaustion.sh` checks it). The
-  relay now loads the JDK's zone rules at boot, and a production host needs a
-  `nofile` limit above the sockets it means to hold.
+  relay now loads the JDK's zone rules at boot, and `docker-compose.yml`
+  sets the relay's `nofile` limit (`RELAY_NOFILE`, 524,288) rather than
+  inheriting the engine's.
 
 ## One write per socket per flush
 

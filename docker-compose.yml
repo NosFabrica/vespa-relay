@@ -99,6 +99,15 @@ services:
     # FTS reindex — not the negentropy id snapshots, which were what needed
     # 12g. Those went with the sync process, and this dropped to 6g.
     mem_limit: ${RELAY_MEM_LIMIT:-6g}
+    # Every client socket is a file. Without this the container takes whatever
+    # limit the Docker engine was started with, which varies by host and engine
+    # version; out of files, the relay refuses new connections until some close.
+    # An engine that cannot grant it (rootless Docker past the user's own hard
+    # limit) fails to create the container: lower RELAY_NOFILE there.
+    ulimits:
+      nofile:
+        soft: ${RELAY_NOFILE:-524288}
+        hard: ${RELAY_NOFILE:-524288}
     depends_on:
       vespa:
         condition: service_healthy
