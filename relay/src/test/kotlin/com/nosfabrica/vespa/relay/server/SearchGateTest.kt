@@ -149,15 +149,19 @@ class SearchGateTest {
         }
 
     @Test
-    fun `a ranked read is one with terms, a phrase, or a sort — a lens alone is plain recall`() {
-        assertTrue(Filter(search = "bitcoin include:spam").isRankedRead())
-        assertTrue(Filter(search = "\"lightning network\" observer:${"a".repeat(64)}").isRankedRead())
-        assertTrue(Filter(search = "sort:rank include:spam").isRankedRead(), "a trust-ordered match-all ranks the whole corpus")
-        assertFalse(Filter(search = "include:spam").isRankedRead())
-        assertFalse(Filter(search = "observer:${"a".repeat(64)}").isRankedRead())
-        assertFalse(Filter(search = "-spam include:spam").isRankedRead(), "an exclusion alone is recall minus a word, not a ranking")
-        assertFalse(Filter(kinds = listOf(1)).isRankedRead())
-        assertFalse(Filter(search = "  ").isRankedRead())
+    fun `the gate holds terms, a phrase, or a sort the store ranks by — a lens alone is plain recall`() {
+        val gate = SearchGate(1)
+
+        fun holds(search: String?) = gate.gates(listOf(Filter(kinds = listOf(1), search = search)))
+        assertTrue(holds("bitcoin include:spam"))
+        assertTrue(holds("\"lightning network\" observer:${"a".repeat(64)}"))
+        assertTrue(holds("sort:rank include:spam"), "a trust-ordered match-all ranks the whole corpus")
+        assertFalse(holds("sort:bogus include:spam"), "a sort the store does not know is served as plain recall")
+        assertFalse(holds("include:spam"))
+        assertFalse(holds("observer:${"a".repeat(64)}"))
+        assertFalse(holds("-spam include:spam"), "an exclusion alone is recall minus a word, not a ranking")
+        assertFalse(holds(null))
+        assertFalse(holds("  "))
     }
 
     @Test

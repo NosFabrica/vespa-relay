@@ -138,6 +138,14 @@ the store call to EOSE, not to the end of the call, because a REQ parks at its
 live tail. A searching COUNT is gated too; it ran the same match set at about
 15x the search it summarizes.
 
+**The relay reads a filter's lens and ranking off the store's `ReadShape`.**
+`LensRequiredPolicy` and `SearchGate` parsed the search string themselves, and
+the gate disagreed with the store: any `sort:` counted as ranked, while the
+store ignores a value it does not recognise and serves plain recall, so
+`sort:bogus` queued behind a connection's real searches for nothing.
+`ReadShape.of(filter)` is derived by the mapping the query compiler uses, so the
+two cannot drift; `sort:bogus` is no longer held.
+
 **Pressure is sampled to EOSE, never to the end of the call.** A REQ parks
 until the client closes it, so timing the whole call recorded subscription
 lifetimes as read latency and pinned the ingest backoff at max. `/pressure`
