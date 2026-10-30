@@ -80,7 +80,7 @@ release's Package.swift, 22 commits over v2.8.0). It makes public what this rela
     `pushed` now counts events an upstream accepted, not events sent; the log names what was left.
   RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move. With the store at 596c78a862be
     the graph showed `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`, the force winning; the store at
-    9fc501742650 (vespaEventStore) names 2.9.0 itself, and no arrow is left.
+    9fc501742650 and since d75be63d9db0 (vespaEventStore) names 2.9.0 itself, and no arrow is left.
 
 Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a; its JVM code is the merge of
 quartz#61, c2c73e7), 15 commits over v2.7.3. All of it is the relay server's live fan-out, written against this
@@ -545,7 +545,19 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-9fc501742650 = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 596c78a862be, below): the store on
+d75be63d9db0 = vespa-eventstore main @ 2026-10-30, the merge of PR #190 (parents fec452107fe8, main before,
+and 9fc501742650, below). Its tree is 9fc501742650's (git diff 9fc5017 d75be63 is empty), so nothing a
+deployment runs moves; the pin is on main's history, where a branch hash is not promised to stay.
+  git merge-base --is-ancestor 9fc501742650 d75be63d9db0   # verified
+
+DEPLOY: nothing moves.
+
+GATED: the tree is the one gated at 9fc501742650 (below); here, ./gradlew build archTest against the
+  JitPack jar of d75be63d9db0.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 9fc501742650 = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 596c78a862be, below): the store on
 quartz 2.9.0, its local copies retired for quartz's.
   QUARTZ 2.9.0 (29d63b9), the same release as this relay's quartz pin. The store's HexKeys.isHexKey,
     Event.addressOrNull, boundedRank, the NIP-85 subject and provider walks, search expansion's References

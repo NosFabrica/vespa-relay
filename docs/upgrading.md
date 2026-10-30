@@ -6,7 +6,7 @@ about everything else an operator has to do or will see.
 
 ## The store reads its own settings (October 2026)
 
-vespa-eventstore `9fc501742650` and quartz 2.9.0. Nothing to deploy: the
+vespa-eventstore `d75be63d9db0` and quartz 2.9.0. Nothing to deploy: the
 schema does not move.
 
 ### Do before the first boot
