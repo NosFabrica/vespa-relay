@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.peers
 
-import com.nosfabrica.vespa.relay.config.withoutDefaultPort
+import com.nosfabrica.vespa.relay.util.withoutDefaultPort
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.util.concurrent.ConcurrentHashMap
@@ -70,7 +70,7 @@ internal class RelayUrlCache(
         if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return REFUSED
         // Every url read here is someone else's: a local, private or malformed host names their machine, not a relay.
         if (!RelayUrlNormalizer.isDialableFromOthers(url.url)) return REFUSED
-        return Decided(withoutDefaultPort(url), RelayUrlNormalizer.isOnion(url.url))
+        return Decided(url.withoutDefaultPort(), RelayUrlNormalizer.isOnion(url.url))
     }
 
     companion object {

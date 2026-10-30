@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.util.withoutDefaultPort
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.AuthCmd
@@ -116,23 +117,4 @@ class MultiAddressAuthPolicy(
         /** Identities one connection is told about; real clients sign in as one or two. */
         internal const val MAX_TOLD = 16
     }
-}
-
-/**
- * `ws://host:80/` and `ws://host/` name one endpoint, likewise `wss` and 443, but quartz's
- * normalizer keeps an explicit default port. A bracketed IPv6 host survives.
- */
-private fun NormalizedRelayUrl.withoutDefaultPort(): NormalizedRelayUrl {
-    val port =
-        when {
-            url.startsWith("ws://") -> ":80"
-            url.startsWith("wss://") -> ":443"
-            else -> return this
-        }
-    val authorityStart = url.indexOf("://") + 3
-    val slash = url.indexOf('/', authorityStart)
-    val authorityEnd = if (slash < 0) url.length else slash
-    val portStart = authorityEnd - port.length
-    if (portStart <= authorityStart || !url.regionMatches(portStart, port, 0, port.length)) return this
-    return NormalizedRelayUrl(url.removeRange(portStart, authorityEnd))
 }
