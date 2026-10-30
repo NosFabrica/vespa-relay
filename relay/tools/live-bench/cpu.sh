@@ -16,7 +16,10 @@ log="$BENCH_OUT/cpu-load.txt"
 STEPS=$FEEDS,$FEEDS HOLD=60 RATE=$RATE CHILDREN=${CHILDREN:-4} RELAY_PID=$RELAY_PID feeds > "$log" 2>&1 &
 load=$!
 # The second "publishing" line is the measured step; 10 s in, the step is past its start.
-for _ in $(seq 1 300); do [ "$(grep -c 'publishing for' "$log")" -ge 2 ] && break; sleep 2; done
+# Before it, the publisher signs the step's events, minutes of it at high RATE: give up only after an hour, and
+# never read a sample outside the step.
+for _ in $(seq 1 1800); do [ "$(grep -c 'publishing for' "$log")" -ge 2 ] && break; sleep 2; done
+[ "$(grep -c 'publishing for' "$log")" -ge 2 ] || { echo "live-bench: the measured step never started; see $log" >&2; kill $load; relay_stop; exit 1; }
 sleep 10
 read -r user kernel < <(relay_cpu 30)
 wait $load
