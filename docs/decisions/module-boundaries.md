@@ -56,6 +56,20 @@ checked by breaking each of the ten rules and watching the ten cases fail; on
 the first attempt the whole task was skipped and the build was green. The inputs
 are declared now, the same way `:relay:test` declares `.env.example`.
 
+**What is not ours goes upstream, and the engine import list only shrinks.**
+A cross-repo review found code here re-deriving what quartz or the store
+already does or should: a Hex check, NIP-01 prefix parsing, a default-port
+fold quartz's normalizer should own, the store's search grammar, YQL against
+schema field names. Each copy drifts on the next bump without a test noticing,
+and two already disagreed with their upstream. So the rule is to search
+upstream first, and a copy that has to stay names the upstream change that
+retires it. The store's `engine` package is its internal layer, reached through
+its escape hatches "for ops and benchmarks"; seven main files import from it,
+and `ModuleBoundariesTest.ENGINE_ALLOWED` lists exactly those names, failing on
+a new one and on a stale entry, so the list can only shrink. Reach-through via
+`VespaEventStore.store` is not guarded: `store` is the name of every
+`IEventStore` here, and source text cannot tell the hatch from the interface.
+
 **`TorTransport`'s tests live with `TorTransport`.** They were in `:monitor`,
 in `:peers`' package, because three of the sixteen turn on `shouldPreProbe` and
 `Unreachability`, which are the monitor's. Twelve moved to `:peers`; the four

@@ -136,8 +136,9 @@ package below it belongs to exactly one module, so a package name says which
 module holds the file. The root package itself holds the two entrypoints and
 nothing else. `ModuleBoundariesTest` (in `:common`, beside the other guards that
 read the checkout rather than run it) fails the build on both, on a dependency
-that points the wrong way along the include order, on one nothing imports, and
-on Ktor or the store crossing the `/stats.json` seam. The long form, file by
+that points the wrong way along the include order, on one nothing imports,
+on Ktor or the store crossing the `/stats.json` seam, and on a main source
+importing the store's `engine` off its list (`ENGINE_ALLOWED`, which only shrinks). The long form, file by
 file with the reasoning, is [docs/layout.md](docs/layout.md).
 
 ```
@@ -348,6 +349,13 @@ for env vars and a boot warning for config keys, never silently.
 
 **A configured component must never be silently inert.** If a flag needs
 something else to be true, make it true and say so.
+
+**What is not ours goes upstream.** Before writing protocol code, search
+quartz; before writing YQL or naming a Vespa schema field or rank profile,
+search vespa-eventstore. A local copy of an upstream behaviour carries a
+one-line KDoc pointer to the upstream change that retires it ("Remove when
+quartz …"). What stays here is deployment: thresholds, what to publish, env
+vars, wiring.
 
 **Don't publish claims you can't support.** Negative NIP-66 records are signed
 and public; `Unreachability.proves()` stays quiet on an unknown failure, because

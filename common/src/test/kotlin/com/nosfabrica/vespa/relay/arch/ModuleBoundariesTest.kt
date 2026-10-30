@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.arch
 
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -131,6 +132,42 @@ class ModuleBoundariesTest {
     }
 
     @Test
+    fun `main sources reach the store's engine only where they already did`() {
+        // The engine is the store's own layer; a consumer that needs one of its names is missing a facade member.
+        val found =
+            Repo.modules
+                .flatMap { module ->
+                    Repo.sources(module, "main").flatMap { f -> engineNames(f.readText()).map { fileKey(module, f) to it } }
+                }.toSet()
+        val grown = found.filter { (file, name) -> name !in ENGINE_ALLOWED[file].orEmpty() }
+        val stale = ENGINE_ALLOWED.flatMap { (file, names) -> names.map { file to it } }.filter { it !in found }
+
+        assertTrue(
+            grown.isEmpty(),
+            "ask vespa-eventstore for a facade member instead of reaching into its engine:\n" + grown.joinToString("\n"),
+        )
+        assertTrue(stale.isEmpty(), "no longer imported, so take it off ENGINE_ALLOWED:\n" + stale.joinToString("\n"))
+    }
+
+    /** Every engine name a source imports, and any line that spells one out inline. */
+    private fun engineNames(text: String): List<String> =
+        text.lines().mapNotNull { line ->
+            val trimmed = line.trim()
+            when {
+                trimmed.startsWith("import $ENGINE.") -> trimmed.removePrefix("import ").substringBefore(' ')
+                trimmed.startsWith("*") || trimmed.startsWith("//") -> null
+                "$ENGINE." in trimmed -> "inline: $trimmed"
+                else -> null
+            }
+        }
+
+    /** `module:path` under the package root, the key [ENGINE_ALLOWED] is written in. */
+    private fun fileKey(
+        module: String,
+        file: File,
+    ): String = "$module:" + file.relativeTo(File(Repo.dir(module), "src/main/kotlin/com/nosfabrica/vespa/relay")).path
+
+    @Test
     fun `every declared module dependency is used`() {
         // A dependency nothing imports is a false edge on the graph, and it re-exports whatever
         // that module exports: :monitor carried :web, and with it Ktor, on one test's import.
@@ -202,10 +239,28 @@ class ModuleBoundariesTest {
     private companion object {
         const val ROOT = "com.nosfabrica.vespa.relay"
         const val STORE = "com.nosfabrica.vespa.eventstore"
+        const val ENGINE = "$STORE.engine"
         const val CLIENT = "com.vitorpamplona.quartz.nip01Core.relay.client"
         const val SOCKETS = "com.vitorpamplona.quartz.nip01Core.relay.sockets"
         val ROOT_PACKAGE = Regex("""^package $ROOT$""", RegexOption.MULTILINE)
         val PROJECT_DEP = Regex("""(\w+)\(project\(":([A-Za-z0-9_-]+)"\)\)""")
+
+        /**
+         * The engine names main sources import today. It only shrinks: a new one fails the build,
+         * and one no longer imported has to be taken off.
+         */
+        val ENGINE_ALLOWED: Map<String, Set<String>> =
+            mapOf(
+                "common:pulse/PulseDocument.kt" to
+                    setOf("$ENGINE.client.EngineResources", "$ENGINE.metrics.CostLedger", "$ENGINE.metrics.IngestStats"),
+                "common:pulse/StoreMetricsLog.kt" to setOf("$ENGINE.metrics.CostLedger", "$ENGINE.metrics.IngestStats"),
+                "common:pulse/TrustDocument.kt" to setOf("$ENGINE.metrics.DegradedReads"),
+                "common:store/SchemaDeploy.kt" to setOf("$ENGINE.app.SchemaDeployer", "$ENGINE.app.VespaApp"),
+                "peers:ingest/IngestPipeline.kt" to
+                    setOf("$ENGINE.async.QUERY_FANOUT", "$ENGINE.async.mapBounded", "$ENGINE.metrics.IngestStats"),
+                "peers:ingest/StoreProbes.kt" to setOf("$ENGINE.doc.EventDoc", "$ENGINE.query.EventQuery"),
+                "sync:sync/SyncEngine.kt" to setOf("$ENGINE.metrics.IngestStats"),
+            )
 
         /** `api(` at the start of a dependency line, so a comment mentioning it does not count. */
         val API = Regex("""^\s+api\(""", RegexOption.MULTILINE)
