@@ -361,6 +361,15 @@ services:
     # your deployment can spare (e.g. VESPA_MEM_LIMIT=30g SYNC_MEM_LIMIT=10g;
     # 70% of 10g still holds the 5.3 GiB assertions snapshot with margin).
     mem_limit: ${SYNC_MEM_LIMIT:-12g}
+    # Every upstream relay held live is a socket, and the router holds the whole
+    # prime list at once (PeerClient.MAX_CONCURRENT_SOCKETS is 4096). Set rather
+    # than inherited, as the relay's: an engine started with a 1024 soft limit
+    # stops the fan-out at the files it has. Lower SYNC_NOFILE where the engine
+    # cannot grant it (rootless Docker).
+    ulimits:
+      nofile:
+        soft: ${SYNC_NOFILE:-524288}
+        hard: ${SYNC_NOFILE:-524288}
     depends_on:
       vespa:
         condition: service_healthy
