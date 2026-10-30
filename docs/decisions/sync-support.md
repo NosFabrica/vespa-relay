@@ -217,6 +217,31 @@ paced publish, all at once. The stream now takes one snapshot per interval and
 pushes it to its urls in turn, so the live snapshots are bounded by the number
 of `up` streams; a url that fails still leaves the rest their turn.
 
+**A url's push is quartz's `NegentropyStoreSync` group.** Quartz 2.9.0 gave it
+the options this needed, and `syncGroup(relay, filter, snapshot)` takes the
+pass's own gated snapshot, so `shareSnapshots` (which reads outside the gate and
+lets waiting groups inherit a failed read) is not used. Up only, no deletion
+settle (its `applyDown` writes a relay's kind 5, and this process's store is
+read-only), uploads beside the session as the paced loop did. What changed:
+an event counts as pushed when the upstream's `OK` accepts it, not when it was
+sent; the push is paced by those answers (`PUSH_WINDOW` awaiting at once)
+rather than a fixed 40 ms; one reconcile per url, since the rounds existed to
+re-find what an unconfirmed send lost; a relay that stops answering stalls the
+push once; and each url has one interval's budget, the rest counted as
+`uploadsLeft` for the next pass. That budget starts with the reconcile, which
+quartz's `uploadDeadlineMs` counts.
+
+**The pager's store index is quartz's, booked here.** `StoreWindowIndex` wraps
+`NegentropyLocalIndex.of(store)` in `storeCall`. Quartz turns a failed count
+into null, so the wrapper carries that null through the call as a failure,
+or `store` would book a refused count as answered.
+
+**`RelayPages` and `AliasProbe` keep their own reading of the socket.** Quartz
+2.9.0's `PageReport` counts a page's unmatched and above-`until` events on the
+page's own subscription; the sampler names the kinds and stamps that crossed
+every subscription of the socket, and the probe grades off-kind and
+off-window separately, so neither moved.
+
 **Heal first, then remember.** A suppressed id is never downloaded again and
 so can never re-trigger, so `RouterRefusalSink` enqueues the repair before
 recording the id. The only way into the heal queue is a store refusal of an

@@ -25,7 +25,7 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
@@ -38,28 +38,22 @@ import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The `up` direction: pushes our matching events to each upstream of a stream that lacks them,
- * every [intervalSec], reconciling until nothing more is missing.
+ * The `up` direction: every [intervalSec], pushes our matching events to each upstream of a stream
+ * that lacks them, through quartz's [NegentropyStoreSync], each url within one interval's budget.
  */
 internal class UpstreamPush(
     private val client: NostrClient,
     private val store: IEventStore,
     private val intervalSec: Long,
-    /** The engine-wide one-id-snapshot-at-a-time gate, held for the snapshot and released before any round. */
+    /** The engine-wide one-id-snapshot-at-a-time gate, held for the snapshot and released before any push. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
-    /** One negentropy round against an upstream, handing over the ids it lacks; quartz's unless a test stands in. */
-    private val reconcile: suspend (SyncUpstream, List<IdAndTime>, suspend (List<String>) -> Unit) -> Unit = { up, local, onHaveIds ->
-        client.negentropyReconcile(
-            relay = up.url,
-            filter = up.filter,
-            localEntries = local,
-            idleTimeoutMs = NEG_IDLE_MS,
-            onHaveIds = { ids -> onHaveIds(ids) },
-            onNeedIds = { /* up-only: nothing is pulled here */ },
-        )
+    /** One url's push against the pass's snapshot; quartz's group unless a test stands in. */
+    private val pushGroup: suspend (SyncUpstream, List<IdAndTime>) -> NegentropyStoreSync.GroupResult = { up, local ->
+        NegentropyStoreSync(client, BookedReads(store), upOnly(intervalSec)).syncGroup(up.url, up.filter, local)
     },
 ) {
+    /** Events an upstream accepted, its `OK` true. */
     val pushed = AtomicLong()
 
     /** Pushes one stream to each of its [urls] in turn, every [intervalSec]. */
@@ -79,9 +73,9 @@ internal class UpstreamPush(
 
     /**
      * One pass: one id snapshot under the gate, shared by the stream's urls in turn, so a stream
-     * holds at most one snapshot however many urls it pushes to. Returns rounds and events per url.
+     * holds at most one snapshot however many urls it pushes to. Returns each url's outcome.
      */
-    internal suspend fun pass(urls: List<SyncUpstream>): Map<SyncUpstream, Pair<Int, Long>> {
+    internal suspend fun pass(urls: List<SyncUpstream>): Map<SyncUpstream, NegentropyStoreSync.GroupResult> {
         val filter = urls.first().filter
         require(urls.all { it.streamName == urls.first().streamName && it.filter == filter }) { "one pass is one stream's urls" }
         val local: List<IdAndTime> =
@@ -90,12 +84,21 @@ internal class UpstreamPush(
                     store.snapshotIdsForNegentropy(listOf(filter))
                 }
             }
-        val outcomes = LinkedHashMap<SyncUpstream, Pair<Int, Long>>()
+        val outcomes = LinkedHashMap<SyncUpstream, NegentropyStoreSync.GroupResult>()
         for (up in urls) {
             if (!scope.isActive) break
             try {
-                val (rounds, events) = pushTo(up, local).also { outcomes[up] = it }
-                System.err.println("router: up ${up.url.url} pushed $events event(s) upstream ($rounds round(s))")
+                val result = pushGroup(up, local)
+                pushed.addAndGet(result.uploaded.toLong())
+                // A group reports a failed reconcile rather than throwing it.
+                val failure = result.error
+                if (failure != null) {
+                    System.err.println("router: up ${up.url.url} failed: $failure")
+                    continue
+                }
+                outcomes[up] = result
+                val left = if (result.uploadsLeft > 0) ", ${result.uploadsLeft} left for the next pass" else ""
+                System.err.println("router: up ${up.url.url} pushed ${result.uploaded} event(s) upstream (${result.have} it lacked$left)")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -106,40 +109,37 @@ internal class UpstreamPush(
         return outcomes
     }
 
-    /** Rounds against one url until nothing more is missing; a round changes the upstream's set, never [local]. */
-    private suspend fun pushTo(
-        up: SyncUpstream,
-        local: List<IdAndTime>,
-    ): Pair<Int, Long> {
-        var rounds = 0
-        var pushedThisRound: Long
-        var pushedThisPass = 0L
-        do {
-            pushedThisRound = 0
-            reconcile(up, local) { ids ->
-                // Chunked so the store never materialises a whole diff as one query.
-                for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
-                    val events: List<Event> =
-                        storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(chunk.size)) {
-                            store.query(Filter(ids = chunk))
-                        }
-                    for (event in events) {
-                        client.publish(event, setOf(up.url))
-                        pushed.incrementAndGet()
-                        pushedThisRound++
-                        delay(PUBLISH_PACE_MS)
-                    }
-                }
+    /** The store as quartz's group reads it: the by-id fetches of what an upstream lacks, booked like every other store call. */
+    private class BookedReads(
+        private val store: IEventStore,
+    ) : IEventStore by store {
+        override suspend fun <T : Event> query(filter: Filter): List<T> =
+            storeCall(StoreCalls.CALLER_PUSH_UPSTREAM, StoreCalls.OP_QUERY, StoreCalls.ids(filter.ids?.size ?: 0)) {
+                store.query(filter)
             }
-            pushedThisPass += pushedThisRound
-            rounds++
-        } while (pushedThisRound > 0 && rounds < MAX_ROUNDS && scope.isActive)
-        return rounds to pushedThisPass
     }
 
     companion object {
-        private const val PUBLISH_PACE_MS = 40L
-        private const val MAX_ROUNDS = 8
+        /** Events awaiting an upstream's `OK` at once: its answers pace the push. */
+        const val PUSH_WINDOW = 4
+
         private const val ID_FETCH_CHUNK = 500
+
+        /**
+         * Up only, over the pass's own snapshot. No deletion settle: its `applyDown` writes a relay's
+         * kind 5 into a store this process opens read-only. The budget counts from the reconcile's start.
+         */
+        fun upOnly(intervalSec: Long): NegentropyStoreSync.Config =
+            NegentropyStoreSync.Config(
+                down = false,
+                up = true,
+                syncDeletions = false,
+                pageFallback = false,
+                idChunk = ID_FETCH_CHUNK,
+                reconcileConcurrency = 1,
+                idleTimeoutMs = NEG_IDLE_MS,
+                uploadWindow = PUSH_WINDOW,
+                uploadDeadlineMs = intervalSec * 1000,
+            )
     }
 }

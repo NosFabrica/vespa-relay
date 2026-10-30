@@ -183,11 +183,11 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         recall carries no terms and expands nothing, which is
                         every read the router makes.
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
-                        client signs the .onion it dialled, and quartz's
-                        OptionalAuthPolicy binds exactly one url. It also
-                        carries the LOGIN HOOK: quartz's `authorize` is the one
-                        seam that sees a verified AUTH and that connection's
-                        `send` at once
+                        client signs the .onion it dialled, so quartz's
+                        OptionalAuthPolicy is built over every address. It
+                        also carries the LOGIN HOOK: quartz's `authorize` is
+                        the one seam that sees a verified AUTH, and
+                        `sendToClient` reaches that connection
     TrustNotice.kt      what a reader is told the moment they sign in: ONE
                         NOTICE naming the first link of their chain this relay
                         does not hold, and nothing when it holds them all.
@@ -350,7 +350,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     ProbeGate.kt          whether either drop-probe still earns its round trip,
                           learned from what it drops
     BisectingInsert.kt    the batch-bisecting write
-    UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
+    UpstreamPush.kt       dir = up: quartz's NegentropyStoreSync, up only, over one
+                          gated snapshot per pass and a per-url budget
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
                           streams and their kinds — written once at boot so the
                           relay can publish it. The kind list exists in
@@ -383,7 +384,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           probe — the tag [VisitPool]'s roster selects on
     ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
     Silence.kt            classifying what a quiet socket actually said
-    Unreachability.kt     which failures may be published as NIP-66 records
     RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
                           rtts, `R`, `s` (+version), `N`. Absent writes no tag
                           rather than a zero, and everything it writes it also

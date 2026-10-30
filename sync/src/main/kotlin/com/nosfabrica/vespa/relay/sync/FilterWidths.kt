@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
  * How many kinds each relay accepts in one filter, learned from the relay's own refusal. A
  * refusal naming a number below the ask is adopted as the cap; one naming none halves the
  * ask. Both only ever narrow, which is what makes the loop terminate.
- * Remove when quartz's pager has a per-page hook to learn a relay's kind cap on.
+ * Remove when quartz's pager learns a relay's kind cap itself.
  */
 internal class FilterWidths {
     private val caps = ConcurrentHashMap<NormalizedRelayUrl, Int>()

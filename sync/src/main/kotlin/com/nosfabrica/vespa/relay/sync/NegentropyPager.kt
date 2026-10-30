@@ -36,7 +36,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
-import kotlinx.coroutines.CancellationException
 
 /** Sizes for the window stack, all counts of events; the pager turns them into `created_at` boundaries. */
 internal data class NegPageTuning(
@@ -82,29 +81,31 @@ internal class PagedWindow(
 )
 
 /**
- * [NegentropyLocalIndex] over this relay's store: counts and id reads by range.
- * Remove when quartz's own `StoreWindowIndex` is public.
+ * Quartz's [NegentropyLocalIndex.of] this store, each read booked on the visit's [StoreCalls]. A
+ * count quartz could not get stays null, and is booked as failed rather than as an answer.
  */
 internal class StoreWindowIndex(
-    private val store: IEventStore,
+    store: IEventStore,
 ) : NegentropyLocalIndex {
-    // A failed count is not fatal, but cancellation is not a failed count.
+    private val inner = NegentropyLocalIndex.of(store)
+
     override suspend fun count(window: Filter): Int? =
         try {
             storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_COUNT, StoreCalls.summarise(window)) {
-                store.count(window)
+                inner.count(window) ?: throw CountUnanswered
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
+        } catch (_: CountUnanswered) {
             null
         }
 
     // Booked apart from the count: this materialises every id in the window.
     override suspend fun entriesFor(window: Filter): List<IdAndTime> =
         storeCall(StoreCalls.CALLER_VISIT_NEGENTROPY, StoreCalls.OP_SNAPSHOT_IDS, StoreCalls.summarise(window)) {
-            store.snapshotIdsForNegentropy(listOf(window))
+            inner.entriesFor(window)
         }
+
+    /** Carries quartz's null through [storeCall] as the failure it was; never escapes [count]. */
+    private object CountUnanswered : Exception()
 }
 
 /** The count the pager already took, handed to quartz's own sizing check instead of a second query. */
