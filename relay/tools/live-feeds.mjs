@@ -14,6 +14,10 @@
 //           a relay without NIP-50
 // CHILDREN  load processes; each is one process's open-file limit 4
 // OPEN_RATE sockets opened a second, over all children            1000
+// AUTHORS   0 for feeds of every note; N for follow-list feeds, each following FOLLOWS of
+//           N author keys, with each note from one of them, so a note reaches only the
+//           feeds that follow its author                                    0
+// FOLLOWS   authors each feed follows when AUTHORS is set                   10
 // LINGER    seconds to hold every feed open, idle, after the last step: for heap and
 //           kernel readings per connection                                  0
 // URLS      extra comma-separated ws:// addresses of the same relay (127.0.0.2…): one address
@@ -45,6 +49,13 @@ function feedsChild() {
   const sockets = []; let live = 0, failed = 0, dropped = 0, nextUrl = 0;
   const closedWhy = {}; const eose = [];
   let pubAt = new Map(), early = new Map(), hist = new Array(BUCKETS.length).fill(0), received = 0, windowOpen = false;
+  // Follow-list feeds: each REQ names `follows` authors of `pool`; owed counts, per author, the counted feeds following it.
+  let pool = null, follows = 0, owed = 0, countedFeeds = 0, followers = new Map();
+  const sample = () => {
+    const picked = new Set();
+    while (picked.size < Math.min(follows, pool.length)) picked.add(pool[Math.floor(Math.random() * pool.length)]);
+    return [...picked];
+  };
 
   const record = (id, at) => {
     const t = pubAt.get(id);
@@ -52,12 +63,13 @@ function feedsChild() {
     hist[bucketOf(at - t)]++; received++;
   };
   const open = () => new Promise((resolve) => {
-    const ws = new WebSocket(urls[nextUrl++ % urls.length]); const s = { ws, subs: perSocket, alive: false, gotEose: 0, counted: false };
+    const ws = new WebSocket(urls[nextUrl++ % urls.length]);
+    const s = { ws, subs: perSocket, alive: false, gotEose: 0, counted: false, authors: pool ? Array.from({ length: perSocket }, sample) : null };
     let settled = false; const settle = (ok) => { if (!settled) { settled = true; if (ok) { s.alive = true; live++; } else failed++; resolve(); } };
     ws.onopen = () => {
       const sent = performance.now();
       s.sent = sent;
-      for (let i = 0; i < perSocket; i++) ws.send(JSON.stringify(["REQ", "f" + i, filter]));
+      for (let i = 0; i < perSocket; i++) ws.send(JSON.stringify(["REQ", "f" + i, s.authors ? { ...filter, authors: s.authors[i] } : filter]));
     };
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
@@ -72,22 +84,29 @@ function feedsChild() {
   });
 
   process.on("message", async (msg) => {
-    if (msg.op === "grow") {
+    if (msg.op === "authors") {
+      pool = msg.pubs; follows = msg.follows;
+      process.send({ op: "authored" });
+    } else if (msg.op === "grow") {
       eose.length = 0; failed = 0;
       const want = msg.sockets - sockets.length; const gap = 1000 / msg.openRate; const pending = [];
       for (let i = 0; i < want; i++) { pending.push(open()); await new Promise((r) => setTimeout(r, gap)); }
       await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, 60000))]);
       process.send({ op: "grown", live, failed, eose: [...eose], closedWhy: { ...closedWhy }, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "window") {
-      pubAt = new Map(); early = new Map(); hist.fill(0); received = 0; dropped = 0; windowOpen = true;
+      pubAt = new Map(); early = new Map(); hist.fill(0); received = 0; dropped = 0; owed = 0; windowOpen = true;
       for (const s of sockets) s.counted = s.alive;
+      countedFeeds = sockets.filter((s) => s.counted).reduce((a, s) => a + s.subs, 0);
+      followers = new Map();
+      for (const s of sockets) if (s.counted && s.authors) for (const list of s.authors) for (const a of list) followers.set(a, (followers.get(a) || 0) + 1);
       process.send({ op: "windowed", feeds: sockets.filter((s) => s.counted).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "pub") {
       pubAt.set(msg.id, msg.t);
+      owed += pool ? followers.get(msg.author) || 0 : countedFeeds;
       for (const at of early.get(msg.id) || []) record(msg.id, at); early.delete(msg.id);
     } else if (msg.op === "report") {
       windowOpen = false;
-      process.send({ op: "reported", received, hist, dropped, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
+      process.send({ op: "reported", received, owed, hist, dropped, feeds: sockets.filter((s) => s.alive).reduce((a, s) => a + s.subs, 0) });
     } else if (msg.op === "exit") { for (const s of sockets) s.ws.close(); setTimeout(() => process.exit(0), 500); }
   });
   process.send({ op: "ready" });
@@ -96,21 +115,24 @@ function feedsChild() {
 // ---------------------------------------------------------------- the publisher
 async function publisherChild() {
   const { event, keypair } = await import("./nostr-sign.mjs");
-  const url = process.argv[3]; const key = keypair(); const run = Math.random().toString(36).slice(2, 8);
+  const url = process.argv[3]; let keys = [keypair()]; const run = Math.random().toString(36).slice(2, 8);
   const ws = new WebSocket(url); await new Promise((r) => (ws.onopen = r));
   const okAt = new Map(); const sentAt = new Map(); const refused = [];
   ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m[0] === "OK") { okAt.set(m[1], Date.now() - (sentAt.get(m[1]) ?? Date.now())); if (!m[2]) refused.push(m[3]); } };
   let seq = 0;
   process.on("message", async (msg) => {
-    if (msg.op === "sign") {
-      const signed = Array.from({ length: msg.n }, () => event(key, 1, [], `live-feeds ${run} ${seq++}`));
+    if (msg.op === "keys") {
+      keys = Array.from({ length: msg.n }, () => keypair());
+      process.send({ op: "keys", pubs: keys.map((k) => k.pub) });
+    } else if (msg.op === "sign") {
+      const signed = Array.from({ length: msg.n }, () => event(keys[Math.floor(Math.random() * keys.length)], 1, [], `live-feeds ${run} ${seq++}`));
       process.send({ op: "signed" });
       process.once("message", async (go) => {
         const gap = 1000 / go.rate; const start = performance.now();
         for (let i = 0; i < signed.length; i++) {
           const wait = start + i * gap - performance.now(); if (wait > 0) await new Promise((r) => setTimeout(r, wait));
           const t = Date.now(); sentAt.set(signed[i].id, t); ws.send(JSON.stringify(["EVENT", signed[i]]));
-          process.send({ op: "pub", id: signed[i].id, t });
+          process.send({ op: "pub", id: signed[i].id, t, author: signed[i].pubkey });
         }
         await new Promise((r) => setTimeout(r, 3000));
         const oks = signed.map((e) => okAt.get(e.id)).filter((x) => x !== undefined).sort((a, b) => a - b);
@@ -128,6 +150,7 @@ async function main() {
   const steps = env("STEPS", "2000,4000,8000,16000").split(",").map(Number);
   const perSocket = Number(env("PER_SOCKET", 1)), rate = Number(env("RATE", 5)), hold = Number(env("HOLD", 20));
   const lens = env("LENS", "include:spam"), nChildren = Number(env("CHILDREN", 4)), openRate = Number(env("OPEN_RATE", 1000));
+  const authors = Number(env("AUTHORS", 0)), follows = Number(env("FOLLOWS", 10));
   const pid = env("RELAY_PID", ""); const httpBase = url.replace(/^ws/, "http");
   const self = fileURLToPath(import.meta.url);
 
@@ -137,13 +160,17 @@ async function main() {
   const publisher = spawn(["--publisher", url]);
   await Promise.all([...children, publisher].map((c) => next(c, "ready")));
   publisher.on("message", (m) => { if (m.op === "pub") for (const c of children) c.send(m); });
+  if (authors > 0) {
+    const keyed = next(publisher, "keys"); publisher.send({ op: "keys", n: authors }); const { pubs } = await keyed;
+    await Promise.all(children.map((c) => { const p = next(c, "authored"); c.send({ op: "authors", pubs, follows }); return p; }));
+  }
 
   const cpuTicks = () => { try { const f = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" "); return Number(f[11]) + Number(f[12]); } catch { return NaN; } };
   const rssMb = () => { try { return Math.round(Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, "utf8"))[1]) / 1024); } catch { return NaN; } };
   const pressure = async () => { try { return await (await fetch(`${httpBase}/pressure`)).json(); } catch { return null; } };
   const fmt = (x) => (Number.isFinite(x) ? String(Math.round(x)) : "-");
 
-  console.log(`lens=${lens} per_socket=${perSocket} rate=${rate}/s hold=${hold}s children=${nChildren} urls=${urls.length}`);
+  console.log(`lens=${lens} per_socket=${perSocket} rate=${rate}/s hold=${hold}s children=${nChildren} urls=${urls.length}` + (authors > 0 ? ` authors=${authors} follows=${follows}` : ""));
   console.log("feeds  sockets fail  eose_p50 eose_p99 | owed      got%    p50   p90   p99   max ms | dropped relay_cpu% rss_mb pressure_ms liveGate");
   for (const feeds of steps) {
     const sockets = Math.ceil(feeds / perSocket);
@@ -155,8 +182,7 @@ async function main() {
 
     const n = Math.round(rate * hold);
     const signed = next(publisher, "signed"); publisher.send({ op: "sign", n }); await signed;
-    const windowed = await Promise.all(children.map((c) => { const p = next(c, "windowed"); c.send({ op: "window" }); return p; }));
-    const liveFeeds = windowed.reduce((a, w) => a + w.feeds, 0);
+    await Promise.all(children.map((c) => { const p = next(c, "windowed"); c.send({ op: "window" }); return p; }));
     console.error(`  ${feeds} feeds open, publishing for ${hold}s`);
     const t0 = performance.now(), c0 = cpuTicks();
     const published = next(publisher, "published"); publisher.send({ op: "go", rate }); const pub = await published;
@@ -164,7 +190,7 @@ async function main() {
     const rep = await Promise.all(children.map((c) => { const p = next(c, "reported"); c.send({ op: "report" }); return p; }));
     const hist = new Array(BUCKETS.length).fill(0); for (const r of rep) r.hist.forEach((v, i) => (hist[i] += v));
     const got = rep.reduce((a, r) => a + r.received, 0), dropped = rep.reduce((a, r) => a + r.dropped, 0);
-    const owed = liveFeeds * pub.n; const p = await pressure();
+    const owed = rep.reduce((a, r) => a + r.owed, 0); const p = await pressure();
     const cpu = ((c1 - c0) / 100 / secs) * 100;
     console.log(
       `${String(feeds).padEnd(6)} ${String(live).padEnd(7)} ${String(failed).padEnd(5)} ${fmt(eose[Math.floor(eose.length / 2)]).padStart(8)} ${fmt(eose[Math.floor(eose.length * 0.99)]).padStart(8)} | ` +

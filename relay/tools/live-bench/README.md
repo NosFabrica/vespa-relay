@@ -12,6 +12,7 @@ relay's side.
 | `memory.sh [VAR=value ...]` | live heap and kernel memory per idle feed, and the classes behind them | bytes per feed, top classes |
 | `churn.sh [VAR=value ...]` | whether closed connections leave objects behind | live counts per round |
 | `stalled.sh [VAR=value ...]` | how a client that stops reading is cut off, with paranoid leak detection | relay connect/disconnect times |
+| `ramp.sh [VAR=value ...]` | how many feeds before delivery misses its target (p99, share delivered, opens, drops) | each step pass/fail, and the capacity |
 | `profile.sh [VAR=value ...]` | where the Java CPU goes in that step (JFR) | shares by area of the fan-out path |
 | `strfry.sh` | the same step against strfry, as a reference | as `cpu.sh`, plus RSS |
 
