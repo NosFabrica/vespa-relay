@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.store
 
 import com.nosfabrica.vespa.eventstore.runtime.DEFAULT_PROVIDER_REFRESH_MILLIS
 import com.nosfabrica.vespa.eventstore.runtime.WriterTopology
-import com.nosfabrica.vespa.relay.util.strictInt
 import java.net.URI
 
 /**
@@ -62,26 +61,6 @@ fun providerRefreshSeconds(env: Map<String, String>): Long =
                     "Use 0 to turn the refresh off, or unset it for the default.",
             )
     } ?: (DEFAULT_PROVIDER_REFRESH_MILLIS / 1000)
-
-/** The variable [feedBatch] checks. The store reads it (vespa-eventstore's `VespaEventIndex`), in both processes. */
-const val FEED_BATCH_ENV = "VESPA_FEED_BATCH"
-
-/** The store's feed chunk (`VespaEventIndex.FEED_CHUNK`): a larger batch would only be split again. */
-const val MAX_FEED_BATCH = 4_096
-
-/**
- * Documents per HTTP request through the batch handler the store ships in its application package
- * (vespa-eventstore #170, `BatchFeedHandler`); `0` or `1` writes every put through `/document/v1`
- * as before. Batching 100 per request took 28-31% off Vespa's CPU per live-relay event and raised
- * what three cores absorb by 40-60% (that store's benchmark/README.md, "More than one document per
- * request"). Each process deploys the application package, handler included, at boot.
- *
- * The STORE reads the variable, and leniently: a value that is not a number turns batching off
- * without a word. So each boot reads it here first, where a value that does not parse or is out of
- * range stops the boot instead. Null when unset: the store's own default applies — 100 since
- * vespa-eventstore 343926b68850 (#180), off before it — and docker-compose.yml sets 100.
- */
-fun feedBatch(env: Map<String, String>): Int? = env.strictInt(FEED_BATCH_ENV, 0..MAX_FEED_BATCH)
 
 /** The variable naming the containers that serve Vespa's document API. Read by both processes. */
 const val FEED_URLS_ENV = "VESPA_FEED_URLS"

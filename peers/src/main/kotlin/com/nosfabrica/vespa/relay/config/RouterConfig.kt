@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -37,8 +38,8 @@ data class RouterConfig(
     // The store serializes writes, so ingest throughput comes from the batch size, not the workers.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
-    /** Ids per dedup probe query, `VESPA_DEDUP_CHUNK`: the store's knob, read here so ingest matches it. */
-    val ingestDedupChunk: Int = IngestTuning.DEFAULT_DEDUP_CHUNK,
+    /** Ids per dedup probe query, `VESPA_DEDUP_CHUNK`: the store's knob, taken from its tuning so ingest matches it. */
+    val ingestDedupChunk: Int = EngineTuning.DEFAULT_DEDUP_CHUNK,
     /**
      * Negentropy paging: the events one reconcile window aims to hold, the floor and ceiling
      * the learned per-peer size moves between, and how far below `now` a sweep stops.

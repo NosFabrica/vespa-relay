@@ -4,6 +4,26 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The store reads its own settings (October 2026)
+
+vespa-eventstore `7e05038862db` and quartz 2.8.0. Nothing to deploy: the
+schema does not move.
+
+### Do before the first boot
+
+- **Check every `VESPA_*` setting parses.** Both processes now read all of the
+  store's variables strictly at boot ([configuration.md](configuration.md),
+  "Ranges the boot enforces"), where the store used to read most of them
+  leniently: `VESPA_VISIT_STREAM=no` was read as on (only `0` and `false`
+  turned it off) and now means off, and a value no reading fits stops the
+  boot, with every bad variable named in one line.
+
+### What you will see
+
+- A NIP-50 `sort:` the store does not recognise (`sort:bogus`) is no longer held
+  by the per-connection search lane; the store always served it as plain
+  recall.
+
 ## The relay is the only writer (October 2026)
 
 The sync process no longer writes the store. Every write it makes (ingest's

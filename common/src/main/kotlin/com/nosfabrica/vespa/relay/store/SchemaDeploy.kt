@@ -20,10 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.store
 
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.app.SchemaDeployer
 import com.nosfabrica.vespa.eventstore.engine.app.VespaApp
 import com.nosfabrica.vespa.relay.util.BootTask
-import java.net.URI
 import java.time.Duration
 
 /**
@@ -84,7 +84,7 @@ fun awaitServedSchema(
     vespaUrl: String,
     timeout: Duration = Duration.ofMinutes(10),
     poll: Duration = Duration.ofMillis(250),
-    isServing: (String) -> Boolean = SchemaDeployer(vespaConfigUrlFor(vespaUrl))::isServing,
+    isServing: (String) -> Boolean = SchemaDeployer(VespaEventStore.deriveConfigUrl(vespaUrl))::isServing,
 ) {
     if (isServing(vespaUrl)) return
     System.err.println("schema: nothing serves at $vespaUrl yet — waiting for the relay's deploy (up to ${timeout.toMinutes()} min)")
@@ -97,10 +97,4 @@ fun awaitServedSchema(
         Thread.sleep(poll.toMillis())
     }
     System.err.println("schema: an application serves at $vespaUrl")
-}
-
-/** The config server sits on :19071 by convention, on the same host as the query endpoint. */
-fun vespaConfigUrlFor(queryUrl: String): String {
-    val u = URI.create(queryUrl)
-    return URI(u.scheme, null, u.host, 19071, null, null, null).toString()
 }

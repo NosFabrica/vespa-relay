@@ -318,7 +318,18 @@ with the engine's own tiebreak, and books it (and the id probe) to
 read in `IngestPipeline`'s companion initializer, so a bad value surfaced as an
 `ExceptionInInitializerError` on the first batch rather than a boot refusal,
 and a test could not set it. It now rides `IngestTuning` from
-`RouterConfigLoader.fromEnv`.
+`RouterConfigLoader.fromEnv`, and its value is the store's own: both processes
+read every store variable once, through `EngineTuning.fromEnv`, and hand that
+tuning to `open()` and to ingest alike.
+
+**The store's settings are read strictly, by the store, before the network.**
+The store read its two dozen `VESPA_*` variables leniently, where each was used,
+so `VESPA_FEED_BATCH=off` silently turned batching off; this repo re-parsed the
+two it cared about with its own copies of the ranges (`MAX_FEED_BATCH`,
+`DEFAULT_DEDUP_CHUNK`). `EngineTuning.fromEnv(System.getenv())` reads all of
+them, refuses every bad one in one message, and goes to `open(tuning =)`; the
+copies are gone. Six of them are process-wide and pinned by that `open()`, and
+each process opens one store.
 
 **`ParseAudit` keeps at most 256 distinct findings.** Its key is quartz's
 message normalized, and quartz's templates quote the offending field's value,
