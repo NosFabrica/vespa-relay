@@ -113,5 +113,6 @@ class RelayFactsTest {
         // Built raw: a record's `d` tag is a stranger's string that never went through the normalizer.
         assertNull(RelayDocument.httpAddressOf(NormalizedRelayUrl("wss://")), "no host is nothing to ask")
         assertNull(RelayDocument.httpAddressOf(NormalizedRelayUrl("https://relay.example")), "and neither is a scheme this is not for")
+        assertEquals("https://relay.example/", RelayDocument.httpAddressOf(NormalizedRelayUrl("WSS://relay.example/")), "a scheme in capitals still pairs")
     }
 }

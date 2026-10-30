@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired it with.
@@ -457,11 +458,9 @@ object RelayDiscovery {
     ): Boolean =
         when {
             dest == "kinds" -> value.toIntOrNull() != null
-            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> isHex64(value)
+            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> value.length == 64 && Hex.isHex64(value)
             else -> true
         }
-
-    private fun isHex64(v: String): Boolean = v.length == 64 && v.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
     /** A tag value as a dialable url, or null; the rules live in [RelayUrlCache.decide]. */
     private fun normalize(
