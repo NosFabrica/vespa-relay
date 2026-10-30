@@ -47,14 +47,31 @@
 # all, while streams discover their relays, is what gets refused.
 
 # Where candidate urls come from — the same select syntax streams use.
-# NIP-65 write relays, and NIP-29 group hosts (their tag carries the url at
-# element 2, the one relay list in the protocol that does not put it at 1).
 sources = [
     {
-        select = [ { kind = 10002, tag = "r", marker = "write" } ]
+        # EVERY NIP-65 relay, inbox included — no `marker` condition.
+        #
+        # `marker = "write"` cost more than it bought. Over a 30,000-list
+        # sample, 348 of 2,611 distinct urls (13.3%) are named ONLY with
+        # `read`, and a write-only scan never graded one of them: invisible
+        # to the deployment, not merely deprioritised. The marker is
+        # user-set and often wrong (the same sample held read-only urls
+        # literally named `.../outbox`), and an inbox relay holds what
+        # OTHERS write to its author, which for a mirror is coverage.
+        # Whether a relay is worth downloading from is what the fitness
+        # pass measures: if it grades prime, the streams take from it.
+        #
+        # It is also the fast read. `tag_index` keeps no third element, so
+        # a marker-filtered select has to page whole lists; without one the
+        # source pass is a single grouping query — measured ~157 s for a
+        # 327-page walk of 3.27M lists against ~1 s.
+        select = [ { kind = 10002, tag = "r" } ]
         filter = { "kinds": [10002] }
     },
     {
+        # NIP-29 group hosts. A `group` tag is ["group", <id>, <relay url>,
+        # <name?>], so the url is element 2 — the one relay list in the
+        # protocol that does not put it at 1.
         select = [ { kind = 10009, tag = "group", relay = 2 } ]
         filter = { "kinds": [10009] }
     },
@@ -176,4 +193,10 @@ fastLaneSeconds = 120
 # 10% of the urls held 60-74% of this gate and the clearnet corpus queued
 # behind dead onions; raise SYNC_TOR_MAX_SOCKETS, not this, to buy onion
 # throughput.
-dialConcurrency = 128
+#
+# 100, after 500 shortened a cold corpus's FIRST fitness pass (aliasFold
+# 988s -> 642s, consistency 2566s -> 1022s): steady state re-verdicts only
+# what is new, and a wider gate is more concurrent connects, not more
+# answers — a stall once blamed on this width was a CPU-bound scan per
+# connect (#154), which more dials would only have made worse.
+dialConcurrency = 100
