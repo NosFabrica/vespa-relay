@@ -78,9 +78,9 @@ release's Package.swift, 22 commits over v2.8.0). It makes public what this rela
     (syncGroup with localEntries, not shareSnapshots), uploads beside the session, PUSH_WINDOW = 4
     awaiting their OK, one interval's uploadDeadlineMs per url (counted from the reconcile's start).
     `pushed` now counts events an upstream accepted, not events sent; the log names what was left.
-  RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move. The store at 596c78a862be
-    (vespaEventStore) still names 2.8.0, so the graph shows `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`,
-    the force winning; it goes once the store pin names 2.9.0.
+  RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move. With the store at 596c78a862be
+    the graph showed `com.vitorpamplona.quartz:quartz:2.8.0 -> 2.9.0`, the force winning; the store at
+    9fc501742650 (vespaEventStore) names 2.9.0 itself, and no arrow is left.
 
 Prev 2.8.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.8.0 (89ae60a). Main sources move in the
 relay server's live fan-out only (FanoutExecutor, LiveFrameSink, LiveSubscriptionBackend, RelaySession and
@@ -521,7 +521,30 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-596c78a862be = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 4e2e8657819b, below): one fix.
+9fc501742650 = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 596c78a862be, below): the store on
+quartz 2.9.0, its local copies retired for quartz's.
+  QUARTZ 2.9.0 (29d63b9), the same release as this relay's quartz pin. The store's HexKeys.isHexKey,
+    Event.addressOrNull, boundedRank, the NIP-85 subject and provider walks, search expansion's References
+    and the observer:/language: readers give way to Hex.isHexKey, addressTagOrNull, the NIP-85 accessors,
+    SubjectReferences and SearchQuery. docIdSegment and the StemText.LANGUAGES gate stay the store's.
+  WHAT THIS RELAY CAN SEE. A 30382 subject must be 64 lowercase hex (an upper-case d never ranked anyone;
+    the reconciler now reports such a stored cell as an orphan). Search expansion serves upper-case e/p
+    list members, lowercased, where it used to look them up and drop them. A NIP-62 vanish naming
+    wss://relay:443 now covers a store opened as wss://relay (quartz's url normalizer).
+  PARITY IS QUARTZ'S BATTERY. ParityCheck gives way to StoreConformance over ConformanceCorpus; NostrCorpus
+    stays as the benchmarks' workload.
+  git merge-base --is-ancestor 596c78a862be 9fc501742650   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range).
+
+GATED: the store's build at 9fc5017 (engine 371, store 572, benchmark 22 unit tests, 0 failures) and its
+  integration gate against Vespa in Docker, with quartz 2.9.0 from Central (29 run, 0 failures, 1 skipped
+  for want of a STAGING_CORPUS export; parity 155/155); here, ./gradlew build archTest against the
+  JitPack jar.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 596c78a862be = vespa-eventstore branch ccr-dd7e4f54-qc6gf6 @ 2026-10-30 (over 4e2e8657819b, below): one fix.
   A DOCUMENT GET NEVER LEAVES ITS DOCID SEGMENT (596c78a). The engine's event and reputation gets put
     the id straight into the document-API url, and a kind 5's e tags reach get() having passed only
     quartz's length check: a signed deletion naming "../../../../../search/?ranking=…&yql=…" (64
