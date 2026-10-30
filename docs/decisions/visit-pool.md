@@ -223,3 +223,44 @@ tracks its submissions (`IngestAcks`) and waits for their outcomes before `recor
 store failed to take records nothing and counts in `bandsWithheld`, and the next visit walks it
 again. The wait is one ingest round trip per chunk, since a chunk records once at its end, not per
 page. `VisitPoolAckGateTest` pins both directions, and fails on the old order.
+
+**A drained walk of a closed window records the window, events or none (issue 291).** Quartz's
+`SyncCoverage` records only kinds that produced events, and claims up to the newest one. On a
+past-only stream (`backfillMutesReports`, kinds 1984 + 10000, an `until` in the past) both failed:
+a relay holding none of the kinds drained an empty page and recorded nothing, so it stayed
+`neverRun` and was walked from the floor on every visit, and a relay that did hold some kept a
+newer leg `(newest, until]` it could never fill, so 72% of the stream's visits went to relays
+already marked complete. `withDrainedWindow` now hands quartz the evidence the walk holds: every
+kind the chunk named, over the whole chunk, complete when the walk reached the floor. A chunk that
+reaches the filter's own past `until` claims up to the moment it was asked, because the filter
+matches nothing above its bound and quartz's newer leg is inclusive at `max`. An open chunk (no
+`until`) is unchanged: its forward edge stays the newest event, because late arrivals land below
+the present. Quartz itself is not changed, so this needs no bump. `ClosedWindowBandTest` pins it.
+
+**A past-only ask holds no live tail.** A tail opens at `now - TAIL_OVERLAP_SECONDS`, so an ask
+whose `until` is below that is an inverted window that matches nothing. With
+`maxLiveConcurrency = 1` the stream's one live permit sat on such a tail; one visit was measured
+in `draining queued heals, then the tail` for 508 s. `TailBook.open` drops these asks, and opens
+no tail when nothing is left.
+
+**A visit that completes a band says so once.** Aborts have a log line and successes had none, so a
+stream's progress could not be read from the log. `router: visit … settled [...]` prints when a
+band first turns complete, so it fires at most once per band rather than once per visit.
+
+**An ask a relay refuses as policy is unreadable, not owed (issue 291, Q3).** Of the issue's failing
+relays, many refuse the ask as policy, and their answer never changes: `restricted: this relay only
+serves kinds …`, `blocked: kinds 10000 not allowed`, `invalid-filter: only wallet kinds are
+allowed`, `blocked: … must have 'h', 'e' or 'a' tag`, or a NIP-42 gate that will not take our
+identity. Each revisit asked again, logged an abort, and left the pair in `neverRun`, so a past-only
+stream's counter had a floor it could not get below. `StandingRefusal` reads the ending and the
+relay's sentence: NIP-01's refusal prefixes and a "kind not allowed" phrase count; anything about
+our load (`rate-limited:`, `blocked: already 50 subscriptions`, "too many") never does, and width
+refusals still go to `FilterWidths` first. Two such refusals make the ask unreadable. Other endings
+neither add a strike nor reset the count, because mostro-p2p.tech was measured alternating its
+`kind not allowed` CLOSED with silence; only a clean read clears it. While the verdict stands, the
+pool skips the ask (no dial, and no tail carries it), and the schedule counts it under `cannotRun`,
+the column `CannotReconcile` already uses. The per-relay row keeps the relay's sentence after the
+abort itself is cleared. The verdict is persisted, so a restart does not spend two more refusals to
+learn it again. It lapses after a day, one REQ against a policy that rarely moves, and then the
+next standing refusal restores it, since the strikes are kept until a clean read.
+`UnreadableAskTest` pins it, and fails without the skip.

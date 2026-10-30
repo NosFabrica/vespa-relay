@@ -103,11 +103,22 @@ internal class PoolFixture(
         }
     }
 
+    /** Waits for a tail, or for a visit that asked something to end: a past-only ask opens no tail. */
+    suspend fun awaitVisit(
+        pool: VisitPool,
+        timeoutMs: Long = 10_000,
+    ) {
+        withTimeout(timeoutMs) {
+            while (tails.isEmpty() && (asked.isEmpty() || pool.primeUnits().any { it.visiting })) delay(10)
+        }
+    }
+
     fun pool(
         limits: PoolLimits = PoolLimits(emptyMap()),
         quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
         roster: RosterSource = RosterBuilder(store = store, streams = streams, bands = bands),
         workers: Int = 1,
+        complaints: RelayComplaints = RelayComplaints.DEAF,
     ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
@@ -115,6 +126,7 @@ internal class PoolFixture(
         ingest.start()
         return VisitPool(
             reads = this,
+            complaints = complaints,
             bands = bands,
             ingest = ingest,
             pager =
@@ -163,7 +175,7 @@ internal class PoolFixture(
                 val fixture = PoolFixture(scope, streams, answer, bands)
                 val pool = fixture.pool()
                 pool.start()
-                fixture.awaitTail()
+                fixture.awaitVisit(pool)
                 return pool
             } finally {
                 scope.cancel()

@@ -131,6 +131,7 @@ internal class PoolStatus(
         val snapshot = roster()
         // One pass for the whole table; asked per row, it would scan the map once per row.
         val cannotReconcile = bands.cannotReconcileByUnit()
+        val unreadable = bands.unreadableByUnit()
         val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
         // A banded stream's audit files its reconcile under the bare name, which no band key is.
         val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
@@ -139,6 +140,8 @@ internal class PoolStatus(
             for ((stream, unit) in byStream) {
                 val key = VisitKey(url, stream)
                 val abort = aborts.last(stream, url)
+                // A skipped ask aborts nothing, so after its first skip only the verdict still says why.
+                val refused = if (abort == null) unreadable[stream to url.url] else null
                 out +=
                     RelayStatusReport.PrimeUnit(
                         relay = url.url,
@@ -154,9 +157,9 @@ internal class PoolStatus(
                         negentropyRefusedWhy = cannotReconcile[stream to url.url],
                         watched = snapshot.watches(url, stream),
                         kindCap = widths.capFor(url),
-                        abortReason = abort?.reason?.says,
-                        abortSaid = abort?.said,
-                        abortAtSec = abort?.atSec ?: 0,
+                        abortReason = abort?.reason?.says ?: refused?.reason,
+                        abortSaid = abort?.said ?: refused?.said,
+                        abortAtSec = abort?.atSec ?: refused?.at ?: 0,
                         auditKey = auditKeys[stream],
                     )
             }
@@ -282,6 +285,8 @@ internal class PoolStatus(
             Processors.Count("liveEvicted", tails.evictions.get()),
             Processors.Count("poolReceived", counters.poolReceived.get()),
             Processors.Count("narrowedRelays", widths.narrowed.toLong()),
+            // A gauge, like `narrowedRelays`: a verdict lapses, so a count since boot would only grow.
+            Processors.Count("unreadableUnits", bands.unreadableByUnit().size.toLong()),
         ) + aborts.counts()
     }
 

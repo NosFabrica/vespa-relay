@@ -42,6 +42,8 @@ internal class TailBook(
     private val widths: FilterWidths,
     private val ingest: IngestPipeline,
     private val queue: VisitQueue<VisitKey>,
+    /** The asks a relay refuses as policy; a tail carrying one would be refused the same way. */
+    private val unreadable: (VisitKey, RosterBuilder.Ask) -> Boolean = { _, _ -> false },
     /** The live roster, read per event so a relay cannot widen ingest past what it is asked. */
     private val roster: () -> RosterBuilder.Roster,
     /** One event a tail delivered, counted on the pool's own total. */
@@ -145,7 +147,15 @@ internal class TailBook(
         val url = key.url
         val unit = roster().asks[url]?.get(key.stream) ?: return
         if (unit.asks.isEmpty()) return
-        val wantsNow = unit.identity
+        val since = nowSeconds() - VisitPool.TAIL_OVERLAP_SECONDS
+        // An ask bounded in the past matches nothing live, and an unreadable one is refused; a tail of only those holds a permit for nothing.
+        val live = unit.asks.filter { ask -> ask.filter.until.let { it == null || it >= since } && !unreadable(key, ask) }
+        if (live.isEmpty()) {
+            drop(key)
+            return
+        }
+        // What this tail carries, so a tail opened before an ask was dropped from it is re-opened without it.
+        val wantsNow = if (live.size == unit.asks.size) unit.identity else live.mapTo(HashSet()) { it.filter.toJson() }
         val capNow = widths.capFor(url)
         val sitting = tails[key]
         if (sitting != null) {
@@ -168,7 +178,7 @@ internal class TailBook(
         // Claim and subscribe before publishing, so a concurrent drop meets a fully formed tail.
         sockets.claim(url)
         try {
-            val filters = VisitPool.tailFilters(unit.asks, nowSeconds() - VisitPool.TAIL_OVERLAP_SECONDS)
+            val filters = VisitPool.tailFilters(live, since)
             reads.tail(subId, url, widths.chunkAll(url, filters)) { event ->
                 onArrived()
                 credit(url)

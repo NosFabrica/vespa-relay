@@ -236,14 +236,17 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   already walked per (stream, filter, relay), per kind, so a re-run asks only
   outside it. The arithmetic is quartz's `SyncCoverage`; fix band behaviour
   upstream. A completed reconcile records `reconciledThrough`; an empty page
-  records nothing.
+  records nothing, except that a drained walk of a closed window (an `until`)
+  records the whole window for every kind it asked (`withDrainedWindow`).
 - **The visit pool.** `VisitPool` walks declared and discovered relays the same
   way: a rotating queue of (relay, stream) units worked by a fixed set of
   workers. A visit pages forward from the band's edge, audits the past by
   negentropy when due, drains queued heals, then leaves a live tail. One
   unclean ask ends the visit, except a walk our full ingest queue silenced,
   which waits for it and resumes; `VisitAborts` partitions why, `RelayComplaints`
-  keeps the relay's sentence, `FilterWidths` narrows an ask refused for width.
+  keeps the relay's sentence, `FilterWidths` narrows an ask refused for width,
+  and an ask refused twice as policy (`StandingRefusal`) is skipped as
+  unreadable for a day, counted under `cannotRun`.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
 - **The monitor.** Its own config file (`MONITOR_CONFIG_FILE`, `monitor.conf`;

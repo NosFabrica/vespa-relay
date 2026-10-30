@@ -304,6 +304,8 @@ function processorFact(p) {
     }
     // Not a fault: a relay that has told us its filter width is one we can now finish.
     if (p.narrowedRelays) add(`${fmt(p.narrowedRelays)} asked in kind chunks`, "narrowedRelays");
+    // Not a backlog: asks these relays refuse as policy, skipped until the verdict lapses.
+    if (p.unreadableUnits) add(`${fmt(p.unreadableUnits)} refuse an ask as policy`, "unreadableUnits");
     if (p.liveEvicted) add(`${fmt(p.liveEvicted)} live subscription(s) rotated out`, "liveEvicted");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;

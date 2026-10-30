@@ -96,6 +96,8 @@ internal class AuditSchedule(
         // Before any clock: a band no sweep can walk has no due time to compute, and a due time
         // computed for it would read as a backlog that nothing will ever drain.
         if (bands.cannotReconcile(ask.stream.name, url, ask.filter, band, now)) return AuditClock.CANNOT_BE_RUN
+        // The pool skips an unreadable ask whole, its audit included.
+        if (bands.unreadable(ask.stream.name, url, ask.filter, now) != null) return AuditClock.CANNOT_BE_RUN
         if (ask.stream.deleteMissing == DeleteMissing.OFF) {
             return AuditClock.of(bands.auditDueAt(ask.stream.name, url, ask.filter, negentropySyncThePastSeconds, band))
         }
@@ -142,7 +144,13 @@ internal class AuditSchedule(
                         // Per band, not per stream: the knob and the tally are the band's.
                         if (bands.refetchThePastSecondsFor(key) == SyncBands.NEVER) continue
                         // The stream's own filter, the key the pool records under; a windowed one finds nothing.
-                        refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(AuditClock.of(bands.refetchDueAt(key, url, ask.filter)))
+                        val clock =
+                            if (bands.unreadable(name, url, ask.filter, nowSec) != null) {
+                                AuditClock.CANNOT_BE_RUN
+                            } else {
+                                AuditClock.of(bands.refetchDueAt(key, url, ask.filter))
+                            }
+                        refetches.getOrPut(name to tier.id) { Tally(nowSec) }.add(clock)
                     }
                 }
             }

@@ -1082,6 +1082,15 @@ internal val MIRROR_TERMS: JsonObject =
                 "everybody's. Zero means no relay on this roster has ever complained about filter width.",
         )
         term(
+            "unreadableUnits",
+            "(relay, stream) pairs holding an ask the relay refused as POLICY twice since it last served it — " +
+                "`restricted:`, `blocked:`, `invalid:`, a kind it says it will not serve, or an identity its " +
+                "NIP-42 gate will not take. Such an ask is skipped, not retried every revisit, and counts under " +
+                "`cannotRun` rather than `neverRun` on the schedule rows; it is paged again a day after the " +
+                "last refusal, and one clean read clears it. Refusals about our load (`rate-limited:`, a " +
+                "subscription cap) never count. A gauge, so it falls as verdicts lapse.",
+        )
+        term(
             "poolReceived",
             "Events the pool's visits and tails have delivered to ingest since boot, counted at the socket. The " +
                 "same larger-than-stored caveat as every `received` on this card: ingest drops the copies other " +

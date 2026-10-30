@@ -16,7 +16,10 @@
 # copies on the SYNC process (`./gradlew :sync:run` / the vespa-sync binary) —
 # the relay refuses to boot with either set, because it runs neither plane.
 #
-# These two files as they stand are what we run. You can use them unchanged.
+# These two files as they stand are what we run — the values, the kinds and the
+# schedules of a live deployment — with one thing taken out: our monitor's
+# pubkey in the `authors` bindings (see profileViaOutbox). You can use them
+# unchanged.
 #
 #
 # TWO PLANES, TWO FILES
@@ -147,40 +150,39 @@ streams {
         # including the 10002s the monitor's own sources read.
         filter = { "kinds": [0, 10002] }
         # Declared relays are visited exactly like discovered ones — one queue,
-        # one tail each, one policy — so these two clocks mean here what they
-        # mean everywhere: reconcile the covered past weekly with the relays
-        # that answer a NEG-OPEN, and re-page it monthly for the rest (and for
-        # whatever a reconcile cannot see). Neither has a default.
-        negentropySyncThePastSeconds = 604800
-        refetchThePastSeconds = 2592000
+        # one tail each, one policy — so these clocks mean here what they mean
+        # everywhere. Neither has a default: an absent schedule never runs.
+        #
+        # BANDED BY AGE: the last month still moves, the 1y+ tail does not, and
+        # re-reconciling the tail weekly is where a large mirror's CPU goes
+        # (measured: 202M documents visited in 4.3h, 8 of proton's 12 cores).
+        # The bands tile the past, so the tail is walked once a year instead of
+        # 52 times. Each re-page band stays above the reconcile's cadence for
+        # the same ground: set equal, the two collide, since the catch-up runs
+        # BEFORE the audit inside a visit.
+        negentropy = [
+          { maxAge = 2592000,  every = 604800   }   # 0-30d   reconciled weekly
+          { maxAge = 31536000, every = 2592000  }   # 30d-1y  reconciled monthly
+          { every = 31536000 }                       # 1y+     reconciled yearly
+        ]
+        refetch = [
+          { maxAge = 2592000,  every = 2592000  }   # 0-30d   re-paged monthly
+          { maxAge = 31536000, every = 7776000  }   # 30d-1y  re-paged quarterly
+          { every = 31536000 }                       # 1y+     re-paged yearly
+        ]
+        # Heal the source rather than re-download from it forever: ingest
+        # refusing a stale event (REPLACED / DELETED / VANISHED) queues the
+        # current version back to the relay that served it. Both switches on
+        # here only — five relays with an operator behind them is a bounded
+        # blast radius. `dir` governs the reconcile; healing still publishes.
+        healContent = true
+        healRetractions = true
         urls = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",
             "wss://indexer.coracle.social",
             "wss://user.kindpag.es",
             "wss://directory.yabu.me"
-        ]
-    }
-
-    # OpenAgents' plugin and capability catalog: capability heads (NIP-CAP
-    # 30180), plugin listings (NIP-EXT 30184) and their immutable releases
-    # (3184). contentViaOutbox asks every certified relay for them too, but
-    # today they are published to one relay, which no monitor verdict has to
-    # vouch for to be worth asking: a pinned upstream, like the indexers. The
-    # retractions ride along, so a listing deleted or a publisher vanished at
-    # the source is deleted here.
-    openAgents {
-        dir = "down"
-
-        # A small catalog on one relay: one dial, one tail.
-        visitConcurrency = 1
-        maxLiveConcurrency = 1
-
-        filter = { "kinds": [5, 62, 3184, 30180, 30184] }
-        negentropySyncThePastSeconds = 604800
-        refetchThePastSeconds = 2592000
-        urls = [
-            "wss://relay.openagents.com"
         ]
     }
 
@@ -196,8 +198,13 @@ streams {
         # events, so it dials broadly and keeps a fraction of the tails. The
         # four budgets on every stream have to sum under the dispatcher's
         # ceiling: see `VisitPool.warnOnSocketBudget`, which says so at boot.
-        visitConcurrency = 32
-        maxLiveConcurrency = 100
+        visitConcurrency = 28
+        maxLiveConcurrency = 90
+        # A stale version served here still earns a correction: the newer one
+        # is published back. Content only — asking the whole certified fan-out
+        # to DELETE something is a stronger act, so `healRetractions` stays on
+        # the indexers alone.
+        healContent = true
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `l` tag says prime and whose
         # record is newer than maxAgeSeconds. A monitor republishes the record
@@ -219,16 +226,26 @@ streams {
         relaySource = [
             {
                 filter = { "kinds": [30166], "#l": ["prime"] }
-                # ...naming the monitors to trust, and nobody else:
+                # ...naming the monitors to trust, and nobody else. Our own
+                # deployment runs this form with its RELAY_NSEC's hex pubkey —
+                # the NIP-11 `self` — on every 30166 source and gate, so a
+                # stream that ever mirrors 30166 cannot inherit a stranger's
+                # verdicts. Put YOUR relay's hex here, not ours:
                 # filter = { "kinds": [30166], "#l": ["prime"], "authors": ["3bf0c63f…"] }
                 # How stale a verdict may be and still admit its relay, measured
                 # on the record's own clock. There is NO default: nothing in the
                 # router knows which filters describe a measurement that goes
                 # stale and which describe a list that does not, so an unwritten
-                # bound is no bound. Two 6h sweeps + slack — one missed sweep
-                # must not empty the roster, three missed sweeps is a monitor
-                # whose silence should.
-                maxAgeSeconds = 50400
+                # bound is no bound.
+                #
+                # 48h, not the two-sweeps-plus-slack (14h) that sweepSeconds
+                # promises: measured over the 800 newest verdicts of a ~20k
+                # candidate corpus, median age 10.4h and a tail past 31h, since
+                # one pass covers a fraction of the candidates. A bound tighter
+                # than the real re-grade rate drops healthy relays for being
+                # un-regraded; 48h clears the tail and still expires a monitor
+                # that has genuinely gone silent.
+                maxAgeSeconds = 172800
                 # How often to RE-READ this source. One indexed query, so it can
                 # run far more often than a relay-list scan — and it has to: this
                 # is what bounds a newly-certified relay's wait to join the
@@ -245,27 +262,37 @@ streams {
         # to `monitor.sweepSeconds`. Scoped to both, or left unscoped, the
         # roster never dips and the old key comes out once the new one covers
         # the corpus.
-        # Weekly negentropy reconcile of the covered past, for the relays the
-        # monitor measured as answering a NEG-OPEN. A relay it measured as NOT
-        # answering is never asked — the attempt cannot succeed, and it is the
-        # line below that re-checks that relay's past instead.
-        negentropySyncThePastSeconds = 604800
-        # …and how often the bands EXPIRE, putting the whole filter back on the
-        # walk — the coarse version of the same check, paid in full downloads.
-        # Unset it does not run at all; set it equal to the audit and the two
-        # collide, because the catch-up runs BEFORE the audit inside a visit, so
-        # the stream re-pages its whole history from the plausible floor and
-        # THEN reconciles the same ground for the difference. Monthly keeps the
-        # safety net for what band arithmetic cannot see, at a quarter of the
-        # walks, with the weekly audit doing the real work between them.
-        refetchThePastSeconds = 2592000
+        #
+        # The five indexers are dialled by `indexers` already; excluding them
+        # here keeps one relay from being worked twice.
+        exclude = [
+            "wss://purplepag.es",
+            "wss://profiles.nostr1.com",
+            "wss://indexer.coracle.social",
+            "wss://user.kindpag.es",
+            "wss://directory.yabu.me"
+        ]
+        # The reconcile runs only against relays the monitor measured as
+        # answering a NEG-OPEN; the re-page is the only re-check the others
+        # get. Banded as on `indexers`, and for the same reason.
+        negentropy = [
+          { maxAge = 2592000,  every = 604800   }   # 0-30d   reconciled weekly
+          { maxAge = 31536000, every = 2592000  }   # 30d-1y  reconciled monthly
+          { every = 31536000 }                       # 1y+     reconciled yearly
+        ]
+        refetch = [
+          { maxAge = 2592000,  every = 2592000  }   # 0-30d   re-paged monthly
+          { maxAge = 31536000, every = 7776000  }   # 30d-1y  re-paged quarterly
+          { every = 31536000 }                       # 1y+     re-paged yearly
+        ]
     }
 
     assertions {
         dir = "down"
-        # Narrow: one provider's own scores, on the relays that serve them.
-        visitConcurrency = 16
-        maxLiveConcurrency = 40
+        # Narrow: one provider's own scores, on the relays that serve them. Its
+        # daily reconcile is the retraction clock, so it keeps a real share.
+        visitConcurrency = 12
+        maxLiveConcurrency = 12
         # ENFORCED: the provider's relay is the source of truth, and a score
         # it stopped serving is deleted here after — and only after — a clean
         # full reconcile. Start a new deployment at "dryRun" and read the
@@ -300,7 +327,14 @@ streams {
             30382, 30383, 30384, 30385,
             30392, 30393, 30394, 30395,
         ] }
-        refreshSeconds = 21600
+        # How often the 10040 scan rebuilds this stream's AUTHOR SET. Hourly,
+        # not six: the narrowing is by author, so a subject who nominates a
+        # provider waits this long before any of its scores are mirrored —
+        # measured, a provider holding 149,994 scores was still absent two
+        # hours after the 10040 that named it. Cheap to shorten: a band is
+        # keyed by the filter, so this clock restarts no walk.
+        refreshSeconds = 3600
+        exclude = []
         # Still a scanned source, and still author-bound: a provider stream's
         # whole meaning is "THIS service's records from THIS relay", which is
         # the one place narrowing earns its keep. The pool makes one ask per
@@ -389,7 +423,7 @@ streams {
         # written differently. A stream with no `gatedBy` dials whatever its
         # sources name and says so at boot.
         gatedBy = [
-            { filter = { "kinds": [30166], "#l": ["prime"] }, maxAgeSeconds = 50400, refreshSeconds = 120 }
+            { filter = { "kinds": [30166], "#l": ["prime"] }, maxAgeSeconds = 172800, refreshSeconds = 120 }  # 48h: see profileViaOutbox
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
@@ -428,23 +462,20 @@ streams {
     # this store holds. Their sibling state kinds are deliberately NOT here:
     # 819 (merge accepted) and 30819 (wiki redirect) are wired in quartz but
     # implement no `SearchableEvent`, so this stream, which mirrors what is
-    # worth searching, has nothing to do with them. The ask is 158 kinds wide
+    # worth searching, has nothing to do with them. The ask is 205 kinds wide
     # now; relays that cap kinds per filter refuse the whole REQ rather than
     # trimming it, and `FilterWidths` is what learns each relay's cap from its
     # refusal and re-sends the leg in chunks — so widening this list costs
     # nothing on a relay that answers it and one learned chunking on one that
     # does not.
     #
-    # The Open Markets kinds travel with the 30402 listings they describe:
-    # 30405 collections, 30406 shipping options and 31555 product reviews,
-    # searchable once quartz parses them. Shopstr reuses 30405 and 30406 for
-    # encrypted carts and escrow records; quartz stores those and indexes nothing.
-    #
-    # OpenAgents' catalog (3184 plugin releases, 30180 capability heads, 30184
-    # plugin listings) is asked of every certified relay here, as well as of
-    # its one home relay in the `openAgents` stream above, so a publisher who
-    # moves or adds relays is still found. Searchable once the store's quartz
-    # pin carries their `SearchableEvent` classes.
+    # The graph and the reactions to it ride here too: 3 (follow lists), 10000
+    # (mute lists) and 1984 (reports) are the web-of-trust inputs a ranking
+    # service reads, and 6 / 16 (reposts) and 7 (reactions) are what a note's
+    # engagement is counted from. They are also the heaviest growth: one
+    # 5-minute sample of a large relay had kind 7 at 95 events against kind 1's
+    # 80, and paging the past of kind 6 added ~17M events to our store in a
+    # day. Size the store for them, or leave them out.
     #
     # The trusted families (1985, 30382-30385, 30392-30395) are here because a
     # search EXPANDS them: a hit on one is answered with the records it points
@@ -456,44 +487,66 @@ streams {
     # ask, bound to a provider's own relay; this is the wide one.
     contentViaOutbox {
         # The widest stream here, and the one whose audits cost the most: a
-        # negentropy pass over ~150 kinds of covered history builds and
+        # negentropy pass over ~200 kinds of covered history builds and
         # compares id sets per window, so it is capped well under its dial
         # width. `deferred` on the status page says when a cap is turning work
         # away rather than merely bounding it.
-        visitConcurrency = 96
-        maxLiveConcurrency = 500
+        visitConcurrency = 80
+        maxLiveConcurrency = 90
         refetchConcurrency = 4
         negentropyConcurrency = 4
 
         dir  = "down"
+        # Corrections flow back to whichever relay served a stale version.
+        healContent = true
         filter = { "kinds": [
-            0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 31, 32, 33, 40, 41, 42, 54, 62,
-            818, 1010, 1063, 1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313,
-            1315, 1337, 1617, 1618, 1621, 1622, 1630, 1631, 1632, 1633, 1808,
-            1985, 2003, 2004, 2473, 3184, 3302, 5050,
-            5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734,
-            9735, 9736, 9737, 9802, 10002, 10003, 10009, 10040, 10100, 10154,
-            11871, 12473, 15128, 15129, 30000, 30001, 30002, 30003, 30004, 30005,
-            30006, 30009, 30015, 30017, 30018, 30019, 30020, 30023, 30030,
-            30040, 30041, 30045, 30054, 30055, 30063, 30142, 30175, 30176,
-            30177, 30180, 30184, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315,
-            30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395,
-            30402, 30405, 30406, 30617, 30620, 30817, 30818, 31337, 31555,
-            31871, 31872, 31873,
+            0, 1, 3, 5, 6, 7, 9, 11, 14, 15, 16, 20, 21, 22, 24, 31, 32, 33, 40,
+            41, 42, 43, 44, 54, 62, 64, 818, 1010, 1022, 1063, 1065, 1068, 1111,
+            1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617, 1618, 1621, 1622,
+            1630, 1631, 1632, 1633, 1808, 1984, 1985, 2003, 2004, 2473, 3302,
+            5050, 5100, 5129, 5250, 5302, 5303, 5901, 6969, 7516, 8002, 8003,
+            8333, 9002, 9007, 9021, 9022, 9035, 9036, 9041, 9321, 9734, 9735,
+            9736, 9737, 9802, 9998, 9999, 10000, 10002, 10003, 10009, 10040,
+            10100, 10154, 11316, 11333, 11871, 12473, 15128, 15129, 30000,
+            30001, 30002, 30003, 30004, 30005, 30006, 30008, 30009, 30015,
+            30017, 30018, 30019, 30020, 30023, 30030, 30040, 30041, 30045,
+            30054, 30055, 30063, 30066, 30068, 30142, 30175, 30176, 30177,
+            30178, 30267, 30296, 30297, 30298, 30311, 30312, 30313, 30315,
+            30382, 30383, 30384, 30385, 30392, 30393, 30394, 30395, 30402,
+            30617, 30620, 30621, 30817, 30818, 31337, 31871, 31872, 31873,
             31890, 31922, 31923, 31924, 31925, 31987, 31990, 32176, 32267,
-            33401, 33863, 34139, 34235, 34236, 34259, 34550, 35128, 35129,
-            36787, 38000, 38192, 38383, 39000, 39089, 39092, 39701, 40002,
-            40100, 45001, 45003, 48106
+            33331, 33401, 33534, 33863, 34139, 34235, 34236, 34259, 34550,
+            35128, 35129, 36787, 37516, 37517, 38000, 38192, 38383, 39000,
+            39003, 39089, 39092, 39307, 39701, 39998, 39999, 40002, 40003,
+            40006, 40007, 40008, 40099, 40100, 40901, 42000, 43001, 43002,
+            43003, 43004, 43005, 43006, 45001, 45003, 45010, 46030, 46031,
+            48106
         ] }
         relaySource = [
             {
                 filter = { "kinds": [30166], "#l": ["prime"] }
-                maxAgeSeconds = 50400
-                refreshSeconds = 120  # see profileViaOutbox
+                maxAgeSeconds = 172800  # see profileViaOutbox
+                refreshSeconds = 120    # see profileViaOutbox
             }
         ]
-        negentropySyncThePastSeconds = 604800
-        refetchThePastSeconds = 2592000  # see profileViaOutbox — and this is the
-                                     # corpus where re-paging weekly costs most
+        exclude = [
+            "wss://purplepag.es",
+            "wss://profiles.nostr1.com",
+            "wss://indexer.coracle.social",
+            "wss://user.kindpag.es",
+            "wss://directory.yabu.me"
+        ]
+        # Banded as on `indexers` — and this is the corpus where re-walking the
+        # tail costs most.
+        negentropy = [
+          { maxAge = 2592000,  every = 604800   }   # 0-30d   reconciled weekly
+          { maxAge = 31536000, every = 2592000  }   # 30d-1y  reconciled monthly
+          { every = 31536000 }                       # 1y+     reconciled yearly
+        ]
+        refetch = [
+          { maxAge = 2592000,  every = 2592000  }   # 0-30d   re-paged monthly
+          { maxAge = 31536000, every = 7776000  }   # 30d-1y  re-paged quarterly
+          { every = 31536000 }                       # 1y+     re-paged yearly
+        ]
     }
 }

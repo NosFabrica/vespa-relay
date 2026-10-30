@@ -95,6 +95,24 @@ class SyncBands(
 
     private val cannot = ConcurrentHashMap<VerifiedKey, CannotReconcile>()
 
+    /**
+     * An ask the relay refuses as policy ([StandingRefusal]) every time it is paged: neither
+     * covered nor outstanding, so the pool stops asking it until the reading lapses.
+     */
+    data class Unreadable(
+        /** Standing refusals since the last clean read; other endings neither add nor reset. */
+        val strikes: Int,
+        /** When the last was measured, so the verdict lapses and the ask is tried again. */
+        val at: Long,
+        /** How the walk ended, in the abort vocabulary. */
+        val reason: String,
+        /** What the relay said, when it said anything. */
+        val said: String?,
+    )
+
+    /** Keyed by the stream's name and its own filter, whatever band a refusal arrived in. */
+    private val unreadableAsks = ConcurrentHashMap<VerifiedKey, Unreadable>()
+
     /** When each ask's audit was last claimed, complete or not. In memory only. */
     private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
 
@@ -126,7 +144,7 @@ class SyncBands(
     ): Int {
         val held = HashSet<Held>()
         coverageByStream.forEach { (key, coverage) -> coverage.export().keys.forEach { held += Held(key, it.filter, it.relay) } }
-        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys, unreadableAsks.keys)) map.forEach { held += Held(it.stream, it.filter, it.relay) }
         val clocksBefore = unowned.stamps()
         val doomed = unowned.expired(held, owned, now)
         if (doomed.isEmpty()) {
@@ -145,7 +163,7 @@ class SyncBands(
                 coverageByStream.replace(key, old, SyncCoverage(refetchThePastSecondsFor(key), onChange = { changed() }).also { it.restore(kept) })
             }
         }
-        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
+        for (map in listOf(verified.keys, cannot.keys, attempts.keys, incomplete.keys, unreadableAsks.keys)) map.removeIf { Held(it.stream, it.filter, it.relay) in doomed }
         changed()
         System.err.println("router: forgot ${doomed.size} band(s) no roster unit has owned for ${UnownedClock.UNOWNED_TTL_SECONDS / 86_400}d")
         return doomed.size
@@ -262,6 +280,52 @@ class SyncBands(
         val state = cannot[VerifiedKey(stream, filter.toJson(), url.url, band)] ?: return false
         if (state.strikes < STRIKES_BEFORE_IMPOSSIBLE) return false
         return at - state.at < CANNOT_RECONCILE_TTL_SECONDS
+    }
+
+    /** One standing refusal of this ask. Returns the strikes so far; it reads as unreadable at [STRIKES_BEFORE_UNREADABLE]. */
+    fun noteUnreadable(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        reason: String,
+        said: String?,
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Int {
+        val key = VerifiedKey(stream, filter.toJson(), url.url)
+        val after = unreadableAsks.compute(key) { _, was -> Unreadable((was?.strikes ?: 0) + 1, at, reason, said) }!!
+        changed()
+        return after.strikes
+    }
+
+    /** The ask was read to the end: whatever the relay refused before, it serves it now. */
+    fun clearUnreadable(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ) {
+        if (unreadableAsks.isEmpty()) return
+        if (unreadableAsks.remove(VerifiedKey(stream, filter.toJson(), url.url)) != null) changed()
+    }
+
+    /** The standing verdict on this ask, or null while it is ordinary work. Lapses on its own, so a relay that changes policy is read again. */
+    fun unreadable(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        at: Long = System.currentTimeMillis() / 1000,
+    ): Unreadable? {
+        if (unreadableAsks.isEmpty()) return null
+        val state = unreadableAsks[VerifiedKey(stream, filter.toJson(), url.url)] ?: return null
+        return state.takeIf { it.strikes >= STRIKES_BEFORE_UNREADABLE && at - it.at < UNREADABLE_TTL_SECONDS }
+    }
+
+    /** Every (stream, relay) with an ask it cannot read, to that verdict; one pass, as [cannotReconcileByUnit]. */
+    fun unreadableByUnit(at: Long = System.currentTimeMillis() / 1000): Map<Pair<String, String>, Unreadable> {
+        val out = HashMap<Pair<String, String>, Unreadable>()
+        unreadableAsks.forEach { (key, state) ->
+            if (state.strikes >= STRIKES_BEFORE_UNREADABLE && at - state.at < UNREADABLE_TTL_SECONDS) out[key.stream to key.relay] = state
+        }
+        return out
     }
 
     /**
@@ -545,6 +609,10 @@ class SyncBands(
                 readByKey(o) { key, entry -> cannotOf(entry.jsonObject)?.let { cannot[key] = it } }
                 return@forEach
             }
+            if (streamOrFlatKey == UNREADABLE) {
+                readByKey(o) { key, entry -> unreadableOf(entry.jsonObject)?.let { unreadableAsks[key] = it } }
+                return@forEach
+            }
             if (streamOrFlatKey == INCOMPLETE_AUDITS) {
                 readByKey(o) { key, entry -> incompleteOf(entry.jsonObject)?.let { incomplete[key] = it } }
                 return@forEach
@@ -573,6 +641,7 @@ class SyncBands(
         coverageByStream.clear()
         verified.clear()
         cannot.clear()
+        unreadableAsks.clear()
         incomplete.clear()
         unowned.clear()
     }
@@ -676,6 +745,7 @@ class SyncBands(
             }
             putBandClocks()
             putCannotReconcile()
+            putUnreadable()
             putIncompleteAudits()
             putUnownedSince()
         }
@@ -726,6 +796,22 @@ class SyncBands(
         return CannotReconcile(strikes, at, o["why"]?.jsonPrimitive?.contentOrNull ?: "")
     }
 
+    /** One unreadable ask, as it is written. */
+    private fun unreadableOf(u: Unreadable): JsonObject =
+        buildJsonObject {
+            put("strikes", u.strikes)
+            put("at", u.at)
+            put("reason", u.reason)
+            u.said?.let { put("said", it) }
+        }
+
+    /** One unreadable ask read back, or null for an entry too damaged to stand for one. */
+    private fun unreadableOf(o: JsonObject): Unreadable? {
+        val strikes = o["strikes"]?.jsonPrimitive?.intOrNull ?: return null
+        val at = o["at"]?.jsonPrimitive?.longOrNull ?: return null
+        return Unreadable(strikes, at, o["reason"]?.jsonPrimitive?.contentOrNull ?: "", o["said"]?.jsonPrimitive?.contentOrNull)
+    }
+
     /** One audit backoff, as it is written. */
     private fun incompleteOf(c: IncompleteAudits): JsonObject =
         buildJsonObject {
@@ -746,6 +832,9 @@ class SyncBands(
      * exactly what one of these is — still has somewhere to say so.
      */
     private fun JsonObjectBuilder.putCannotReconcile() = putByKey(CANNOT_RECONCILE, cannot) { cannotOf(it) }
+
+    /** The asks a relay refuses as policy, so a restart does not ask each one twice more to learn it again. */
+    private fun JsonObjectBuilder.putUnreadable() = putByKey(UNREADABLE, unreadableAsks) { unreadableOf(it) }
 
     /** The audits backing off an incomplete download, so a restart does not re-run one at once. */
     private fun JsonObjectBuilder.putIncompleteAudits() = putByKey(INCOMPLETE_AUDITS, incomplete) { incompleteOf(it) }
@@ -864,6 +953,9 @@ class SyncBands(
         /** Where the impossible bands are written, beside [BAND_CLOCKS] and out of the url namespace. */
         private const val CANNOT_RECONCILE = "#cannotReconcile"
 
+        /** Where the unreadable asks are written, beside [CANNOT_RECONCILE]. */
+        private const val UNREADABLE = "#unreadable"
+
         /** Where the audit backoffs are written, beside [CANNOT_RECONCILE]. */
         private const val INCOMPLETE_AUDITS = "#incompleteAudits"
 
@@ -878,6 +970,12 @@ class SyncBands(
 
         /** How long that reading stands before the band is swept again. */
         const val CANNOT_RECONCILE_TTL_SECONDS = 7L * 24 * 60 * 60
+
+        /** Standing refusals before an ask reads as unreadable. More than one, so a relay mid-deploy is not believed. */
+        const val STRIKES_BEFORE_UNREADABLE = 2
+
+        /** How long that reading stands before the ask is paged again: one REQ a day against a policy that rarely moves. */
+        const val UNREADABLE_TTL_SECONDS = 24L * 60 * 60
 
         /** `SYNC_STATE_FILE`, unset for in-memory. [streams] are the only source of a re-fetch period. */
         fun fromEnv(
@@ -938,4 +1036,40 @@ internal fun drainSettlesThePast(
     val legFloor = leg.since ?: Long.MIN_VALUE
     val filterFloor = filter.since ?: SyncCoverage.PLAUSIBLE_FLOOR
     return legFloor <= filterFloor
+}
+
+/**
+ * [observed] plus what a drained walk of a closed [chunk] read: the whole chunk, for every kind
+ * it names, events or none. An open chunk adds nothing, since its forward edge is the newest event.
+ */
+internal fun withDrainedWindow(
+    observed: Map<Int, SyncCoverage.Span>,
+    walk: PagedFetchResult,
+    chunk: Filter,
+    filter: Filter,
+    askedAt: Long,
+): Map<Int, SyncCoverage.Span> {
+    if (walk.end != PagedFetchResult.End.DRAINED) return observed
+    val top = drainedTop(chunk, filter, askedAt) ?: return observed
+    val bottom = maxOf(chunk.since ?: SyncCoverage.PLAUSIBLE_FLOOR, SyncCoverage.PLAUSIBLE_FLOOR)
+    if (bottom > top) return observed
+    val window = SyncCoverage.Span(bottom, top)
+    val kinds = chunk.kinds?.takeIf { it.isNotEmpty() } ?: listOf(SyncCoverage.ALL_KINDS)
+    return observed + kinds.associateWith { observed[it]?.widen(window) ?: window }
+}
+
+/**
+ * The newest second a drained [chunk] vouches for, held back by the landing overlap. Reaching
+ * [filter]'s own past `until`, it is the ask itself: the filter matches nothing above its bound.
+ */
+private fun drainedTop(
+    chunk: Filter,
+    filter: Filter,
+    askedAt: Long,
+): Long? {
+    val top = chunk.until ?: return null
+    val landed = askedAt - VisitPool.TAIL_OVERLAP_SECONDS
+    val bound = filter.until
+    if (bound != null && top >= bound && bound <= landed) return askedAt
+    return minOf(top, landed)
 }
