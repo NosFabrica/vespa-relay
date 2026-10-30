@@ -319,10 +319,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           IS whether the resync converges. One of the eight
                           (`abortedBackpressured`) is OURS — the mirror's own
                           full ingest queue — and never touches a relay's row
-    RelayComplaints.kt    what a relay SAID when it would not answer — the
-                          NOTICE/CLOSED text quartz's PagedFetchResult has no
-                          room for, kept per relay and dated so a walk can only
-                          read the sentence its own REQ earned
+    RelayComplaints.kt    what a relay SAID when it would not answer, for the
+                          NOTICE quartz's PagedFetchResult.message never sees
+                          (a CLOSED's text is read off the result first), kept
+                          per relay and dated so a walk can only read the
+                          sentence its own REQ earned
     RelayPages.kt         …and what it SENT: the page an abort could not name,
                           because a walk aborts on `downloaded == 0` and the
                           events that would say why are dropped by the match

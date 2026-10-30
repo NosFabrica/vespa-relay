@@ -113,6 +113,14 @@ Measured: the narrowing got three sentences of three from `git.cloistr.xyz`
 and lost the race on the second attempt against `purplerelay.com`, stopping
 at 69 kinds and aborting a relay that was one halving from working.
 
+**The walk's own result speaks first.** Quartz's `PagedFetchResult.message`
+carries a `CLOSED`'s text (and an `auth-required:` one's), set before the walk's
+end is signalled, so it cannot lose the race the grace exists for. A refusal
+reads it first (`VisitPool.saidAbout`) and waits on the listener only when it
+is empty: an idle walk after a bare NOTICE, which nothing but a connection
+listener hears. A `CANNOT_CONNECT` message is the transport's error, not the
+relay's sentence, and is not taken.
+
 **Complaints are bounded at 4,096 relays and 200 characters.** The listener
 sits on the client both planes share, and a probe pass dials every url
 discovery ever named (20,340 on one cycle) against a roster of hundreds (678

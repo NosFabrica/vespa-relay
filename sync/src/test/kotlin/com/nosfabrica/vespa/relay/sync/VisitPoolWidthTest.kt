@@ -63,12 +63,14 @@ class VisitPoolWidthTest {
 
     /**
      * A relay that refuses any filter naming more than [cap] kinds with a `CLOSED` and a
-     * sentence. Its own [RelayComplaints], so the sentence is dated when the refusal is produced.
+     * sentence. Its own [RelayComplaints], so the sentence is dated when the refusal is produced;
+     * with [onTheResult] the sentence rides the walk's result and no listener hears it.
      */
     private class WidthCappedRelay(
         private val cap: Int,
         private val says: String = "invalid: too many kinds (max $cap)",
         private val end: PagedFetchResult.End = PagedFetchResult.End.CLOSED,
+        private val onTheResult: Boolean = false,
     ) : RelayReads,
         RelayComplaints {
         val asked = CopyOnWriteArrayList<List<Int>>()
@@ -85,6 +87,7 @@ class VisitPoolWidthTest {
         ): PagedFetchResult {
             asked += filter.kinds.orEmpty()
             if ((filter.kinds?.size ?: 0) > cap) {
+                if (onTheResult) return PagedFetchResult(0, end, says)
                 saidAtMs = System.currentTimeMillis()
                 return PagedFetchResult(0, end)
             }
@@ -206,6 +209,25 @@ class VisitPoolWidthTest {
                         .associate { it.name to it.value }
                 assertEquals(0L, counts["abortedVisits"], "the retry rescued the visit, so nothing aborted")
                 assertEquals(1L, counts["narrowedRelays"], "one relay has told us what it will take")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a sentence carried on the walk's own result narrows with no listener to hear it`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val store = NostrSemanticsStore(InMemoryEventIndex())
+            val relay = WidthCappedRelay(cap = 2, onTheResult = true)
+            val processors = Processors()
+            val pool = poolOver(relay, store, scope, processors)
+            try {
+                pool.start()
+                withTimeout(10_000) {
+                    while (relay.tails.isEmpty()) delay(20)
+                }
+                assertTrue(relay.asked.drop(1).all { it.size <= 2 }, "every ask after the refusal is inside the stated limit: ${relay.asked}")
             } finally {
                 scope.cancel()
             }

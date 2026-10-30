@@ -399,8 +399,7 @@ internal class VisitPool(
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
                     resumeAt[key] = at + 1
-                    // A stall of ours has no sentence from the relay to wait for.
-                    val said = if (refusal.reason.ours) null else complaints.awaitSince(url, refusal.askedAtMs)
+                    val said = saidAbout(refusal, url)
                     aborts
                         .record(
                             key.stream,
@@ -451,6 +450,18 @@ internal class VisitPool(
         )
     }
 
+    /**
+     * What the relay said about [refusal]: the walk's own result first, else what a listener heard,
+     * which is the only way a NOTICE-only refusal is heard. A stall of ours has no sentence.
+     */
+    private suspend fun saidAbout(
+        refusal: Refusal,
+        url: NormalizedRelayUrl,
+    ): String? {
+        if (refusal.reason.ours) return null
+        return refusal.said ?: complaints.awaitSince(url, refusal.askedAtMs)
+    }
+
     /** Nothing was dialled, so the next try needs no revisit's wait; a standing timer would hold it to one. */
     private fun turnAway(key: VisitKey) {
         turnedAway += key
@@ -468,6 +479,8 @@ internal class VisitPool(
         val ours: Boolean = false,
         /** The walk was read, and the store had not answered all of its events within the quiet give-up. */
         val unstored: Boolean = false,
+        /** The relay's own sentence, when the walk's result carried one. */
+        val said: String? = null,
     ) {
         val reason: VisitAborts.Reason
             get() =
@@ -533,11 +546,10 @@ internal class VisitPool(
                 var narrowings = 0
                 while (true) {
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
-                    // The relay's complaint arrives on a different listener than the refusal, so await it.
-                    // A refusal of ours has none, and no width to learn.
+                    // A refusal of ours has no width to learn.
                     if (!refusal.reason.ours &&
                         narrowings < MAX_NARROWINGS &&
-                        widths.learn(url, complaints.awaitSince(url, refusal.askedAtMs), refusal.filter.kinds?.size ?: 0)
+                        widths.learn(url, saidAbout(refusal, url), refusal.filter.kinds?.size ?: 0)
                     ) {
                         narrowings++
                         System.err.println(
@@ -660,7 +672,14 @@ internal class VisitPool(
             // it touches the one held, which is rarely. The ground is asked again next visit.
             if (paged.ours || refusedOutright(walked)) {
                 // No band for a refused chunk: nothing was walked.
-                return Refusal(walked.end, chunk, askedAtMs, pages.render(sampling, walked.downloaded), ours = paged.ours)
+                return Refusal(
+                    walked.end,
+                    chunk,
+                    askedAtMs,
+                    pages.render(sampling, walked.downloaded),
+                    ours = paged.ours,
+                    said = RelayComplaints.saidIn(walked),
+                )
             }
             val verdicts = storedAll(acks, stream.name, url, ongoingVisit)
             // Every further chunk would wait on the same silent store.

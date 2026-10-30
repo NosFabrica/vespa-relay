@@ -358,7 +358,7 @@ else's server.
 
 One line each; the evidence is in [docs/traps.md](docs/traps.md).
 
-- A relay's sentence arrives on a connection listener after the refusal ends the walk; `RelayComplaints.awaitSince` gives it 250ms.
+- A relay's sentence arrives on a connection listener after the refusal ends the walk: read `PagedFetchResult.message` first; `RelayComplaints.awaitSince` gives a NOTICE-only refusal 250ms.
 - A fallback that returns a count cannot tell empty from refused: `WindowSync.page` returns `PagedFetchResult`, guarded on `refusedOutright`.
 - A fix to the filter has to reach every path that sends it; `FilterWidths` is built once in `SyncEngine`, and `ClientWindowSync` takes it with no default.
 - A completeness number needs the denominator the work uses: `RelayStatusReport` joins on the unit's owed asks (`RosterBuilder.UnitAsks.identity`), not on the bands present.

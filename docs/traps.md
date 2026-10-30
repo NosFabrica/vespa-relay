@@ -16,8 +16,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   see it: from identical code, `git.cloistr.xyz` won the race three times and
   narrowed 139 → 69 → 34 → 17 until it was served, while `purplerelay.com` lost
   it on the second attempt, stopped the narrowing dead at 69 and aborted a visit
-  that was one halving from working. `RelayComplaints.awaitSince` gives the
-  sentence a 250ms grace, paid only on a refusal. **If a fact arrives on a
+  that was one halving from working. A `CLOSED`'s text now comes off the walk's
+  own `PagedFetchResult.message`, which has no race; `RelayComplaints.awaitSince`
+  keeps a 250ms grace for the sentence only a listener hears, a NOTICE-only
+  refusal, paid only on a refusal. **If a fact arrives on a
   different callback from the thing that makes you want it, assume you can be
   early.**
 
