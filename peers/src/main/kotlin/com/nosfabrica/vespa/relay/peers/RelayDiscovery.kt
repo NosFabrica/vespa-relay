@@ -80,6 +80,17 @@ object RelayDiscovery {
                 it.tag != null && it.tag.length == 1 && it.urlIndex == 1 && it.where.isEmpty() && it.bindings.isEmpty()
             }
 
+    /** [filter] narrowed to [select]'s kind, as the paged walk reads it; null when [filter] cannot match that kind. */
+    private fun scopedTo(
+        filter: Filter,
+        select: RelaySelect,
+    ): Filter? =
+        when {
+            select.kind == null -> filter
+            filter.kinds?.let { select.kind !in it } == true -> null
+            else -> filter.copy(kinds = listOf(select.kind))
+        }
+
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
         store: IEventStore,
@@ -107,8 +118,9 @@ object RelayDiscovery {
             if (aggregate != null) {
                 // The urls come back raw, so they take the same `normalize` the paged path applies.
                 for (select in source.selects) {
+                    val scoped = scopedTo(bounded, select) ?: continue
                     aggregate
-                        .distinctTagValues(bounded, select.tag!!, unconditional = true)
+                        .distinctTagValues(scoped, select.tag!!, unconditional = true)
                         .forEach { raw -> normalize(raw, allowOnion)?.let { found += it } }
                 }
             }
