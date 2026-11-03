@@ -41,6 +41,8 @@ import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.orphanSweepDryRun
 import com.nosfabrica.vespa.relay.maintenance.parseReindexKinds
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
+import com.nosfabrica.vespa.relay.maintenance.trustVerifyRepair
+import com.nosfabrica.vespa.relay.maintenance.verifyTrustOnStart
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.pulse.PulseDocument
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
@@ -210,6 +212,7 @@ private class Boot(
     val stats: StatsIntervals,
     val switches: MaintenanceSwitches,
     val orphanSweepDryRun: Boolean?,
+    val trustVerifyRepair: Boolean?,
     val pubkeyAllow: Set<String>,
     val pubkeyDeny: Set<String>,
     val kindAllow: Set<Int>,
@@ -313,6 +316,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         stats = statsIntervalsFromEnv(env),
         switches = switches,
         orphanSweepDryRun = orphanSweepDryRun(env["SWEEP_ORPHAN_SCORES_ON_START"]),
+        trustVerifyRepair = trustVerifyRepair(env["VERIFY_TRUST_ON_START"]),
         pubkeyAllow = allowPubkeysFromEnv(env),
         pubkeyDeny = denyPubkeysFromEnv(env),
         kindAllow = allowKindsFromEnv(env),
@@ -379,13 +383,18 @@ private fun startMaintenance(
     boot.orphanSweepDryRun?.let { dryRun -> launchOrphanScoreSweep(scope, store, dryRun) }
     // On by default: the page is gated, these counters are not, and a diagnostic nobody enables is missing.
     StoreMetricsLog.startLogging("relay", store, boot.switches.storeMetricsLogSeconds)
-    if (boot.switches.trustReconcile) {
+    val verifyRepair = boot.trustVerifyRepair
+    if (boot.switches.trustReconcile || verifyRepair != null) {
         scope.launch {
-            println("trust: reconciling in the background — ranked search may return less until this finishes")
-            val startedMs = System.currentTimeMillis()
-            reconcileTrustWithRetry(store)
-            println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
-            BootClock.mark("relay: trust reconciled (ranked search complete)")
+            if (boot.switches.trustReconcile) {
+                println("trust: reconciling in the background — ranked search may return less until this finishes")
+                val startedMs = System.currentTimeMillis()
+                reconcileTrustWithRetry(store)
+                println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+                BootClock.mark("relay: trust reconciled (ranked search complete)")
+            }
+            // After the reconcile, not beside it: a service it is still walking would read as drift.
+            verifyRepair?.let { repair -> verifyTrustOnStart(store, repair) }
         }
     }
 }
