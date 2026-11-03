@@ -234,6 +234,10 @@ services:
       # `true` is a DRY RUN. Reclaims space only until the same by-kind filter
       # re-downloads it, so it pairs with narrowing that stream.
       SWEEP_ORPHAN_SCORES_ON_START: ${SWEEP_ORPHAN_SCORES_ON_START:-}
+      # Audit every reputation document against its 10040/30382 records after
+      # the startup reconcile, which only samples. Anything other than `repair`
+      # is a CHECK that writes nothing.
+      VERIFY_TRUST_ON_START: ${VERIFY_TRUST_ON_START:-}
       # Where the reindex walk saves its position. In the mounted volume, so a
       # restart resumes instead of redoing the corpus — the store's cursor is
       # resumable by design and holding it only in memory cost 12.2M events

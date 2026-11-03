@@ -55,7 +55,25 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (9b070bd: main @ 1813390 plus the
+2.13.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.13.0 (d99aae0), 44 commits over v2.9.0 through
+2.10.0, 2.10.1, 2.11.0, 2.12.0 and 2.12.1. The same release as the store's pin (2e4f323c4aad), which audits it
+against the store. What this relay reaches:
+
+  THE SYNC'S RELAY CLIENT, three fixes it runs into. A subscription made at start is dialed once, not
+    redialed by a full reconnect on the first tick, and a fleet joins the pool in one membership
+    change instead of one republish per relay (e699a7a: NostrClient). No AUTH goes out after
+    RelayAuthenticator.destroy(), even from a signer that never suspends (e151c32). SurgeDns no longer
+    caches a resolver that did not answer as a dead domain, and dials a cold cache through a bounded
+    resolver (bda9740: BoundedDns), so a pool reconnecting at once stops parking healthy relays for five
+    minutes. Each is a fix in the direction this relay wanted; no signature it calls changed.
+  THE PARSE TABLE, one shape. A kind 30078 carrying drss.io's listening-progress tags parses as
+    DrssListenProgressAppDataEvent, not AppSpecificDataEvent: both addressable, neither searchable, so
+    the store treats it the same (no reindex).
+  Not reached: NIP-03 calendars, Namecoin's ElectrumX, Jester chess, RelayOfflineTracker.
+  RUNTIME CLASSPATH (:relay, :sync): quartz and quartz-jvm alone move; quartz's build files have no diff
+    in the range. The store at 2e4f323c4aad names 2.13.0 itself, so no arrow.
+
+Prev 2.9.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.9.0 (9b070bd: main @ 1813390 plus the
 release's Package.swift, 22 commits over v2.8.0). It makes public what this relay had copied. What this relay reaches:
 
   THE LOCAL COPIES, RETIRED OR WRAPPED. Deleted for quartz's: DefaultPort.withoutDefaultPort (the
@@ -545,7 +563,36 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-d75be63d9db0 = vespa-eventstore main @ 2026-10-30, the merge of PR #190 (parents fec452107fe8, main before,
+2e4f323c4aad = vespa-eventstore branch claude/compassionate-turing-3snl48 @ 2026-11-03 (over d75be63d9db0, below):
+the cause of the search.brainstorm.world score drift, the audit that repairs it, and quartz 2.13.0.
+  A COLD PROVIDER PASS NO LONGER DELETES SCORE DOCUMENTS (1185e0e). The ledger drain re-derives the
+    subjects a dying process left marked, after dropping the provider pass; on a cold engine the 10040
+    read comes back empty (ProviderMap returns it, uncached), every subject derives empty, and
+    removeEmpties deleted each document. Measured live: dd664d5e lacked 422 of 698 named providers'
+    cells, every one older than 2026-11-02 07:40 UTC. recomputeBatch and writeDerived now refuse an
+    empty pass while a subject holds a scored document (ProviderPassUnserved); the drain keeps the
+    marker and retries. verify refuses the same way.
+  VERIFY, WHICH VERIFY_TRUST_ON_START RUNS (18ff819, e3014db). Its confirm holds the writer lock per
+    GATE_SLICE (500) instead of for a whole suspect batch (up to 20,000): the longest wait a trust write
+    saw behind a 1,200-subject repair went from 2.8 s to 1.1 s. Repair writes the derivation it judged
+    instead of deriving again. Its seen-subject bloom is capped at 16M subjects (~58 MB), where it was
+    sized by every stored card (164M here: ~590 MB). It shows on /trust.json's steps as trust-verify.
+  TrustDriftRepairIT (6b3b829): the drift built on a real Vespa, found by a check, repaired.
+  QUARTZ 2.13.0 (2e4f323), as this relay's pin above.
+  git merge-base --is-ancestor d75be63d9db0 2e4f323c4aad   # verified
+
+DEPLOY: nothing moves (engine/app has no diff in the range). After it: VERIFY_TRUST_ON_START=check for
+  one boot, then repair (docs/configuration.md); the guard has to be running before the repair, or the
+  next restart can delete what it fixed.
+
+GATED: the store's build at 2e4f323 on quartz 2.13.0 from Central (971 unit tests, 0 failures); and its
+  integration gate against Vespa in Docker at the same commit (28 classes, 53 tests, 0 failures, 1
+  skipped for want of a STAGING_CORPUS export; parity 155/155; TrustDriftRepairIT among them). Here, ./gradlew build archTest against the JitPack jar: 1,706 tests, 0 failures; the
+  runtime graph holds one quartz (2.13.0) and the store at 2e4f323c4aad, no arrow.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev d75be63d9db0 = vespa-eventstore main @ 2026-10-30, the merge of PR #190 (parents fec452107fe8, main before,
 and 9fc501742650, below). Its tree is 9fc501742650's (git diff 9fc5017 d75be63 is empty), so nothing a
 deployment runs moves; the pin is on main's history, where a branch hash is not promised to stay.
   git merge-base --is-ancestor 9fc501742650 d75be63d9db0   # verified

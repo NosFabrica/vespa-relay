@@ -4,6 +4,39 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Score repair and quartz 2.13.0 (November 2026)
+
+vespa-eventstore `2e4f323c4aad` and quartz 2.13.0. Nothing to deploy: the
+schema does not move.
+
+### Do after the first boot
+
+- **Audit the scores once.** A restart could delete reputation documents: the
+  boot drain re-derived the authors a dying process left marked against a
+  provider pass that read no kind 10040 on the cold engine, and each came out
+  empty. On search.brainstorm.world one author lacked 422 of 698 providers'
+  cells, every one older than 2026-11-02 07:40 UTC, so ranked reads gated
+  trusted authors out. The store now refuses that derivation; the cells lost
+  before stay lost until repaired. Boot once with `VERIFY_TRUST_ON_START=check`
+  and read its `trust-verify:` line, then once with `repair`, then unset it
+  ([configuration.md](configuration.md)). Run the repair on this release, not
+  before: the guard has to be in place, or the next restart can undo it.
+
+### What you will see
+
+- **A cold boot may report the trust drain refusing.** The first refusal is
+  printed with its stack (`… failed and stay queued: the provider pass read no
+  kind 10040, yet N of M subject(s) hold scored documents …`) and later ones
+  are counted under the store's `trust.drain` background failures: the engine
+  is not serving its 10040s yet, so the drain keeps the marked authors queued
+  and retries every few seconds instead of re-deriving them. It clears on its
+  own once the lists are served.
+- **The audit is on `/trust.json`** as the `trust-verify` step while it runs.
+- **The sync's relay client.** A fleet subscribed at start is dialed once
+  rather than redialed on the first tick; a resolver that did not answer no
+  longer parks a relay for five minutes as a dead domain; no AUTH goes out on
+  a client being torn down (quartz 2.10.0 to 2.12.1).
+
 ## The store reads its own settings (October 2026)
 
 vespa-eventstore `d75be63d9db0` and quartz 2.9.0. Nothing to deploy: the

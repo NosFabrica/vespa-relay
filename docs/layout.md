@@ -257,6 +257,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     TrustReconcile.kt   the startup trust-projection repair
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
+    TrustVerify.kt      VERIFY_TRUST_ON_START
     RelayProfile.kt     the relay's OWN kind 0 and kind 10002, signed with
                         RELAY_NSEC at boot: the NIP-11 name/description as a
                         profile, and this relay as its own NIP-65 inbox and
