@@ -585,9 +585,9 @@ DEPLOY: nothing moves (engine/app has no diff in the range). After it: VERIFY_TR
   one boot, then repair (docs/configuration.md); the guard has to be running before the repair, or the
   next restart can delete what it fixed.
 
-GATED: the store's build at 2e4f323 on quartz 2.13.0 from Central (971 unit tests, 0 failures); its
-  integration gate against Vespa in Docker is RUNNING at this commit and its result is recorded in the
-  next one. Here, ./gradlew build archTest against the JitPack jar: 1,706 tests, 0 failures; the
+GATED: the store's build at 2e4f323 on quartz 2.13.0 from Central (971 unit tests, 0 failures); and its
+  integration gate against Vespa in Docker at the same commit (28 classes, 53 tests, 0 failures, 1
+  skipped for want of a STAGING_CORPUS export; parity 155/155; TrustDriftRepairIT among them). Here, ./gradlew build archTest against the JitPack jar: 1,706 tests, 0 failures; the
   runtime graph holds one quartz (2.13.0) and the store at 2e4f323c4aad, no arrow.
 
 SPELLED WITH 12 HEX DIGITS.
