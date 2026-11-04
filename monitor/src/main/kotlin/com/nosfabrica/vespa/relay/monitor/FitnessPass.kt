@@ -389,9 +389,9 @@ class FitnessPass(
                     gate,
                     probe::deadlineMs,
                     progress,
-                    cut = { url -> if (url !in toCheck) batch.cut(url) },
-                    before = { url -> url in toCheck || preProbe(url, batch) },
-                ) { url ->
+                    cut = { _, url -> if (url !in toCheck) batch.cut(url) },
+                    before = { _, url -> url in toCheck || preProbe(url, batch) },
+                ) { _, url ->
                     if (url in toCheck) checkHeld(url, anchor, batch) else measureOne(url, anchor, batch, documents)
                 }
             }

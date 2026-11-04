@@ -21,13 +21,11 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.fold.RelayAliases
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Does a relay answer the same question the same way twice: one filter, one anchor, asked twice,
  * the answers compared to each other and never to the filter. A failure excludes rather than
- * downgrades; [Verdict.UNMEASURABLE] is the absence of a claim and never excludes.
+ * downgrades; [Verdict.UNMEASURABLE] is the absence of a claim and never excludes. Holds no verdicts: the store does.
  */
 class RelayConsistency(
     /** The smallest window worth deciding on. */
@@ -45,131 +43,35 @@ class RelayConsistency(
         UNMEASURABLE,
     }
 
-    private val consistent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    private val inconsistent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /** False is "no verdict", not "bad". */
-    fun measured(url: NormalizedRelayUrl): Boolean = url in consistent || url in inconsistent
-
-    fun refusedCount(): Int = inconsistent.size
-
-    /**
-     * Asked per candidate, not as set sizes: the sets can hold verdicts about urls nothing
-     * discovers any more.
-     */
-    fun isConsistent(url: NormalizedRelayUrl): Boolean = url in consistent
-
-    /** Only a positive failure refuses a url; a fan-out is never narrowed by silence. */
-    fun isInconsistent(url: NormalizedRelayUrl): Boolean = url in inconsistent
-
-    /** Everything with no verdict yet. */
-    fun toProbe(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !measured(it) }
-
     /** Null is a relay that could not be asked, which like an empty answer is no evidence. */
     fun decide(
         first: Set<String>?,
         second: Set<String>?,
-    ): Verdict {
-        if (first == null || second == null) return Verdict.UNMEASURABLE
-        val smaller = minOf(first.size, second.size)
-        if (smaller < minSample) return Verdict.UNMEASURABLE
-        return if (containment(first, second) >= minOverlap) Verdict.CONSISTENT else Verdict.INCONSISTENT
-    }
+    ): Verdict = judge(first, second)?.verdict ?: Verdict.UNMEASURABLE
 
-    /** A pair of answers that proved something, with the two windows it was proved on. */
+    /**
+     * A pair of answers that proved something: the two windows, the ids they share, and how much of the
+     * smaller is inside the larger. Containment, as in [RelayAliases], because a relay may truncate one ask at its own limit.
+     */
     data class Decided(
         val verdict: Verdict,
         val first: Set<String>,
         val second: Set<String>,
+        val shared: Int,
+        val score: Double,
     )
 
-    /** [decide], carrying the windows when it proved something; null is [Verdict.UNMEASURABLE]. */
+    /** [decide], carrying the windows and the counts when it proved something; null is [Verdict.UNMEASURABLE]. */
     fun judge(
         first: Set<String>?,
         second: Set<String>?,
     ): Decided? {
         if (first == null || second == null) return null
-        return decide(first, second).takeIf { it != Verdict.UNMEASURABLE }?.let { Decided(it, first, second) }
-    }
-
-    /**
-     * How much of the smaller answer is inside the larger. Containment, as in [RelayAliases],
-     * because a relay may truncate one ask at its own limit.
-     */
-    fun containment(
-        first: Set<String>,
-        second: Set<String>,
-    ): Double {
         val smaller = minOf(first.size, second.size)
-        if (smaller == 0) return 0.0
+        if (smaller < minSample) return null
         val shared = if (first.size <= second.size) first.count { it in second } else second.count { it in first }
-        return shared.toDouble() / smaller
-    }
-
-    /** Shared ids between two answers, for the evidence string on the record. */
-    fun shared(
-        first: Set<String>,
-        second: Set<String>,
-    ): Int = if (first.size <= second.size) first.count { it in second } else second.count { it in first }
-
-    /** Record a verdict this pass just measured. [Verdict.UNMEASURABLE] is not one. */
-    fun learn(
-        url: NormalizedRelayUrl,
-        verdict: Verdict,
-    ) {
-        when (verdict) {
-            Verdict.CONSISTENT -> {
-                inconsistent -= url
-                consistent += url
-            }
-
-            Verdict.INCONSISTENT -> {
-                consistent -= url
-                inconsistent += url
-            }
-
-            Verdict.UNMEASURABLE -> {
-                Unit
-            }
-        }
-    }
-
-    /**
-     * Set the verdicts for [candidates] to exactly what the store holds, one url at a time,
-     * because every stream reads this object while it changes.
-     */
-    fun replace(
-        candidates: Collection<NormalizedRelayUrl>,
-        stable: Set<NormalizedRelayUrl>,
-        unstable: Set<NormalizedRelayUrl>,
-    ) {
-        for (url in candidates) {
-            when (url) {
-                in unstable -> {
-                    inconsistent += url
-                    consistent -= url
-                }
-
-                in stable -> {
-                    consistent += url
-                    inconsistent -= url
-                }
-
-                // No verdict in the store, expired or never taken: forgetting it gives the TTL its teeth.
-                else -> {
-                    consistent -= url
-                    inconsistent -= url
-                }
-            }
-        }
-    }
-
-    /** Drop every verdict held about a url outside [urls], so the sets are bounded by the candidate set. */
-    fun retainOnly(urls: Collection<NormalizedRelayUrl>) {
-        val keep = urls.toHashSet()
-        consistent.retainAll(keep)
-        inconsistent.retainAll(keep)
+        val score = if (smaller == 0) 0.0 else shared.toDouble() / smaller
+        return Decided(if (score >= minOverlap) Verdict.CONSISTENT else Verdict.INCONSISTENT, first, second, shared, score)
     }
 
     companion object {

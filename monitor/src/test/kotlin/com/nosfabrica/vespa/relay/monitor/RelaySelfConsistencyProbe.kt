@@ -95,15 +95,14 @@ class RelaySelfConsistencyProbe {
                 }
                 // The real pass at its own anchor, the only line that says whether the relay keeps its place.
                 val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-                val consistency = RelayConsistency()
                 val pass =
                     ConsistencyPass(
-                        consistency = consistency,
+                        consistency = RelayConsistency(),
                         record = RelayVerdictRecord(store, signer),
                         probe = probe,
                     )
                 val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure(RunKind.SWEEP, listOf(url)) } }
-                val refused = listOf(url).filter(consistency::isInconsistent)
+                val refused = runBlocking { RelayVerdictRecord(store, signer).load(listOf(url)).inconsistent }
                 println(
                     "    VERDICT  " +
                         when {

@@ -367,11 +367,11 @@ class ProbeDeadlineTest {
         runBlocking {
             val processors = Processors()
             val handle = processors.of("consistency")
-            val consistency = RelayConsistency()
+            val store = newStore()
             val pass =
                 ConsistencyPass(
-                    consistency = consistency,
-                    record = RelayVerdictRecord(newStore(), signer),
+                    consistency = RelayConsistency(),
+                    record = RelayVerdictRecord(store, signer),
                     probe = probe(stalling()),
                     progress = handle,
                 )
@@ -393,7 +393,7 @@ class ProbeDeadlineTest {
                 ConsistencyPass.Unmeasured.ABANDONED.reason in reasons,
                 "the abandoned url must be named as abandoned, not as a probe failure: $reasons",
             )
-            assertEquals(emptySet<NormalizedRelayUrl>(), listOf(wedged).filterTo(HashSet(), consistency::isInconsistent))
+            assertEquals(emptySet<NormalizedRelayUrl>(), RelayVerdictRecord(store, signer).load(listOf(wedged)).inconsistent)
         }
 
     @Test

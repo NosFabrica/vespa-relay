@@ -104,19 +104,30 @@ class ConsistencyReportTest {
                 object : IEventStore by newStore() {
                     override suspend fun insert(event: Event): Unit = throw IllegalStateException("the store refused the write")
                 }
-            val consistency = RelayConsistency()
+            val dials = AtomicInteger()
             val gate =
                 ConsistencyPass(
-                    consistency = consistency,
+                    consistency = RelayConsistency(),
                     record = RelayVerdictRecord(refusing, signer),
-                    probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) }, target = 40, page = 40, fallbackPage = 40),
+                    probe =
+                        AliasProbe(
+                            fetch = { _, _, _, _ ->
+                                dials.incrementAndGet()
+                                AliasProbe.Page(corpus())
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                        ),
                     progress = processors.of("consistency"),
                 )
 
             assertEquals(0, gate.measure(RunKind.SWEEP, listOf(steady)), "a verdict that never landed was counted as decided")
-            assertTrue(!consistency.measured(steady), "a verdict that never landed is held as measured")
             assertEquals(0, row(processors).decided)
             assertEquals(1, row(processors).unmeasured, "the url is still owed a verdict")
+            val afterFirst = dials.get()
+            gate.measure(RunKind.SWEEP, listOf(steady))
+            assertTrue(dials.get() > afterFirst, "a verdict that never landed is held as measured")
         }
 
     @Test
@@ -355,5 +366,45 @@ class ConsistencyReportTest {
                 work.undecided.single().hosts == 1,
                 "one thin relay is one host, beside the url count rather than instead of it",
             )
+        }
+
+    @Test
+    fun `every url ends in exactly one outcome, the ones the deadline cut included`() =
+        runBlocking {
+            val declined = RelayUrlNormalizer.normalize("wss://declined.example")
+            val wedged = RelayUrlNormalizer.normalize("wss://wedged.example")
+            val processors = Processors()
+            val gate =
+                ConsistencyPass(
+                    consistency = RelayConsistency(),
+                    record = RelayVerdictRecord(newStore(), signer),
+                    probe =
+                        AliasProbe(
+                            fetch = { at, want, _, _ ->
+                                when (at) {
+                                    steady -> AliasProbe.Page(corpus().take(want))
+                                    wedged -> kotlinx.coroutines.awaitCancellation()
+                                    else -> AliasProbe.Page(null)
+                                }
+                            },
+                            target = 40,
+                            page = 40,
+                            fallbackPage = 40,
+                            idleMs = { 20L },
+                        ),
+                    progress = processors.of("consistency"),
+                    canDial = { it != declined },
+                )
+
+            assertEquals(1, gate.measure(RunKind.SWEEP, listOf(steady, thin, declined, wedged)))
+
+            val work = row(processors)
+            val reasons = work.undecided.associate { it.reason to it.urls }
+            assertEquals(1, work.decided)
+            assertEquals(3, work.unmeasured)
+            assertEquals(work.unmeasured, work.undecided.sumOf { it.urls }, "a url under two reasons, or under none")
+            assertEquals(1, reasons[ConsistencyPass.Unmeasured.ABANDONED.reason], "the cut url: $reasons")
+            assertEquals(1, reasons[ConsistencyPass.Unmeasured.TRANSPORT.reason], "the declined url: $reasons")
+            assertEquals(3, work.dialled, "every url a socket was opened for, the cut one included")
         }
 }

@@ -181,6 +181,17 @@ re-adopted; this object is shared by every stream, and another stream's
 `unusable` call inside that window put every inconsistent relay back into its
 cycle.
 
+**`RelayConsistency` holds no verdicts; a stability pass returns one outcome
+per url.** The two sets were rebuilt from the store at the top of every pass
+and read only by that pass, so the store read plus the writes that landed say
+the same thing; the one difference is a fast-lane log line, whose "refused in
+total" now counts its own candidates instead of the last sweep's. The dials
+shared three atomics, two concurrent maps and a locked sample set; each url's
+coroutine now returns a sealed `Outcome` into its own slot, and the counts, the
+unplaced-reason sample and the decided tally are read after the join. A url
+with no slot is one the deadline cut; a slot written first wins over a late
+cut. `judge` counts the shared ids once and carries the score.
+
 **The consistency pass has no per-pass budget, and it filters out folded
 urls.** The budget it once carried stopped a pass measuring its whole set. A
 folded url is never dialled, so measuring it is spent on a question nobody
