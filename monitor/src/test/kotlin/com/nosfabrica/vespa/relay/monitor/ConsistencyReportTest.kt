@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -91,6 +92,29 @@ class ConsistencyReportTest {
             assertEquals("declined by our own transport", reasonOf(processors))
             assertEquals(0, row(processors).dialled, "no socket was opened, so nothing was dialled")
             assertEquals(1, row(processors).undecided.single().urls)
+        }
+
+    @Test
+    fun `a verdict the store refused is neither held nor counted`() =
+        runBlocking {
+            val processors = Processors()
+            val refusing =
+                object : IEventStore by newStore() {
+                    override suspend fun insert(event: Event): Unit = throw IllegalStateException("the store refused the write")
+                }
+            val consistency = RelayConsistency()
+            val gate =
+                ConsistencyPass(
+                    consistency = consistency,
+                    record = RelayVerdictRecord(refusing, signer),
+                    probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(corpus()) }, target = 40, page = 40, fallbackPage = 40),
+                    progress = processors.of("consistency"),
+                )
+
+            assertEquals(0, gate.measure("t", listOf(steady), canDial = { true }), "a verdict that never landed was counted as decided")
+            assertTrue(!consistency.measured(steady), "a verdict that never landed is held as measured")
+            assertEquals(0, row(processors).decided)
+            assertEquals(1, row(processors).unmeasured, "the url is still owed a verdict")
         }
 
     @Test

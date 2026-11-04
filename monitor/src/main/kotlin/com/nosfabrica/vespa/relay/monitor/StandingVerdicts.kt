@@ -26,6 +26,7 @@ import kotlinx.coroutines.CancellationException
 /**
  * The one read of what this monitor stands behind that a pass publishes against, or null once the
  * failure is logged. Every pass skips its publishing on null: a verdict signed blind can contradict the record.
+ * A read past [RelayVerdictRecord.ReadTimeout]'s deadline is a failure like any other.
  */
 internal suspend fun readStanding(
     pass: String,
@@ -38,8 +39,11 @@ internal suspend fun readStanding(
         throw e
     } catch (e: Exception) {
         System.err.println(
-            "router: $pass [$label] — could not read the standing verdicts (${e.javaClass.simpleName}); " +
+            "router: $pass [$label] — could not read the standing verdicts (${whyUnread(e)}); " +
                 "nothing measured or published, every url is measured again next pass",
         )
         null
     }
+
+/** A failed verdict read in words: a timeout names its deadline, anything else its class. */
+internal fun whyUnread(e: Exception): String = if (e is RelayVerdictRecord.ReadTimeout) e.message.orEmpty() else e.javaClass.simpleName

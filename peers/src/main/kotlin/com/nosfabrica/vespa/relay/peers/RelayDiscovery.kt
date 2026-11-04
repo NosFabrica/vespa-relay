@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired it with.
@@ -272,9 +273,12 @@ object RelayDiscovery {
         filter: Filter,
         until: Long?,
         ask: Int,
+        deadlineMs: Long?,
     ): List<Event> {
         val asked = filter.copy(until = until, limit = ask)
-        return storeCall(caller, StoreCalls.OP_QUERY, StoreCalls.summarise(asked)) { store.query(asked) }
+        val read = suspend { storeCall(caller, StoreCalls.OP_QUERY, StoreCalls.summarise(asked)) { store.query<Event>(asked) } }
+        if (deadlineMs == null) return read()
+        return withTimeoutOrNull(deadlineMs) { read() } ?: throw RelayVerdictRecord.ReadTimeout(deadlineMs)
     }
 
     /** One verdict read, booked as the round-up's rather than the monitor's. */
@@ -309,6 +313,8 @@ object RelayDiscovery {
         caller: String = StoreCalls.CALLER_SOURCE_RELAY_LISTS,
         /** The widest page ever asked for; past the store's `maxHits` the whole scan is refused. */
         maxAsk: Int = maxOf(pageSize, SCAN_PAGE),
+        /** The wall clock on each page, past which the scan throws [RelayVerdictRecord.ReadTimeout]; null waits. */
+        pageDeadlineMs: Long? = null,
         onEach: (Event) -> Unit,
     ) {
         // An explicit `limit` is the caller's budget for the whole scan; only events handed to [onEach] spend it.
@@ -318,13 +324,13 @@ object RelayDiscovery {
         while (remaining > 0) {
             val budget = remaining.toLong() + boundaryIds.size
             var ask = minOf(minOf(pageSize, maxAsk).toLong(), budget).toInt()
-            var page: List<Event> = queryPage(store, caller, filter, until, ask)
+            var page: List<Event> = queryPage(store, caller, filter, until, ask, pageDeadlineMs)
             if (page.isEmpty()) return
 
             // A page whose ends share a `created_at` is one timestamp and the cursor has nowhere to go.
             while (page.size == ask && ask < budget && ask < maxAsk && page.first().createdAt == page.last().createdAt) {
                 ask = minOf(ask.toLong() * 2, budget, maxAsk.toLong()).toInt()
-                page = queryPage(store, caller, filter, until, ask)
+                page = queryPage(store, caller, filter, until, ask, pageDeadlineMs)
             }
 
             var oldest = Long.MAX_VALUE

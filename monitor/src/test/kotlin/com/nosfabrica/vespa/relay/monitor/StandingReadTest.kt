@@ -35,7 +35,11 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -131,4 +135,57 @@ class StandingReadTest {
             pass.measure("t", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
             assertNothingSigned(store, "fitness")
         }
+
+    /** Reads never answer, writes land: a store wedged under the pass gate. */
+    private class Silent(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    /** [pass] run to its end within a few deadlines, and what it said on stderr. */
+    private fun withinDeadline(pass: suspend () -> Unit): String {
+        val captured = ByteArrayOutputStream()
+        val realErr = System.err
+        System.setErr(PrintStream(captured, true))
+        try {
+            // The assertion is the pass ending at all: a hung read would hold the pass gate for good.
+            runBlocking { withTimeout(20 * READ_DEADLINE_MS) { pass() } }
+        } finally {
+            System.setErr(realErr)
+        }
+        return captured.toString()
+    }
+
+    private fun silentRecord(store: NostrSemanticsStore) = RelayVerdictRecord(Silent(store), signer, readDeadlineMs = READ_DEADLINE_MS)
+
+    @Test
+    fun `a standing read the store never answers ends every pass, which publishes nothing and names the deadline`() {
+        val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+        val fold = AliasFolding(aliases = RelayAliases(), record = silentRecord(store), probe = probe())
+        val stability = ConsistencyPass(consistency = RelayConsistency(), record = silentRecord(store), probe = probe())
+        val fitness =
+            FitnessPass(
+                record = silentRecord(store),
+                probe = probe(),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            )
+
+        val said =
+            listOf(
+                "fold" to withinDeadline { assertEquals(0, fold.measure("t", urls, canDial = { true })) },
+                "stability" to withinDeadline { assertEquals(0, stability.measure("t", urls, canDial = { true })) },
+                "fitness" to withinDeadline { fitness.measure("t", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) },
+            )
+        for ((pass, err) in said) {
+            assertNothingSigned(store, pass)
+            assertTrue("could not read the standing verdicts (the read outlived its" in err, "the $pass pass did not name the deadline: $err")
+        }
+    }
+
+    private companion object {
+        const val READ_DEADLINE_MS = 50L
+    }
 }

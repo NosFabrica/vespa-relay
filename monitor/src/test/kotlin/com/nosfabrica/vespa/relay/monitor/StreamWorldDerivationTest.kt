@@ -29,9 +29,11 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -97,7 +99,7 @@ class StreamWorldDerivationTest {
      * constructor that starts doing work is noticed. Nothing here submits, so the sink throws.
      */
     private fun world(
-        store: NostrSemanticsStore,
+        store: IEventStore,
         exclude: List<String>,
         monitorAuthors: List<String> = emptyList(),
         self: String? = null,
@@ -367,6 +369,38 @@ class StreamWorldDerivationTest {
 
             world.candidates()
             assertEquals(140, world.lastDerivation.sourcedLastRound, "the second round carries what the first one named")
+        }
+
+    @Test
+    fun `a round whose read failed or collapsed is not the next round's baseline`() =
+        runBlocking {
+            val monitor = NostrSignerInternal(KeyPair())
+            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            for (i in 0 until 140) {
+                inner.insert(event(10002, arrayOf("r", "wss://relay$i.example", "write")))
+            }
+            var read = "whole"
+            val store =
+                object : IEventStore by inner {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        if (filter.kinds != listOf(10002)) return inner.query(filter)
+                        return when (read) {
+                            "failed" -> throw IllegalStateException("a loading content node")
+                            "short" -> inner.query<T>(filter).take(10)
+                            else -> inner.query(filter)
+                        }
+                    }
+                }
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
+
+            world.candidates()
+            for (fault in listOf("failed", "short")) {
+                read = fault
+                world.candidates()
+                read = "whole"
+                world.candidates()
+                assertEquals(140, world.lastDerivation.sourcedLastRound, "a $fault read became the baseline")
+            }
         }
 
     @Test

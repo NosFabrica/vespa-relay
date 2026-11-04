@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -184,6 +185,22 @@ class AliasFoldingTest {
     fun `a fold the store refused is not counted as learned`() =
         runBlocking {
             assertEquals(0, stuckFold(hang = false).measure("t", sixHosts, canDial = { true }))
+        }
+
+    @Test
+    fun `a fold the store refused is not held either`() =
+        runBlocking {
+            val aliases = RelayAliases()
+            val fold =
+                AliasFolding(
+                    aliases = aliases,
+                    record = RelayVerdictRecord(StuckWrites(newStore(), hang = false), signer),
+                    probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+                )
+
+            fold.measure("t", sixHosts, canDial = { true })
+
+            assertEquals(emptyList(), sixHosts.filter { aliases.measured(it) }, "what the store refused still reads as decided")
         }
 
     private fun folding(
@@ -1245,7 +1262,22 @@ class AliasFoldingTest {
 
             assertEquals(0, fold.measure("t", urls, canDial = { true }), "distinct endpoints were folded together")
             assertEquals(urls, fold.applyVerdicts(urls).dial)
+            // Each endpoint was held up against the three others, the yardstick among them once.
+            for (url in urls) {
+                val evidence = sameAsOf(store, url)?.get(2)
+                assertTrue(evidence?.contains("with 3 compared endpoint(s) on this host") == true, "${url.url}: $evidence")
+            }
         }
+
+    private suspend fun sameAsOf(
+        store: NostrSemanticsStore,
+        url: NormalizedRelayUrl,
+    ): Array<String>? =
+        store
+            .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), tags = mapOf("d" to listOf(url.url))))
+            .maxByOrNull { it.createdAt }
+            ?.tags
+            ?.firstOrNull { it[0] == RelayVerdictRecord.SAME_AS_TAG }
 
     @Test
     fun `a single url is returned untouched by both halves`() =

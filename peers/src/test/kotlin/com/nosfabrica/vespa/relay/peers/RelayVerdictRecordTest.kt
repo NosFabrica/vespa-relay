@@ -35,12 +35,18 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -584,5 +590,72 @@ class RelayVerdictRecordTest {
             }
             val publish = calls.snapshot().callers.single { it.caller == StoreCalls.CALLER_MONITOR_PUBLISH }
             assertEquals(2L, publish.issued, "a read the store hangs on must show under `store` like the insert does")
+        }
+
+    /** A store whose queries never answer; writes never get that far. */
+    private class SilentStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    @Test
+    fun `a verdict read the store never answers fails within its deadline`(): Unit =
+        runBlocking {
+            val record = RelayVerdictRecord(SilentStore(newStore()), signer, readDeadlineMs = 50)
+            val urls = (0 until 1_200).map { RelayUrlNormalizer.normalize("wss://r$it.example") }
+
+            // The assertion is each read ending at all, as a failure the passes already skip on.
+            withTimeout(5_000) {
+                assertFailsWith<RelayVerdictRecord.ReadTimeout> { record.load(urls) }
+                assertFailsWith<RelayVerdictRecord.ReadTimeout> { record.loadAll() }
+            }
+        }
+
+    /** Answers like [inner], counting the queries in flight at once. */
+    private class CountingStore(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        val inFlight = AtomicInteger()
+        val most = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            most.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+            try {
+                delay(20)
+                return inner.query(filter)
+            } finally {
+                inFlight.decrementAndGet()
+            }
+        }
+    }
+
+    @Test
+    fun `a wide read asks several chunks at once and never more than its bound`() =
+        runBlocking {
+            val store = newStore()
+            val urls = (0 until 10 * 500).map { RelayUrlNormalizer.normalize("wss://r$it.example") }
+            RelayVerdictRecord(store, signer).publishDistinct(urls.last(), 500, "nothing", 0)
+            val counting = CountingStore(store)
+
+            val held = RelayVerdictRecord(counting, signer).load(urls)
+
+            assertEquals(setOf(urls.last()), held.distinct, "a concurrent read must still take in every chunk")
+            assertTrue(counting.most.get() in 2..4, "chunks in flight at once: ${counting.most.get()}")
+        }
+
+    @Test
+    fun `a stability score reads the same whatever the box's locale`() =
+        runBlocking {
+            val store = newStore()
+            val previous = Locale.getDefault()
+            Locale.setDefault(Locale.GERMANY)
+            try {
+                RelayVerdictRecord(store, signer).publishConsistency(alias, consistent = true, first = 40, second = 40, shared = 20, score = 0.5, anchorDays = 7)
+            } finally {
+                Locale.setDefault(previous)
+            }
+            val evidence = recordFor(store, alias.url)?.tags?.single { it[0] == RelayVerdictRecord.SELF_CONSISTENT_TAG }?.get(2)
+            assertTrue(evidence?.endsWith("-> 0.500") == true, "a signed record must not carry a decimal comma: $evidence")
         }
 }

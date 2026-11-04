@@ -35,6 +35,8 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.KeyStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -176,6 +178,29 @@ class ReachabilityProbeTest {
         assertEquals(Reach.UNEXPLAINED, lookup(UnknownHostException("dual.example")))
         assertEquals(Reach.PROVED_UNREACHABLE, lookup(UnknownHostException("dual.example: Name or service not known")))
         assertEquals(Reach.TRANSPORT_DOWN, lookup(UnknownHostException("dual.example: Temporary failure in name resolution")))
+    }
+
+    @Test
+    fun `a lookup that outlives its clock ends within it and claims nothing`() {
+        // Blocking DNS cannot be cancelled, so only a lookup bounded off the caller's thread returns on time.
+        val stalled = CountDownLatch(1)
+        val probe =
+            ReachabilityProbe(
+                tor = null,
+                resolve = {
+                    stalled.await(10, TimeUnit.SECONDS)
+                    arrayOf(v4)
+                },
+                lookupMs = 100,
+            )
+        try {
+            val startedMs = System.currentTimeMillis()
+            assertEquals(Reach.UNEXPLAINED, runBlocking { probe.reach(url) }, "our resolver stalling is no proof about the relay")
+            assertEquals(TlsAnswer.UNCHECKED, runBlocking { probe.tls(url) })
+            assertTrue(System.currentTimeMillis() - startedMs < 5_000, "the probe waited out the resolver")
+        } finally {
+            stalled.countDown()
+        }
     }
 
     private val dir =

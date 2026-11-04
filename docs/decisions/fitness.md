@@ -595,9 +595,13 @@ spent 619 permit-seconds pre-probing in the sample, and 81 after.
 **The NIP-11 document is fetched beside the dial, not before it.** The two
 fail independently, and a host that hangs one usually hangs both, so the
 document's ten-second clock was paid in full in front of every dead url's
-ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
-url's stage reads `nip-11 document` only while the dial has finished and the
-document has not.
+ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. It
+is joined by the batch, not by the url: a url waiting on its document after the
+dial ended held a dial permit for up to the document's whole clock, so the
+permit now goes back with the dial and the document is bounded by its own clock.
+The pre-probe likewise runs before the permit is taken; `ReachabilityProbe`
+bounds its own concurrency, and its lookup has its own clock because the
+resolver cannot be cancelled.
 
 **A url waiting on the fold on a server that answered HTTP is asked once.** The fold
 fingerprints what a path serves, so a path its server will not upgrade (a 404,

@@ -28,9 +28,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * A per-url pass's dials: [measure] once per url, under [gate] and inside it the url's own
- * [deadlineMs], so the wait for a permit is never charged to the relay. [cut] hears of each url
- * the deadline stopped; nothing about it is a fact about the relay.
+ * A per-url pass's dials: [before] outside [gate], bounded by itself, then unless it said no [measure] under
+ * the gate and inside it the url's own [deadlineMs], so a permit is held only by the dial and its wait is never
+ * charged to the relay. [cut] hears of each url the deadline stopped; nothing about it is a fact about the relay.
  */
 internal suspend fun dialEach(
     urls: List<NormalizedRelayUrl>,
@@ -38,6 +38,7 @@ internal suspend fun dialEach(
     deadlineMs: (NormalizedRelayUrl) -> Long,
     progress: Processors.Handle?,
     cut: (NormalizedRelayUrl) -> Unit,
+    before: suspend (NormalizedRelayUrl) -> Boolean = { true },
     measure: suspend (NormalizedRelayUrl) -> Unit,
 ) = coroutineScope {
     for (url in urls) {
@@ -45,6 +46,13 @@ internal suspend fun dialEach(
             // Counted in the launch, not from `invokeOnCompletion`: that handler can run after this
             // scope has resumed, and a late tick would land on the next phase's count.
             try {
+                val dials =
+                    try {
+                        before(url)
+                    } finally {
+                        progress?.released(url.url)
+                    }
+                if (!dials) return@launch
                 gate.withPermit(url) {
                     val ran =
                         withTimeoutOrNull(deadlineMs(url)) {

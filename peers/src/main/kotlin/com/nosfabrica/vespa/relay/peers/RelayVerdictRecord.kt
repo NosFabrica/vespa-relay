@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.peers
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
+import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -32,7 +33,13 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -48,7 +55,14 @@ class RelayVerdictRecord(
     private val writer: StoreWriter = StoreWriter.local(store),
     /** Whose records [load] and [loadAll] read; an edit only ever reads [signer]'s own. */
     private val readFrom: List<String> = listOfNotNull(signer?.pubKey),
+    /** The wall clock on each store query [load] and [loadAll] make; past it the read throws [ReadTimeout]. */
+    private val readDeadlineMs: Long = READ_DEADLINE_MS,
 ) {
+    /** A verdict read the store did not answer within [deadlineMs]; an ordinary failure, so a caller skips as on any other. */
+    class ReadTimeout(
+        val deadlineMs: Long,
+    ) : Exception("the read outlived its ${fmtDuration(deadlineMs)} deadline")
+
     /** What this monitor has decided and still stands behind. */
     data class Verdicts(
         /** Folded url -> the url that stands in for it. */
@@ -79,11 +93,13 @@ class RelayVerdictRecord(
         val staleFolds: Set<NormalizedRelayUrl> = emptySet(),
     )
 
-    /** One chunked record read, booked as the monitor's. */
+    /** One chunked record read, booked as the monitor's and bounded by [readDeadlineMs]. */
     private suspend fun readRecords(filter: Filter): List<Event> =
-        storeCall(StoreCalls.CALLER_MONITOR_VERDICTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
-            store.query<Event>(filter)
-        }
+        withTimeoutOrNull(readDeadlineMs) {
+            storeCall(StoreCalls.CALLER_MONITOR_VERDICTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+                store.query<Event>(filter)
+            }
+        } ?: throw ReadTimeout(readDeadlineMs)
 
     /**
      * Read back every verdict covering [candidates]. Throws when the store cannot answer, and
@@ -92,13 +108,23 @@ class RelayVerdictRecord(
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
+        val permits = Semaphore(LOAD_CONCURRENCY)
+        // Taken in chunk order once all have answered, so the result does not depend on which came back first.
+        val pages =
+            coroutineScope {
+                candidates
+                    .map { it.url }
+                    .chunked(QUERY_CHUNK)
+                    .map { chunk ->
+                        async {
+                            permits.withPermit {
+                                newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk))))
+                            }
+                        }
+                    }.awaitAll()
+            }
         val held = Building()
-        for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
-            held.take(
-                newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk)))),
-                floor,
-            )
-        }
+        for (page in pages) held.take(page, floor)
         return held.verdicts()
     }
 
@@ -140,6 +166,7 @@ class RelayVerdictRecord(
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, since = floor),
             RECORD_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            pageDeadlineMs = readDeadlineMs,
         ) { event -> if (several != null) several += event else held.take(event, floor) }
         several?.let { held.take(newestPerUrl(it), floor) }
         return held.verdicts()
@@ -268,7 +295,7 @@ class RelayVerdictRecord(
                     arrayOf(
                         SELF_CONSISTENT_TAG,
                         if (consistent) CONSISTENT_YES else CONSISTENT_NO,
-                        "$first + $second events at a ${anchorDays}d anchor, $shared shared -> %.3f".format(score),
+                        "$first + $second events at a ${anchorDays}d anchor, $shared shared -> %.3f".format(Locale.ROOT, score),
                         nowSeconds().toString(),
                         CONSISTENCY_EPOCH,
                     ),
@@ -622,6 +649,15 @@ class RelayVerdictRecord(
 
         /** Urls per `#d` query, shared with [RelayDiscovery.undialable]. */
         internal const val QUERY_CHUNK = 500
+
+        /** `#d` queries one [load] has in flight at once. */
+        internal const val LOAD_CONCURRENCY = 4
+
+        /**
+         * The wall clock on one verdict query. The passes read under the monitor's pass gate, so a
+         * query that never answers would stop every pass behind it.
+         */
+        const val READ_DEADLINE_MS = 60_000L
 
         private const val RECORD_PAGE = 2_000
     }

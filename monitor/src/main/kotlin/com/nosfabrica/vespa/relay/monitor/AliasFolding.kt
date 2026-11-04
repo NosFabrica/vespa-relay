@@ -229,21 +229,26 @@ class AliasFolding(
             tick = false,
         )
 
-    /** One answer from [url] through [walk], dialled under its gate permit and the pass's deadline. */
+    /**
+     * One answer from [url] through [walk], dialled under its gate permit and the pass's deadline. The
+     * pre-probe runs before either permit: it needs no socket, and bounds itself.
+     */
     private suspend fun <T> ask(
         run: Run,
         url: NormalizedRelayUrl,
         walk: suspend () -> T,
-    ): Asked<T> =
+    ): Asked<T> {
+        // A stopped writer refuses whatever this dial could prove, so it is not taken.
+        if (run.writer.stoppedBy != null || !run.canDial(url)) return Asked(false, null)
         // The host's permit before the pass's: a server's queue must not hold a permit another server could use.
-        run.hostGate(url).withPermit {
+        return run.hostGate(url).withPermit {
             gate.withPermit(url) {
-                // A stopped writer refuses whatever this dial could prove, so it is not taken.
-                if (run.writer.stoppedBy != null || !run.canDial(url)) return@withPermit Asked(false, null)
+                if (run.writer.stoppedBy != null) return@withPermit Asked(false, null)
                 run.taken.incrementAndGet()
                 Asked(true, dial(url, run.sockets, walk))
             }
         }
+    }
 
     /** One host's group: find a yardstick, then hold the rest up against it and publish what that proves. */
     private suspend fun measureGroup(
@@ -378,7 +383,7 @@ class AliasFolding(
         if (wanted.size < 2 || !wanted.all { it in search.spoke }) return false
         val survivor = wanted.first()
         val folds = aliases.foldUnreadable(wanted, survivor)
-        val landed = run.writer.write(folds.keys.toList()) { record.publishUnreadable(it, survivor, wanted.size) != null }
+        val landed = write(run, folds, emptySet()) { record.publishUnreadable(it, survivor, wanted.size) != null }
         run.newVerdicts += landed
         if (folds.isNotEmpty()) clearUndecidable(survivor)
         if (landed.size < folds.size) writesStopped(run, wanted)
@@ -418,7 +423,7 @@ class AliasFolding(
         if (same.size < 2 || writesStopped(run, same)) return false
         val survivor = aliases.preferred(same) ?: return false
         val folds = aliases.foldOnto(same, survivor)
-        val landed = run.writer.write(folds.keys.toList()) { record.publishWholeStore(it, survivor, store.ids.size) != null }
+        val landed = write(run, folds, emptySet()) { record.publishWholeStore(it, survivor, store.ids.size) != null }
         run.newVerdicts += landed
         if (folds.isNotEmpty()) clearUndecidable(survivor)
         if (landed.size < folds.size) writesStopped(run, same)
@@ -468,7 +473,8 @@ class AliasFolding(
         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
         for (url in result.distinct) {
             val print = prints[url].orEmpty()
-            val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
+            // A set: the leader is often among the distinct urls already.
+            val others = (result.distinct + leader) - url
             val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
             cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
         }
@@ -520,7 +526,7 @@ class AliasFolding(
         cleared: Map<NormalizedRelayUrl, Cleared>,
     ) {
         val landed =
-            run.writer.write((verdicts.keys + cleared.keys).toList()) { url ->
+            write(run, verdicts.mapValues { it.value.canonical }, cleared.keys) { url ->
                 val v = verdicts[url]
                 // Both flags can be set at once; the twin form wins because the pairing is the argument.
                 when {
@@ -531,6 +537,25 @@ class AliasFolding(
                 } != null
             }
         run.newVerdicts += verdicts.keys.filter { it in landed }
+    }
+
+    /**
+     * [folds] and [cleared], already learned in memory, through the pass's writer. Every url whose write
+     * did not land, and the canonical of each such fold, goes back to what the store now holds.
+     */
+    private suspend fun write(
+        run: Run,
+        folds: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        cleared: Set<NormalizedRelayUrl>,
+        publish: suspend (NormalizedRelayUrl) -> Boolean,
+    ): Set<NormalizedRelayUrl> {
+        val urls = (folds.keys + cleared).toList()
+        val landed = run.writer.write(urls, publish)
+        val missed = urls.filter { it !in landed }
+        if (missed.isEmpty()) return landed
+        val stored = run.held.aliases + folds.filterKeys { it in landed }
+        aliases.replace(missed + missed.mapNotNull { folds[it] }, stored, run.held.distinct + cleared.filter { it in landed })
+        return landed
     }
 
     /** The writes the store did not take this pass; those hosts are measured again next pass. */
@@ -714,7 +739,7 @@ class AliasFolding(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            System.err.println("router: fold [$label] — the walk over every verdict failed (${e.javaClass.simpleName}); reading the candidates' own instead")
+            System.err.println("router: fold [$label] — the walk over every verdict failed (${whyUnread(e)}); reading the candidates' own instead")
             record.load(candidates + world().matesOf(candidates))
         }
 

@@ -42,6 +42,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -220,7 +221,7 @@ class FitnessPass(
     ) {
         SERVER_ERROR("the server answered the upgrade with a 5xx", serverAnswered = true, backsOff = true),
         TOR_DOWN("our Tor proxy is not answering", serverAnswered = false),
-        LOOKUP_UNEXPLAINED("the lookup failed with no reason left to read", serverAnswered = false, blind = true),
+        LOOKUP_UNEXPLAINED("the lookup failed or timed out with no reason left to read", serverAnswered = false, blind = true),
         OUR_TLS("the dial failed TLS where our direct handshake succeeded, so our transport did", serverAnswered = false),
         TLS_UNCHECKED("the dial failed TLS and no direct handshake could check it", serverAnswered = false),
         RATE_LIMITED("the relay rate limited us", serverAnswered = true, backsOff = true),
@@ -383,9 +384,20 @@ class FitnessPass(
             progress.measuring(toDial.size + toCheck.size, Processors.UNIT_URL)
             // A week back, so "events above the anchor" can only mean "ignored the cursor".
             val anchor = RelayConsistency.settledAnchor(nowSeconds())
-            // A held url writes nothing when cut, so it is outside the batch guard's count.
-            dialEach(toDial + toCheck, gate, probe::deadlineMs, progress, cut = { url -> if (url !in toCheck) batch.cut(url) }) { url ->
-                if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, reach, sockets, batch, onEvent)
+            // The documents are joined here, after the dials gave their permits back.
+            coroutineScope {
+                val documents = this
+                // A held url writes nothing when cut, so it is outside the batch guard's count.
+                dialEach(
+                    toDial + toCheck,
+                    gate,
+                    probe::deadlineMs,
+                    progress,
+                    cut = { url -> if (url !in toCheck) batch.cut(url) },
+                    before = { url -> url in toCheck || preProbe(url, reach, batch) },
+                ) { url ->
+                    if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, sockets, batch, onEvent, documents)
+                }
             }
             // Before the guard: a refused batch still heard each relay ask us to come back later.
             backOff(batch)
@@ -626,18 +638,12 @@ class FitnessPass(
         }
     }
 
-    /**
-     * One url's whole job: the pre-probe, then the document beside the dial. Only the dial claims
-     * a socket. [Processors.Handle.holding] is called at each boundary to name the step.
-     */
-    private suspend fun measureOne(
+    /** The pre-probe, before any dial permit: true when the url is dialled, else its outcome or reason is filed on [batch]. */
+    private suspend fun preProbe(
         url: NormalizedRelayUrl,
-        anchor: Long,
         reach: suspend (NormalizedRelayUrl) -> Reach,
-        sockets: Sockets,
         batch: Batch,
-        onEvent: suspend (Event) -> Unit,
-    ) {
+    ): Boolean {
         progress.holding(url.url, STAGE_REACHABILITY)
         val reached =
             try {
@@ -647,40 +653,46 @@ class FitnessPass(
             } catch (e: Exception) {
                 // The pre-probe throwing is this box failing to ask, not evidence about the server.
                 batch.unmeasured[url] = "the reachability probe itself threw ${e.javaClass.simpleName}"
-                return
+                return false
             }
         when (reached) {
             // Dialled all the same: `silent` is the dial's word to say, on the dial's own window.
             Reach.REACHABLE, Reach.UNANSWERED -> {
-                Unit
+                return true
             }
 
             Reach.PROVED_UNREACHABLE -> {
                 batch.outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe", preProbe = true)
-                return
             }
 
             // Our proxy not answering says nothing about the relay behind it, nor about our clearnet dials.
             Reach.TRANSPORT_DOWN -> {
                 if (tor?.routes(url) == true) batch.deferred[url] = Deferral.TOR_DOWN else batch.unmeasured[url] = "our own transport is not answering"
-                return
             }
 
             Reach.UNEXPLAINED -> {
                 batch.deferred[url] = Deferral.LOOKUP_UNEXPLAINED
-                return
             }
         }
+        return false
+    }
+
+    /**
+     * One url's dial, with its document asked beside it on [documents], which the batch joins once the
+     * permit is back. Only the dial claims a socket; the document is bounded by its own clock.
+     */
+    private suspend fun measureOne(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        sockets: Sockets,
+        batch: Batch,
+        onEvent: suspend (Event) -> Unit,
+        documents: CoroutineScope,
+    ) {
         // Beside the dial, not before it: the two fail independently, and a host that hangs one hangs both.
-        coroutineScope {
-            val reading = document?.let { doc -> launch { batch.readings[url] = doc.read(url) } }
-            progress.holding(url.url, STAGE_LADDER)
-            dial(url, anchor, sockets, batch, onEvent)
-            if (reading?.isActive == true) {
-                progress.holding(url.url, STAGE_DOCUMENT)
-                reading.join()
-            }
-        }
+        document?.let { doc -> documents.launch { batch.readings[url] = doc.read(url) } }
+        progress.holding(url.url, STAGE_LADDER)
+        dial(url, anchor, sockets, batch, onEvent)
     }
 
     /**
@@ -785,7 +797,8 @@ class FitnessPass(
         defer: (Deferral) -> Unit,
     ): Outcome? {
         val status = Silence.upgradeStatus(raw)
-        val said = status?.let { "the websocket upgrade was refused with HTTP $it" } ?: Silence.UPGRADE.reason
+        // Built on the reason: [answeringServers] recognises a refusal by it.
+        val said = status?.let { "${Silence.UPGRADE.reason} with HTTP $it" } ?: Silence.UPGRADE.reason
         return when (status) {
             in 500..599 -> {
                 defer(Deferral.SERVER_ERROR)
@@ -1428,8 +1441,6 @@ class FitnessPass(
 
         /** A held leg's `stage`, in the pass's own words. */
         const val STAGE_REACHABILITY = "pre-probe"
-
-        const val STAGE_DOCUMENT = "nip-11 document"
 
         const val STAGE_LADDER = "ask ladder"
 

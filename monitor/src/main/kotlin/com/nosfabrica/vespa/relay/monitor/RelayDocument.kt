@@ -38,9 +38,13 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -146,28 +150,33 @@ class RelayDocument(
         }
     }
 
-    /** Brackets the TCP and TLS handshake alone. One instance per call. */
-    private class ConnectTimer : okhttp3.EventListener() {
-        @Volatile private var startedAt: Long? = null
+    /**
+     * Brackets the TCP and TLS handshake alone, one instance per call. OkHttp races an address's
+     * attempts (`fastFallback`), so each start is kept by its address and the one that connected is timed.
+     */
+    internal class ConnectTimer(
+        private val nanoTime: () -> Long = System::nanoTime,
+    ) : okhttp3.EventListener() {
+        private val startedAt = ConcurrentHashMap<InetSocketAddress, Long>()
 
         @Volatile var openMs: Long? = null
             private set
 
         override fun connectStart(
-            call: okhttp3.Call,
-            inetSocketAddress: java.net.InetSocketAddress,
-            proxy: java.net.Proxy,
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
         ) {
-            startedAt = System.nanoTime()
+            startedAt[inetSocketAddress] = nanoTime()
         }
 
         override fun connectEnd(
-            call: okhttp3.Call,
-            inetSocketAddress: java.net.InetSocketAddress,
-            proxy: java.net.Proxy,
-            protocol: okhttp3.Protocol?,
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
+            protocol: Protocol?,
         ) {
-            startedAt?.let { openMs = (System.nanoTime() - it) / 1_000_000 }
+            startedAt[inetSocketAddress]?.let { openMs = (nanoTime() - it) / 1_000_000 }
         }
     }
 

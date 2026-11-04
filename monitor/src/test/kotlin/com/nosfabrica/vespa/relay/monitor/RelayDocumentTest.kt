@@ -34,6 +34,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -215,5 +218,23 @@ class RelayDocumentTest {
         private val OBJECT_MEMBERS =
             setOf("equals", "hashCode", "toString", "copy") +
                 (1..8).map { "component$it" }
+    }
+
+    @Test
+    fun `rtt-open is timed from the start of the attempt that connected, not the last one begun`() {
+        // OkHttp starts a second address while the first is still connecting; the first may win.
+        var nowNs = 0L
+        val timer = RelayDocument.ConnectTimer { nowNs }
+        val call = OkHttpClient().newCall(Request.Builder().url("http://dual.example/").build())
+        val v6 = InetSocketAddress(InetAddress.getByAddress("dual.example", ByteArray(16).also { it[15] = 1 }), 80)
+        val v4 = InetSocketAddress(InetAddress.getByAddress("dual.example", byteArrayOf(192.toByte(), 0, 2, 1)), 80)
+
+        timer.connectStart(call, v6, Proxy.NO_PROXY)
+        nowNs = 250_000_000L
+        timer.connectStart(call, v4, Proxy.NO_PROXY)
+        nowNs = 300_000_000L
+        timer.connectEnd(call, v6, Proxy.NO_PROXY, null)
+
+        assertEquals(300L, timer.openMs)
     }
 }

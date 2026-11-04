@@ -25,7 +25,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.EOFException
 import java.io.IOException
 import java.net.InetAddress
@@ -34,7 +36,11 @@ import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
@@ -61,7 +67,7 @@ enum class Reach {
     /** Our own transport cannot carry the dial; nothing was learned about the relay. */
     TRANSPORT_DOWN,
 
-    /** The lookup failed with no reason left to read; the dial would hit the same cached answer. */
+    /** The lookup failed with no reason left to read, or outlived its budget; the dial would meet the same resolver. */
     UNEXPLAINED,
 
     /** Every address had the whole connect window and none answered: no proof, but a dial would wait out its own. */
@@ -93,8 +99,16 @@ internal class ReachabilityProbe(
     private val tlsFactory: SSLSocketFactory = SSLContext.getDefault().socketFactory,
     /** How long a [REUSABLE] answer stands; no longer than a sweep, so each sweep's fold asks afresh. */
     private val reuseMs: Long = REUSE_MS,
+    /** The wall clock on one name lookup, which the resolver does not let us cancel. */
+    private val lookupMs: Long = LOOKUP_TIMEOUT_MS,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
+
+    /** Where lookups block; a lookup past [lookupMs] is abandoned to its thread, and the pool bounds how many can be. */
+    private val lookups =
+        ThreadPoolExecutor(threads, threads, LOOKUP_THREAD_IDLE_SECONDS, TimeUnit.SECONDS, LinkedBlockingQueue()) { task ->
+            Thread(task, "reachability-lookup").apply { isDaemon = true }
+        }.apply { allowCoreThreadTimeOut(true) }
 
     /** Host:port -> an answer no claim is signed on, and when it was had; every pass of a sweep asks the same hosts. */
     private val lately = ConcurrentHashMap<String, Pair<Reach, Long>>()
@@ -126,18 +140,22 @@ internal class ReachabilityProbe(
     }
 
     /** One lookup and connect, on the probe's own threads. */
-    private suspend fun probe(target: Target): Reach =
-        withContext(io) {
-            val addresses =
-                try {
-                    resolve(target.host)
-                } catch (e: IOException) {
-                    return@withContext lookupFailed(e)
-                }
+    private suspend fun probe(target: Target): Reach {
+        val addresses =
+            try {
+                lookup(target.host) ?: return Reach.UNEXPLAINED
+            } catch (e: IOException) {
+                return lookupFailed(e)
+            }
+        return withContext(io) {
             val attempt = open(target, addresses)
             attempt.socket?.close()
             if (attempt.socket != null) Reach.REACHABLE else judge(attempt.failures, attempt.complete, attempt.fullWindows)
         }
+    }
+
+    /** [host]'s addresses, or null when the resolver did not answer within [lookupMs]: our side, never proof. */
+    private suspend fun lookup(host: String): Array<InetAddress>? = withTimeoutOrNull(lookupMs) { CompletableFuture.supplyAsync({ resolve(host) }, lookups).await() }
 
     /**
      * A direct handshake to [url] under our default trust, on the pre-probe's route, to check a
@@ -146,13 +164,13 @@ internal class ReachabilityProbe(
     suspend fun tls(url: NormalizedRelayUrl): TlsAnswer {
         if (!shouldPreProbe(url, tor) || !url.url.startsWith("wss://", ignoreCase = true)) return TlsAnswer.UNCHECKED
         val target = Target.of(url) ?: return TlsAnswer.UNCHECKED
+        val addresses =
+            try {
+                lookup(target.host) ?: return TlsAnswer.UNCHECKED
+            } catch (_: IOException) {
+                return TlsAnswer.UNCHECKED
+            }
         return withContext(io) {
-            val addresses =
-                try {
-                    resolve(target.host)
-                } catch (_: IOException) {
-                    return@withContext TlsAnswer.UNCHECKED
-                }
             val socket = open(target, addresses).socket ?: return@withContext TlsAnswer.UNCHECKED
             socket.use { handshake(it, target) }
         }
@@ -255,6 +273,11 @@ internal class ReachabilityProbe(
 
         /** Across every address of one host; an address left untried proves nothing. */
         internal const val TOTAL_TIMEOUT_MS = 8_000L
+
+        /** One name lookup, before [TOTAL_TIMEOUT_MS] starts. */
+        internal const val LOOKUP_TIMEOUT_MS = 5_000L
+
+        private const val LOOKUP_THREAD_IDLE_SECONDS = 30L
 
         /**
          * A host's verdict over its addresses: proof only when every address failed with proof,

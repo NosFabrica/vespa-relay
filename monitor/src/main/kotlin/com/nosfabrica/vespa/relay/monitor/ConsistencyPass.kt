@@ -142,21 +142,26 @@ class ConsistencyPass(
         }
 
         progress?.measuring(wanted.size, Processors.UNIT_URL)
-        val decided = AtomicInteger()
-        val refused = AtomicInteger()
         // Urls a socket was opened for; a url [canDial] held back is not one.
         val walked = AtomicInteger()
         val silent = ConcurrentHashMap<NormalizedRelayUrl, Finding>()
         // Terminal text Silence could not place, sampled so the table grows from real strings.
-        val unplaced = ConcurrentHashMap.newKeySet<String>()
+        val unplaced = LinkedHashSet<String>()
         // One anchor for the whole pass.
         val anchor = RelayConsistency.settledAnchor(nowSeconds())
         val earned = ConcurrentHashMap<NormalizedRelayUrl, Earned>()
 
         // Nothing is published about a url the deadline cut: the clock is ours. A url cut after
         // its verdict was earned keeps it.
-        dialEach(wanted, gate, probe::deadlineMs, progress, cut = { if (!earned.containsKey(it)) silent[it] = Finding(Unmeasured.ABANDONED) }) { url ->
-            measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced, earned)
+        dialEach(
+            wanted,
+            gate,
+            probe::deadlineMs,
+            progress,
+            cut = { if (!earned.containsKey(it)) silent[it] = Finding(Unmeasured.ABANDONED) },
+            before = { url -> dials(url, canDial, silent) },
+        ) { url ->
+            measureOne(url, anchor, onEvent, sockets, walked, silent, unplaced, earned)
         }
 
         // Outside the dial's deadline and permit: a slow store must not cost a verdict the relay earned.
@@ -182,6 +187,15 @@ class ConsistencyPass(
                     anchorDays = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60),
                 ) != null
             }
+        // Only a verdict the store took is held or counted: one it refused is measured again next pass.
+        var decided = 0
+        var refused = 0
+        for (url in writes.stored) {
+            val consistent = earned.getValue(url).consistent
+            consistency.learn(url, if (consistent) RelayConsistency.Verdict.CONSISTENT else RelayConsistency.Verdict.INCONSISTENT)
+            decided++
+            if (!consistent) refused++
+        }
         if (writes.published < earned.size) {
             System.err.println(
                 "router: $label stability — ${earned.size - writes.published} earned verdict(s) NOT written " +
@@ -191,10 +205,10 @@ class ConsistencyPass(
             )
         }
 
-        if (decided.get() > 0 || silent.isNotEmpty()) {
+        if (decided > 0 || silent.isNotEmpty()) {
             System.err.println(
-                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) — ${decided.get()} decided " +
-                    "(${refused.get()} refused as inconsistent), ${silent.size} proved nothing" +
+                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) — $decided decided " +
+                    "($refused refused as inconsistent), ${silent.size} proved nothing" +
                     breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
                     ", ${consistency.refusedCount()} url(s) now refused in total " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
@@ -209,8 +223,8 @@ class ConsistencyPass(
         if (unplaced.isNotEmpty()) {
             System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
-        report(label, candidates, folded, dialled = walked.get(), decided = decided.get(), unmeasurable = silent + waitingFindings)
-        return decided.get()
+        report(label, candidates, folded, dialled = walked.get(), decided = decided, unmeasurable = silent + waitingFindings)
+        return decided
     }
 
     /** The undecided urls by finding, commonest first. */
@@ -337,20 +351,12 @@ class ConsistencyPass(
             }
     }
 
-    /** One url's paired walk, so the deadline has something to wrap. */
-    private suspend fun measureOne(
+    /** The pre-probe, before any dial permit: true when the url is walked, else its finding is filed. */
+    private suspend fun dials(
         url: NormalizedRelayUrl,
-        anchor: Long,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit,
-        sockets: Sockets,
-        walked: AtomicInteger,
-        decided: AtomicInteger,
-        refused: AtomicInteger,
         silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
-        unplaced: MutableSet<String>,
-        earned: ConcurrentHashMap<NormalizedRelayUrl, Earned>,
-    ) {
+    ): Boolean {
         progress?.holding(url.url, STAGE_REACHABILITY)
         // Not runCatching: it swallows CancellationException and would file a shutdown as probe failures.
         val reachable =
@@ -360,12 +366,23 @@ class ConsistencyPass(
                 throw e
             } catch (e: Exception) {
                 silent[url] = Finding(Unmeasured.FAILED)
-                return
+                return false
             }
-        if (!reachable) {
-            silent[url] = Finding(Unmeasured.TRANSPORT)
-            return
-        }
+        if (!reachable) silent[url] = Finding(Unmeasured.TRANSPORT)
+        return reachable
+    }
+
+    /** One url's paired walk, so the deadline has something to wrap. */
+    private suspend fun measureOne(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        onEvent: suspend (Event) -> Unit,
+        sockets: Sockets,
+        walked: AtomicInteger,
+        silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
+        unplaced: MutableSet<String>,
+        earned: ConcurrentHashMap<NormalizedRelayUrl, Earned>,
+    ) {
         walked.incrementAndGet()
         progress?.holding(url.url, STAGE_LADDER)
         sockets.claim(url)
@@ -389,14 +406,15 @@ class ConsistencyPass(
             val why = attempt.why()
             // The transport's words only under the one reason they explain.
             val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
-            if (cause == Silence.UNKNOWN && unplaced.size < MAX_UNPLACED_SAMPLES) {
-                attempt.saidWhat()?.let { unplaced += it }
+            if (cause == Silence.UNKNOWN) {
+                // Under the set's own lock: the dials run concurrently, and the cap must hold.
+                attempt.saidWhat()?.let { said -> synchronized(unplaced) { if (unplaced.size < MAX_UNPLACED_SAMPLES) unplaced += said } }
             }
             silent[url] = Finding(why, cause)
             return
         }
         val (verdict, first, second) = answer
-        // No suspension point from here to the end, so the deadline cannot split the three.
+        // Learned only once the write lands, in [measure].
         earned[url] =
             Earned(
                 consistent = verdict == RelayConsistency.Verdict.CONSISTENT,
@@ -405,9 +423,6 @@ class ConsistencyPass(
                 shared = consistency.shared(first, second),
                 score = consistency.containment(first, second),
             )
-        consistency.learn(url, verdict)
-        decided.incrementAndGet()
-        if (verdict == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
     }
 
     /** One decided url's numbers, held from the dial to the write. */

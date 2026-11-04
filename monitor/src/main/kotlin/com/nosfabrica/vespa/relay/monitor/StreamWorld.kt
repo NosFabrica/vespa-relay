@@ -153,10 +153,11 @@ internal class StreamWorld(
             )
         derived = true
         this.known = ServerIndex(live.toHashSet())
-        // A derivation that collapsed is a fault in the read, not a new baseline. Said once;
-        // nothing is retried.
+        // A read that failed or collapsed is a fault in the read, not a new baseline. A collapse is
+        // said each round it holds; nothing is retried.
         val previous = lastSourced
-        if (previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE) {
+        val shrunk = previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE
+        if (shrunk) {
             System.err.println(
                 "router: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
                     "a drop of ${(100 - 100 * all.size / previous)}%. The relay lists in the store do not change that " +
@@ -164,7 +165,7 @@ internal class StreamWorld(
                     "The passes still walk ${live.size} url(s), because the corpus is our own records too.",
             )
         }
-        lastSourced = all.size
+        if (read && !shrunk) lastSourced = all.size
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
                 "; ${all.size} named by a relay list this round" +
