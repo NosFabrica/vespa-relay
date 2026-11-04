@@ -17,9 +17,13 @@
 #   cp monitor.conf.example monitor.conf
 #   MONITOR_CONFIG_LOCAL=./monitor.conf docker compose --profile sync up -d --build
 #
-# Without Docker, point MONITOR_CONFIG_FILE at your copy on the SYNC process.
-# It runs in the same process as the mirror, so a change here is the same
-# `docker compose --profile sync restart sync`.
+# Without Docker, point MONITOR_CONFIG_FILE at your copy on the MONITOR process
+# (`./gradlew :monitor:run` / the vespa-monitor binary). It is its own process,
+# so a change here is `docker compose --profile sync restart monitor`, and the
+# mirror never notices.
+#
+# `connectionTimeout` (seconds, default 20) is a probe's dial budget, the
+# monitor's own; sync.conf keeps the mirror's.
 #
 # THIS FILE IS THE BLOCK'S CONTENTS, NOT THE BLOCK. `sources` and the clocks sit
 # at the top level; a `monitor { }` wrapper around them is refused rather than

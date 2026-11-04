@@ -10,7 +10,8 @@ subsystem as **the router** — `sync.conf` + `monitor.conf`, the `router:` log 
 `ROUTER_*` spellings are refused at boot, each naming what replaced it.
 
 It is its own process (`SyncMain`, the compose `sync` service behind
-`--profile sync`), so a `sync.conf` or `monitor.conf` change is a `restart sync`, never a
+`--profile sync`), and the monitor another (`MonitorMain`, the `monitor` service), so a
+`sync.conf` change is a `restart sync` and a `monitor.conf` change a `restart monitor`, never a
 relay outage — and the sync bands make the re-run resume rather than
 re-download. The relay hard-errors if `SYNC_CONFIG*` is aimed at it: that
 setting used to start the mirror in-process, and accepting-but-ignoring it

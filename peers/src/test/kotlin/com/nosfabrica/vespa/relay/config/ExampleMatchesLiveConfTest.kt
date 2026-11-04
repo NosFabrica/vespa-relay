@@ -104,11 +104,6 @@ class ExampleMatchesLiveConfTest {
         assertEquals(monitorShape(example), monitorShape(live), "monitor.conf and monitor.conf.example measure different sets")
     }
 
-    /** A monitor file is the block's contents, so it needs a stream config to be parsed beside. */
-    private fun loadMonitor(file: File): MonitorConfig =
-        RouterConfigLoader
-            .parse(
-                """streams { none { dir = "down", filter = { "kinds": [1] }, urls = [] } }""",
-                monitorOrigin = file,
-            ).monitor!!
+    /** A monitor file, read as the monitor process reads it. */
+    private fun loadMonitor(file: File): MonitorConfig = RouterConfigLoader.parseMonitorConf(origin = file)
 }

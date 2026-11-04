@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets

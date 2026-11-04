@@ -93,6 +93,26 @@ the only thing between the two planes is the events. With several signers the ne
 speaks for a url whole, because merging tag by tag lets one monitor's fold sit beside another's
 `distinct` on the same url.
 
+**The monitor is its own process.** With the writer, the fold and the verdict signers already
+apart, what still tied the two planes was that `SyncEngine` built and started a `MonitorEngine`.
+`MonitorMain` now runs it over a read-only store, its own `PeerClient` and `RelayWriter`, and the
+relay's NIP-11 key check, and `:sync` no longer depends on `:monitor`. A process module cannot
+depend on another (`ModuleBoundariesTest`), so the fold's read side moved to `:peers` (`fold/`)
+in the same change, with the relay dial and key check (`IngestTarget`) and the boot guards both
+processes use. The probe-event sink went with the split: it handed what a probe happened to see
+to the mirror's ingest, and with no mirror beside it the monitor drops those events, a handful
+per relay that the mirror's own walks fetch. A monitor setting or a `monitor { }` block aimed at
+the sync stops its boot, as `SYNC_CONFIG*` stops the relay's, because a setting on the wrong
+process configures nothing. With no `monitor.conf` at all the monitor says so and exits 0:
+measuring nothing is a deployment, and a supervisor should leave it down rather than restart it.
+Its sockets are its own, so a relay the mirror holds live is dialled a second time from the same
+host; a relay that answers that with a 429 or "too many" is deferred in memory (`RATE_LIMITED`)
+and never signed. What the shared process used to catch on its own now needs saying across the
+gap: the sync's boot refused a discovering deployment with no monitor declared, and with the
+monitor elsewhere it cannot tell, so a stream that takes its relays from 30166 records the store
+does not hold is named on every health line (`VerdictSupply`). The monitor's page carries its own
+`store` section, and both processes count a thread killed by a VirtualMachineError (`watchForFatals`).
+
 **A probe dial is not an upstream, so its events are always verified.** The sink
 used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
 one declared upstream's events; an event here came off whichever relay a pass

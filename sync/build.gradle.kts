@@ -7,8 +7,6 @@ dependencies {
     // implementation, not api: this module is a process, nothing compiles against it.
     implementation(project(":common"))
     implementation(project(":peers"))
-    // This process hosts the monitor. The dependency must stay one-directional.
-    implementation(project(":monitor"))
     implementation(project(":web"))
     implementation(libs.quartz)
     implementation(libs.vespa.eventstore.store)

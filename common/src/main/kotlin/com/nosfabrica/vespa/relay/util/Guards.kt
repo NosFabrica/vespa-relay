@@ -18,14 +18,14 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.sync
+package com.nosfabrica.vespa.relay.util
 
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /** One step of a shutdown: a throw is logged under [what] and swallowed, so the steps after it still run. */
-internal inline fun shutdownStep(
+inline fun shutdownStep(
     what: String,
     step: () -> Unit,
 ) {
@@ -40,7 +40,7 @@ internal inline fun shutdownStep(
  * Runs [tick] every [periodMs] until cancelled. A tick that throws is logged under [what] and
  * the loop goes on, so one bad tick cannot silence a periodic job for the life of the process.
  */
-internal suspend fun repeatEvery(
+suspend fun repeatEvery(
     periodMs: Long,
     what: String,
     tick: suspend () -> Unit,

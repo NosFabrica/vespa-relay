@@ -38,18 +38,16 @@ class ShippedExamplesTest {
 
     /** Both shipped files, parsed together the way a deployment reads them. */
     private val example: RouterConfig =
-        RouterConfigLoader.parse(
-            syncOrigin = at("sync.conf.example"),
-            monitorOrigin = at("monitor.conf.example"),
-        )
+        RouterConfigLoader
+            .parse(syncOrigin = at("sync.conf.example"))
+            .copy(monitor = RouterConfigLoader.parseMonitorConf(origin = at("monitor.conf.example")))
 
     @Test
     fun `the shipped pair boots`() {
-        // sync.conf.example's header copies BOTH files, and its streams discover their relays, so
-        // parsed together they have to survive the undeclared-monitor refusal.
-        RouterConfigLoader.refuseUndeclaredMonitor(example)
-        assertTrue(example.discoveryStreams().isNotEmpty(), "the shape: without a discovery stream the refusal cannot fire")
-        assertNotNull(example.monitorSources(), "…so the monitor half has to declare what it measures")
+        // sync.conf.example's header copies BOTH files; the monitor process refuses one that names no sources.
+        assertTrue(example.discoveryStreams().isNotEmpty(), "the shape: the streams discover their relays")
+        RouterConfigLoader.refuseUndeclaredSources(example.monitor!!)
+        assertNotNull(example.monitorSources(), "…and the monitor half declares what it measures")
     }
 
     @Test

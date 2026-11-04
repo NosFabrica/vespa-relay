@@ -23,15 +23,13 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
 import com.nosfabrica.vespa.relay.config.RouterConfig
+import com.nosfabrica.vespa.relay.fold.StoredFold
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
-import com.nosfabrica.vespa.relay.monitor.MonitorEngine
-import com.nosfabrica.vespa.relay.monitor.MonitorStatus
-import com.nosfabrica.vespa.relay.monitor.StoredFold
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -62,6 +60,9 @@ import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
+import com.nosfabrica.vespa.relay.util.repeatEvery
+import com.nosfabrica.vespa.relay.util.shutdownStep
+import com.nosfabrica.vespa.relay.util.watchForFatals
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -89,7 +90,7 @@ class SyncEngine(
     private val sweepState: SweepState = SweepState(null),
     /** Ids twice refused by the store, and the repairs queued for the relays serving them. Disabled by default. */
     private val refusedIds: RefusedIds = RefusedIds.disabled(),
-    /** Answers NIP-42 challenges and signs the monitor's verdicts. Without one every relay reads as unmeasured. */
+    /** Answers upstream NIP-42 challenges, and is whose verdicts the roster follows when `verdictsFrom` is unset. */
     private val signer: NostrSigner? = null,
     /** "" (errors only), "sent" or "full". */
     wireLogMode: String = "",
@@ -113,13 +114,11 @@ class SyncEngine(
      * stays the read side in either mode. Closed with the engine.
      */
     private val writer: StoreWriter = StoreWriter.local(store),
-    /** Where the monitor's verdicts go: a connection of its own, so the plane needs nothing of the mirror's to write. Closed with the engine. */
-    private val monitorWriter: StoreWriter = writer,
 ) : AutoCloseable {
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
-    /** The websocket client, socket budget, Tor and NIP-42, shared with the monitor plane. */
+    /** The websocket client, socket budget, Tor and NIP-42. */
     private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
     private val client = peers.client
     private val tor = peers.tor
@@ -179,30 +178,8 @@ class SyncEngine(
             complaints,
         )
 
-    /** One socket refcount across every stream and probe pass. */
+    /** One socket refcount across every stream. */
     private val sockets = RelaySockets(client, pinnedUrls)
-
-    /** The monitor plane, on its own clock, writing the verdicts the roster selects on. */
-    private val monitor =
-        MonitorEngine(
-            store = store,
-            settings = config.monitor,
-            // The monitor's own declaration, handed over whole. Nothing here derives it from the
-            // mirror's streams: the two planes name their relays independently.
-            sources = config.monitorSources(),
-            connectionTimeoutMs = config.connectionTimeoutSec * 1000L,
-            peers = peers,
-            signer = signer,
-            sockets = sockets,
-            // Once, always verified (`trusted` vouches for a declared upstream, not a probed relay),
-            // and only if a pulling stream wants it: an `up` filter says what we publish.
-            onProbeEvent = { event ->
-                if (visitStreams.any { it.filter.match(event) }) ingest.submit(event, skipVerify = false)
-            },
-            pinnedUrls = pinnedUrls,
-            scope = scope,
-            writer = monitorWriter,
-        )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
     private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds, writer)
@@ -213,7 +190,10 @@ class SyncEngine(
     /** Those signers' verdicts, read back. Empty when nobody is followed. */
     private val verdicts = RelayVerdictRecord(store, signer = null, readFrom = verdictSigners)
 
-    /** The duplicate-url fold, read from those verdicts alone, so the roster needs no monitor in this process. */
+    /** Says, on the health clock, which verdict-sourced streams no stored verdict feeds. */
+    private val verdictSupply = VerdictSupply(store, visitStreams)
+
+    /** The duplicate-url fold, read from those verdicts alone. */
     private val fold = StoredFold.over(store, verdictSigners, allowOnion = tor != null)
 
     /** The rotating pool, inert when no stream rides it. */
@@ -252,7 +232,7 @@ class SyncEngine(
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
-    /** One boot for every node; a monitor-only one still needs ingest, a connected client and the progress document. */
+    /** Starts ingest, the client, the pool and the progress document; a push-only router still needs each. */
     fun start(): SyncEngine {
         val mirrors = visitStreams.isNotEmpty() || upUpstreams.isNotEmpty()
         if (!mirrors) System.err.println("router: no upstreams configured; nothing to mirror")
@@ -260,7 +240,7 @@ class SyncEngine(
         ingest.start()
         registerProcessors()
         peers.announceTor()
-        watchForFatals()
+        watchForFatals("router", fatals)
         scope.launch { healthLoop() }
         peers.connect()
 
@@ -269,8 +249,6 @@ class SyncEngine(
         upUpstreams.groupBy { it.streamName }.values.forEach { urls -> scope.launch { upPush.loop(urls) } }
         visitPool.start()
         System.err.println(verdictsLine())
-
-        monitor.start()
 
         // Its own loop: the phase report below is skipped for a push-only router.
         publishProgressLoop()
@@ -370,18 +348,6 @@ class SyncEngine(
     @Volatile
     private var health: SyncProgress.Health? = null
 
-    /** Counts VirtualMachineErrors so a damaged process does not read as merely quiet. Both boot paths need it. */
-    private fun watchForFatals() {
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            if (error is VirtualMachineError) {
-                fatals.incrementAndGet()
-                System.err.println("router: FATAL ${error.javaClass.simpleName} killed thread ${thread.name} — the router is now degraded")
-            }
-            previous?.uncaughtException(thread, error)
-        }
-    }
-
     /** The status document on its own clock. It describes the process, so it runs with no streams at all. */
     private fun publishProgressLoop() {
         scope.launch {
@@ -408,11 +374,7 @@ class SyncEngine(
             System.err.println(healthLine(reading))
             // On the health clock so `wedged` above and the call it is stuck in read together.
             storeCalls.warnSlow().forEach { System.err.println(it) }
-            monitor.heldOutDead().takeIf { it > 0 }?.let { dead ->
-                System.err.println(
-                    "router: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes",
-                )
-            }
+            verdictSupply.starved().forEach { System.err.println(it) }
         }
     }
 
@@ -515,7 +477,6 @@ class SyncEngine(
         shutdownStep("close ingest") { ingest.close() }
         // Last: ingest's final batch may still be on its way to the relay.
         shutdownStep("close the writer") { writer.close() }
-        if (monitorWriter !== writer) shutdownStep("close the monitor's writer") { monitorWriter.close() }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
@@ -525,12 +486,6 @@ class SyncEngine(
 
     /** The pool's current roster, as the status page's per-relay table needs it. */
     fun primeUnits(): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnits()
-
-    /** The monitor plane's status document. */
-    fun monitorStatus(
-        everySeconds: Long,
-        relayUrl: String?,
-    ): MonitorStatus = monitor.status(everySeconds, relayUrl)
 
     companion object {
         // Published names in the progress document; a rename breaks readers charting them.

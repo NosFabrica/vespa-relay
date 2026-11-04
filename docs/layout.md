@@ -62,8 +62,8 @@ web/src/main/kotlin/com/nosfabrica/vespa/relay/web/
 peers/src/main/kotlin/com/nosfabrica/vespa/relay/
   peers/
     PeerClient.kt         the websocket client, the 1,024-socket dispatcher, Tor
-                          and NIP-42 — one of each, for BOTH planes, which is
-                          why RelaySockets can refcount across them
+                          and NIP-42 — one of each per client process, the
+                          mirror's and the monitor's
     RelaySockets.kt       who is still using this socket: one refcount across
                           every stream and every probe pass
     RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
@@ -78,17 +78,26 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
     DialGate.kt           what bounds a probe pass's dials — ONE GATE PER
                           TRANSPORT, since the clearnet dispatcher and the
                           Tor one are separate budgets. Not ingest/ProbeGate
-  config/                 RouterConfig + its HOCON loader — one file configures
-                          both planes, so it sits under both
+  config/                 RouterConfig + its HOCON loader: sync.conf for the
+                          mirror, monitor.conf (monitorFromEnv) for the monitor
+  fold/                   the duplicate-url fold as 30166 records state it:
+                          FoldReading.readBack, RelayAliases, ServerIndex, and
+                          StoredFold, the roster's read. Here because both
+                          processes read it and neither may depend on the other
   ingest/                 IngestPipeline (on an IngestTuning, not the whole
                           config), ParseAudit, the refusal filters, ProbeGate.
                           The one write path for both processes: the mirror's
                           downloads and the relay's publishes (it is quartz's
                           EventIngest), with StoreProbes wiring the two drop-
-                          probes the same way for each
+                          probes the same way for each. IngestTarget is the
+                          relay dial and its NIP-11 key check, for both client
+                          processes
   progress/               Processors and InFlight — the report both planes
                           register rows in
 
+monitor/src/main/kotlin/com/nosfabrica/vespa/relay/
+  MonitorMain.kt          the monitor's entrypoint: monitor.conf, a read-only
+                          store, its own PeerClient and RelayWriter, its page
 monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
   MonitorStatus.kt        this plane's OWN /stats.json — its four pass rows, the
                           subset of the glossary they need, and the served
@@ -96,14 +105,11 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
                           because this page is not served by the relay
   MonitorEngine.kt        the plane: the three passes, the derivation, the boot
                           retirement of verdicts this router would no longer
-                          sign. Its CONSTRUCTOR is the account of what the
-                          monitor still takes from the mirror, and it names no
-                          mirror type: the monitor's own config, the relay
-                          lists it scans, a dial budget, and a sink for an
-                          event a probe happened to see
+                          sign. It names no mirror type: MonitorMain hands it
+                          the monitor's own config, the relay lists it scans,
+                          a dial budget, and a sink that drops what a probe
+                          happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
-  StoredFold.kt           the same answer read from our records alone, for the
-                          roster, so the mirror needs no monitor in its process
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
   StreamWorld.kt          the candidate set all three measure over — monitor.conf's
@@ -295,8 +301,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   SyncMain.kt           entrypoint; env, store, engine, block. The root
                         package holds this file and nothing else
   sync/                 THE MIRROR — everything that moves events into the store
-    SyncEngine.kt         wiring, health/stats lines. Owned by NEITHER plane,
-                          which is why it starts both
+    SyncEngine.kt         wiring, health/stats lines
     VisitPool.kt          EVERY down stream's engine: the roster (declared
                           `urls` plus the relays the monitor's 30166 verdicts
                           admit), rotating visits (catch-up, the reconcile of
@@ -369,10 +374,9 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     AliasMonitor.kt       the schedule the passes run on: fold, then stability,
                           then fitness
     AliasProbe.kt         the fingerprint: a relay's newest events, as ids
-    AliasFolding.kt       apply() reads verdicts; measure() earns them
-    StoredFold.kt         readBack() over a world built from our records: what
-                          the roster folds on
-    RelayAliases.kt       which discovered urls are ONE relay (see below)
+    AliasFolding.kt       apply() reads verdicts; measure() earns them. Its read
+                          half, readBack(), and RelayAliases, which urls are ONE
+                          relay (see below), live in :peers' fold/
     ConsistencyPass.kt    the pass that measures the stability gate
     RelayConsistency.kt   which relays answer one filter the same way twice
     RelayCompliance.kt    …and which relays answer THE FILTER at all — the

@@ -40,7 +40,7 @@ class MonitorGateTest {
     private fun withMonitorFile(
         streams: String,
         monitor: String,
-    ) = RouterConfigLoader.parse(streams.trimIndent(), monitorHocon = monitor.trimIndent())
+    ) = RouterConfigLoader.parse(streams.trimIndent()).copy(monitor = RouterConfigLoader.parseMonitorConf(monitor.trimIndent()))
 
     /** The monitor block's contents, bare, as its own file carries them. */
     private val bareMonitorFile =
@@ -159,17 +159,6 @@ class MonitorGateTest {
     }
 
     @Test
-    fun `declaring the monitor twice is refused rather than resolved`() {
-        // Two declarations cannot both be the truth, and picking one silently is how a deployment
-        // measures a set nobody is looking at.
-        val e =
-            assertFailsWith<IllegalArgumentException> {
-                withMonitorFile(pureMonitor, bareMonitorFile)
-            }
-        assertTrue(e.message!!.contains("Keep one"), "the message says which to delete: ${e.message}")
-    }
-
-    @Test
     fun `a monitor file wrapped in its own block name is refused`() {
         // The copy-paste out of a one-file config. Read past, it would parse to a monitor with no
         // sources — measuring nothing, quietly, which is the failure this whole rule exists for.
@@ -187,8 +176,8 @@ class MonitorGateTest {
         val cfg = withMonitorFile(streamDiscovers, "fastLaneSeconds = 60")
         assertNotNull(cfg.monitor, "the block parses — it is the declaration that is missing")
         assertNull(cfg.monitorSources())
-        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseUndeclaredMonitor(cfg) }
-        assertTrue(e.message!!.contains("MONITOR_CONFIG_FILE"), "and the boot says where the declaration goes: ${e.message}")
+        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseUndeclaredSources(cfg.monitor!!) }
+        assertTrue(e.message!!.contains("sources = []"), "and the boot says how to measure nothing on purpose: ${e.message}")
     }
 
     @Test
@@ -196,17 +185,7 @@ class MonitorGateTest {
         val cfg = withMonitorFile(streamDiscovers, "sources = []")
         assertNotNull(cfg.monitor, "the declaration exists, so the boot has its answer")
         assertNull(cfg.monitorSources(), "and the answer is that nothing is measured")
-        RouterConfigLoader.refuseUndeclaredMonitor(cfg)
-    }
-
-    @Test
-    fun `a deployment that discovers and declares no monitor is refused at boot`() {
-        // Parsing is fine — the config is well formed; it is the process that would run inert.
-        val cfg = config(streamDiscovers)
-        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseUndeclaredMonitor(cfg) }
-        assertTrue(e.message!!.contains("MONITOR_CONFIG_FILE"), "the message says where the declaration goes: ${e.message}")
-        RouterConfigLoader.refuseUndeclaredMonitor(config(staticOnly))
-        RouterConfigLoader.refuseUndeclaredMonitor(config(pureMonitor))
+        RouterConfigLoader.refuseUndeclaredSources(cfg.monitor!!)
     }
 
     // `config.monitor?.fastLaneSeconds` is null both for no block and for the `= 0` off switch.

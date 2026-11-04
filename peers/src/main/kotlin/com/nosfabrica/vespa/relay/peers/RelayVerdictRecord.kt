@@ -612,6 +612,9 @@ class RelayVerdictRecord(
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
 
+        /** How long a `dead` verdict holds a url out of the passes and the fold. */
+        const val DEAD_TTL_SECONDS = 24L * 60 * 60
+
         /** The wall clock on one whole [edit]. Wider than `VerdictWrites.PUBLISH_DEADLINE_MS`, which must fire first. */
         const val EDIT_DEADLINE_MS = 120_000L
 

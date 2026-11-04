@@ -72,10 +72,9 @@ class RelayListLiveProbe {
 
                 fun at(name: String) = requireNotNull(listOf(File("../$name"), File(name)).firstOrNull { it.isFile }) { "missing $name" }
                 val conf =
-                    RouterConfigLoader.parse(
-                        at("sync.conf.example").readText(),
-                        monitorHocon = at("monitor.conf.example").readText(),
-                    )
+                    RouterConfigLoader
+                        .parse(at("sync.conf.example").readText())
+                        .copy(monitor = RouterConfigLoader.parseMonitorConf(at("monitor.conf.example").readText()))
                 val monitor = requireNotNull(conf.monitor) { "the example has no monitor config" }
                 val sources = monitor.sources.orEmpty().filter { it.filter.kinds?.contains(kind) == true }
                 val selects = sources.flatMap { it.selects }

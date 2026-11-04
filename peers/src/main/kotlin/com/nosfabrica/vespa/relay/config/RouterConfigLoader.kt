@@ -95,28 +95,9 @@ object RouterConfigLoader {
         engine: EngineTuning = EngineTuning.fromEnv(env),
     ): RouterConfig? {
         refuseRenamedRouterEnv(env)
-        // The monitor's own file, if the deployment keeps the two planes apart. Read BEFORE the
-        // sync config decides there is nothing to do, so a monitor declaration is never dropped
-        // without a word and the one-declaration rule holds on every path.
-        val monitorInline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
-        val monitorFile = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
-        require(monitorInline == null || monitorFile == null) {
-            "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
-        }
-        // Not read here: a file is handed to `parse` as a file, so `include` resolves against its
-        // own directory. Only its existence is settled now, where the message can still name it.
-        val monitorOrigin = monitorFile.takeIf { monitorInline == null }
-        require(monitorOrigin == null || monitorOrigin.isFile) {
-            "router: MONITOR_CONFIG_FILE points at ${monitorOrigin?.path}, which is not a readable file"
-        }
-        val hasMonitor = monitorInline != null || monitorOrigin != null
-
+        refuseMonitorEnv(env)
         val inline = env["SYNC_CONFIG"]?.takeIf { it.isNotBlank() }
         val syncFile = env["SYNC_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
-        require(!hasMonitor || inline != null || syncFile != null) {
-            "router: a monitor config is set and no sync config is — this process mirrors and measures in one, " +
-                "and there is nothing here to mirror. Set SYNC_CONFIG_FILE too, or unset the monitor variable"
-        }
         if (inline == null && syncFile == null) return null
         // Only where the text did not come inline: an `include` resolves against the including
         // document's own directory, and a string-parsed one has no directory to resolve against.
@@ -148,37 +129,89 @@ object RouterConfigLoader {
             ingestConcurrency,
             ingestBatch,
             relaySourceDefaults,
-            monitorInline,
             syncOrigin = syncOrigin,
-            monitorOrigin = monitorOrigin,
-        ).copy(
-            ingestDedupChunk = engine.dedupChunk ?: EngineTuning.DEFAULT_DEDUP_CHUNK,
-            negPageTarget = pageTarget,
-            negPageMin = pageMin,
-            negPageMax = pageMax,
-            negPageSlackSec = pageSlack,
-        ).let {
-            if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
+        ).also { refuseMonitorBlock(it) }
+            .copy(
+                ingestDedupChunk = engine.dedupChunk ?: EngineTuning.DEFAULT_DEDUP_CHUNK,
+                negPageTarget = pageTarget,
+                negPageMin = pageMin,
+                negPageMax = pageMax,
+                negPageSlackSec = pageSlack,
+            ).let {
+                if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
+            }
+    }
+
+    /** The monitor's variables, which configure its own process and never this one. */
+    val MONITOR_ENV = listOf("MONITOR_CONFIG", "MONITOR_CONFIG_FILE", "MONITOR_STATUS_PORT", "MONITOR_STATUS_FILE")
+
+    /** A monitor variable on the sync process: the monitor is its own process, so it would configure nothing. */
+    fun refuseMonitorEnv(env: Map<String, String>) {
+        val set = MONITOR_ENV.filter { !env[it].isNullOrBlank() }
+        require(set.isEmpty()) {
+            "router: ${set.joinToString()} set on the sync process, which no longer runs the monitor. The monitor is its own " +
+                "process (vespa-monitor, the `monitor` compose service): move these to it and unset them here"
+        }
+    }
+
+    /** The mirror's config variables, which configure the sync process and never the monitor. */
+    val SYNC_ENV = listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE")
+
+    /** A sync config on the monitor process: the mirror is its own process, so it would configure nothing. */
+    fun refuseSyncEnv(env: Map<String, String>) {
+        val set = SYNC_ENV.filter { !env[it].isNullOrBlank() }
+        require(set.isEmpty()) {
+            "router: ${set.joinToString()} set on the monitor process, which does not mirror. The mirror is its own process " +
+                "(vespa-sync, the `sync` compose service): move these to it and unset them here"
         }
     }
 
     /**
-     * Refuses a deployment whose streams discover their relays and which declares no monitor: it
-     * would measure nothing, and the config never said that was the intent. At boot, not at parse,
-     * because such a config is well formed — it is the process that would run inert.
+     * The sync's own `connectionTimeout` when it is not the default, said once at boot: the monitor read it
+     * while it shared this process, and now reads monitor.conf's instead.
      */
-    fun refuseUndeclaredMonitor(config: RouterConfig) {
-        // The block existing is not the declaration — `sources` is. One that only tunes the clocks
-        // never said what to measure, and would run the plane over nothing without a word.
-        if (config.monitor?.sources != null) return
-        val discovering = config.discoveryStreams().map { it.name }
-        require(discovering.isEmpty()) {
-            "router: ${discovering.joinToString()} discover their relays, and this deployment declares no monitor. " +
-                "The monitor measures what its own config names and nothing else — every url it derives becomes a " +
-                "signed public claim about somebody else's relay, so it is never inferred from a stream. Point " +
-                "MONITOR_CONFIG_FILE at a monitor.conf naming the relay lists to scan (start from " +
-                "monitor.conf.example), or keep a `monitor { }` block in the sync config. A deployment that mirrors " +
-                "these streams and deliberately measures nothing declares an empty monitor: `monitor { sources = [] }`"
+    fun connectionTimeoutNote(config: RouterConfig): String? =
+        config.connectionTimeoutSec.takeIf { it != MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS }?.let {
+            "router: connectionTimeout = $it in the sync config sizes the mirror's dials only; the monitor's probes " +
+                "take `connectionTimeout` from monitor.conf (default ${MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS})"
+        }
+
+    /** A `monitor { }` block in the sync config, which the sync no longer reads. */
+    private fun refuseMonitorBlock(config: RouterConfig) {
+        require(config.monitor == null) {
+            "router: the sync config has a `monitor { }` block, and the monitor is its own process now. Move the block's " +
+                "contents to monitor.conf (MONITOR_CONFIG_FILE on the monitor service) and delete it here"
+        }
+    }
+
+    /**
+     * The monitor process's config, from `MONITOR_CONFIG` or `MONITOR_CONFIG_FILE`. Refuses a config
+     * that never says what to measure: every url it derives becomes a signed public claim, so the
+     * corpus is declared, and `sources = []` is how a deployment measures nothing on purpose.
+     */
+    fun monitorFromEnv(env: Map<String, String>): MonitorConfig {
+        val inline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
+        val file = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
+        require(inline == null || file == null) {
+            "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
+        }
+        require(inline != null || file != null) {
+            "router: MONITOR_CONFIG or MONITOR_CONFIG_FILE is required — the monitor measures what its own config names and " +
+                "nothing else. Point MONITOR_CONFIG_FILE at a monitor.conf (start from monitor.conf.example)"
+        }
+        // A file is parsed as a file, so its `include` resolves against its own directory.
+        val origin = file.takeIf { inline == null }
+        require(origin == null || origin.isFile) { "router: MONITOR_CONFIG_FILE points at ${origin?.path}, which is not a readable file" }
+        val monitor = parseMonitorConf(inline, origin)
+        refuseUndeclaredSources(monitor)
+        return monitor
+    }
+
+    /** A monitor config with no `sources`: it only tuned the clocks, and would run the passes over nothing. */
+    fun refuseUndeclaredSources(monitor: MonitorConfig) {
+        require(monitor.sources != null) {
+            "router: the monitor config names no `sources`, so it never said what to measure. Name the relay lists to scan " +
+                "(start from monitor.conf.example), or declare `sources = []` to measure nothing on purpose"
         }
     }
 
@@ -208,11 +241,9 @@ object RouterConfigLoader {
     }
 
     /**
-     * The two planes' configs into one model. Each plane arrives as text OR as the file to read it
-     * from, never both: a file is parsed in place so its `include` resolves against its own
-     * directory. [monitorHocon]/[monitorOrigin] carry `monitor.conf` — the `monitor { }` block's
-     * contents at the top level, no wrapper — and are both null where the block lives in the sync
-     * config.
+     * `sync.conf` into the model, as text OR as the file to read it from, never both: a file is
+     * parsed in place so its `include` resolves against its own directory. A `monitor { }` block is
+     * parsed so that [fromEnv] can refuse it; `monitor.conf` itself is [parseMonitorConf]'s.
      */
     fun parse(
         hocon: String? = null,
@@ -220,9 +251,7 @@ object RouterConfigLoader {
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
-        monitorHocon: String? = null,
         syncOrigin: File? = null,
-        monitorOrigin: File? = null,
     ): RouterConfig {
         val cfg = document(hocon, syncOrigin)
         refuseRetired(cfg, SYNC_CONFIG, RETIRED_ROOT_KEYS)
@@ -233,7 +262,7 @@ object RouterConfigLoader {
         val streams = streamsCfg.root().keys.map { name -> parseStream(name, streamsCfg.getConfig(quote(name)), relaySourceDefaults) }
         warnRetractionOverlaps(streams)
         refuseUnknownKeys(cfg, SYNC_CONFIG, ROOT_KEYS)
-        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
+        val monitor = if (cfg.hasPath("monitor")) monitorFrom(cfg.getConfig("monitor")) else null
         val verdictsFrom = if (cfg.hasPath("verdictsFrom")) cfg.getStringList("verdictsFrom").map { PubKeys.decode(it, "$SYNC_CONFIG `verdictsFrom`") }.distinct() else null
         return RouterConfig(
             connTimeout,
@@ -436,36 +465,17 @@ object RouterConfigLoader {
     }
 
     /**
-     * The monitor's declaration, from its own file when there is one and from the sync config's
-     * `monitor { }` block otherwise. A monitor source is a relay source, so it reuses the
-     * stream-side parsers.
+     * `monitor.conf`, as text OR as the file to read it from: the monitor process's whole config,
+     * the block's contents at the top level. It does not refuse a config with no `sources`;
+     * [monitorFromEnv] does, at boot.
      */
-    private fun parseMonitor(
-        cfg: Config,
-        monitorHocon: String?,
-        monitorOrigin: File?,
-    ): MonitorConfig? {
-        val m =
-            when {
-                monitorHocon != null || monitorOrigin != null -> {
-                    // Two declarations cannot both be the truth, and picking one silently is how a
-                    // deployment measures a set nobody is looking at.
-                    require(!cfg.hasPath("monitor")) {
-                        "router: the sync config has a `monitor { }` block AND a separate monitor config is set " +
-                            "(MONITOR_CONFIG / MONITOR_CONFIG_FILE). Keep one: move the block's contents into the " +
-                            "monitor file and delete it here, or unset the variable"
-                    }
-                    monitorDocument(monitorHocon, monitorOrigin)
-                }
+    fun parseMonitorConf(
+        hocon: String? = null,
+        origin: File? = null,
+    ): MonitorConfig = monitorFrom(monitorDocument(hocon, origin))
 
-                cfg.hasPath("monitor") -> {
-                    cfg.getConfig("monitor")
-                }
-
-                else -> {
-                    return null
-                }
-            }
+    /** One monitor declaration's keys. A monitor source is a relay source, so it reuses the stream-side parsers. */
+    private fun monitorFrom(m: Config): MonitorConfig {
         refuseRetired(m, MONITOR_CONFIG, RETIRED_MONITOR_KEYS)
         // Absent and empty are different answers: one never said what to measure, the other said
         // "nothing". Only the first is refused at boot.
@@ -477,6 +487,7 @@ object RouterConfigLoader {
             sweepSeconds = m.longAtLeast(MONITOR_CONFIG, "sweepSeconds", 300L) ?: MonitorConfig.DEFAULT_SWEEP_SECONDS,
             fastLaneSeconds = parseFastLane(m),
             dialConcurrency = m.intAtLeast(MONITOR_CONFIG, "dialConcurrency", 1) ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY,
+            connectionTimeoutSec = m.longAtLeast(MONITOR_CONFIG, "connectionTimeout", 1L) ?: MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS,
         )
     }
 
@@ -1092,7 +1103,7 @@ object RouterConfigLoader {
     /** The stream keys [parseDiscovery] reads, and so only on a stream with a `relaySource`. */
     private val DISCOVERY_KEYS = setOf("relaySource", "gatedBy", "refreshSeconds", "exclude", "maxRelaysPerList")
 
-    private val MONITOR_KEYS = setOf("sources", "exclude", "sweepSeconds", "fastLaneSeconds", "dialConcurrency")
+    private val MONITOR_KEYS = setOf("sources", "exclude", "sweepSeconds", "fastLaneSeconds", "dialConcurrency", "connectionTimeout")
 
     private val SELECT_KEYS = setOf("kind", "tag", "relay", "index", "marker", "where")
 

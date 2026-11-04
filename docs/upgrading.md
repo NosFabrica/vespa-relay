@@ -4,6 +4,46 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The monitor is its own process (November 2026)
+
+The monitor left the sync process. It is `vespa-monitor` in the same image and
+the `monitor` service in `docker-compose.yml`, under the same `sync` profile, so
+`docker compose --profile sync up -d` starts it.
+
+### Do before the first boot
+
+- **Move the monitor's settings to the monitor.** `MONITOR_CONFIG`,
+  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT` and `MONITOR_STATUS_FILE` on the
+  sync process stop its boot and say where they moved, and so does a
+  `monitor { }` block in `sync.conf`: move its contents to `monitor.conf`. Under
+  compose with `MONITOR_CONFIG_LOCAL` there is nothing to change.
+- **Check the memory budget.** The monitor container takes `MONITOR_MEM_LIMIT`
+  (default `6g`, not yet measured on its own). Its heap was part of the sync's
+  12g before.
+- **A probe's dial budget** is `connectionTimeout` in `monitor.conf` now
+  (default 20 s); `sync.conf`'s no longer reaches the monitor.
+
+### What you will see
+
+- **A `vespa-monitor` container**, with the monitor page on 7779 as before and
+  its own `boot:` and health lines. `restart sync` no longer restarts the
+  monitor; `restart monitor` does, and neither touches the other.
+- **No monitor config, no monitor.** Without `MONITOR_CONFIG_LOCAL` the monitor
+  prints that this deployment measures nothing and exits 0, and compose leaves
+  it down. A sync whose streams discover their relays is no longer refused for
+  having no monitor declared: it rosters from whatever verdicts `verdictsFrom`
+  names, and the boot says whose.
+- **A health line naming a starved stream.** A stream whose relays come from
+  kind-30166 verdicts that the store does not hold (`router: health stream `X`
+  takes its relays from kind-30166 verdicts and the store holds none…`) means
+  no monitor is signing them: start the monitor service, or point
+  `verdictsFrom` at the monitor that does.
+- **The sync's `connectionTimeout`** is named at boot when it is not the
+  default, since the monitor no longer reads it.
+- **An event a probe happens to see is no longer mirrored.** It went into the
+  mirror's ingest when both ran in one process; the monitor drops it now. A
+  handful per relay, and the mirror's own walks fetch them.
+
 ## Score repair and quartz 2.13.0 (November 2026)
 
 vespa-eventstore `2e4f323c4aad` and quartz 2.13.0. Nothing to deploy: the

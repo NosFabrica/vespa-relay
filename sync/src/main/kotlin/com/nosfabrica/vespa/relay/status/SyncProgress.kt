@@ -225,66 +225,7 @@ class SyncProgress {
                 processors.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
                 }
-                store?.let { put("store", storeCalls(it)) }
-            }
-
-        /** The store section. Every count is written with its zeroes so the sums can always be checked. */
-        private fun storeCalls(s: StoreCalls.Snapshot): JsonObject =
-            buildJsonObject {
-                put("outstanding", s.outstanding)
-                // The operator's own threshold, so the page marks rows by it, not a copy of the default.
-                put("slowAfterSec", s.slowAfterSec)
-                put("issued", s.issued)
-                put("returned", s.returned)
-                put("failed", s.failed)
-                put("cancelled", s.cancelled)
-                s.calls.takeIf { it.isNotEmpty() }?.let { rows ->
-                    putJsonArray("calls") {
-                        for (c in rows) {
-                            add(
-                                buildJsonObject {
-                                    put("caller", c.caller)
-                                    put("op", c.op)
-                                    // A summary of the ask, never the ask.
-                                    c.asked?.let { put("asked", it) }
-                                    put("issuedAt", c.issuedAt)
-                                    put("elapsedSec", c.elapsedSec)
-                                    put("outstandingAtIssue", c.outstandingAtIssue)
-                                },
-                            )
-                        }
-                    }
-                }
-                put("omitted", s.omitted)
-                s.callers.takeIf { it.isNotEmpty() }?.let { rows ->
-                    putJsonArray("callers") {
-                        for (c in rows) {
-                            add(
-                                buildJsonObject {
-                                    put("caller", c.caller)
-                                    put("issued", c.issued)
-                                    put("returned", c.returned)
-                                    put("failed", c.failed)
-                                    put("cancelled", c.cancelled)
-                                    put("outstanding", c.outstanding)
-                                    c.oldestOutstandingSec?.let { put("oldestOutstandingSec", it) }
-                                },
-                            )
-                        }
-                    }
-                }
-                s.ages.takeIf { rows -> rows.any { it.calls > 0 } }?.let { rows ->
-                    putJsonArray("ages") {
-                        for (a in rows) {
-                            add(
-                                buildJsonObject {
-                                    put("fromSec", a.fromSec)
-                                    put("calls", a.calls)
-                                },
-                            )
-                        }
-                    }
-                }
+                store?.let { put("store", it.document()) }
             }
 
         /** A list of held relays, one shape for a stream's `inFlight` and the root's `live`. */

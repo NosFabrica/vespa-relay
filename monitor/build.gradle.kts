@@ -1,22 +1,31 @@
 plugins {
     id("vespa-relay.kotlin-module")
+    application
 }
 
 dependencies {
-    // Never :sync. What the monitor needs from the mirror arrives through MonitorEngine's constructor.
-    // api: MonitorEngine's constructor and RelayVerdictRecord are written in this module's types.
-    api(project(":peers"))
+    // implementation, not api: this module is a process, nothing compiles against it. Never :sync:
+    // the mirror reads the verdicts from the store, and the monitor knows no mirror type.
+    implementation(project(":common"))
+    implementation(project(":peers"))
+    implementation(project(":web"))
+    implementation(libs.quartz)
+    implementation(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)
     implementation(libs.kotlinx.serialization.json)
     // RelayDocument fetches NIP-11 over http. Declared rather than taken from :peers'
     // api, so the graph says where the dependency is used.
     implementation(libs.okhttp)
-    // Tests only: this plane produces a document and renders nothing, so :web is not on
-    // its compile classpath. MonitorStatusTest serves the shared page over the document.
-    testImplementation(project(":web"))
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.serialization.json)
     testImplementation(libs.okhttp)
+}
+
+application {
+    // Netty loads its native libraries itself; JDK 24+ warns at every boot unless native access is granted.
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
+    mainClass = "com.nosfabrica.vespa.relay.MonitorMainKt"
+    applicationName = "vespa-monitor"
 }
 
 tasks.test {

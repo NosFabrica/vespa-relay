@@ -18,36 +18,24 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.status
+package com.nosfabrica.vespa.relay.util
 
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
-/**
- * Rebuilds a status document on a timer, one instance per plane. Its own daemon thread, so
- * the page keeps refreshing while the mirror's dispatchers are saturated.
- */
-internal class StatusRollup(
-    /** Names the thread and the log line a failed pass prints. */
-    private val name: String,
-    private val everySeconds: Long,
-    private val publish: () -> Unit,
-) : AutoCloseable {
-    private val timer =
-        Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "$name-status").apply { isDaemon = true }
+class FatalWatchTest {
+    @Test
+    fun `a thread killed by a VirtualMachineError is counted, and an ordinary exception is not`() {
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+        try {
+            val fatals = AtomicLong()
+            watchForFatals("test", fatals)
+            Thread { throw OutOfMemoryError("staged") }.apply { start() }.join()
+            Thread { throw IllegalStateException("ordinary") }.apply { start() }.join()
+            assertEquals(1L, fatals.get())
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(before)
         }
-
-    fun start(): StatusRollup {
-        timer.scheduleAtFixedRate({
-            // `scheduleAtFixedRate` cancels the schedule on the first exception.
-            runCatching { publish() }
-                .onFailure { System.err.println("router: $name status rollup failed: ${it.message}") }
-        }, everySeconds, everySeconds, TimeUnit.SECONDS)
-        return this
-    }
-
-    override fun close() {
-        timer.shutdownNow()
     }
 }

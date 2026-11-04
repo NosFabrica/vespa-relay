@@ -432,24 +432,12 @@ services:
       ROUTER_CONFIG_LOCAL: ${ROUTER_CONFIG_LOCAL:-}
       ROUTER_SYNC_STATE_FILE: ${ROUTER_SYNC_STATE_FILE:-}
       ROUTER_SWEEP_STATE_FILE: ${ROUTER_SWEEP_STATE_FILE:-}
-      # What this deployment MEASURES, in its own file: the relay lists the
-      # monitor scans and the clocks its passes run on. Separate because every
-      # url it derives becomes a signed public claim about somebody else's
-      # relay, so editing the streams above must never change it. A deployment
-      # whose streams discover their relays and which declares no monitor at
-      # all is refused at boot rather than quietly measuring nothing.
-      # `:+` and not `:-`: EMPTY unless the operator pointed MONITOR_CONFIG_LOCAL at a file of
-      # their own. The mount below always has something at the path, and defaulting to it would
-      # start signing public claims about strangers' relays for a deployment that never asked —
-      # the opposite of what declaring the corpus is for. Unset, a config whose streams discover
-      # their relays refuses to boot and says how to opt in.
-      MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-${MONITOR_CONFIG_LOCAL:+/etc/vespa-relay/monitor.conf}}
       # Clients first, across the process boundary: the relay serves its mean
       # read latency on GET /pressure; this process's repairs yield to it and its
       # status page reports it. Ingest does not: the relay's mirror lane already
       # yields. Unset it to repair at full speed regardless of readers.
       SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
-      # Where every write goes: the relay container, over one socket signed in
+      # Where every write goes: the relay container, over a socket signed in
       # with RELAY_NSEC, so the relay is the index's only writer
       # (docs/configuration.md).
       SYNC_INGEST_URL: ${SYNC_INGEST_URL:-ws://relay:7777}
@@ -534,15 +522,6 @@ services:
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
       # Survives a restart, so a redeploy does not blank the page for a tick.
       SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
-      # THE MONITOR'S OWN PAGE, one port past it: which relay urls are one
-      # server wearing several addresses, which cannot answer the same question
-      # twice, which are graded prime — and the signed kind-30166 records
-      # themselves, read over the relay's websocket. Its own page because it
-      # answers a different question in a different unit (relay urls, not
-      # events), and because when this plane becomes its own container the port
-      # it is read at does not change. 0 serves no monitor page.
-      MONITOR_STATUS_PORT: 7779
-      MONITOR_STATUS_FILE: ${MONITOR_STATUS_FILE:-/var/lib/vespa-relay/monitor-status.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -562,8 +541,9 @@ services:
       VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Same key as the relay, and required: every write goes to the relay
-      # signed in as it, and upstream NIP-42 AUTH and the NIP-66 monitor sign as
-      # the relay this process feeds.
+      # signed in as it, and upstream NIP-42 AUTH signs as the relay this
+      # process feeds. Unless sync.conf sets `verdictsFrom`, it is also whose
+      # verdicts the roster follows: the monitor service signs with it.
       RELAY_NSEC: ${RELAY_NSEC:-}
       # Opt-in parse audit — it rides ingest, so it lives on this side of the
       # split. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay, which the
@@ -596,8 +576,6 @@ services:
       # — by a person with a browser — and because the alternative is exec'ing
       # into the container to find out whether the mirror is running.
       - "${SYNC_STATUS_PORT:-7778}:7778"
-      # …and the monitor's, for the same reason.
-      - "${MONITOR_STATUS_PORT:-7779}:7779"
       # The mirror's pulse page, LOOPBACK ONLY — see the relay service. Unlike
       # the two above it, this document is not public.
       - "127.0.0.1:${SYNC_PULSE_PORT:-7781}:${SYNC_PULSE_PORT:-7781}"
@@ -605,11 +583,76 @@ services:
       # Mounts your local ./sync.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.
       - ${SYNC_CONFIG_LOCAL:-./sync.conf.example}:/etc/vespa-relay/sync.conf:ro
-      # …and your ./monitor.conf beside it, the same way.
-      - ${MONITOR_CONFIG_LOCAL:-./monitor.conf.example}:/etc/vespa-relay/monitor.conf:ro
       # Sync cursors + the parse audit report, shared with the relay's mount.
       - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
     restart: unless-stopped
+
+  # THE MONITOR: the measuring plane, its own process. It reads the store,
+  # dials the relays monitor.conf names, and signs kind-30166 verdicts that it
+  # writes through the relay. The mirror reads them back from the store and
+  # knows nothing else about it, so `restart monitor` after a monitor.conf edit
+  # leaves the mirror's sockets and bands alone, and the other way round.
+  # Same profile as the sync, so `--profile sync` measures as it always did.
+  monitor:
+    build: .
+    image: vespa-relay
+    entrypoint: ["/app/monitor/bin/vespa-monitor"]
+    container_name: vespa-monitor
+    profiles: ["sync"]
+    # Not measured on its own yet. A full fold and fitness sweep over a
+    # 20k-url corpus needed a 6g test heap (MonitorReplayProbe), and it ran
+    # inside the sync's 12g before this split.
+    mem_limit: ${MONITOR_MEM_LIMIT:-6g}
+    ulimits:
+      nofile:
+        soft: ${MONITOR_NOFILE:-65536}
+        hard: ${MONITOR_NOFILE:-65536}
+    depends_on:
+      vespa:
+        condition: service_healthy
+      relay:
+        condition: service_started
+      tor:
+        condition: service_started
+    environment:
+      JAVA_TOOL_OPTIONS: ${MONITOR_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
+      VESPA_URL: http://vespa:8080
+      VESPA_FEED_URLS: ${VESPA_FEED_URLS:-}
+      VESPA_QUERY_URLS: ${VESPA_QUERY_URLS:-}
+      RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      TRUST_PROVIDER_REFRESH_SECONDS: ${TRUST_PROVIDER_REFRESH_SECONDS:-}
+      # What this deployment MEASURES, in its own file: the relay lists to
+      # scan and the clocks the passes run on. Every url it derives becomes a
+      # signed public claim about somebody else's relay. `:+` and not `:-`:
+      # EMPTY unless MONITOR_CONFIG_LOCAL names a file of yours, because the
+      # mount below always has something at the path. Empty, the monitor says
+      # it measures nothing here and exits cleanly, and is not restarted.
+      MONITOR_CONFIG_FILE: ${MONITOR_CONFIG_FILE:-${MONITOR_CONFIG_LOCAL:+/etc/vespa-relay/monitor.conf}}
+      # Where the verdicts go: the relay container, signed in with RELAY_NSEC.
+      MONITOR_INGEST_URL: ${MONITOR_INGEST_URL:-ws://relay:7777}
+      # Signs every verdict, and must be the relay's own: the boot reads the
+      # relay's NIP-11 `self` and stops on a mismatch.
+      RELAY_NSEC: ${RELAY_NSEC:-}
+      # The monitor's page: which urls are one server, which cannot answer the
+      # same question twice, which are graded prime. 0 serves no page.
+      MONITOR_STATUS_PORT: 7779
+      MONITOR_STATUS_FILE: ${MONITOR_STATUS_FILE:-/var/lib/vespa-relay/monitor-status.json}
+      MONITOR_STATUS_INTERVAL_SECONDS: ${MONITOR_STATUS_INTERVAL_SECONDS:-}
+      MONITOR_WIRE_LOG: ${MONITOR_WIRE_LOG:-}
+      QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # The same Tor as the sync, under the same names: a hidden service is
+      # measured through it.
+      SYNC_TOR_SOCKS: ${SYNC_TOR_SOCKS-tor:9050}
+      SYNC_TOR_ALL: ${SYNC_TOR_ALL:-}
+      SYNC_TOR_CONNECT_TIMEOUT_SECONDS: ${SYNC_TOR_CONNECT_TIMEOUT_SECONDS:-}
+      SYNC_TOR_MAX_SOCKETS: ${SYNC_TOR_MAX_SOCKETS:-}
+    ports:
+      - "${MONITOR_STATUS_PORT:-7779}:7779"
+    volumes:
+      - ${MONITOR_CONFIG_LOCAL:-./monitor.conf.example}:/etc/vespa-relay/monitor.conf:ro
+      - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
+    # A deployment with no monitor.conf exits 0 and stays down; a refusal or a crash restarts.
+    restart: on-failure
 
   # The Tor transport for .onion upstreams. Its own container, not a daemon
   # inside the sync image: that image carries BOTH processes, so installing Tor

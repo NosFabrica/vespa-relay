@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Re-records relay/cds.classlist and sync/cds.classlist, the classes each process loads in a real
+# Re-records relay/, sync/ and monitor/cds.classlist, the classes each process loads in a real
 # boot, which the Dockerfile archives (AppCDS) when it builds the image. Run it from the repository
-# root against a compose stack that is up, with Vespa holding data and the sync's sources reachable,
-# after a dependency bump or a change to what the boot does; then rebuild the image and commit both
-# files. A dev stack, not production: it restarts the relay and the sync twice.
+# root against a compose stack that is up, with Vespa holding data and the sync's and the monitor's
+# sources reachable, after a dependency bump or a change to what the boot does; then rebuild the
+# image and commit the files. A dev stack, not production: it restarts the three processes twice.
 #
 #   tools/record-cds-classlists.sh [seconds to let them run, default 90]
 #
@@ -24,20 +24,23 @@ services:
   sync:
     environment:
       VESPA_SYNC_OPTS: "-XX:DumpLoadedClassList=/var/lib/vespa-relay/sync.classlist"
+  monitor:
+    environment:
+      VESPA_MONITOR_OPTS: "-XX:DumpLoadedClassList=/var/lib/vespa-relay/monitor.classlist"
 YML
 BASE=${COMPOSE:-docker compose -f docker-compose.yml}
 DC="$BASE -f $OVR --profile sync"
 # Back to the stack as configured however this ends: a failed step must not leave it recording.
 restore() {
   rm -f "$OVR"
-  $BASE --profile sync up -d --no-deps --force-recreate relay sync
+  $BASE --profile sync up -d --no-deps --force-recreate relay sync monitor
 }
 trap restore EXIT
-$DC up -d --no-deps --force-recreate relay sync
+$DC up -d --no-deps --force-recreate relay sync monitor
 echo "recording for ${SECS}s"
 sleep "$SECS"
-$DC stop relay sync
-for app in relay sync; do
+$DC stop relay sync monitor
+for app in relay sync monitor; do
   [ -s "$STATE/$app.classlist" ] || { echo "no $STATE/$app.classlist: nothing recorded" >&2; exit 1; }
   {
     echo "# Classes a $app boot loads, recorded from a running stack by tools/record-cds-classlists.sh and"

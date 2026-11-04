@@ -86,6 +86,8 @@ class RelayWriter(
     private val redialMs: Long = REDIAL_MS,
     /** How [dial]'s host is resolved; a test stands in for compose's, which forgets a stopped container. */
     dns: Dns = Dns.SYSTEM,
+    /** The log and boot-line prefix: the process writing, `sync` or `monitor`. */
+    private val process: String = "sync",
 ) : StoreWriter {
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
@@ -119,7 +121,7 @@ class RelayWriter(
                     pingMillis: Int,
                     compressed: Boolean,
                 ) {
-                    if (relay.url == dial) BootClock.once("sync: relay writer connected")
+                    if (relay.url == dial) BootClock.once("$process: relay writer connected")
                 }
 
                 override suspend fun onIncomingMessage(
@@ -127,7 +129,7 @@ class RelayWriter(
                     msgStr: String,
                     msg: Message,
                 ) {
-                    if (msg is OkMessage && relay.url == dial && signedIn()) BootClock.once("sync: relay writer signed in (mirror lane)")
+                    if (msg is OkMessage && relay.url == dial && signedIn()) BootClock.once("$process: relay writer signed in (mirror lane)")
                 }
             },
         )
@@ -161,7 +163,7 @@ class RelayWriter(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                System.err.println("sync: redialling the relay at ${dial.url} failed: ${e.message}")
+                System.err.println("$process: redialling the relay at ${dial.url} failed: ${e.message}")
             }
         }
     }
@@ -213,7 +215,7 @@ class RelayWriter(
         val last = unsignedLoggedAt.get()
         if (now - last < UNSIGNED_LOG_MS || !unsignedLoggedAt.compareAndSet(last, now)) return
         System.err.println(
-            "sync: not signed in to the relay at ${dial.url} after ${authWaitMs}ms (NIP-42 ${authenticator.authSnapshot(dial).phase}); " +
+            "$process: not signed in to the relay at ${dial.url} after ${authWaitMs}ms (NIP-42 ${authenticator.authSnapshot(dial).phase}); " +
                 "$count batch(es) so far went through its publishers' lane instead of the mirror lane. Stored all the same, " +
                 "but check that this process's RELAY_NSEC is the relay's own",
         )

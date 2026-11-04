@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl

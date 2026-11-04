@@ -31,13 +31,9 @@ import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
-import com.nosfabrica.vespa.relay.monitor.AliasProbe
-import com.nosfabrica.vespa.relay.monitor.FitnessPass
-import com.nosfabrica.vespa.relay.monitor.Reach
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.status.StreamPhases
@@ -61,8 +57,8 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * Runs the fitness pass over a few live relays, reads the kind-30166 roster back from an
- * in-memory store and lets a small [VisitPool] with two streams work it, printing each stage's
+ * Grades a few live relays `prime` by hand, reads the kind-30166 roster back from an in-memory
+ * store and lets a small [VisitPool] with two streams work it against them, printing each stage's
  * decisions and the progress document. Asserts nothing. Selected by `-DvisitPoolProbe=true`.
  */
 class VisitPoolLiveProbe {
@@ -106,18 +102,10 @@ class VisitPoolLiveProbe {
 
         try {
             runBlocking {
-                // ---- Plane one: the monitor earns verdicts on live servers.
-                val fitness =
-                    FitnessPass(
-                        record = record,
-                        probe = AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { 15_000L },
-                        client = client,
-                        progress = processors.of("fitness"),
-                    )
-                val started = System.currentTimeMillis()
-                fitness.measure("live probe", candidates, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                // ---- Graded by hand: the monitor is its own process, and its live probes are its own.
+                for (url in candidates) record.publishFitness(url, Verdict.PRIME.value, "graded by hand for the probe", pageable = null, nip77 = null)
                 println("=".repeat(78))
-                println("fitness pass over ${candidates.size} url(s) in ${System.currentTimeMillis() - started}ms — records now say:")
+                println("${candidates.size} url(s) graded prime by hand — records now say:")
                 val roster = RelayDiscovery.discover(store, RelayDiscoveryConfig(listOf(probeSource(signer.pubKey)), 3600, RelayExcludes.NONE))
                 println("  prime roster read back: ${roster.map { it.url.url }}")
                 println("=".repeat(78))

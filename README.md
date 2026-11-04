@@ -327,7 +327,7 @@ events from the relays their own 10002 marks write* is one line — and it needs
 no per-kind code: any tag that carries a relay url at some offset can be a
 source.
 
-Mirroring and measuring are two configs, because they are two planes:
+Mirroring and measuring are two configs and two processes, because they are two planes:
 `sync.conf` says what to mirror, `monitor.conf` says which relay urls to probe
 and grade, over its own `sources` and its own single `exclude`. To try it under
 compose — the `sync` profile is the on-switch:
@@ -338,8 +338,9 @@ cp monitor.conf.example monitor.conf   # what to measure: the relay lists to sca
 SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
   docker compose --profile sync up -d --build
 
-# after editing either: bounce only the mirror, the relay keeps serving
-docker compose --profile sync restart sync
+# after editing one: bounce only its process, the relay keeps serving
+docker compose --profile sync restart sync      # sync.conf
+docker compose --profile sync restart monitor   # monitor.conf
 ```
 
 [`docs/router.md`](docs/router.md) is the full guide: choosing `negentropy` vs

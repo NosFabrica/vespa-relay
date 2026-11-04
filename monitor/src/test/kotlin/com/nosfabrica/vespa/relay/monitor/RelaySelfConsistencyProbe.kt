@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
