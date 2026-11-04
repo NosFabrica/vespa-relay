@@ -42,6 +42,7 @@ import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.StatusRollup
+import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
@@ -108,6 +109,7 @@ fun main() {
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — the served relay's own ws url, which its NIP-42 check reads.")
     val relayUrl = RelayUrlNormalizer.normalizeOrNull(relayUrlRaw) ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
 
+    applyQuartzLogLevel(env)
     val storeTuning = EngineTuning.fromEnv(env)
     val config = RouterConfigLoader.monitorFromEnv(env)
     val sources = config.asDiscovery()
@@ -168,7 +170,7 @@ fun main() {
     keyChecked.await()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + storeCalls)
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
-    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
+    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()), process = "monitor")
     val peers = PeerClient(scope, identity, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
     val engine =
         MonitorEngine(

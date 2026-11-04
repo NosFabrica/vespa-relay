@@ -297,7 +297,7 @@ fun main() {
         println("vespa-sync status page on http://localhost:$statusPort/ (refreshed every ${statusEverySeconds}s)")
     }
 
-    BootClock.mark("sync: status pages published, starting the engine")
+    BootClock.mark("sync: status page published, starting the engine")
     engine.start()
     BootClock.mark("sync: engine started (streams and visits launched)")
 
