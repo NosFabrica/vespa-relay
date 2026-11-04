@@ -63,7 +63,7 @@ class MonitorStatusTest {
             calls.track("monitor.verdicts", "query") { Unit }
             val data =
                 MonitorStatus(rows(), everySeconds = 30, storeCalls = calls)
-                    .document(nowSeconds = 1_000)["monitor"]!!
+                    .document()["monitor"]!!
                     .jsonObject["data"]!!
                     .jsonObject
             val store = assertNotNull(data["progress"]!!.jsonObject["store"]).jsonObject
@@ -74,7 +74,7 @@ class MonitorStatusTest {
 
     @Test
     fun `the document carries this plane's rows, and the definitions for them alone`() {
-        val doc = MonitorStatus(rows(), everySeconds = 30).document(nowSeconds = 1_000)
+        val doc = MonitorStatus(rows(), everySeconds = 30).document()
 
         assertEquals(MonitorStatus.SCHEMA_VERSION, doc["schema"]!!.jsonPrimitive.content.toInt())
         assertEquals(
@@ -111,7 +111,7 @@ class MonitorStatusTest {
     @Test
     fun `a deployment with no monitor publishes no section at all`() {
         // A card of zeroes would read as a monitor that is failing.
-        val doc = MonitorStatus(Processors(), everySeconds = 30).document(nowSeconds = 1_000)
+        val doc = MonitorStatus(Processors(), everySeconds = 30).document()
 
         assertNull(doc["monitor"])
         assertEquals(0, (doc["tiers"]!!.jsonObject[MonitorStatus.TIER]!!.jsonObject["sections"] as JsonArray).size)
@@ -144,7 +144,7 @@ class MonitorStatusTest {
 
     @Test
     fun `the document names itself, because one page is served by three services`() {
-        val doc = MonitorStatus(rows(), everySeconds = 30, relayUrl = "ws://localhost:7777").document(nowSeconds = 1_000)
+        val doc = MonitorStatus(rows(), everySeconds = 30, relayUrl = "ws://localhost:7777").document()
 
         assertEquals("Relay monitor", doc["title"]!!.jsonPrimitive.content)
         // Deriving the relay from `location` would dial the status site's own port.

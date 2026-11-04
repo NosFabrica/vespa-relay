@@ -188,17 +188,6 @@ class MonitorGateTest {
         RouterConfigLoader.refuseUndeclaredSources(cfg.monitor!!)
     }
 
-    // `config.monitor?.fastLaneSeconds` is null both for no block and for the `= 0` off switch.
-    @Test
-    fun `a config with no monitor block still gets the default fast lane`() {
-        assertEquals(
-            MonitorConfig.DEFAULT_FAST_LANE_SECONDS,
-            MonitorEngine.fastLaneSecondsFor(config(streamDiscovers).monitor),
-            "a stream-discovering deployment has no monitor block, and lost its fast lane to that",
-        )
-        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, MonitorEngine.fastLaneSecondsFor(config(staticOnly).monitor))
-    }
-
     @Test
     fun `an operator who turned the lane off keeps it off`() {
         val off =
@@ -212,7 +201,7 @@ class MonitorGateTest {
                 """,
             )
         assertNull(
-            MonitorEngine.fastLaneSecondsFor(off.monitor),
+            off.monitor!!.fastLaneSeconds,
             "0 is the documented off switch; a default that overrode it would restart a lane by hand-tuning",
         )
         // The same block without the off switch, so the assertion above is about the 0 and not the block.
@@ -225,6 +214,6 @@ class MonitorGateTest {
                 }
                 """,
             )
-        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, MonitorEngine.fastLaneSecondsFor(on.monitor))
+        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, on.monitor!!.fastLaneSeconds)
     }
 }

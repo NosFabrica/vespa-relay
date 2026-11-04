@@ -23,8 +23,8 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -83,6 +83,7 @@ class DialPermitTest {
     private fun fitness(
         concurrency: Int,
         document: RelayDocument? = null,
+        reach: suspend (NormalizedRelayUrl) -> Reach = { Reach.REACHABLE },
         onDial: (NormalizedRelayUrl) -> Unit = {},
     ) = FitnessPass(
         record = RelayVerdictRecord(newStore(), signer),
@@ -90,8 +91,9 @@ class DialPermitTest {
         client = EmptyNostrClient(),
         progress = Processors().of("fitness"),
         document = document,
-        concurrency = concurrency,
+        gate = DialGate(concurrency),
         reconcile = { _, _ -> },
+        reach = reach,
     )
 
     @Test
@@ -100,16 +102,10 @@ class DialPermitTest {
             val both = Rendezvous(urls.size)
             // Each pre-probe waits for the other: one permit held across it could never let the second start.
             withTimeout(10_000) {
-                fitness(concurrency = 1).measure(
-                    "t",
-                    urls,
-                    reach = { url ->
-                        both.meet(url.url)
-                        Reach.REACHABLE
-                    },
-                    onEvent = {},
-                    sockets = Sockets.NONE,
-                )
+                fitness(concurrency = 1, reach = { url ->
+                    both.meet(url.url)
+                    Reach.REACHABLE
+                }).measure(RunKind.SWEEP, urls)
             }
         }
 
@@ -117,14 +113,15 @@ class DialPermitTest {
     fun `the stability gate pre-probes outside the dial permit`() =
         runBlocking {
             val both = Rendezvous(urls.size)
-            val pass = ConsistencyPass(consistency = RelayConsistency(), record = RelayVerdictRecord(newStore(), signer), probe = probe(), concurrency = 1)
+            val pass =
+                ConsistencyPass(consistency = RelayConsistency(), record = RelayVerdictRecord(newStore(), signer), probe = probe(), gate = DialGate(1), canDial = { url ->
+                    both.meet(url.url)
+                    true
+                })
 
             val decided =
                 withTimeout(10_000) {
-                    pass.measure("t", urls, canDial = { url ->
-                        both.meet(url.url)
-                        true
-                    })
+                    pass.measure(RunKind.SWEEP, urls)
                 }
             assertEquals(urls.size, decided)
         }
@@ -134,14 +131,15 @@ class DialPermitTest {
         runBlocking {
             val both = Rendezvous(2)
             val hosts = listOf("one", "two").flatMap { listOf(RelayUrlNormalizer.normalize("wss://$it.example"), RelayUrlNormalizer.normalize("wss://$it.example/alpha")) }
-            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(newStore(), signer), probe = probe(), concurrency = 1)
+            val fold =
+                AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(newStore(), signer), probe = probe(), gate = DialGate(1), canDial = { url ->
+                    both.meet(RelayAliases.hostOf(url.url))
+                    true
+                })
 
             val learned =
                 withTimeout(10_000) {
-                    fold.measure("t", hosts, canDial = { url ->
-                        both.meet(RelayAliases.hostOf(url.url))
-                        true
-                    })
+                    fold.measure(RunKind.SWEEP, hosts)
                 }
             assertEquals(2, learned)
         }
@@ -170,7 +168,7 @@ class DialPermitTest {
             runBlocking {
                 withTimeout(30_000) {
                     fitness(concurrency = 1, document = document) { url -> dialled[url]?.countDown() }
-                        .measure("t", local, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                        .measure(RunKind.SWEEP, local)
                 }
             }
             assertTrue(dialled.values.all { it.count == 0L }, "both urls were dialled")

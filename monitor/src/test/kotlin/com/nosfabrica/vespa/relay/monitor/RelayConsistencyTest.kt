@@ -212,13 +212,13 @@ class RelayConsistencyTest {
                         ),
                 )
 
-            val decided = pass.measure("t", listOf(steady, shuffler), canDial = { true })
+            val decided = pass.measure(RunKind.SWEEP, listOf(steady, shuffler))
 
             assertEquals(2, decided, "both urls should have reached a verdict")
             assertEquals(setOf(shuffler), RelayVerdictRecord(store, signer).load(listOf(steady, shuffler)).inconsistent)
 
             val afterFirst = dials.get()
-            assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
+            assertEquals(0, pass.measure(RunKind.SWEEP, listOf(steady, shuffler)))
             assertEquals(afterFirst, dials.get(), "a measured url was re-dialled")
         }
 
@@ -251,7 +251,7 @@ class RelayConsistencyTest {
                     progress = processors.of("consistency"),
                 )
 
-            assertEquals(1, pass.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(1, pass.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals(setOf(steady), RelayVerdictRecord(inner, signer).load(listOf(steady)).consistent)
             val row =
                 processors
@@ -273,13 +273,13 @@ class RelayConsistencyTest {
                     record = RelayVerdictRecord(newStore(), signer),
                     probe = AliasProbe(fetch = { _, want, _, _ -> AliasProbe.Page(corpus.take(want)) }, target = 40, page = 40, fallbackPage = 40),
                 )
-            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady, shuffler), canDial = { true })
+            pass.measure(RunKind.SWEEP, listOf(steady, shuffler))
             assertTrue(consistency.measured(shuffler))
 
-            pass.measure(AliasMonitor.FAST_LANE, listOf(steady), canDial = { true })
+            pass.measure(RunKind.FAST_LANE, listOf(steady))
             assertTrue(consistency.measured(shuffler), "a fast-lane batch is not the candidate set")
 
-            pass.measure(AliasMonitor.ALL_STREAMS, listOf(steady), canDial = { true })
+            pass.measure(RunKind.SWEEP, listOf(steady))
             assertFalse(consistency.measured(shuffler), "a url no sweep names any more is still held in memory")
         }
 
@@ -294,7 +294,7 @@ class RelayConsistencyTest {
                     probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }),
                 )
 
-            assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
+            assertEquals(0, pass.measure(RunKind.SWEEP, listOf(steady, shuffler)))
             assertEquals(emptySet(), RelayVerdictRecord(store, signer).load(listOf(steady, shuffler)).inconsistent)
         }
 
@@ -313,7 +313,7 @@ class RelayConsistencyTest {
                         }),
                 )
 
-            assertEquals(0, pass.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, pass.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals(listOf(null, null), asked.toList(), "the kinds pair would wait on the same dial's clock")
         }
 

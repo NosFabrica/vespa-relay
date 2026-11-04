@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -155,7 +154,7 @@ class RelayComplianceTest {
             // Every event fails both checks.
             val liar = Liar(signed(kind = 7, at = nowSeconds(), n = 10))
             val probe = AliasProbe(fetch = liar::fetch, target = 10, page = 10, fallbackPage = 10)
-            val window = probe.window(url, anchor = settled, kinds = listOf(1)) {}
+            val window = probe.window(url, anchor = settled, kinds = listOf(1))
 
             assertEquals(10, window.compliance.seen)
             assertEquals(10, window.compliance.offKind)
@@ -169,13 +168,13 @@ class RelayComplianceTest {
             // A zero here means the question was never put, not that the relay got it right.
             val liar = Liar(signed(kind = 7, at = settled, n = 10))
             val probe = AliasProbe(fetch = liar::fetch, target = 10, page = 10, fallbackPage = 10)
-            val bare = probe.window(url, anchor = settled, kinds = null) {}
+            val bare = probe.window(url, anchor = settled, kinds = null)
 
             assertEquals(0, bare.compliance.offKind)
             assertTrue(!bare.compliance.kindsAsked, "nothing was asked about kinds, so nothing was learned about them")
 
             // A `kinds` page two under a bare page one would drain honestly and read as a terminating walk.
-            val second = assertNotNull(probe.pageBelow(url, until = settled, kinds = null) {})
+            val second = assertNotNull(probe.pageBelow(url, until = settled, kinds = null))
             assertEquals(0, second.offKind)
             assertTrue(!second.kindsAsked, "page two of a bare walk is bare, so it learns nothing about kinds either")
         }
@@ -187,23 +186,13 @@ class RelayComplianceTest {
             val page = signed(kind = 1, at = settled, n = 5)
             val liar = Liar(page)
             val probe = AliasProbe(fetch = liar::fetch, target = 20, page = 5, fallbackPage = 5)
-            val window = probe.window(url, anchor = settled, kinds = null) {}
+            val window = probe.window(url, anchor = settled, kinds = null)
 
             assertTrue(liar.asks > 1, "the walk has to have paged for this to be measuring anything")
             assertTrue(
                 window.compliance.offWindow > 0,
                 "every page after the first came back above the cursor it was asked under",
             )
-        }
-
-    @Test
-    fun `everything the narrow ask downloads goes to ingest, like every other window`(): Unit =
-        runBlocking {
-            val liar = Liar(signed(kind = 1, at = settled, n = 4))
-            val probe = AliasProbe(fetch = liar::fetch, target = 10, page = 10, fallbackPage = 10)
-            val delivered = mutableListOf<Event>()
-            probe.pageBelow(url, until = settled, kinds = null) { delivered += it }
-            assertEquals(4, delivered.size)
         }
 
     // ------------------------------------------------------------------------
@@ -230,7 +219,7 @@ class RelayComplianceTest {
                 ),
             client = EmptyNostrClient(),
             progress = Processors().of("fitness"),
-        ).measure("compliance", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+        ).measure(RunKind.SWEEP, listOf(url))
 
         val published =
             store
@@ -298,7 +287,7 @@ class RelayComplianceTest {
                     ),
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("cut page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, listOf(url))
 
             val published =
                 store
@@ -344,7 +333,7 @@ class RelayComplianceTest {
                     ),
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("cut on page two", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, listOf(url))
 
             val published =
                 store
@@ -401,7 +390,7 @@ class RelayComplianceTest {
             val page = signed(kind = 1, at = settled, n = 20)
             val liar = Liar(page, honoursCursor = false)
             val probe = AliasProbe(fetch = liar::fetch, target = 20, page = 20, fallbackPage = 20)
-            val second = assertNotNull(probe.pageBelow(url, until = settled - 20, kinds = null) {})
+            val second = assertNotNull(probe.pageBelow(url, until = settled - 20, kinds = null))
 
             assertEquals(second.seen, second.offWindow, "every event came back above a cursor one second below them")
         }

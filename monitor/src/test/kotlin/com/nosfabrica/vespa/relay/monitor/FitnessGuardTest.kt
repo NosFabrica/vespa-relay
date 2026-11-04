@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -90,7 +89,8 @@ class FitnessGuardTest {
                 progress = Processors().of("fitness"),
                 tor = tor,
                 tlsCheck = { tlsCheck(it) },
-            ).measure("guard", urls, reach = { reach(it) }, onEvent = {}, sockets = Sockets.NONE)
+                reach = { reach(it) },
+            ).measure(RunKind.SWEEP, urls)
             urls.associateWith { gradeOf(store, it) }
         }
 

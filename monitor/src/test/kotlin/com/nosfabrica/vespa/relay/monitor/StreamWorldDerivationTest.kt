@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -37,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -94,10 +94,7 @@ class StreamWorldDerivationTest {
                 """.trimIndent(),
             ).monitorSources()
 
-    /**
-     * Nothing here dials, so the probe and sockets are never reached; they are passed real so a
-     * constructor that starts doing work is noticed. Nothing here submits, so the sink throws.
-     */
+    /** Nothing here dials, so the probe is never reached; it is passed real so a constructor that starts doing work is noticed. */
     private fun world(
         store: IEventStore,
         exclude: List<String>,
@@ -112,8 +109,6 @@ class StreamWorldDerivationTest {
             monitorAuthors = monitorAuthors,
             self = self,
             tor = null,
-            sockets = Sockets.NONE,
-            onProbeEvent = { error("no dial runs here, so nothing can have seen an event") },
             progress = progress,
         )
 
@@ -132,7 +127,7 @@ class StreamWorldDerivationTest {
             val world = world(store, listOf("wss://filter.nostr.wine/npub.*"))
             world.candidates()
 
-            val d = world.lastDerivation
+            val d = assertNotNull(world.lastDerivation)
             assertEquals(perNpub.size, d.excluded, "every per-npub url the exclude dropped has to appear in the count")
             assertEquals(perNpub.size + 1, d.sourced, "`sourced` is what the store NAMED, above the exclusion, not below it")
             assertEquals(0, d.heldOutDead, "no dead verdicts were published, so nothing was held out")
@@ -158,7 +153,7 @@ class StreamWorldDerivationTest {
             val world = world(store, listOf("wss://filter.nostr.wine/npub.*"))
             val candidates = world.candidates()
 
-            val d = world.lastDerivation
+            val d = assertNotNull(world.lastDerivation)
             assertEquals(
                 d.sourced,
                 d.excluded + d.heldOutDead + candidates.size,
@@ -174,18 +169,18 @@ class StreamWorldDerivationTest {
             val row = processors.of("aliasSource")
             val world = world(store, listOf("wss://filter.nostr.wine/npub.*"), progress = row)
             // A boot publishes no counts rather than claiming it named no urls.
-            assertEquals(false, world.derived, "nothing has been derived before the first walk")
+            assertNull(world.lastDerivation, "nothing has been derived before the first walk")
 
             val candidates = world.candidates()
-            assertEquals(true, world.derived, "and the numbers are a measurement once one has")
+            assertNotNull(world.lastDerivation, "and the numbers are a measurement once one has")
 
             val after = processors.snapshot().single()
             assertEquals("source", after.measuring?.unit, "the walk declared what it was counting")
             // Per source, not per config: a position over configs could not move.
             assertEquals(1, after.measuring?.toProbe, "one unit per configured source, across every derivation")
             assertEquals(1, after.measuring?.attempted, "and it is behind the walk once that source's read ends")
-            assertEquals(candidates.size, world.lastDerivation.candidates)
-            assertEquals(1, world.lastDerivation.candidates, "one relay survives the exclude, and the row says so")
+            assertEquals(candidates.size, world.lastDerivation!!.candidates)
+            assertEquals(1, world.lastDerivation!!.candidates, "one relay survives the exclude, and the row says so")
         }
 
     @Test
@@ -201,8 +196,6 @@ class StreamWorldDerivationTest {
                     monitorAuthors = emptyList(),
                     self = null,
                     tor = null,
-                    sockets = Sockets.NONE,
-                    onProbeEvent = { error("no dial runs here, so nothing can have seen an event") },
                     progress = processors.of("aliasSource"),
                 )
 
@@ -237,8 +230,6 @@ class StreamWorldDerivationTest {
                     monitorAuthors = listOf(monitor.pubKey),
                     self = monitor.pubKey,
                     tor = null,
-                    sockets = Sockets.NONE,
-                    onProbeEvent = { error("no dial runs here") },
                     recentlyGraded = { urls -> StreamWorld.gradedSince(record, urls, nowSeconds() - sweepSeconds) },
                 )
 
@@ -300,8 +291,8 @@ class StreamWorldDerivationTest {
             val world = world(store, emptyList())
             val candidates = world.candidates()
 
-            assertEquals(1, world.lastDerivation.excluded, "our own url is a drop an operator can act on")
-            assertEquals(2, world.lastDerivation.sourced)
+            assertEquals(1, world.lastDerivation!!.excluded, "our own url is a drop an operator can act on")
+            assertEquals(2, world.lastDerivation!!.sourced)
             assertTrue(candidates.none { it == self }, "and still never dialled")
         }
 
@@ -327,7 +318,7 @@ class StreamWorldDerivationTest {
             val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
             world.candidates()
 
-            val d = world.lastDerivation
+            val d = assertNotNull(world.lastDerivation)
             assertEquals(1, d.sourced, "one url is what the relay lists name")
             assertEquals(2, d.recordedOnly, "the two nothing names any more are still urls this router knows of")
         }
@@ -347,9 +338,9 @@ class StreamWorldDerivationTest {
             val candidates = world.candidates()
 
             assertTrue(forgotten in candidates, "a url only our own records name must still be re-measured")
-            assertEquals(2, world.lastDerivation.candidates, "both the named url and the recorded one are the corpus")
-            assertEquals(1, world.lastDerivation.sourced, "…and `sourced` still means what a relay list named this round")
-            assertEquals(1, world.lastDerivation.recordedOnly, "…with the other side of the union named as its own number")
+            assertEquals(2, world.lastDerivation!!.candidates, "both the named url and the recorded one are the corpus")
+            assertEquals(1, world.lastDerivation!!.sourced, "…and `sourced` still means what a relay list named this round")
+            assertEquals(1, world.lastDerivation!!.recordedOnly, "…with the other side of the union named as its own number")
         }
 
     @Test
@@ -364,11 +355,11 @@ class StreamWorldDerivationTest {
             val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
 
             world.candidates()
-            assertEquals(140, world.lastDerivation.sourced)
-            assertNull(world.lastDerivation.sourcedLastRound, "the first round has nothing to be compared against")
+            assertEquals(140, world.lastDerivation!!.sourced)
+            assertNull(world.lastDerivation!!.sourcedLastRound, "the first round has nothing to be compared against")
 
             world.candidates()
-            assertEquals(140, world.lastDerivation.sourcedLastRound, "the second round carries what the first one named")
+            assertEquals(140, world.lastDerivation!!.sourcedLastRound, "the second round carries what the first one named")
         }
 
     @Test
@@ -399,7 +390,7 @@ class StreamWorldDerivationTest {
                 world.candidates()
                 read = "whole"
                 world.candidates()
-                assertEquals(140, world.lastDerivation.sourcedLastRound, "a $fault read became the baseline")
+                assertEquals(140, world.lastDerivation!!.sourcedLastRound, "a $fault read became the baseline")
             }
         }
 
@@ -416,7 +407,7 @@ class StreamWorldDerivationTest {
             val world = world(store, emptyList())
             world.candidates()
 
-            assertEquals(0, world.lastDerivation.recordedOnly)
+            assertEquals(0, world.lastDerivation!!.recordedOnly)
         }
 
     @Test
@@ -426,8 +417,8 @@ class StreamWorldDerivationTest {
             val world = world(store, emptyList())
             val candidates = world.candidates()
 
-            assertEquals(0, world.lastDerivation.excluded)
-            assertEquals(perNpub.size + 1, world.lastDerivation.sourced)
+            assertEquals(0, world.lastDerivation!!.excluded)
+            assertEquals(perNpub.size + 1, world.lastDerivation!!.sourced)
             assertEquals(perNpub.size + 1, candidates.size, "nothing excluded means everything is a candidate")
         }
 }

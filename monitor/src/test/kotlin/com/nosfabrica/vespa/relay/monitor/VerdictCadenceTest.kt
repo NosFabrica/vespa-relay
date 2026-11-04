@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -109,7 +108,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(deadlineMs() * 40) {
-                    pass.measure("cut late", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, listOf(slow))
                 }
             } finally {
                 System.setErr(realErr)
@@ -149,7 +148,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("neg-open clock", listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, listOf(slow))
             }
 
             assertEquals(Verdict.PRIME.value, gradeOf(store, slow))
@@ -192,12 +191,12 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("wedged", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, urls)
             }
 
             store.wedged = false
             withTimeout(30_000) {
-                pass.measure("recovered", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, urls)
             }
 
             for (url in urls) {
@@ -242,10 +241,10 @@ class VerdictCadenceTest {
                 )
 
             // One label for both sweeps: the resume cursor is per label.
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(RunKind.SWEEP, urls) }
             val first = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
-            withTimeout(30_000) { pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
+            withTimeout(30_000) { pass.measure(RunKind.SWEEP, urls) }
             val second = synchronized(attempted) { attempted.toList() }
 
             assertEquals(LANDED_BEFORE_WEDGE + VerdictWrites.PUBLISH_WEDGE_LIMIT, first.size, "a wedged store must cost the wedge limit and no more")
@@ -301,7 +300,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, corpusUrls)
             }
             val sweptFirst = synchronized(attempted) { attempted.toList() }
             synchronized(attempted) { attempted.clear() }
@@ -309,13 +308,13 @@ class VerdictCadenceTest {
             // A healthy lane tick writes its whole batch and so has no resume point of its own.
             wedged.set(false)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.FAST_LANE, laneUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.FAST_LANE, laneUrls)
             }
             synchronized(attempted) { attempted.clear() }
 
             wedged.set(true)
             withTimeout(30_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, corpusUrls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, corpusUrls)
             }
             val sweptAgain = synchronized(attempted) { attempted.toList() }
 
@@ -353,7 +352,7 @@ class VerdictCadenceTest {
                     reconcile = { _, _ -> },
                 )
             withTimeout(60_000) {
-                pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, urls)
             }
 
             // Under the time budget, so only the consecutive limit could have ended this early.
@@ -388,12 +387,12 @@ class VerdictCadenceTest {
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
                 )
-            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure(RunKind.SWEEP, listOf(alias))
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
 
             // Nothing to dial and nothing to re-sign: the one read is the whole cost.
             queries.set(0)
-            pass.measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure(RunKind.SWEEP, listOf(alias))
             assertEquals(1, queries.get(), "the standing verdicts were read ${queries.get()} times for one batch")
         }
 
@@ -425,7 +424,7 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(RunKind.SWEEP, listOf(alias, dialled))
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled))
@@ -435,7 +434,7 @@ class VerdictCadenceTest {
 
             inserts.set(0)
             withTimeout(30_000) {
-                pass().measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass().measure(RunKind.SWEEP, listOf(alias, dialled))
             }
             assertEquals(1, inserts.get(), "a pass must re-sign what it dialled and only that")
             assertEquals(Verdict.PRIME.value, gradeOf(store, dialled), "the dialled url is still re-graded every pass")
@@ -453,7 +452,7 @@ class VerdictCadenceTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
-                ).measure(AliasMonitor.ALL_STREAMS, listOf(alias, dialled), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(RunKind.SWEEP, listOf(alias, dialled))
             }
             assertEquals(Verdict.PRIME.value, gradeOf(store, alias), "a verdict that CHANGED must be written whatever the record said")
         }
@@ -478,12 +477,12 @@ class VerdictCadenceTest {
                 )
 
             withTimeout(30_000) {
-                passFolding(first).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(first).measure(RunKind.SWEEP, listOf(alias))
             }
             assertTrue(first.url in (evidenceOf(store, alias) ?: ""), "the first fold has to name the first canonical")
 
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(RunKind.SWEEP, listOf(alias))
             }
             assertEquals(Verdict.ALIAS.value, gradeOf(store, alias))
             assertTrue(
@@ -493,7 +492,7 @@ class VerdictCadenceTest {
 
             val stamp = stampOf(store, alias)
             withTimeout(30_000) {
-                passFolding(second).measure(AliasMonitor.ALL_STREAMS, listOf(alias), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                passFolding(second).measure(RunKind.SWEEP, listOf(alias))
             }
             assertEquals(stamp, stampOf(store, alias), "an unchanged inherited verdict must still be left standing")
         }
@@ -517,7 +516,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, listOf(slow), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, listOf(slow))
                 }
             } finally {
                 System.setErr(realErr)
@@ -577,7 +576,7 @@ class VerdictCadenceTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(60_000) {
-                    pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, urls)
                 }
             } finally {
                 System.setErr(realErr)

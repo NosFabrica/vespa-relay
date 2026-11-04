@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.StoredFold
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -94,8 +93,6 @@ class StoredFoldTest {
                 monitorAuthors = MonitorEngine.deadVerdictSigners(ours.pubKey, sources),
                 self = ours.pubKey,
                 tor = null,
-                sockets = Sockets.NONE,
-                onProbeEvent = { error("nothing here dials") },
             )
         world.candidates()
         val folding = AliasFolding(RelayAliases(), RelayVerdictRecord(store, ours), AliasProbe(fetch = { _, _, _, _ -> error("the roster never dials") }))

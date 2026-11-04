@@ -59,12 +59,14 @@ class ConsistencyReportTest {
     private fun pass(
         handle: Processors.Handle,
         store: NostrSemanticsStore = newStore(),
+        canDial: suspend (NormalizedRelayUrl) -> Boolean = { true },
         fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page,
     ) = ConsistencyPass(
         consistency = RelayConsistency(),
         record = RelayVerdictRecord(store, signer),
         probe = AliasProbe(fetch = fetch, target = 40, page = 40, fallbackPage = 40),
         progress = handle,
+        canDial = canDial,
     )
 
     private fun row(processors: Processors) =
@@ -82,12 +84,12 @@ class ConsistencyReportTest {
             val processors = Processors()
             val dials = AtomicInteger()
             val gate =
-                pass(processors.of("consistency")) { _, _, _, _ ->
+                pass(processors.of("consistency"), canDial = { false }) { _, _, _, _ ->
                     dials.incrementAndGet()
                     AliasProbe.Page(corpus())
                 }
 
-            assertEquals(0, gate.measure("t", listOf(steady), canDial = { false }))
+            assertEquals(0, gate.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals(0, dials.get(), "a url the transport declined must never reach the probe")
             assertEquals("declined by our own transport", reasonOf(processors))
             assertEquals(0, row(processors).dialled, "no socket was opened, so nothing was dialled")
@@ -111,7 +113,7 @@ class ConsistencyReportTest {
                     progress = processors.of("consistency"),
                 )
 
-            assertEquals(0, gate.measure("t", listOf(steady), canDial = { true }), "a verdict that never landed was counted as decided")
+            assertEquals(0, gate.measure(RunKind.SWEEP, listOf(steady)), "a verdict that never landed was counted as decided")
             assertTrue(!consistency.measured(steady), "a verdict that never landed is held as measured")
             assertEquals(0, row(processors).decided)
             assertEquals(1, row(processors).unmeasured, "the url is still owed a verdict")
@@ -121,9 +123,9 @@ class ConsistencyReportTest {
     fun `a probe that throws before the walk is ours, and says so`() =
         runBlocking {
             val processors = Processors()
-            val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(corpus()) }
+            val gate = pass(processors.of("consistency"), canDial = { error("socket budget") }) { _, _, _, _ -> AliasProbe.Page(corpus()) }
 
-            assertEquals(0, gate.measure("t", listOf(steady), canDial = { error("socket budget") }))
+            assertEquals(0, gate.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("the probe failed mid-walk", reasonOf(processors))
         }
 
@@ -136,7 +138,7 @@ class ConsistencyReportTest {
                 pass(silent.of("consistency")) { _, _, _, _ ->
                     AliasProbe.Page(null, reason = "cannot: java.net.ConnectException: Connection refused")
                 }
-            assertEquals(0, never.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, never.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("the connection was refused", reasonOf(silent))
             assertEquals(
                 "never answered a REQ",
@@ -152,7 +154,7 @@ class ConsistencyReportTest {
 
             val mute = Processors()
             val quiet = pass(mute.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
-            assertEquals(0, quiet.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, quiet.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("gave up for a reason we do not recognise", reasonOf(mute))
             assertEquals(
                 "never answered a REQ",
@@ -173,7 +175,7 @@ class ConsistencyReportTest {
                 pass(half.of("consistency")) { _, _, _, _ ->
                     if (answers.getAndIncrement() == 0) AliasProbe.Page(corpus()) else AliasProbe.Page(null)
                 }
-            assertEquals(0, once.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, once.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("answered one of the two asks, not both", reasonOf(half))
         }
 
@@ -182,12 +184,12 @@ class ConsistencyReportTest {
         runBlocking {
             val refused = Processors()
             val empty = pass(refused.of("consistency")) { _, _, _, _ -> AliasProbe.Page(emptyList()) }
-            assertEquals(0, empty.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, empty.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("answered, but served no filter we know", reasonOf(refused))
 
             val short = Processors()
             val nine = pass(short.of("consistency")) { _, want, _, _ -> AliasProbe.Page(corpus(9).take(want)) }
-            assertEquals(0, nine.measure("t", listOf(thin), canDial = { true }))
+            assertEquals(0, nine.measure(RunKind.SWEEP, listOf(thin)))
             assertEquals("too few events to judge on", reasonOf(short))
         }
 
@@ -202,7 +204,7 @@ class ConsistencyReportTest {
                     AliasProbe.Page(null, authRefused = true)
                 }
 
-            assertEquals(0, gate.measure("t", listOf(steady), canDial = { true }))
+            assertEquals(0, gate.measure(RunKind.SWEEP, listOf(steady)))
             assertEquals("refused our auth", reasonOf(processors))
             assertEquals(2, dials.get(), "the pair, and not the kinds fallback behind it")
         }
@@ -216,7 +218,7 @@ class ConsistencyReportTest {
             val thin = (1..4).map { RelayUrlNormalizer.normalize("wss://lonely$it.example") }
             val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
 
-            gate.measure("t", wide + thin, canDial = { true })
+            gate.measure(RunKind.SWEEP, wide + thin)
 
             val row = row(processors).undecided.single()
             assertEquals(8, row.urls)
@@ -239,7 +241,7 @@ class ConsistencyReportTest {
             val many = (1..hostCount).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
             val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
 
-            gate.measure("t", many, canDial = { true })
+            gate.measure(RunKind.SWEEP, many)
 
             val row = row(processors).undecided.single()
             assertEquals(Processors.MAX_UNDECIDED_HOSTS, row.top.size)
@@ -292,7 +294,7 @@ class ConsistencyReportTest {
                     AliasProbe.Page(corpus().take(want))
                 }
 
-            gate.measure("t", paths, canDial = { true })
+            gate.measure(RunKind.SWEEP, paths)
 
             assertEquals(1, walked.size, "one walk per server until the fold decides: $walked")
             val work = row(processors)
@@ -325,7 +327,7 @@ class ConsistencyReportTest {
                 }
 
             val candidates = listOf(steady, shuffler, thin, duplicate)
-            gate.measure("t", candidates, canDial = { true })
+            gate.measure(RunKind.SWEEP, candidates)
 
             val work = row(processors)
             assertEquals(4, work.candidates)

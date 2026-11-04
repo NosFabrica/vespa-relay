@@ -30,11 +30,9 @@ import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
-import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CancellationException
@@ -56,23 +54,23 @@ class AliasFolding(
     private val aliases: RelayAliases,
     private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
-    private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
+    /** The monitor's one dial gate, shared with every other pass. */
+    private val gate: DialGate = DialGate(DEFAULT_DIAL_CONCURRENCY),
     /** How long a host that could not be decided is left alone. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
     /** Fold a group every url answered and none would serve from. */
     private val foldUnreadableGroups: Boolean = DEFAULT_FOLD_UNREADABLE_GROUPS,
     /** Where each pass reports, or null; [AliasMonitor] writes the clock to the same handle. */
-    val progress: Processors.Handle? = null,
-    /** The proxy, for the gate only. */
-    tor: TorTransport? = null,
+    override val progress: Processors.Handle? = null,
     /** The wall clock on one verdict write. */
     private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
     /** The urls the monitor knows, so a narrower read still takes in the other urls on each candidate's server. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
-) {
-    /** One gate object, not one per pass. */
-    private val gate = DialGate.over(concurrency, tor)
-
+    /** Whether the pre-probe lets a url be fingerprinted. */
+    private val canDial: suspend (NormalizedRelayUrl) -> Boolean = { true },
+    /** The socket refcount; without one every fingerprint leaves a websocket behind. */
+    private val sockets: Sockets = Sockets.NONE,
+) : AliasMonitor.Pass {
     /**
      * Hosts a pass dialled and could not decide anything about, and when each is worth trying
      * again. In memory, not signed: "we could not measure this" is a fact about our pass.
@@ -95,28 +93,25 @@ class AliasFolding(
     /**
      * Fingerprint every group left unresolved once [candidates] are grouped against the whole
      * recorded world, and publish what that proves. Returns how many new aliases it learned.
-     * [sockets] is the caller's refcount; without one every fingerprint leaves a websocket behind.
      */
-    suspend fun measure(
-        label: String,
+    override suspend fun measure(
+        kind: RunKind,
         candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit = {},
-        sockets: Sockets = Sockets.NONE,
     ): Int {
         if (candidates.isEmpty()) return 0
+        val label = kind.label
         val startedMs = System.currentTimeMillis()
 
         val grouped = adoptWorld(label, candidates) ?: return 0
         val world = grouped.urls
         // A sweep's world is everything the fold can be asked about; a fast-lane batch is a handful of urls.
-        if (label != AliasMonitor.FAST_LANE) forgetAllBut(world)
+        if (kind == RunKind.SWEEP) forgetAllBut(world)
         if (world.size < 2) return 0
         // Read after the adopt and before the first dial; with `unmeasured` after the pass it makes
         // the card's fraction.
         val fresh = candidates.count { !aliases.measured(it) }
 
-        val run = Run(label, canDial, onEvent, sockets, grouped.held, System.currentTimeMillis(), newWriter())
+        val run = Run(label, grouped.held, System.currentTimeMillis(), newWriter())
         // Hosts on cooldown are held back, not dropped.
         val all = aliases.unresolved(world)
         val groups = all.filter { group -> !onCooldown(group, run.startedAtMs) }
@@ -169,9 +164,6 @@ class AliasFolding(
     /** One pass's state, shared by the groups it measures concurrently. */
     private class Run(
         val label: String,
-        val canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        val onEvent: suspend (Event) -> Unit,
-        val sockets: Sockets,
         /** The store's own answer at the start of the pass, which the reproducibility guard restores. */
         val held: RelayVerdictRecord.Verdicts,
         val startedAtMs: Long,
@@ -239,13 +231,13 @@ class AliasFolding(
         walk: suspend () -> T,
     ): Asked<T> {
         // A stopped writer refuses whatever this dial could prove, so it is not taken.
-        if (run.writer.stoppedBy != null || !run.canDial(url)) return Asked(false, null)
+        if (run.writer.stoppedBy != null || !canDial(url)) return Asked(false, null)
         // The host's permit before the pass's: a server's queue must not hold a permit another server could use.
         return run.hostGate(url).withPermit {
             gate.withPermit(url) {
                 if (run.writer.stoppedBy != null) return@withPermit Asked(false, null)
                 run.taken.incrementAndGet()
-                Asked(true, dial(url, run.sockets, walk))
+                Asked(true, dial(url, walk))
             }
         }
     }
@@ -325,7 +317,7 @@ class AliasFolding(
         var thinAnswers = 0
         for (candidate in wanted) {
             if (fruitless >= YARDSTICK_ATTEMPTS || thinAnswers >= THIN_ATTEMPTS) break
-            val attempt = ask(run, candidate) { probe.leaderPrint(candidate, anchor, run.onEvent) }
+            val attempt = ask(run, candidate) { probe.leaderPrint(candidate, anchor) }
             if (attempt.asked) search.asked += candidate
             if (attempt.answer?.answeredForFold == true) search.spoke += candidate
             val print = attempt.answer?.leader
@@ -364,7 +356,7 @@ class AliasFolding(
         val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
         coroutineScope {
             for (url in wanted.filter { it !in search.asked }) {
-                launch { ask(run, url) { probe.leaderPrint(url, anchor, run.onEvent) }.answer?.let { swept[url] = it } }
+                launch { ask(run, url) { probe.leaderPrint(url, anchor) }.answer?.let { swept[url] = it } }
             }
         }
         for ((url, attempt) in swept) {
@@ -411,12 +403,12 @@ class AliasFolding(
         val thin = search.thin ?: return false
         val store = search.thinPrint?.takeIf { it.drained && it.ids.isNotEmpty() } ?: return false
         val control = controlPathOf(thin) ?: return false
-        val seen = ask(run, control) { probe.window(control, anchor, store.kinds, run.onEvent) }.answer
+        val seen = ask(run, control) { probe.window(control, anchor, store.kinds) }.answer
         if (seen == null || !servesStore(seen, store)) return false
         val stores = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Window>()
         coroutineScope {
             for (url in wanted.filter { it != thin }) {
-                launch { ask(run, url) { probe.window(url, anchor, store.kinds, run.onEvent) }.answer?.let { stores[url] = it } }
+                launch { ask(run, url) { probe.window(url, anchor, store.kinds) }.answer?.let { stores[url] = it } }
             }
         }
         val same = listOf(thin) + wanted.filter { url -> stores[url]?.let { servesStore(it, store) } == true }
@@ -455,7 +447,7 @@ class AliasFolding(
         prints[leader] = lead.ids
         coroutineScope {
             for (url in members) {
-                launch { ask(run, url) { probe.fingerprint(url, anchor, lead.kinds, run.onEvent) }.answer?.let { prints[url] = it } }
+                launch { ask(run, url) { probe.fingerprint(url, anchor, lead.kinds) }.answer?.let { prints[url] = it } }
             }
         }
         // Before anything is learned: a member the stopped writer kept us from asking is not a silent one.
@@ -501,7 +493,7 @@ class AliasFolding(
         distinct: Int,
     ): Boolean {
         val leaderPrint = lead.ids
-        val again = ask(run, leader) { probe.fingerprint(leader, anchor, lead.kinds, run.onEvent) }.answer
+        val again = ask(run, leader) { probe.fingerprint(leader, anchor, lead.kinds) }.answer
         if (again != null && aliases.reproducible(leaderPrint, again)) return true
         val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
         // Back to what the store says.
@@ -637,7 +629,6 @@ class AliasFolding(
      */
     private suspend fun <T> dial(
         url: NormalizedRelayUrl,
-        sockets: Sockets,
         walk: suspend () -> T,
     ): T? =
         withTimeoutOrNull(probe.deadlineMs(url)) {

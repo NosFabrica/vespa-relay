@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.INostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
@@ -72,12 +71,13 @@ class FitnessPass(
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
     /** The bars a relay's answer is held to. */
     private val compliance: RelayCompliance = RelayCompliance(),
-    val progress: Processors.Handle,
+    override val progress: Processors.Handle,
     /** The relay's NIP-11 document. Null publishes the same verdicts with fewer facts. */
     private val document: RelayDocument? = null,
     /** The proxy, where there is one; the `n` tag must name what carried the measurement. */
     private val tor: TorTransport? = null,
-    private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
+    /** The monitor's one dial gate, shared with every other pass. */
+    private val gate: DialGate = DialGate(AliasFolding.DEFAULT_DIAL_CONCURRENCY),
     /** The wall clock on one verdict write. */
     private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
     /** The wall clock on the NEG-OPEN. */
@@ -94,10 +94,11 @@ class FitnessPass(
     },
     /** One sweep's period: how long a deferred url backs off, and the unit a deferring `prime` ages in. */
     private val sweepMs: Long = AliasMonitor.DEFAULT_INTERVAL_MS,
-) {
-    /** One gate for every pass this component runs. */
-    private val gate = DialGate.over(concurrency, tor)
-
+    /** The pre-probe: whether this process can reach a url at all, and whose side a refusal is on. */
+    private val reach: suspend (NormalizedRelayUrl) -> Reach = { Reach.REACHABLE },
+    /** The socket refcount; without one every dial leaves a websocket behind. */
+    private val sockets: Sockets = Sockets.NONE,
+) : AliasMonitor.Pass {
     /**
      * The url each batch's write loop stopped on, or no entry when it wrote everything. Keyed by
      * label because the sweep and the fast lane share this object.
@@ -134,9 +135,9 @@ class FitnessPass(
 
     /**
      * Replay the writes the store did not take, under the same limits as a batch's own, dropping any
-     * the record has since overtaken. Returns how many landed. The caller serialises this with [measure].
+     * the record has since overtaken. Returns how many landed. Never runs beside [measure].
      */
-    suspend fun flushPending(): Int {
+    override suspend fun flushPending(): Int {
         if (pending.isEmpty()) return 0
         val queued = HashMap(pending)
         progress.phase(RETRYING_WRITES)
@@ -165,8 +166,8 @@ class FitnessPass(
     }
 
     /**
-     * The record over the queued urls, under the write deadline: the caller holds the pass gate, so a
-     * read that never answers would stop every sweep and lane behind it. Null leaves the queue as it is.
+     * The record over the queued urls, under the write deadline: the retry runs on the monitor's one
+     * scheduler, so a read that never answers would stop every sweep and lane behind it. Null leaves the queue as it is.
      */
     private suspend fun readBeforeReplay(urls: Set<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts? {
         val why =
@@ -267,7 +268,7 @@ class FitnessPass(
         /** Beside the outcomes, not on them: the document and the REQ fail independently. */
         val readings = ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>()
 
-        /** Events the dials handed to ingest. */
+        /** Events the dials were served. */
         val downloaded = AtomicInteger()
 
         /** Urls this pass gave up on rather than measured; [abandoned] names a bounded few. */
@@ -343,19 +344,14 @@ class FitnessPass(
         val withdrawalsPending: Int,
     )
 
-    /**
-     * Measure [candidates] and write a verdict for each. Returns how many events the dials
-     * delivered to [onEvent].
-     */
-    suspend fun measure(
-        label: String,
+    /** Measure [candidates] and write a verdict for each. Returns how many events the dials were served. */
+    override suspend fun measure(
+        kind: RunKind,
         candidates: List<NormalizedRelayUrl>,
-        reach: suspend (NormalizedRelayUrl) -> Reach,
-        onEvent: suspend (Event) -> Unit,
-        sockets: Sockets,
     ): Int {
         if (candidates.isEmpty()) return 0
-        val sweep = label != AliasMonitor.FAST_LANE
+        val label = kind.label
+        val sweep = kind == RunKind.SWEEP
         if (sweep) {
             // A url the sweep no longer names is not ours to grade; its queued write would land as a claim about it.
             val named = candidates.toHashSet()
@@ -394,9 +390,9 @@ class FitnessPass(
                     probe::deadlineMs,
                     progress,
                     cut = { url -> if (url !in toCheck) batch.cut(url) },
-                    before = { url -> url in toCheck || preProbe(url, reach, batch) },
+                    before = { url -> url in toCheck || preProbe(url, batch) },
                 ) { url ->
-                    if (url in toCheck) checkHeld(url, anchor, sockets, batch, onEvent) else measureOne(url, anchor, sockets, batch, onEvent, documents)
+                    if (url in toCheck) checkHeld(url, anchor, batch) else measureOne(url, anchor, batch, documents)
                 }
             }
             // Before the guard: a refused batch still heard each relay ask us to come back later.
@@ -641,7 +637,6 @@ class FitnessPass(
     /** The pre-probe, before any dial permit: true when the url is dialled, else its outcome or reason is filed on [batch]. */
     private suspend fun preProbe(
         url: NormalizedRelayUrl,
-        reach: suspend (NormalizedRelayUrl) -> Reach,
         batch: Batch,
     ): Boolean {
         progress.holding(url.url, STAGE_REACHABILITY)
@@ -684,15 +679,13 @@ class FitnessPass(
     private suspend fun measureOne(
         url: NormalizedRelayUrl,
         anchor: Long,
-        sockets: Sockets,
         batch: Batch,
-        onEvent: suspend (Event) -> Unit,
         documents: CoroutineScope,
     ) {
         // Beside the dial, not before it: the two fail independently, and a host that hangs one hangs both.
         document?.let { doc -> documents.launch { batch.readings[url] = doc.read(url) } }
         progress.holding(url.url, STAGE_LADDER)
-        dial(url, anchor, sockets, batch, onEvent)
+        dial(url, anchor, batch)
     }
 
     /**
@@ -729,18 +722,12 @@ class FitnessPass(
     private suspend fun checkHeld(
         url: NormalizedRelayUrl,
         anchor: Long,
-        sockets: Sockets,
         batch: Batch,
-        onEvent: suspend (Event) -> Unit,
     ) {
         progress.holding(url.url, STAGE_HELD)
         sockets.claim(url)
         try {
-            val window =
-                probe.window(url, anchor, null) { event ->
-                    batch.downloaded.incrementAndGet()
-                    onEvent(event)
-                }
+            val window = probe.window(url, anchor, null).also { batch.downloaded.addAndGet(it.compliance.seen) }
             val reason = window.reason
             if (window.ids == null && Silence.of(reason) == Silence.UPGRADE) {
                 upgradeRefused(reason) {}?.takeIf { it.verdict == Verdict.DEAD }?.let { batch.outcomes[url] = it }
@@ -758,17 +745,11 @@ class FitnessPass(
     private suspend fun dial(
         url: NormalizedRelayUrl,
         anchor: Long,
-        sockets: Sockets,
         batch: Batch,
-        onEvent: suspend (Event) -> Unit,
     ) {
         sockets.claim(url)
         try {
-            val outcome =
-                dialVerdict(url, anchor, batch) { event ->
-                    batch.downloaded.incrementAndGet()
-                    onEvent(event)
-                }
+            val outcome = dialVerdict(url, anchor, batch)
             if (outcome != null) {
                 batch.outcomes[url] = outcome
             } else if (!batch.deferred.containsKey(url)) {
@@ -857,7 +838,6 @@ class FitnessPass(
         url: NormalizedRelayUrl,
         anchor: Long,
         batch: Batch,
-        onEvent: suspend (Event) -> Unit,
     ): Outcome? {
         // Handed over the moment the ladder has earned it, so the per-url deadline cannot cost it.
         val settled: (Outcome) -> Unit = { batch.outcomes[url] = it }
@@ -873,7 +853,7 @@ class FitnessPass(
         // A shape refused for our key: chorus.bonsai.com gates DMs this way and serves profiles openly.
         var authRefused = false
         for (rung in AliasProbe.SHAPES) {
-            val window = probe.window(url, anchor, rung, onEvent)
+            val window = probe.window(url, anchor, rung).also { batch.downloaded.addAndGet(it.compliance.seen) }
             if (window.authRefused && window.ids.isNullOrEmpty()) {
                 authRefused = true
                 refusals += AUTH_REQUIRED + " " + (window.refusal ?: "rejected our key")
@@ -974,7 +954,7 @@ class FitnessPass(
             } else {
                 progress.holding(url.url, STAGE_COMPLIANCE)
                 withTimeoutOrNull(probe.deadlineMs(url) / COMPLIANCE_BUDGET_DIVISOR) {
-                    Paged(probe.pageBelow(url, floor - 1, shape, onEvent))
+                    Paged(probe.pageBelow(url, floor - 1, shape)?.also { batch.downloaded.addAndGet(it.seen) })
                 }
             }
         // Boxed for [Reconciled]'s reason: only the clock firing belongs in the count.
@@ -1370,19 +1350,20 @@ class FitnessPass(
         }
 
         /**
-         * Withdraw a verdict from each of [urls], several at a time. Every url is a distinct
-         * addressable record, so this keeps the single-writer rule as long as no pass runs beside it.
+         * Withdraw a verdict from each of [urls], several at a time, each url once: two records can
+         * name one url, and two edits of one url must not overlap. No pass may run beside it.
          */
         private suspend fun retire(
             record: RelayVerdictRecord,
             urls: List<NormalizedRelayUrl>,
             progress: Processors.Handle?,
         ) {
-            if (urls.isEmpty()) return
-            progress?.measuring(urls.size, Processors.UNIT_VERDICT)
+            val each = urls.distinct()
+            if (each.isEmpty()) return
+            progress?.measuring(each.size, Processors.UNIT_VERDICT)
             val gate = Semaphore(RETIRE_CONCURRENCY)
             coroutineScope {
-                for (url in urls) {
+                for (url in each) {
                     launch {
                         gate.withPermit { record.retireFitness(url) }
                         progress?.attempted()
@@ -1404,7 +1385,7 @@ class FitnessPass(
         /** What the old build could have written on `s`. May only grow; must not follow a later rename. */
         val LEGACY_GRADES = Verdict.entries.map { it.value } + "syncable"
 
-        /** NIP-66's network values this router can honestly write. */
+        /** NIP-66's network values this monitor can honestly write. */
         const val NETWORK_CLEARNET = "clearnet"
 
         const val NETWORK_TOR = "tor"

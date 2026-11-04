@@ -229,6 +229,19 @@ first tick after it asked for hours of relay lists the sweep had since read.
 `CandidateSource.listsReadFromSec` is when the last derivation that read every
 list began, and the lane asks from no earlier than that.
 
+**One scheduler coroutine runs every job, and the record refuses overlaps.**
+The sweep, the fast lane and the pending-write retry were three loops behind a
+`Mutex`, and five `RelayVerdictRecord` instances relied on it: the
+read-modify-write in `edit` was safe only because three call sites three
+layers away serialised its callers. `AliasMonitor` now `select`s over the three
+clocks on one coroutine, so no two jobs can overlap; a clock that comes due
+during another job runs once after it (the retry used to skip a busy tick, the
+lane to queue on the lock). `MonitorEngine` builds one record and one
+`DialGate` for every pass, and `edit` throws on a second edit of a url already
+under way, so a regression fails loudly instead of losing tags. The probe-seen
+event sink and the pinned set were the mirror's, from when the monitor ran in
+its process; they are gone.
+
 ## Stream world
 
 **The candidate set is derived from the store per pass, not pushed by the

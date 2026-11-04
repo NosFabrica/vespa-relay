@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.peers
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -35,11 +36,15 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.util.Locale
@@ -47,6 +52,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -657,5 +663,38 @@ class RelayVerdictRecordTest {
             }
             val evidence = recordFor(store, alias.url)?.tags?.single { it[0] == RelayVerdictRecord.SELF_CONSISTENT_TAG }?.get(2)
             assertTrue(evidence?.endsWith("-> 0.500") == true, "a signed record must not carry a decimal comma: $evidence")
+        }
+
+    @Test
+    fun `two overlapping edits of one url fail loudly, and another url is untouched`(): Unit =
+        runBlocking {
+            // Both would read the same record, and the later write would erase the earlier's tags.
+            val store = newStore()
+            val inserting = CompletableDeferred<Unit>()
+            val proceed = CompletableDeferred<Unit>()
+            val local = StoreWriter.local(store)
+            val holding =
+                object : StoreWriter by local {
+                    override suspend fun insert(event: Event) {
+                        if (event.tags.any { it[0] == "d" && it[1] == alias.url } && !proceed.isCompleted) {
+                            inserting.complete(Unit)
+                            proceed.await()
+                        }
+                        local.insert(event)
+                    }
+                }
+            val record = RelayVerdictRecord(store, signer, writer = holding)
+
+            val first = async { record.publishDistinct(alias, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2) }
+            withTimeout(10_000) { inserting.await() }
+            // Bounded, so an overlap that is let through waits on the held insert and fails here instead of hanging.
+            val overlapping = runCatching { withTimeoutOrNull(2_000) { record.publish(alias, canonical, sampled = 500, shared = 498) } }
+            assertTrue(overlapping.exceptionOrNull() is IllegalStateException && overlapping.exceptionOrNull() !is CancellationException, "the overlap was let through: $overlapping")
+            assertNotNull(record.publishDistinct(canonical, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2), "another url is its own record")
+
+            proceed.complete(Unit)
+            assertNotNull(first.await(), "the edit under way still lands")
+            assertNotNull(record.publish(alias, canonical, sampled = 500, shared = 498), "the url is free again once its edit ended")
+            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
         }
 }

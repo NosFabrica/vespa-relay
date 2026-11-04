@@ -60,7 +60,7 @@ class RelayDocument(
     /** Documents in flight at once: the passes' dials, each of which asks for one. */
     concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
-    /** Its own, so a fetch neither waits behind the mirror's live tails on the shared client nor holds a slot they need. */
+    /** Its own, so a fetch neither waits behind the passes' dials on the shared client nor holds a slot they need. */
     private val dispatcher =
         Dispatcher().apply {
             maxRequests = concurrency

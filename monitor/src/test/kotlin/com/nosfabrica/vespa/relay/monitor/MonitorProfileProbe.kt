@@ -24,10 +24,10 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.MonitorConfig
 import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -103,27 +103,33 @@ class MonitorProfileProbe {
                 monitorAuthors = listOf(signer.pubKey),
                 self = signer.pubKey,
                 tor = null,
-                sockets = sockets,
-                onProbeEvent = {},
                 progress = processors.of(MonitorEngine.SOURCE_PROCESSOR),
             )
+
+        fun timedReach(pass: String): suspend (NormalizedRelayUrl) -> Reach = { url -> clock.timed(pass, url, "pre-probe") { world.reach(url) }.also { clock.reached(pass, url, it) } }
+        // One gate for every pass, as the monitor has.
+        val gate = DialGate(concurrency)
         val folding =
             AliasFolding(
                 RelayAliases(),
                 RelayVerdictRecord(store, signer),
                 probe(MonitorEngine.FOLD_PROCESSOR, RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency,
+                gate,
                 progress = processors.of(MonitorEngine.FOLD_PROCESSOR),
                 world = { world.known },
+                canDial = { MonitorEngine.foldDials(timedReach(MonitorEngine.FOLD_PROCESSOR)(it)) },
+                sockets = sockets,
             )
         val stability =
             ConsistencyPass(
                 RelayConsistency(),
                 RelayVerdictRecord(store, signer),
                 probe(MonitorEngine.STABILITY_PROCESSOR, RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency,
+                gate,
                 progress = processors.of(MonitorEngine.STABILITY_PROCESSOR),
                 world = { world.known },
+                canDial = { MonitorEngine.gateDials(timedReach(MonitorEngine.STABILITY_PROCESSOR)(it)) },
+                sockets = sockets,
             )
         val fitness =
             FitnessPass(
@@ -132,7 +138,7 @@ class MonitorProfileProbe {
                 client = peers.client,
                 progress = processors.of(MonitorEngine.FITNESS_PROCESSOR),
                 document = RelayDocument(peers::httpFor, concurrency = concurrency),
-                concurrency = concurrency,
+                gate = gate,
                 tlsCheck = { url -> clock.timed(MonitorEngine.FITNESS_PROCESSOR, url, "tls check") { reach.tls(url) } },
                 world = { world.known },
                 reconcile = { url, sliver ->
@@ -140,29 +146,22 @@ class MonitorProfileProbe {
                         peers.client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = FitnessPass.NIP77_IDLE_MS)
                     }
                 },
+                reach = timedReach(MonitorEngine.FITNESS_PROCESSOR),
+                sockets = sockets,
             )
 
-        fun timedReach(
-            pass: String,
-            inner: suspend (NormalizedRelayUrl) -> Reach,
-        ): suspend (NormalizedRelayUrl) -> Reach = { url -> clock.timed(pass, url, "pre-probe") { inner(url) }.also { clock.reached(pass, url, it) } }
-
-        fun entry(
+        /** [pass], timed as a whole into [Clock.passMs]. */
+        fun timed(
             name: String,
-            run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, Sockets) -> Int,
-        ) = object : AliasMonitor.Pass {
-            override val progress = processors.of(name)
-
+            pass: AliasMonitor.Pass,
+        ) = object : AliasMonitor.Pass by pass {
             override suspend fun measure(
-                label: String,
+                kind: RunKind,
                 candidates: List<NormalizedRelayUrl>,
-                reach: suspend (NormalizedRelayUrl) -> Reach,
-                onEvent: suspend (Event) -> Unit,
-                sockets: Sockets,
             ): Int {
                 val startedMs = System.currentTimeMillis()
                 try {
-                    return run(label, candidates, timedReach(name, reach), sockets)
+                    return pass.measure(kind, candidates)
                 } finally {
                     clock.passMs[name] = System.currentTimeMillis() - startedMs
                     System.err.println("profile: $name took ${(System.currentTimeMillis() - startedMs) / 1000}s")
@@ -171,9 +170,9 @@ class MonitorProfileProbe {
         }
         val passes =
             listOf(
-                entry(MonitorEngine.FOLD_PROCESSOR) { l, c, r, s -> folding.measure(l, c, { MonitorEngine.foldDials(r(it)) }, {}, s) },
-                entry(MonitorEngine.STABILITY_PROCESSOR) { l, c, r, s -> stability.measure(l, c, { MonitorEngine.gateDials(r(it)) }, {}, s) },
-                entry(MonitorEngine.FITNESS_PROCESSOR) { l, c, r, s -> fitness.measure(l, c, r, {}, s) },
+                timed(MonitorEngine.FOLD_PROCESSOR, folding),
+                timed(MonitorEngine.STABILITY_PROCESSOR, stability),
+                timed(MonitorEngine.FITNESS_PROCESSOR, fitness),
             )
         val monitor = AliasMonitor(passes, scope, source = world, retryEveryMs = null)
 
@@ -206,7 +205,7 @@ class MonitorProfileProbe {
             }
             val sweepMs = System.currentTimeMillis() - startedMs
             val grades = runBlocking { gradesIn(store) }
-            val report = clock.report(sweepMs, concurrency, world.lastDerivation, grades)
+            val report = clock.report(sweepMs, concurrency, world.lastDerivation ?: StreamWorld.Derivation(), grades)
             File(out, "summary.txt").writeText(report)
             File(out, "urls.tsv").writeText(clock.perUrl())
             File(out, "grades.tsv").writeText(grades.entries.sortedBy { it.key }.joinToString("") { "${it.key}\t${it.value}\n" })

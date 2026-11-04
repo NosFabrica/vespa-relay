@@ -95,7 +95,7 @@ class ConsistencyLivePassProbe {
 
         val started = System.currentTimeMillis()
         try {
-            runBlocking { gate.measure("live", urls, canDial = { true }) }
+            runBlocking { gate.measure(RunKind.SWEEP, urls) }
         } finally {
             scope.cancel()
         }

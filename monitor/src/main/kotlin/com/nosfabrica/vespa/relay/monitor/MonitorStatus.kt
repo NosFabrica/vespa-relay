@@ -47,7 +47,7 @@ class MonitorStatus(
     private val storeCalls: StoreCalls? = null,
 ) {
     /** The document, pure so it can be asserted without a server. Never throws. */
-    fun document(nowSeconds: Long = System.currentTimeMillis() / 1000): JsonObject {
+    fun document(): JsonObject {
         val startedMs = System.currentTimeMillis()
         val rows = processors.snapshot()
         val progress =

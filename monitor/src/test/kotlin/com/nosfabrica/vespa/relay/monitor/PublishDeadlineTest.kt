@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -103,7 +102,7 @@ class PublishDeadlineTest {
                         reconcile = { _, _ -> },
                     )
                 withTimeout(30_000) {
-                    pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, answering)
                 }
                 val bound = concurrency + VerdictWrites.PUBLISH_WEDGE_LIMIT - 1
                 assertTrue(
@@ -160,7 +159,7 @@ class PublishDeadlineTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure("mixed store", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, urls)
                 }
             } finally {
                 System.setErr(realErr)
@@ -204,7 +203,7 @@ class PublishDeadlineTest {
 
             // The assertion is the call completing at all.
             withTimeout(30_000) {
-                pass.measure("wedged store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, answering)
             }
 
             // Clock stamped, position dropped, phase idle: what frees [AliasMonitor]'s gate and the fast lane.
@@ -261,7 +260,7 @@ class PublishDeadlineTest {
                     progress = handle,
                 )
 
-            val running = async { pass.measure("writing", dialled + folded, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
+            val running = async { pass.measure(RunKind.SWEEP, dialled + folded) }
             withTimeout(30_000) { store.reached.await() }
             // The writes around the paused one land on their own time, several at once.
             withTimeout(30_000) {
@@ -331,7 +330,7 @@ class PublishDeadlineTest {
             System.setErr(PrintStream(captured, true))
             try {
                 withTimeout(30_000) {
-                    pass.measure("declining store", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    pass.measure(RunKind.SWEEP, answering)
                 }
             } finally {
                 System.setErr(realErr)
@@ -381,7 +380,7 @@ class PublishDeadlineTest {
                 )
 
             withTimeout(30_000) {
-                pass.measure("one straggler", answering, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, answering)
             }
 
             assertEquals(8, store.insertsAttempted.get(), "a lone straggler must not abandon the batch")

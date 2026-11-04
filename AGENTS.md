@@ -277,7 +277,7 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   `compliant` and `nip77`. A url the fold has not decided waits behind one
   stand-in per server (`RelayAliases.heldForFold`), so a server is graded and
   rostered once until the fold says its paths are distinct. All ride one signed kind-30166 record per url, so
-  `RelayVerdictRecord.edit` is a read-modify-write and the passes never overlap.
+  `RelayVerdictRecord.edit` is a read-modify-write: every pass runs on `AliasMonitor`'s one scheduler coroutine, and `edit` throws on an overlap.
   A verdict ages on its own stamp (`DEFAULT_TTL_SECONDS`) and on a rules epoch
   (`FOLD_EPOCH`, `CONSISTENCY_EPOCH`, `FITNESS_EPOCH`: bump one in the same
   commit as the rule it versions). No pass may join on its slowest url; every

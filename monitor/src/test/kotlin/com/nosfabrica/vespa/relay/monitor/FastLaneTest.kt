@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -65,12 +64,6 @@ class FastLaneTest {
         override suspend fun candidates() = urls
 
         override suspend fun candidatesSince(since: Long) = urls
-
-        override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-        override suspend fun onEvent(event: Event) = Unit
-
-        override val sockets = Sockets.NONE
     }
 
     /** [shuffler] walks its window forward on every ask; everything else pages properly. */
@@ -117,33 +110,15 @@ class FastLaneTest {
                 client = EmptyNostrClient(),
                 progress = processors.of("fitness"),
             )
-        val entry = { handle: Processors.Handle?, run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int ->
-            object : AliasMonitor.Pass {
-                override val progress = handle
-
-                override suspend fun measure(
-                    label: String,
-                    candidates: List<NormalizedRelayUrl>,
-                    reach: suspend (NormalizedRelayUrl) -> Reach,
-                    onEvent: suspend (Event) -> Unit,
-                    sockets: Sockets,
-                ): Int = run(label, candidates, reach, onEvent, sockets)
-            }
-        }
         return Lane(
             stability,
             fitness,
             AliasMonitor(
-                passes = listOf(entry(fitness.progress, fitness::measure)),
+                passes = listOf(fitness),
                 scope = CoroutineScope(Dispatchers.Unconfined),
                 source = Fresh(urls),
                 fastLaneEveryMs = 1_000L,
-                fastLanePasses =
-                    if (gateInLane) {
-                        listOf(entry(stability.progress) { l, c, r, e, s -> stability.measure(l, c, { r(it) == Reach.REACHABLE }, e, s) }, entry(fitness.progress, fitness::measure))
-                    } else {
-                        listOf(entry(fitness.progress, fitness::measure))
-                    },
+                fastLanePasses = if (gateInLane) listOf(stability, fitness) else listOf(fitness),
             ),
         )
     }
@@ -188,7 +163,7 @@ class FastLaneTest {
             val afterLane = dials.get()
             assertTrue(afterLane > 0, "the lane dialled nothing at all")
 
-            assertEquals(0, l.stability.measure("sweep", listOf(steady, shuffler), canDial = { true }))
+            assertEquals(0, l.stability.measure(RunKind.SWEEP, listOf(steady, shuffler)))
             assertEquals(afterLane, dials.get(), "the sweep re-dialled a url the lane had already decided")
         }
 
@@ -197,13 +172,13 @@ class FastLaneTest {
         runBlocking {
             val ran = mutableListOf<String>()
             val boom =
-                AliasMonitor.Pass { label, _, _, _, _ ->
-                    ran += "stability:$label"
+                AliasMonitor.Pass { kind, _ ->
+                    ran += "stability:${kind.label}"
                     error("the gate blew up")
                 }
             val after =
-                AliasMonitor.Pass { label, _, _, _, _ ->
-                    ran += "fitness:$label"
+                AliasMonitor.Pass { kind, _ ->
+                    ran += "fitness:${kind.label}"
                     0
                 }
             val monitor =
@@ -218,7 +193,7 @@ class FastLaneTest {
             monitor.runFastLane(0)
 
             assertEquals(
-                listOf("stability:${AliasMonitor.FAST_LANE}", "fitness:${AliasMonitor.FAST_LANE}"),
+                listOf("stability:${RunKind.FAST_LANE.label}", "fitness:${RunKind.FAST_LANE.label}"),
                 ran,
                 "the lane runs its passes in order, and the second still runs when the first throws",
             )
@@ -238,12 +213,6 @@ class FastLaneTest {
                     }
 
                     override val listsReadFromSec: Long = 5_000L
-
-                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-                    override suspend fun onEvent(event: Event) = Unit
-
-                    override val sockets = Sockets.NONE
                 }
             val monitor =
                 AliasMonitor(
@@ -251,7 +220,7 @@ class FastLaneTest {
                     scope = CoroutineScope(Dispatchers.Unconfined),
                     source = source,
                     fastLaneEveryMs = 1_000L,
-                    fastLanePasses = listOf(AliasMonitor.Pass { _, _, _, _, _ -> 0 }),
+                    fastLanePasses = listOf(AliasMonitor.Pass { _, _ -> 0 }),
                 )
 
             // A lane whose ticks failed through a long read outage still asks only past the sweep.

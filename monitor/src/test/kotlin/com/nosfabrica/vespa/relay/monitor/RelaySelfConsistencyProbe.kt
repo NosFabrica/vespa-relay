@@ -83,13 +83,13 @@ class RelaySelfConsistencyProbe {
                 for ((label, lagSeconds) in ANCHOR_AGES) {
                     val anchor = now - lagSeconds
                     val first =
-                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.leaderPrint(url, anchor) {}.leader } }
+                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.leaderPrint(url, anchor).leader } }
                     if (first == null || first.ids.isEmpty()) {
                         println("    %-8s no window came back — nothing to compare".format(label))
                         continue
                     }
                     val second =
-                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.fingerprint(url, anchor, first.kinds) {} } }
+                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.fingerprint(url, anchor, first.kinds) } }
                     val asked = first.kinds?.let { "kinds=$it" } ?: "bare"
                     println("    %-8s %s  (%s)".format(label, containment(first.ids, second.orEmpty()), asked))
                 }
@@ -102,7 +102,7 @@ class RelaySelfConsistencyProbe {
                         record = RelayVerdictRecord(store, signer),
                         probe = probe,
                     )
-                val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure("live", listOf(url), canDial = { true }) } }
+                val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure(RunKind.SWEEP, listOf(url)) } }
                 val refused = listOf(url).filter(consistency::isInconsistent)
                 println(
                     "    VERDICT  " +

@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -106,15 +105,14 @@ class FitnessBudgetLiveProbe {
                     val url = leg.url
                     leg.preProbeMs = timed { runCatching { reachability.reach(url) } }
                     leg.documentMs = timed { runCatching { document.read(url) } }
-                    var seen = 0
                     var window: AliasProbe.Window? = null
                     leg.ladderMs =
                         timed {
                             // First rung only.
-                            window = runCatching { probe.window(url, anchor, null) { seen++ } }.getOrNull()
+                            window = runCatching { probe.window(url, anchor, null) }.getOrNull()
                         }
                     leg.firstPageMs = window?.firstPageMs
-                    leg.events = seen
+                    leg.events = window?.compliance?.seen ?: 0
                     // The same call, sliver and idle window as the pass.
                     val sliver =
                         Filter(
@@ -190,13 +188,14 @@ class FitnessBudgetLiveProbe {
                     client = client,
                     progress = processors.of("fitness"),
                     document = document,
+                    reach = { reachability.reach(it) },
                 )
             println()
             println("=".repeat(112))
             println("THE REAL PASS OVER THE SAME URLS")
             println("=".repeat(112))
             runBlocking {
-                pass.measure("live budget", urls, reach = { reachability.reach(it) }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, urls)
             }
         } finally {
             scope.cancel()

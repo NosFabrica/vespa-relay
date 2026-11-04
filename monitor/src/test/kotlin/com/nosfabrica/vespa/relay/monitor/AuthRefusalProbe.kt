@@ -85,7 +85,7 @@ class AuthRefusalProbe {
                         launch {
                             gate.withPermit {
                                 val startedMs = System.currentTimeMillis()
-                                val attempt = runCatching { probe.leaderPrint(url, anchor) {} }.getOrNull()
+                                val attempt = runCatching { probe.leaderPrint(url, anchor) }.getOrNull()
                                 val tookMs = System.currentTimeMillis() - startedMs
                                 val shape =
                                     when {

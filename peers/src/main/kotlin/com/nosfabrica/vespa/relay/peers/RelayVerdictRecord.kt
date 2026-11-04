@@ -40,6 +40,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -446,7 +447,8 @@ class RelayVerdictRecord(
     /**
      * Read this url's record, rewrite it through quartz's [RelayDiscoveryEvent.edit] (every tag this
      * writer does not [owns] kept, [add] appended, stamped strictly newer), sign and store it. Bounded
-     * whole by [EDIT_DEADLINE_MS]. Callers serialize edits per url (the passes never overlap).
+     * whole by [EDIT_DEADLINE_MS]. A second edit of [url] while one is under way throws: both would
+     * read the same record, and the later write would erase the earlier's tags.
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
@@ -454,7 +456,26 @@ class RelayVerdictRecord(
         add: List<Array<String>>,
     ): Event? {
         val signer = signer ?: return null
-        return withTimeoutOrNull(EDIT_DEADLINE_MS) {
+        // Said on stderr too: a pass's writer counts a throw as a declined write.
+        check(editing.add(url)) { "two verdict edits of ${url.url} overlapped".also { System.err.println("monitor: BUG — $it") } }
+        try {
+            return editOnce(url, owns, add, signer)
+        } finally {
+            editing.remove(url)
+        }
+    }
+
+    /** The urls an [edit] is under way on. */
+    private val editing: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
+
+    /** [edit]'s read, rewrite, sign and insert, once the url is its own. */
+    private suspend fun editOnce(
+        url: NormalizedRelayUrl,
+        owns: (Array<String>) -> Boolean,
+        add: List<Array<String>>,
+        signer: NostrSigner,
+    ): Event? =
+        withTimeoutOrNull(EDIT_DEADLINE_MS) {
             // A failed read aborts the edit; a fresh record would erase other writers' tags.
             val current =
                 try {
@@ -491,7 +512,6 @@ class RelayVerdictRecord(
                 null
             }
         }
-    }
 
     /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. */
     private fun editFailed(

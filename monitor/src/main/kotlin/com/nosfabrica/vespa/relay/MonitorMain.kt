@@ -158,10 +158,7 @@ fun main() {
             peers = peers,
             signer = identity,
             processors = Processors(),
-            // No mirror in this process: no socket to share and no stream to hand a probe's events to.
-            sockets = RelaySockets(peers.client, emptySet()),
-            onProbeEvent = {},
-            pinnedUrls = emptySet(),
+            sockets = RelaySockets(peers.client, pinnedUrls = emptySet()),
             scope = scope,
             writer = writer,
         )
@@ -189,9 +186,10 @@ fun main() {
     scope.launch {
         repeatEvery(HEALTH_INTERVAL_MS, "health") {
             val rt = Runtime.getRuntime()
+            val fatal = fatals.get()
             System.err.println(
                 "monitor: health heap ${(rt.totalMemory() - rt.freeMemory()) / 1_048_576}/${rt.maxMemory() / 1_048_576}MB" +
-                    (if (fatals.get() > 0) " · ${fatals.get()} FATAL error(s): degraded, restart it" else ""),
+                    (if (fatal > 0) " · $fatal FATAL error(s): degraded, restart it" else ""),
             )
             storeCalls.warnSlow().forEach { System.err.println(it) }
             engine.heldOutDead().takeIf { it > 0 }?.let { dead ->

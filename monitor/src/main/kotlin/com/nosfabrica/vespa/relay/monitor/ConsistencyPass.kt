@@ -25,12 +25,10 @@ import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
-import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -48,20 +46,20 @@ class ConsistencyPass(
     private val consistency: RelayConsistency,
     private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
-    private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
-    /** Where each pass reports how far it got. Null for every caller but the router. */
-    val progress: Processors.Handle? = null,
-    /** The proxy, for the gate alone. */
-    tor: TorTransport? = null,
+    /** The monitor's one dial gate, shared with every other pass. */
+    private val gate: DialGate = DialGate(DEFAULT_DIAL_CONCURRENCY),
+    /** Where each pass reports how far it got. Null for every caller but the monitor. */
+    override val progress: Processors.Handle? = null,
     /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
     private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
     private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
     /** Every url the monitor knows, by server: a stand-in may be a url outside this batch. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
-) {
-    /** One gate for every pass this component runs. */
-    private val gate = DialGate.over(concurrency, tor)
-
+    /** Whether the pre-probe lets a url be walked. */
+    private val canDial: suspend (NormalizedRelayUrl) -> Boolean = { true },
+    /** The socket refcount; without one every walk leaves a websocket behind. */
+    private val sockets: Sockets = Sockets.NONE,
+) : AliasMonitor.Pass {
     /**
      * Every way a url survives a pass with nothing written down. Exactly one is assigned to every
      * url attempted and not decided, so the counts sum to `unmeasured`.
@@ -112,20 +110,18 @@ class ConsistencyPass(
      * Measure the urls nothing is known about yet and publish what that proves. Returns how many
      * new verdicts were reached. Run in the monitor's sequence so two writers never share a record.
      */
-    suspend fun measure(
-        label: String,
+    override suspend fun measure(
+        kind: RunKind,
         candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit = {},
-        sockets: Sockets = Sockets.NONE,
     ): Int {
         if (candidates.isEmpty()) return 0
+        val label = kind.label
         val startedMs = System.currentTimeMillis()
         // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
         val mates = world().matesOf(candidates)
         val held = adopt(label, candidates, mates) ?: return 0
         // A sweep's candidates are the whole set; a fast-lane batch is a handful of urls.
-        if (label != AliasMonitor.FAST_LANE) consistency.retainOnly(candidates)
+        if (kind == RunKind.SWEEP) consistency.retainOnly(candidates)
         // A folded url is never walked; the monitor hands every pass the raw pre-fold list.
         val folded = held.aliases.keys
 
@@ -159,9 +155,9 @@ class ConsistencyPass(
             probe::deadlineMs,
             progress,
             cut = { if (!earned.containsKey(it)) silent[it] = Finding(Unmeasured.ABANDONED) },
-            before = { url -> dials(url, canDial, silent) },
+            before = { url -> dials(url, silent) },
         ) { url ->
-            measureOne(url, anchor, onEvent, sockets, walked, silent, unplaced, earned)
+            measureOne(url, anchor, walked, silent, unplaced, earned)
         }
 
         // Outside the dial's deadline and permit: a slow store must not cost a verdict the relay earned.
@@ -354,7 +350,6 @@ class ConsistencyPass(
     /** The pre-probe, before any dial permit: true when the url is walked, else its finding is filed. */
     private suspend fun dials(
         url: NormalizedRelayUrl,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
         silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
     ): Boolean {
         progress?.holding(url.url, STAGE_REACHABILITY)
@@ -376,8 +371,6 @@ class ConsistencyPass(
     private suspend fun measureOne(
         url: NormalizedRelayUrl,
         anchor: Long,
-        onEvent: suspend (Event) -> Unit,
-        sockets: Sockets,
         walked: AtomicInteger,
         silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
         unplaced: MutableSet<String>,
@@ -388,7 +381,7 @@ class ConsistencyPass(
         sockets.claim(url)
         val attempt =
             try {
-                ladder(url, anchor, onEvent)
+                ladder(url, anchor)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -442,13 +435,12 @@ class ConsistencyPass(
     private suspend fun ladder(
         url: NormalizedRelayUrl,
         anchor: Long,
-        onEvent: suspend (Event) -> Unit,
     ): Ladder {
-        val bare = walkPair(url, anchor, null, onEvent)
+        val bare = walkPair(url, anchor, null)
         val decided = consistency.decide(bare.first.ids, bare.second.ids) != RelayConsistency.Verdict.UNMEASURABLE
         val timedOut = probe.endsLadder(url, bare.first) && probe.endsLadder(url, bare.second)
         if (decided || bare.authRefused || timedOut) return Ladder(bare, null)
-        return Ladder(bare, walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent))
+        return Ladder(bare, walkPair(url, anchor, AliasProbe.FALLBACK_KINDS))
     }
 
     /**
@@ -459,7 +451,6 @@ class ConsistencyPass(
         url: NormalizedRelayUrl,
         anchor: Long,
         kinds: List<Int>?,
-        onEvent: suspend (Event) -> Unit,
     ): Answers =
         coroutineScope {
             val walks =
@@ -467,7 +458,7 @@ class ConsistencyPass(
                     async {
                         // Not runCatching: it would turn a cancellation into a silent walk.
                         try {
-                            probe.window(url, anchor, kinds, onEvent)
+                            probe.window(url, anchor, kinds)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (_: Exception) {

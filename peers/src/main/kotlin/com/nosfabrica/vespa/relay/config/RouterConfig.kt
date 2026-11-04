@@ -114,8 +114,8 @@ data class MonitorConfig(
      */
     val fastLaneSeconds: Long? = DEFAULT_FAST_LANE_SECONDS,
     /**
-     * Relays a probe pass dials at once. The dialling passes run serialized, so this is also
-     * the most sockets the monitor plane holds.
+     * Relays the monitor dials at once over the clearnet, through the one gate every pass shares;
+     * `.onion` dials take Tor's permits, never more than this.
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
     /** A probe's dial budget, before Tor's own slack; `sync.conf` has its own for the mirror. */

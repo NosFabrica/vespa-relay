@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -86,7 +85,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             assertNothingSigned(store, "fold")
         }
 
@@ -106,7 +105,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
 
-            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a narrower read that answered skipped the whole fold")
+            assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a narrower read that answered skipped the whole fold")
         }
 
     @Test
@@ -115,7 +114,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val pass = ConsistencyPass(consistency = RelayConsistency(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, pass.measure("t", urls, canDial = { true }))
+            assertEquals(0, pass.measure(RunKind.SWEEP, urls))
             assertNothingSigned(store, "stability")
         }
 
@@ -132,7 +131,7 @@ class StandingReadTest {
                     reconcile = { _, _ -> },
                 )
 
-            pass.measure("t", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure(RunKind.SWEEP, urls)
             assertNothingSigned(store, "fitness")
         }
 
@@ -175,9 +174,9 @@ class StandingReadTest {
 
         val said =
             listOf(
-                "fold" to withinDeadline { assertEquals(0, fold.measure("t", urls, canDial = { true })) },
-                "stability" to withinDeadline { assertEquals(0, stability.measure("t", urls, canDial = { true })) },
-                "fitness" to withinDeadline { fitness.measure("t", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) },
+                "fold" to withinDeadline { assertEquals(0, fold.measure(RunKind.SWEEP, urls)) },
+                "stability" to withinDeadline { assertEquals(0, stability.measure(RunKind.SWEEP, urls)) },
+                "fitness" to withinDeadline { fitness.measure(RunKind.SWEEP, urls) },
             )
         for ((pass, err) in said) {
             assertNothingSigned(store, pass)

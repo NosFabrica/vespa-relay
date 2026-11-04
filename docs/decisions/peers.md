@@ -60,6 +60,11 @@ ever removed. Measured on a staging pod: 105 `RealWebSocket.loopReader`
 threads, about 100 of them left over from probe passes that had finished,
 the oldest silent for over ninety minutes.
 
+**`RelaySockets` counts inside `ConcurrentHashMap.compute`, not under striped
+locks.** The remap is already atomic per url, so the close runs inside it and
+no claim lands between the count reaching zero and the disconnect; `close`
+touches only quartz's client, never the map.
+
 **One dial gate per transport.** The monitor passes shared one
 `Semaphore(dialConcurrency)` over clearnet and Tor. Measured on staging at
 `dialConcurrency = 100` during a 936-host `aliasFold` pass, `.onion` urls were
