@@ -152,13 +152,7 @@ class MonitorEngine(
             store,
             sources,
             probe,
-            // Our signer plus every monitor our sources name, whose `dead` we honour; a source with no
-            // `authors` adds nothing, since an unscoped `dead` would starve a relay out for good.
-            monitorAuthors =
-                (
-                    listOfNotNull(signer?.pubKey) +
-                        sources?.sources.orEmpty().flatMap { it.filter.authors.orEmpty() }
-                ).distinct(),
+            monitorAuthors = deadAuthors(signer?.pubKey, sources),
             self = signer?.pubKey,
             tor = tor,
             sockets = sockets,
@@ -259,13 +253,6 @@ class MonitorEngine(
                 }
             }
 
-    /**
-     * Which urls this router has folded away, and onto what, so the roster never builds a leg
-     * for another url's relay. Stand-ins and urls waiting on the fold are included: this caller
-     * only decides which socket to open.
-     */
-    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folding?.applyVerdicts(urls, world.known)?.let { it.aliases + it.standIns + it.waiting } ?: emptyMap()
-
     /** How many candidate urls a current `dead` verdict of ours holds out of the passes. */
     fun heldOutDead(): Int = world.lastDerivation.heldOutDead
 
@@ -331,6 +318,15 @@ class MonitorEngine(
         get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
+        /**
+         * Whose `dead` verdicts hold a url out: our key plus every monitor our sources name. A source
+         * with no `authors` adds nothing, since an unscoped `dead` would starve a relay out for good.
+         */
+        fun deadAuthors(
+            self: String?,
+            sources: RelayDiscoveryConfig?,
+        ): List<String> = (listOfNotNull(self) + sources?.sources.orEmpty().flatMap { it.filter.authors.orEmpty() }).distinct()
+
         /** What the fold dials: a host that took a connect, since it says nothing about one that did not. */
         internal fun foldDials(reach: Reach): Boolean = reach == Reach.REACHABLE
 

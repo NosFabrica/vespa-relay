@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
 import com.nosfabrica.vespa.relay.monitor.MonitorStatus
+import com.nosfabrica.vespa.relay.monitor.StoredFold
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -209,6 +210,9 @@ class SyncEngine(
     /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
     private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
 
+    /** The duplicate-url fold, read from those verdicts alone, so the roster needs no monitor in this process. */
+    private val fold = signer?.let { StoredFold.over(store, it, MonitorEngine.deadAuthors(it.pubKey, config.monitorSources()), allowOnion = tor != null) }
+
     /** The rotating pool, inert when no stream rides it. */
     private val visitPool =
         VisitPool(
@@ -227,7 +231,7 @@ class SyncEngine(
                     store = store,
                     streams = visitStreams,
                     bands = bands,
-                    foldedAway = monitor::foldedAway,
+                    foldedAway = { urls -> fold?.foldedAway(urls) ?: emptyMap() },
                     keepBands = pinnedUrls,
                     tor = tor,
                     verdicts = { urls -> verdicts?.load(urls) ?: RelayVerdictRecord.Verdicts() },

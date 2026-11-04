@@ -168,7 +168,7 @@ peers/…/relay/
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
-  AliasFolding, AliasProbe, RelayAliases                     which urls are one server
+  AliasFolding, AliasProbe, RelayAliases, StoredFold         which urls are one server; StoredFold is the roster's read of it
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
   ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
 sync/…/relay/
