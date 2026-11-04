@@ -709,12 +709,36 @@ Three things are refused rather than resolved:
 
 The number that says the two files have drifted apart is `unwatched`, on the
 mirror's `/stats.json` and its prime-relays card: (relay, stream) pairs the
-mirror syncs that no current verdict of ours grades. Zero is the healthy
+mirror syncs that no current verdict of the signers it follows (`verdictsFrom`
+below) grades. Zero is the healthy
 reading. Anything else matters beyond tidiness — `negentropy` and the fold are
 unknown for those relays, and a stream whose `relaySource` is a verdict query
 would drop them at the next rebuild. It stays at zero on a deployment that
 measures nothing on purpose: "nobody graded this" and "nothing here grades
 anything" are different absences.
+
+## verdictsFrom: whose verdicts the mirror reads
+
+The mirror learns about relays only from kind-30166 records in the store. A
+stream's own `relaySource` filter decides which relays it syncs. Beyond that,
+three things read 30166 records by signer: the duplicate-url fold, the NIP-77
+answer each relay's re-checks pace on, and `unwatched` below. `verdictsFrom` in
+`sync.conf` names those signers:
+
+```hocon
+verdictsFrom = [ "npub1…" ]
+```
+
+- **Unset** reads this router's own key (`RELAY_NSEC`), which is what the
+  monitor beside it signs with. Nothing changes for a deployment that runs both.
+- **A list of npubs** follows those monitors, ours or someone else's. With
+  several, each url takes the newest record any of them signed, whole, so no
+  url mixes two monitors' answers. Their `dead` verdicts keep a url out of the fold.
+- **`[]`** follows nobody: no fold, no NIP-77 pacing, no drift count.
+
+Bare hex and nsecs stop the boot, as for every pubkey setting. Nothing here
+reads `monitor.conf`: the mirror does not need to know where the monitor runs,
+or whether one runs at all.
 
 ## Mirroring the deletions themselves
 

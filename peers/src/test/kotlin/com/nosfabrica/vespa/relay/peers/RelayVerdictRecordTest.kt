@@ -505,6 +505,51 @@ class RelayVerdictRecordTest {
             assertEquals(setOf(canonical), record.load(listOf(canonical)).consistent)
         }
 
+    /** [publish] run against a scratch store, then re-signed into [store] at [createdAt], so two signers' records can be ordered. */
+    private suspend fun recordAt(
+        store: NostrSemanticsStore,
+        by: NostrSignerInternal,
+        createdAt: Long,
+        publish: suspend RelayVerdictRecord.() -> Event?,
+    ) {
+        val written = RelayVerdictRecord(newStore(), by).publish()!!
+        store.insert(by.sign<Event>(EventTemplate(createdAt, written.kind, written.tags, written.content)))
+    }
+
+    @Test
+    fun `with several signers the newest record speaks for a url, whole`() =
+        runBlocking {
+            val other = NostrSignerInternal(KeyPair())
+            val both = listOf(signer.pubKey, other.pubKey)
+            val now = nowSeconds()
+
+            val foldNewer = newStore()
+            recordAt(foldNewer, other, now - 100) { publishDistinct(alias, 500, canonical.url, 3) }
+            recordAt(foldNewer, signer, now) { publish(alias, canonical, 500, 500) }
+            val read = RelayVerdictRecord(foldNewer, signer = null, readFrom = both).load(listOf(alias))
+            assertEquals(mapOf(alias to canonical), read.aliases)
+            assertTrue(alias !in read.distinct, "two monitors' answers mixed on one url")
+
+            val distinctNewer = newStore()
+            recordAt(distinctNewer, signer, now - 100) { publish(alias, canonical, 500, 500) }
+            recordAt(distinctNewer, other, now) { publishDistinct(alias, 500, canonical.url, 3) }
+            val reread = RelayVerdictRecord(distinctNewer, signer = null, readFrom = both).loadAll()
+            assertEquals(emptyMap(), reread.aliases)
+            assertEquals(setOf(alias), reread.distinct)
+        }
+
+    @Test
+    fun `a reader follows the signers it names and nobody else`() =
+        runBlocking {
+            val store = newStore()
+            val other = NostrSignerInternal(KeyPair())
+            RelayVerdictRecord(store, other).publish(alias, canonical, 500, 500)
+
+            assertEquals(mapOf(alias to canonical), RelayVerdictRecord(store, signer = null, readFrom = listOf(other.pubKey)).load(listOf(alias)).aliases)
+            assertEquals(emptyMap(), RelayVerdictRecord(store, signer).load(listOf(alias)).aliases, "our own reader took another monitor's fold")
+            assertEquals(emptyMap(), RelayVerdictRecord(store, signer = null, readFrom = emptyList()).load(listOf(alias)).aliases)
+        }
+
     /** A store that cannot answer a query; writes never get that far. */
     private class UnreadableStore(
         inner: IEventStore,

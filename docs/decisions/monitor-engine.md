@@ -85,6 +85,14 @@ this round and has not recorded yet: such a url cannot stand in until its first 
 lane later. A read the store refuses leaves each url's last answer standing, where the engine fell
 back to its in-memory fold, because answering nothing would un-hide every folded url for a round.
 
+**The mirror follows signers it names, not the monitor beside it.** The roster read 30166
+records by `RELAY_NSEC`'s key and took the extra `dead` signers from `monitor.conf`, so a mirror
+had to know where the monitor ran and how it was configured. `verdictsFrom` names the signers
+instead, defaulting to our own key, and their `dead` verdicts are the ones that count; with it,
+the only thing between the two planes is the events. With several signers the newest record
+speaks for a url whole, because merging tag by tag lets one monitor's fold sit beside another's
+`distinct` on the same url.
+
 **A probe dial is not an upstream, so its events are always verified.** The sink
 used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
 one declared upstream's events; an event here came off whichever relay a pass

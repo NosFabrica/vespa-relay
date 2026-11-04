@@ -207,11 +207,14 @@ class SyncEngine(
     /** The deleteMissing comparison for the pool's retracting asks. */
     private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds, writer)
 
-    /** The monitor's own verdicts, read back. Null without a signer: nothing could have written them. */
-    private val verdicts = signer?.let { RelayVerdictRecord(store, it) }
+    /** Whose 30166 records the roster reads: `verdictsFrom`, or this router's own key when that is unset. */
+    private val verdictSigners = config.verdictSigners(signer?.pubKey)
+
+    /** Those signers' verdicts, read back. Empty when nobody is followed. */
+    private val verdicts = RelayVerdictRecord(store, signer = null, readFrom = verdictSigners)
 
     /** The duplicate-url fold, read from those verdicts alone, so the roster needs no monitor in this process. */
-    private val fold = signer?.let { StoredFold.over(store, it, MonitorEngine.deadAuthors(it.pubKey, config.monitorSources()), allowOnion = tor != null) }
+    private val fold = StoredFold.over(store, verdictSigners, allowOnion = tor != null)
 
     /** The rotating pool, inert when no stream rides it. */
     private val visitPool =
@@ -231,12 +234,12 @@ class SyncEngine(
                     store = store,
                     streams = visitStreams,
                     bands = bands,
-                    foldedAway = { urls -> fold?.foldedAway(urls) ?: emptyMap() },
+                    foldedAway = fold::foldedAway,
                     keepBands = pinnedUrls,
                     tor = tor,
-                    verdicts = { urls -> verdicts?.load(urls) ?: RelayVerdictRecord.Verdicts() },
-                    // Nothing signs without an identity, and nothing is measured without a source.
-                    watching = signer != null && config.monitorSources() != null,
+                    verdicts = verdicts::load,
+                    // Drift is counted against the signers followed; following nobody owes no verdict.
+                    watching = verdictSigners.isNotEmpty(),
                 ),
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
@@ -265,6 +268,7 @@ class SyncEngine(
         visitStreams.forEach { phases.register(it.name) }
         upUpstreams.groupBy { it.streamName }.values.forEach { urls -> scope.launch { upPush.loop(urls) } }
         visitPool.start()
+        System.err.println(verdictsLine())
 
         monitor.start()
 
@@ -291,6 +295,14 @@ class SyncEngine(
         )
         return this
     }
+
+    /** Whose verdicts the roster follows, said once at boot so `verdictsFrom = []` never reads as a broken fold. */
+    private fun verdictsLine(): String =
+        when {
+            verdictSigners.isEmpty() -> "router: the roster follows nobody's verdicts (verdictsFrom = [] or no RELAY_NSEC): no fold, no NIP-77 pacing"
+            config.verdictsFrom == null -> "router: the roster follows our own verdicts (${verdictSigners.single().take(12)}…); set verdictsFrom to follow another monitor"
+            else -> "router: the roster follows the verdicts of ${verdictSigners.size} signer(s) from verdictsFrom: ${verdictSigners.joinToString { it.take(12) + "…" }}"
+        }
 
     /**
      * Wires the non-stream jobs to the counters they already keep. A job that is not running

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.nosfabrica.vespa.relay.identity.PubKeys
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
 import com.typesafe.config.Config
@@ -233,6 +234,7 @@ object RouterConfigLoader {
         warnRetractionOverlaps(streams)
         refuseUnknownKeys(cfg, SYNC_CONFIG, ROOT_KEYS)
         val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
+        val verdictsFrom = if (cfg.hasPath("verdictsFrom")) cfg.getStringList("verdictsFrom").map { PubKeys.decode(it, "$SYNC_CONFIG `verdictsFrom`") }.distinct() else null
         return RouterConfig(
             connTimeout,
             streams,
@@ -240,6 +242,7 @@ object RouterConfigLoader {
             ingestConcurrency,
             ingestBatch,
             monitor = monitor,
+            verdictsFrom = verdictsFrom,
         )
     }
 
@@ -1064,7 +1067,7 @@ object RouterConfigLoader {
                 "not a property of how one was discovered",
         )
 
-    private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor")
+    private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor", "verdictsFrom")
 
     private val STREAM_KEYS =
         setOf(

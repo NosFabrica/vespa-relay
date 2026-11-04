@@ -89,7 +89,7 @@ class StoredFoldTest {
                 store = store,
                 sources = sources,
                 probe = ReachabilityProbe(null),
-                monitorAuthors = MonitorEngine.deadAuthors(ours.pubKey, sources),
+                monitorAuthors = MonitorEngine.deadVerdictSigners(ours.pubKey, sources),
                 self = ours.pubKey,
                 tor = null,
                 sockets = Sockets.NONE,
@@ -100,7 +100,7 @@ class StoredFoldTest {
         return folding.applyVerdicts(urls, world.known).let { it.aliases + it.standIns + it.waiting }
     }
 
-    private fun storedFold(store: IEventStore) = StoredFold.over(store, ours, MonitorEngine.deadAuthors(ours.pubKey, sources), allowOnion = false)
+    private fun storedFold(store: IEventStore) = StoredFold.over(store, listOf(ours.pubKey), allowOnion = false)
 
     @Test
     fun `the stored fold answers the roster as the running monitor does`(): Unit =
@@ -144,5 +144,18 @@ class StoredFoldTest {
 
             store.refusing = true
             assertEquals(before, fold.foldedAway(everyUrl), "a refused read un-hid a folded url")
+        }
+
+    @Test
+    fun `the fold follows the signers it is given`(): Unit =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            val other = NostrSignerInternal(KeyPair())
+            // Onto the path, where the stand-in rule alone would pick the root.
+            RelayVerdictRecord(store, other).publish(canonical, alias, 500, 500)
+            val asked = listOf(canonical, alias)
+
+            assertEquals(mapOf(canonical to alias), StoredFold.over(store, listOf(other.pubKey), allowOnion = false).foldedAway(asked))
+            assertTrue(canonical !in StoredFold.over(store, listOf(ours.pubKey), allowOnion = false).foldedAway(asked), "our fold took another monitor's verdict")
         }
 }

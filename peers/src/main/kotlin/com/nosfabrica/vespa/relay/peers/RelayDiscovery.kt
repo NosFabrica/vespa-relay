@@ -199,18 +199,18 @@ object RelayDiscovery {
     }
 
     /**
-     * Every url this router holds a current record about, whatever it says. Scoped to [self]
-     * alone, not [undialable]'s trust set. Null [self] is a router with no signer.
+     * Every url [authors] hold a current record about, whatever it says. The monitor passes its own
+     * key alone, not [undialable]'s trust set; empty [authors] is a router with no signer.
      */
     suspend fun recorded(
         store: IEventStore,
-        self: String?,
+        authors: List<String>,
         maxAgeSeconds: Long,
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
     ): Set<NormalizedRelayUrl> {
-        if (self == null) return emptySet()
-        val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = now - maxAgeSeconds)
+        if (authors.isEmpty()) return emptySet()
+        val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = authors, since = now - maxAgeSeconds)
         val found = HashSet<NormalizedRelayUrl>()
         scan(store, filter, SCAN_PAGE) { event -> urlOf(event, allowOnion)?.let(found::add) }
         return found
