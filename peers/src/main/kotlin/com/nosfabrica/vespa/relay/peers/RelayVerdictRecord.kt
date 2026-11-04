@@ -46,6 +46,8 @@ class RelayVerdictRecord(
     private val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
     /** Where a record is written; [store] is still where it is read back from. */
     private val writer: StoreWriter = StoreWriter.local(store),
+    /** Whose records [load] and [loadAll] read; an edit only ever reads [signer]'s own. */
+    private val readFrom: List<String> = listOfNotNull(signer?.pubKey),
 ) {
     /** What this monitor has decided and still stands behind. */
     data class Verdicts(
@@ -88,17 +90,27 @@ class RelayVerdictRecord(
      * must: a pass that reads nothing back skips its batch rather than acting on an empty set.
      */
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
-        val self = signer?.pubKey ?: return Verdicts()
-        if (candidates.isEmpty()) return Verdicts()
+        if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             held.take(
-                readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk))),
+                newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk)))),
                 floor,
             )
         }
         return held.verdicts()
+    }
+
+    /** One record per url: with several signers the newest speaks for it, so no url mixes two monitors' tags. */
+    private fun newestPerUrl(records: List<Event>): Collection<Event> {
+        if (readFrom.size < 2) return records
+        val newest = HashMap<String, Event>(records.size)
+        for (event in records) {
+            val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
+            if (event.createdAt > (newest[subject]?.createdAt ?: Long.MIN_VALUE)) newest[subject] = event
+        }
+        return newest.values
     }
 
     /**
@@ -118,15 +130,18 @@ class RelayVerdictRecord(
 
     /** Every verdict this monitor still stands behind, paged over the corpus. Throws for [load]'s reason. */
     suspend fun loadAll(): Verdicts {
-        val self = signer?.pubKey ?: return Verdicts()
+        if (readFrom.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
+        // Buffered only when several signers can name one url; one signer's records stream through.
+        val several = if (readFrom.size > 1) ArrayList<Event>() else null
         RelayDiscovery.scan(
             store,
-            Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = floor),
+            Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, since = floor),
             RECORD_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
-        ) { event -> held.take(event, floor) }
+        ) { event -> if (several != null) several += event else held.take(event, floor) }
+        several?.let { held.take(newestPerUrl(it), floor) }
         return held.verdicts()
     }
 
@@ -150,7 +165,7 @@ class RelayVerdictRecord(
 
     /** A page of records, folded into the sets. */
     private fun Building.take(
-        held: List<Event>,
+        held: Collection<Event>,
         floor: Long,
     ) {
         for (event in held) take(event, floor)

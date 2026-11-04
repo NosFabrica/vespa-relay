@@ -21,7 +21,10 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.nosfabrica.vespa.eventstore.EngineTuning
+import com.vitorpamplona.quartz.nip01Core.core.toHexKey
+import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
@@ -1712,5 +1715,25 @@ class RouterConfigTest {
                 assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(hocon) }.message!!.substringAfter("sets `sync`")
             }
         assertEquals(1, messages.toSet().size, "a static and a discovered stream got different reasons: $messages")
+    }
+
+    private fun withVerdictsFrom(value: String) =
+        RouterConfigLoader.parse(
+            """
+            verdictsFrom = $value
+            streams { none { dir = "down", filter = { "kinds": [1] }, urls = [] } }
+            """.trimIndent(),
+        )
+
+    @Test
+    fun `verdictsFrom names the monitors the mirror follows, as npubs`() {
+        val key = KeyPair().pubKey
+        val hex = key.toHexKey()
+        val npub = key.toNpub()
+        assertEquals(listOf(hex), withVerdictsFrom("[\"$npub\"]").verdictSigners(self = "ours"))
+        assertEquals(emptyList(), withVerdictsFrom("[]").verdictSigners(self = "ours"), "an empty list follows nobody")
+        assertEquals(listOf("ours"), withVerdictsFrom("null").verdictSigners(self = "ours"), "unset follows our own key")
+        assertEquals(emptyList(), withVerdictsFrom("null").verdictSigners(self = null))
+        assertFailsWith<IllegalArgumentException> { withVerdictsFrom("[\"$hex\"]") }
     }
 }

@@ -50,6 +50,11 @@ data class RouterConfig(
     val negPageSlackSec: Long = 60,
     /** Null is a deployment with no monitor: nothing is measured and no verdict is signed. */
     val monitor: MonitorConfig? = null,
+    /**
+     * Whose kind-30166 records the mirror reads for the fold, NIP-77 pacing and drift, as hex. Null
+     * is unset, which reads this router's own; empty reads nobody's.
+     */
+    val verdictsFrom: List<String>? = null,
 ) {
     companion object {
         const val DEFAULT_VISIT_CONCURRENCY = 128
@@ -60,6 +65,9 @@ data class RouterConfig(
         /** What a stream with no `maxLiveConcurrency` contributes to the sockets the pool may hold open. */
         const val DEFAULT_MAX_LIVE_CONCURRENCY = 600
     }
+
+    /** The signers whose verdicts the mirror follows: [verdictsFrom], or [self] when it is unset. */
+    fun verdictSigners(self: String?): List<String> = verdictsFrom ?: listOfNotNull(self)
 
     /** The ingest pipeline's boot-time sizing. */
     fun ingestTuning(): IngestTuning = IngestTuning(ingestConcurrency, ingestBatch, ingestDedupChunk)

@@ -112,6 +112,11 @@
 
 connectionTimeout = 20
 
+# Whose kind-30166 verdicts the mirror folds duplicate urls and paces NIP-77 on.
+# Unset reads this router's own key (RELAY_NSEC); a list of npubs follows those
+# monitors; [] follows nobody. See docs/router.md.
+# verdictsFrom = [ "npub1…" ]
+
 # THE POOL'S SOCKETS AND CPU ARE BUDGETED PER STREAM — see each stream below.
 # Every visit-mode stream shares one queue, one worker set and one socket per
 # relay, so what is configured is not a pool of its own but a SHARE of that

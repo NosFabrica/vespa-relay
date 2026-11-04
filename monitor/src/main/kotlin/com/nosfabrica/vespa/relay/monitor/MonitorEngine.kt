@@ -152,7 +152,7 @@ class MonitorEngine(
             store,
             sources,
             probe,
-            monitorAuthors = deadAuthors(signer?.pubKey, sources),
+            monitorAuthors = deadVerdictSigners(signer?.pubKey, sources),
             self = signer?.pubKey,
             tor = tor,
             sockets = sockets,
@@ -322,7 +322,7 @@ class MonitorEngine(
          * Whose `dead` verdicts hold a url out: our key plus every monitor our sources name. A source
          * with no `authors` adds nothing, since an unscoped `dead` would starve a relay out for good.
          */
-        fun deadAuthors(
+        fun deadVerdictSigners(
             self: String?,
             sources: RelayDiscoveryConfig?,
         ): List<String> = (listOfNotNull(self) + sources?.sources.orEmpty().flatMap { it.filter.authors.orEmpty() }).distinct()

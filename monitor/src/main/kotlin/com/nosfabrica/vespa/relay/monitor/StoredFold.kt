@@ -23,16 +23,15 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 
 /**
- * The fold as our own records hold it, for a roster with no monitor in its process. Its world is
- * every url we hold a current record about, less the dead: the monitor's set, short of the urls it
- * found this round and has not written a record for yet.
+ * The fold as a monitor's records hold it, for a roster with no monitor in its process. Its world
+ * is every url those records are about, less the ones they call dead: the monitor's set, short of
+ * the urls it found this round and has not written a record for yet.
  */
 class StoredFold(
     private val record: RelayVerdictRecord,
@@ -80,18 +79,17 @@ class StoredFold(
         /** How long a world read stands; the monitor's own rebuilds it once per derivation. */
         const val WORLD_REFRESH_MS = 5 * 60 * 1000L
 
-        /** The fold [signer]'s records hold in [store], with `dead` read from [deadAuthors]. */
+        /** The fold [signers]' records hold in [store], their own `dead` verdicts included. */
         fun over(
             store: IEventStore,
-            signer: NostrSigner,
-            deadAuthors: List<String>,
+            signers: List<String>,
             allowOnion: Boolean,
         ): StoredFold =
             StoredFold(
-                RelayVerdictRecord(store, signer),
+                RelayVerdictRecord(store, signer = null, readFrom = signers),
                 readWorld = {
-                    val recorded = RelayDiscovery.recorded(store, signer.pubKey, RelayVerdictRecord.DEFAULT_TTL_SECONDS, allowOnion)
-                    recorded - RelayDiscovery.undialable(store, deadAuthors, StreamWorld.DEAD_TTL_SECONDS, allowOnion)
+                    val recorded = RelayDiscovery.recorded(store, signers, RelayVerdictRecord.DEFAULT_TTL_SECONDS, allowOnion)
+                    recorded - RelayDiscovery.undialable(store, signers, StreamWorld.DEAD_TTL_SECONDS, allowOnion)
                 },
             )
     }

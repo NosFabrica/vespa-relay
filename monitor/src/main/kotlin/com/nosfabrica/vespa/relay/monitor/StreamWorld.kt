@@ -113,7 +113,7 @@ internal class StreamWorld(
     private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
         RelayDiscovery.recorded(
             store,
-            self = self,
+            authors = listOfNotNull(self),
             maxAgeSeconds = RelayVerdictRecord.DEFAULT_TTL_SECONDS,
             allowOnion = tor != null,
         )
