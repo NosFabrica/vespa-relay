@@ -48,10 +48,9 @@ class RouterConfExamplesTest {
 
     /** Both fixtures, parsed together the way a deployment reads its two files. */
     private val example: RouterConfig =
-        RouterConfigLoader.parse(
-            syncOrigin = at("rules-sync.conf"),
-            monitorOrigin = at("rules-monitor.conf"),
-        )
+        RouterConfigLoader
+            .parse(syncOrigin = at("rules-sync.conf"))
+            .copy(monitor = RouterConfigLoader.parseMonitorConf(origin = at("rules-monitor.conf")))
 
     /** The fixture's monitor names what it measures; a config that did not would be the bug. */
     private fun monitorSources() = checkNotNull(example.monitor?.sources) { "config/rules-monitor.conf must declare `sources`" }

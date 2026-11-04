@@ -21,8 +21,6 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.EngineTuning
-import com.nosfabrica.vespa.eventstore.SchemaDeploy
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
@@ -45,7 +43,7 @@ import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
 import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
-import com.nosfabrica.vespa.relay.store.STORE_WRITERS
+import com.nosfabrica.vespa.relay.store.ReadOnlyStore
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.sync.PressurePoller
@@ -67,6 +65,7 @@ import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.bundledPage
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
@@ -74,6 +73,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlin.system.exitProcess
 
 /** One past the relay's 7777, so the pair is guessable from either end. */
 private const val DEFAULT_STATUS_PORT = 7778
@@ -83,14 +83,6 @@ private const val DEFAULT_STATUS_INTERVAL_SECONDS = 30L
 
 /** `SYNC_STATUS_INTERVAL_SECONDS`. */
 private fun statusInterval(env: Map<String, String>): Long = env.strictLong("SYNC_STATUS_INTERVAL_SECONDS", 1L..Long.MAX_VALUE) ?: DEFAULT_STATUS_INTERVAL_SECONDS
-
-/**
- * A page's markup, off the classpath; `/stats.html` serves every plane. Missing means
- * a broken build, so it is an error rather than a blank page.
- */
-private fun statusPage(resource: String = "/stats.html"): String =
-    SyncStatus::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
-        ?: error("$resource is missing from the :web jar — no page can be served.")
 
 /**
  * Run the sync engine as its own process against the Vespa the serving relay uses, so the
@@ -116,6 +108,7 @@ fun main() {
     val config =
         RouterConfigLoader.fromEnv(env, storeTuning)
             ?: error("SYNC_CONFIG or SYNC_CONFIG_FILE is required — this process only mirrors; without streams it has no job.")
+    RouterConfigLoader.connectionTimeoutNote(config)?.let { System.err.println(it) }
 
     // Checked before anything slow: a `.onion` upstream with no transport looks like a
     // stream that mirrors nothing.
@@ -129,7 +122,7 @@ fun main() {
     }
 
     // Parsed before the schema deploy and its retries, so a bad value refuses the boot at once.
-    val providerRefresh = providerRefreshSeconds(env)
+    providerRefreshSeconds(env)
     val vespa = vespaEndpoints(env)
     vespa.describe()?.let { System.err.println("sync: the store sends its $it") }
 
@@ -156,7 +149,7 @@ fun main() {
     // stops the boot the moment it is heard (BootTask).
     val keyChecked =
         BootTask("relay key check") {
-            refuseAnotherRelayKey(dial, identity.pubKey, process = "sync")
+            refuseAnotherRelayKey(dial, identity.pubKey, process = "sync") { exitProcess(1) }
             BootClock.mark("sync: the relay's key checked")
         }
     // The pages bind beside the boot too, so a boot that stalls anywhere past here is on them. Until
@@ -165,19 +158,14 @@ fun main() {
     val statusSnapshot = if (statusPort > 0) StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }).also { it.loadFromFile() } else null
     val pageBound =
         BootTask("status page") {
-            statusSnapshot?.let { serveStatusSite(port = statusPort, page = statusPage(), snapshot = it, icon = icon) }.also {
+            statusSnapshot?.let { serveStatusSite(port = statusPort, page = bundledPage(), snapshot = it, icon = icon) }.also {
                 BootClock.mark("sync: status page bound")
             }
         }
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
-    // The relay owns the schema: this process waits for it rather than deploying one (SchemaDeploy.AWAIT).
-    val configUrl = env["VESPA_CONFIG_URL"] ?: VespaEventStore.deriveConfigUrl(vespaUrl)
-    // Read only to say it is the relay's: a shared .env sets it for both services.
-    if (env["AUTO_DEPLOY"] != null) System.err.println("schema: AUTO_DEPLOY is the relay's alone; this process never deploys")
-    System.err.println("schema: waiting until an application serves at $vespaUrl — the relay deploys it (up to 10 min)")
-    VespaEventStore.deploySchema(vespaUrl, configUrl, SchemaDeploy.AWAIT, storeTuning)
-    BootClock.mark("sync: Vespa serves the schema")
+    // The relay owns the schema: this process waits for it rather than deploying one.
+    val configUrl = ReadOnlyStore.awaitSchema(env, vespaUrl, storeTuning, process = "sync")
 
     // Read before the store opens: the slow-read ring is a constructor setting.
     val pulseClientDetail = env.strictFlag("SYNC_PULSE_CLIENT_DETAIL") ?: false
@@ -200,21 +188,15 @@ fun main() {
             )
         }
     val store =
-        VespaEventStore.open(
+        ReadOnlyStore.open(
+            env,
             vespaUrl,
-            relay = relayUrl,
-            schema = SchemaDeploy.AWAIT,
-            configUrl = configUrl,
-            feedEndpoints = vespa.feed,
-            queryEndpoints = vespa.query,
-            // Read-only, so this names the deployment's topology for the store, and writes nothing under it.
-            writers = STORE_WRITERS,
-            providerRefreshSeconds = providerRefresh,
+            relayUrl,
+            configUrl,
+            storeTuning,
+            process = "sync",
             slowQueryThresholdMillis = pulseSlowReadMs(env, "SYNC_PULSE_SLOW_READ_MS", pulseClientDetail, "SYNC_PULSE_CLIENT_DETAIL"),
-            readOnly = true,
-            tuning = storeTuning,
         )
-    BootClock.mark("sync: store open (read-only)")
     // When the counters start; the page states every total as cumulative over this window.
     val storeOpenedAt = System.currentTimeMillis()
 
@@ -312,7 +294,7 @@ fun main() {
         } else {
             servePulseSite(
                 port = pulsePort,
-                page = statusPage("/pulse.html"),
+                page = bundledPage("/pulse.html"),
                 guard = pulseGuard,
                 public = pulseIsPublic,
                 document =

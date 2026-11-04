@@ -38,10 +38,9 @@ class ShippedExamplesTest {
 
     /** Both shipped files, parsed together the way a deployment reads them. */
     private val example: RouterConfig =
-        RouterConfigLoader.parse(
-            syncOrigin = at("sync.conf.example"),
-            monitorOrigin = at("monitor.conf.example"),
-        )
+        RouterConfigLoader
+            .parse(syncOrigin = at("sync.conf.example"))
+            .copy(monitor = RouterConfigLoader.parseMonitorConf(origin = at("monitor.conf.example")))
 
     @Test
     fun `the shipped pair boots`() {

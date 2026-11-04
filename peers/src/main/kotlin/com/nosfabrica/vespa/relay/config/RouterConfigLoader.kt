@@ -154,6 +154,28 @@ object RouterConfigLoader {
         }
     }
 
+    /** The mirror's config variables, which configure the sync process and never the monitor. */
+    val SYNC_ENV = listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE")
+
+    /** A sync config on the monitor process: the mirror is its own process, so it would configure nothing. */
+    fun refuseSyncEnv(env: Map<String, String>) {
+        val set = SYNC_ENV.filter { !env[it].isNullOrBlank() }
+        require(set.isEmpty()) {
+            "router: ${set.joinToString()} set on the monitor process, which does not mirror. The mirror is its own process " +
+                "(vespa-sync, the `sync` compose service): move these to it and unset them here"
+        }
+    }
+
+    /**
+     * The sync's own `connectionTimeout` when it is not the default, said once at boot: the monitor read it
+     * while it shared this process, and now reads monitor.conf's instead.
+     */
+    fun connectionTimeoutNote(config: RouterConfig): String? =
+        config.connectionTimeoutSec.takeIf { it != MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS }?.let {
+            "router: connectionTimeout = $it in the sync config sizes the mirror's dials only; the monitor's probes " +
+                "take `connectionTimeout` from monitor.conf (default ${MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS})"
+        }
+
     /** A `monitor { }` block in the sync config, which the sync no longer reads. */
     private fun refuseMonitorBlock(config: RouterConfig) {
         require(config.monitor == null) {
@@ -180,7 +202,7 @@ object RouterConfigLoader {
         // A file is parsed as a file, so its `include` resolves against its own directory.
         val origin = file.takeIf { inline == null }
         require(origin == null || origin.isFile) { "router: MONITOR_CONFIG_FILE points at ${origin?.path}, which is not a readable file" }
-        val monitor = requireNotNull(parseMonitor(ConfigFactory.empty(), inline, origin))
+        val monitor = parseMonitorConf(inline, origin)
         refuseUndeclaredSources(monitor)
         return monitor
     }
@@ -219,11 +241,9 @@ object RouterConfigLoader {
     }
 
     /**
-     * The two planes' configs into one model. Each plane arrives as text OR as the file to read it
-     * from, never both: a file is parsed in place so its `include` resolves against its own
-     * directory. [monitorHocon]/[monitorOrigin] carry `monitor.conf` — the `monitor { }` block's
-     * contents at the top level, no wrapper — and are both null where the block lives in the sync
-     * config.
+     * `sync.conf` into the model, as text OR as the file to read it from, never both: a file is
+     * parsed in place so its `include` resolves against its own directory. A `monitor { }` block is
+     * parsed so that [fromEnv] can refuse it; `monitor.conf` itself is [parseMonitorConf]'s.
      */
     fun parse(
         hocon: String? = null,
@@ -231,9 +251,7 @@ object RouterConfigLoader {
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
-        monitorHocon: String? = null,
         syncOrigin: File? = null,
-        monitorOrigin: File? = null,
     ): RouterConfig {
         val cfg = document(hocon, syncOrigin)
         refuseRetired(cfg, SYNC_CONFIG, RETIRED_ROOT_KEYS)
@@ -244,7 +262,7 @@ object RouterConfigLoader {
         val streams = streamsCfg.root().keys.map { name -> parseStream(name, streamsCfg.getConfig(quote(name)), relaySourceDefaults) }
         warnRetractionOverlaps(streams)
         refuseUnknownKeys(cfg, SYNC_CONFIG, ROOT_KEYS)
-        val monitor = parseMonitor(cfg, monitorHocon, monitorOrigin)
+        val monitor = if (cfg.hasPath("monitor")) monitorFrom(cfg.getConfig("monitor")) else null
         val verdictsFrom = if (cfg.hasPath("verdictsFrom")) cfg.getStringList("verdictsFrom").map { PubKeys.decode(it, "$SYNC_CONFIG `verdictsFrom`") }.distinct() else null
         return RouterConfig(
             connTimeout,
@@ -447,36 +465,17 @@ object RouterConfigLoader {
     }
 
     /**
-     * The monitor's declaration, from its own file when there is one and from the sync config's
-     * `monitor { }` block otherwise. A monitor source is a relay source, so it reuses the
-     * stream-side parsers.
+     * `monitor.conf`, as text OR as the file to read it from: the monitor process's whole config,
+     * the block's contents at the top level. It does not refuse a config with no `sources`;
+     * [monitorFromEnv] does, at boot.
      */
-    private fun parseMonitor(
-        cfg: Config,
-        monitorHocon: String?,
-        monitorOrigin: File?,
-    ): MonitorConfig? {
-        val m =
-            when {
-                monitorHocon != null || monitorOrigin != null -> {
-                    // Two declarations cannot both be the truth, and picking one silently is how a
-                    // deployment measures a set nobody is looking at.
-                    require(!cfg.hasPath("monitor")) {
-                        "router: the sync config has a `monitor { }` block AND a separate monitor config is set " +
-                            "(MONITOR_CONFIG / MONITOR_CONFIG_FILE). Keep one: move the block's contents into the " +
-                            "monitor file and delete it here, or unset the variable"
-                    }
-                    monitorDocument(monitorHocon, monitorOrigin)
-                }
+    fun parseMonitorConf(
+        hocon: String? = null,
+        origin: File? = null,
+    ): MonitorConfig = monitorFrom(monitorDocument(hocon, origin))
 
-                cfg.hasPath("monitor") -> {
-                    cfg.getConfig("monitor")
-                }
-
-                else -> {
-                    return null
-                }
-            }
+    /** One monitor declaration's keys. A monitor source is a relay source, so it reuses the stream-side parsers. */
+    private fun monitorFrom(m: Config): MonitorConfig {
         refuseRetired(m, MONITOR_CONFIG, RETIRED_MONITOR_KEYS)
         // Absent and empty are different answers: one never said what to measure, the other said
         // "nothing". Only the first is refused at boot.

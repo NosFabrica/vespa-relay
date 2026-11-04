@@ -6,6 +6,7 @@ import { ago, cardHead, el, fmt, isoOf, short, shownOf } from "../shared/page.js
 import { backgroundPanel, setTerms } from "../shared/processors.js";
 import { Relay } from "../shared/relay.js";
 import { MONITOR_KIND, PRIME, groupByHost, summarise, walkRecords } from "../shared/verdicts.js";
+import { storePanel } from "../sync/cards.js";
 
 /**
  * The round-up and the three passes that decide which relays may be dialled. Drawn only
@@ -31,6 +32,12 @@ function monitorCard(section) {
       "in Monitor verdicts below.";
   }
   card.appendChild(backgroundPanel(rows, true));
+  // The monitor's own store calls: its verdict reads and edits, booked in its own process.
+  const store = storePanel(d.progress);
+  if (store) {
+    card.appendChild(el("p", "sy-h", "the store"));
+    card.appendChild(store);
+  }
   return card;
 }
 /**

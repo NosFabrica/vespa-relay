@@ -115,6 +115,14 @@ fun Route.statsDocument(
 }
 
 /**
+ * A page's markup off the classpath; `/stats.html` serves every plane. Missing means a broken build,
+ * so it is an error rather than a blank page.
+ */
+fun bundledPage(resource: String = "/stats.html"): String =
+    CachedPage::class.java.getResourceAsStream(resource)?.use { it.readBytes().decodeToString() }
+        ?: error("$resource is missing from the :web jar — no page can be served.")
+
+/**
  * A background service's own status site: one page, the document it charts, and the assets both
  * need. Each service binds its own port, so liveness is the connection. [wait] is false by default.
  */

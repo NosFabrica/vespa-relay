@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -42,6 +43,8 @@ class MonitorStatus(
     private val everySeconds: Long,
     /** The served relay's ws url for the verdict panel to dial; `location` here is the monitor's port. */
     private val relayUrl: String? = null,
+    /** This process's store calls, the `store` section; null where nothing books them. */
+    private val storeCalls: StoreCalls? = null,
 ) {
     /** The document, pure so it can be asserted without a server. Never throws. */
     fun document(nowSeconds: Long = System.currentTimeMillis() / 1000): JsonObject {
@@ -50,6 +53,7 @@ class MonitorStatus(
         val progress =
             buildJsonObject {
                 putJsonArray("processors") { rows.forEach { add(Processors.published(it)) } }
+                storeCalls?.let { put("store", it.snapshot().document()) }
             }
         // Absent, not empty, when no pass has registered a row: a card of zeroes reads as a failing monitor.
         val data =

@@ -53,7 +53,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  */
 class MonitorEngine(
     private val store: IEventStore,
-    /** The `monitor { }` block. Null is a deployment with no monitor. */
+    /** `monitor.conf`. Null is a deployment with no monitor. */
     private val settings: MonitorConfig?,
     /**
      * The relay lists this plane scans, from the monitor's own config. Every url they name becomes
@@ -67,11 +67,11 @@ class MonitorEngine(
     private val signer: NostrSigner?,
     /** This plane's own report. */
     private val processors: Processors = Processors(),
-    /** The socket refcount shared with the mirror, so a pass never closes a socket a stream is on. */
+    /** The socket refcount the passes share, so one pass never closes a socket another is on. */
     private val sockets: RelaySockets,
-    /** Where an event a probe dial happened to see goes; the mirror decides who wanted it. */
+    /** Where an event a probe dial happened to see goes; the monitor process drops it, having no mirror to hand it to. */
     private val onProbeEvent: suspend (Event) -> Unit,
-    /** The relays the mirror holds live; never dialled twice, never closed by a pass. */
+    /** Relays another holder keeps live in this process, never closed by a pass; empty in the monitor process. */
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
     /** Where a verdict is written; [store] is still where it is read back from. */
@@ -355,5 +355,6 @@ class MonitorEngine(
     fun status(
         everySeconds: Long,
         relayUrl: String?,
-    ): MonitorStatus = MonitorStatus(processors, everySeconds, relayUrl)
+        storeCalls: StoreCalls? = null,
+    ): MonitorStatus = MonitorStatus(processors, everySeconds, relayUrl, storeCalls)
 }

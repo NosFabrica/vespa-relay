@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
+import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.web.CachedPage
 import com.nosfabrica.vespa.relay.web.favicon
 import com.nosfabrica.vespa.relay.web.installPageDefaults
@@ -33,6 +34,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -52,6 +54,22 @@ class MonitorStatusTest {
                 p.phase(Processors.RUNNING)
                 p.counts { listOf(Processors.Count("foldedAway", 8), Processors.Count("candidates", 40)) }
             }
+        }
+
+    @Test
+    fun `the monitor's own store calls are on its page, defined in its words`(): Unit =
+        runBlocking {
+            val calls = StoreCalls()
+            calls.track("monitor.verdicts", "query") { Unit }
+            val data =
+                MonitorStatus(rows(), everySeconds = 30, storeCalls = calls)
+                    .document(nowSeconds = 1_000)["monitor"]!!
+                    .jsonObject["data"]!!
+                    .jsonObject
+            val store = assertNotNull(data["progress"]!!.jsonObject["store"]).jsonObject
+            assertEquals(1L, store["issued"]!!.jsonPrimitive.long)
+            val terms = data["terms"]!!.jsonObject
+            assertTrue("store" in terms && "outstanding" in terms && "caller" in terms, "the store section is explained: ${terms.keys}")
         }
 
     @Test

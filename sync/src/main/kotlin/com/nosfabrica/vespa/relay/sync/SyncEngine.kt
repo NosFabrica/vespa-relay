@@ -62,6 +62,7 @@ import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
 import com.nosfabrica.vespa.relay.sync.refused.RouterRefusalSink
 import com.nosfabrica.vespa.relay.util.repeatEvery
 import com.nosfabrica.vespa.relay.util.shutdownStep
+import com.nosfabrica.vespa.relay.util.watchForFatals
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -189,6 +190,9 @@ class SyncEngine(
     /** Those signers' verdicts, read back. Empty when nobody is followed. */
     private val verdicts = RelayVerdictRecord(store, signer = null, readFrom = verdictSigners)
 
+    /** Says, on the health clock, which verdict-sourced streams no stored verdict feeds. */
+    private val verdictSupply = VerdictSupply(store, visitStreams)
+
     /** The duplicate-url fold, read from those verdicts alone. */
     private val fold = StoredFold.over(store, verdictSigners, allowOnion = tor != null)
 
@@ -236,7 +240,7 @@ class SyncEngine(
         ingest.start()
         registerProcessors()
         peers.announceTor()
-        watchForFatals()
+        watchForFatals("router", fatals)
         scope.launch { healthLoop() }
         peers.connect()
 
@@ -344,18 +348,6 @@ class SyncEngine(
     @Volatile
     private var health: SyncProgress.Health? = null
 
-    /** Counts VirtualMachineErrors so a damaged process does not read as merely quiet. Both boot paths need it. */
-    private fun watchForFatals() {
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            if (error is VirtualMachineError) {
-                fatals.incrementAndGet()
-                System.err.println("router: FATAL ${error.javaClass.simpleName} killed thread ${thread.name} — the router is now degraded")
-            }
-            previous?.uncaughtException(thread, error)
-        }
-    }
-
     /** The status document on its own clock. It describes the process, so it runs with no streams at all. */
     private fun publishProgressLoop() {
         scope.launch {
@@ -382,6 +374,7 @@ class SyncEngine(
             System.err.println(healthLine(reading))
             // On the health clock so `wedged` above and the call it is stuck in read together.
             storeCalls.warnSlow().forEach { System.err.println(it) }
+            verdictSupply.starved().forEach { System.err.println(it) }
         }
     }
 

@@ -21,22 +21,19 @@
 package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.eventstore.EngineTuning
-import com.nosfabrica.vespa.eventstore.SchemaDeploy
-import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.identity.RelayIdentity
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.nosfabrica.vespa.relay.ingest.refuseAnotherRelayKey
 import com.nosfabrica.vespa.relay.ingest.relayDialFromEnv
 import com.nosfabrica.vespa.relay.monitor.MonitorEngine
-import com.nosfabrica.vespa.relay.monitor.MonitorStatus
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.pulse.StoreMetricsLog
-import com.nosfabrica.vespa.relay.store.STORE_WRITERS
+import com.nosfabrica.vespa.relay.store.ReadOnlyStore
 import com.nosfabrica.vespa.relay.store.providerRefreshSeconds
 import com.nosfabrica.vespa.relay.store.vespaEndpoints
 import com.nosfabrica.vespa.relay.util.BootClock
@@ -51,7 +48,9 @@ import com.nosfabrica.vespa.relay.util.shutdownStep
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
+import com.nosfabrica.vespa.relay.util.watchForFatals
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.bundledPage
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -60,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.system.exitProcess
 
 /** The monitor's own status page; `/stats.html` serves every plane. */
@@ -74,11 +74,6 @@ private const val HEALTH_INTERVAL_MS = 60_000L
 /** The relay websocket the verdicts go to; defaults to `RELAY_URL`. */
 private const val MONITOR_INGEST_URL_ENV = "MONITOR_INGEST_URL"
 
-/** The page's markup, off the classpath. Missing means a broken build, so it is an error rather than a blank page. */
-private fun statusPage(): String =
-    MonitorStatus::class.java.getResourceAsStream("/stats.html")?.use { it.readBytes().decodeToString() }
-        ?: error("/stats.html is missing from the :web jar — no page can be served.")
-
 /**
  * Run the monitor as its own process: it reads the store, dials the relays its own config names,
  * and signs kind-30166 verdicts that it writes through the relay. The mirror reads them back from
@@ -90,12 +85,7 @@ fun main() {
     BootClock.main("monitor")
     exitOnBootFailure()
     val env = System.getenv()
-    // The mirror's config, aimed here, would configure nothing: said and stopped, as the sync does for ours.
-    val syncSet = listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE").filter { !env[it].isNullOrBlank() }
-    require(syncSet.isEmpty()) {
-        "${syncSet.joinToString()} set on the monitor process, which does not mirror. The mirror is its own process " +
-            "(vespa-sync, the `sync` compose service): move these to it and unset them here"
-    }
+    RouterConfigLoader.refuseSyncEnv(env)
     // No monitor.conf is a deployment that measures nothing: said once, and a clean exit a supervisor leaves down.
     if (env["MONITOR_CONFIG"].isNullOrBlank() && env["MONITOR_CONFIG_FILE"].isNullOrBlank()) {
         println(
@@ -114,7 +104,8 @@ fun main() {
     val config = RouterConfigLoader.monitorFromEnv(env)
     val sources = config.asDiscovery()
     val torSettings = TorSettings.fromEnv(env)
-    val providerRefresh = providerRefreshSeconds(env)
+    // Parsed before the schema wait, so a bad value refuses the boot at once.
+    providerRefreshSeconds(env)
     val vespa = vespaEndpoints(env)
     vespa.describe()?.let { System.err.println("monitor: the store sends its $it") }
 
@@ -135,38 +126,24 @@ fun main() {
     // Beside the boot, as in the sync: a refusal stops it the moment it is heard.
     val keyChecked =
         BootTask("relay key check") {
-            refuseAnotherRelayKey(dial, identity.pubKey, process = "monitor")
+            refuseAnotherRelayKey(dial, identity.pubKey, process = "monitor") { exitProcess(1) }
             BootClock.mark("monitor: the relay's key checked")
         }
     val snapshot = if (statusPort > 0) StatsSnapshot(env["MONITOR_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }).also { it.loadFromFile() } else null
     val pageBound =
         BootTask("status page") {
-            snapshot?.let { serveStatusSite(port = statusPort, page = statusPage(), snapshot = it, icon = icon) }.also {
+            snapshot?.let { serveStatusSite(port = statusPort, page = bundledPage(), snapshot = it, icon = icon) }.also {
                 BootClock.mark("monitor: status page bound")
             }
         }
     System.err.println("monitor: verdicts go to the relay at ${dial.url}; the store is opened read-only")
 
-    val configUrl = env["VESPA_CONFIG_URL"] ?: VespaEventStore.deriveConfigUrl(vespaUrl)
-    System.err.println("schema: waiting until an application serves at $vespaUrl — the relay deploys it (up to 10 min)")
-    VespaEventStore.deploySchema(vespaUrl, configUrl, SchemaDeploy.AWAIT, storeTuning)
-    BootClock.mark("monitor: Vespa serves the schema")
-    val store =
-        VespaEventStore.open(
-            vespaUrl,
-            relay = relayUrl,
-            schema = SchemaDeploy.AWAIT,
-            configUrl = configUrl,
-            feedEndpoints = vespa.feed,
-            queryEndpoints = vespa.query,
-            writers = STORE_WRITERS,
-            providerRefreshSeconds = providerRefresh,
-            readOnly = true,
-            tuning = storeTuning,
-        )
-    BootClock.mark("monitor: store open (read-only)")
+    val configUrl = ReadOnlyStore.awaitSchema(env, vespaUrl, storeTuning, process = "monitor")
+    val store = ReadOnlyStore.open(env, vespaUrl, relayUrl, configUrl, storeTuning, process = "monitor")
 
     val storeCalls = StoreCalls()
+    // From here on a pass runs on pool threads; one killed by an OutOfMemoryError must say so.
+    val fatals = AtomicLong().also { watchForFatals("monitor", it) }
     keyChecked.await()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + storeCalls)
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
@@ -194,7 +171,7 @@ fun main() {
     }
     val rollup =
         snapshot?.let { snap ->
-            val status = engine.status(statusEverySeconds, relayUrl.url)
+            val status = engine.status(statusEverySeconds, relayUrl.url, storeCalls)
 
             fun publish() = snap.publish(status.document())
             publish()
@@ -211,6 +188,11 @@ fun main() {
     BootClock.mark("monitor: engine started")
     scope.launch {
         repeatEvery(HEALTH_INTERVAL_MS, "health") {
+            val rt = Runtime.getRuntime()
+            System.err.println(
+                "monitor: health heap ${(rt.totalMemory() - rt.freeMemory()) / 1_048_576}/${rt.maxMemory() / 1_048_576}MB" +
+                    (if (fatals.get() > 0) " · ${fatals.get()} FATAL error(s): degraded, restart it" else ""),
+            )
             storeCalls.warnSlow().forEach { System.err.println(it) }
             engine.heldOutDead().takeIf { it > 0 }?.let { dead ->
                 System.err.println("router: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes")

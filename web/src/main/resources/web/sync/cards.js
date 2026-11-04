@@ -636,4 +636,4 @@ function syncCard(section) {
 }
 
 
-export { syncCard };
+export { storePanel, syncCard };

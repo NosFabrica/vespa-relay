@@ -105,6 +105,13 @@ per relay that the mirror's own walks fetch. A monitor setting or a `monitor { }
 the sync stops its boot, as `SYNC_CONFIG*` stops the relay's, because a setting on the wrong
 process configures nothing. With no `monitor.conf` at all the monitor says so and exits 0:
 measuring nothing is a deployment, and a supervisor should leave it down rather than restart it.
+Its sockets are its own, so a relay the mirror holds live is dialled a second time from the same
+host; a relay that answers that with a 429 or "too many" is deferred in memory (`RATE_LIMITED`)
+and never signed. What the shared process used to catch on its own now needs saying across the
+gap: the sync's boot refused a discovering deployment with no monitor declared, and with the
+monitor elsewhere it cannot tell, so a stream that takes its relays from 30166 records the store
+does not hold is named on every health line (`VerdictSupply`). The monitor's page carries its own
+`store` section, and both processes count a thread killed by a VirtualMachineError (`watchForFatals`).
 
 **A probe dial is not an upstream, so its events are always verified.** The sink
 used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for

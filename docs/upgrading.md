@@ -33,6 +33,13 @@ the `monitor` service in `docker-compose.yml`, under the same `sync` profile, so
   it down. A sync whose streams discover their relays is no longer refused for
   having no monitor declared: it rosters from whatever verdicts `verdictsFrom`
   names, and the boot says whose.
+- **A health line naming a starved stream.** A stream whose relays come from
+  kind-30166 verdicts that the store does not hold (`router: health stream `X`
+  takes its relays from kind-30166 verdicts and the store holds none…`) means
+  no monitor is signing them: start the monitor service, or point
+  `verdictsFrom` at the monitor that does.
+- **The sync's `connectionTimeout`** is named at boot when it is not the
+  default, since the monitor no longer reads it.
 - **An event a probe happens to see is no longer mirrored.** It went into the
   mirror's ingest when both ran in one process; the monitor drops it now. A
   handful per relay, and the mirror's own walks fetch them.

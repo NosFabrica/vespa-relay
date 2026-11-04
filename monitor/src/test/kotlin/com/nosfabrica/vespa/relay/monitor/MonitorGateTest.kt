@@ -40,7 +40,7 @@ class MonitorGateTest {
     private fun withMonitorFile(
         streams: String,
         monitor: String,
-    ) = RouterConfigLoader.parse(streams.trimIndent(), monitorHocon = monitor.trimIndent())
+    ) = RouterConfigLoader.parse(streams.trimIndent()).copy(monitor = RouterConfigLoader.parseMonitorConf(monitor.trimIndent()))
 
     /** The monitor block's contents, bare, as its own file carries them. */
     private val bareMonitorFile =
@@ -156,17 +156,6 @@ class MonitorGateTest {
         assertEquals(60L, monitor.fastLaneSeconds)
         assertEquals(4, monitor.dialConcurrency)
         assertEquals(900L, cfg.monitorSources()!!.refreshSeconds, "the sweep is what re-reads the lists")
-    }
-
-    @Test
-    fun `declaring the monitor twice is refused rather than resolved`() {
-        // Two declarations cannot both be the truth, and picking one silently is how a deployment
-        // measures a set nobody is looking at.
-        val e =
-            assertFailsWith<IllegalArgumentException> {
-                withMonitorFile(pureMonitor, bareMonitorFile)
-            }
-        assertTrue(e.message!!.contains("Keep one"), "the message says which to delete: ${e.message}")
     }
 
     @Test

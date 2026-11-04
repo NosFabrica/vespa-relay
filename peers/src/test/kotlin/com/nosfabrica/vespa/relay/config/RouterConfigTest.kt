@@ -1079,6 +1079,18 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a mirror setting on the monitor process stops its boot, and a tuned sync timeout is pointed at monitor conf`() {
+        for (name in RouterConfigLoader.SYNC_ENV) {
+            val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.refuseSyncEnv(mapOf(name to "x")) }
+            assertTrue(name in e.message!! && "`sync` compose service" in e.message!!, e.message)
+        }
+        RouterConfigLoader.refuseSyncEnv(mapOf("MONITOR_CONFIG" to "sources = []"))
+        assertNull(RouterConfigLoader.connectionTimeoutNote(RouterConfigLoader.parse(streamsConfig)), "the default says nothing")
+        val tuned = RouterConfigLoader.parse(streamsConfig.replace("connectionTimeout = 20", "connectionTimeout = 45"))
+        assertTrue("monitor.conf" in RouterConfigLoader.connectionTimeoutNote(tuned)!!)
+    }
+
+    @Test
     fun `the monitor process reads monitor conf alone and refuses one that never says what to measure`() {
         val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.monitorFromEnv(emptyMap()) }
         assertTrue("MONITOR_CONFIG_FILE" in e.message!!, e.message)
@@ -1632,7 +1644,7 @@ class RouterConfigTest {
         fun refused(
             hocon: String,
             monitor: String? = null,
-        ) = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(hocon, monitorHocon = monitor) }.message.orEmpty()
+        ) = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(hocon).copy(monitor = monitor?.let { RouterConfigLoader.parseMonitorConf(it) }) }.message.orEmpty()
 
         val static = """streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], %s } }"""
         val sourced = """streams { s { filter = { "kinds": [1] }, relaySource = [ { filter = { "kinds": [10002] }, select = [ { kind = 10002, tag = "r", %s } ] } ] } }"""
@@ -1656,7 +1668,7 @@ class RouterConfigTest {
             hocon: String,
             monitor: String? = null,
         ) = assertFailsWith<IllegalArgumentException>(hocon + monitor.orEmpty()) {
-            RouterConfigLoader.parse(hocon, monitorHocon = monitor)
+            RouterConfigLoader.parse(hocon).copy(monitor = monitor?.let { RouterConfigLoader.parseMonitorConf(it) })
         }.message.orEmpty()
 
         val static = """streams { s { filter = { "kinds": [1] }, urls = ["wss://a.example"], %s } }"""
@@ -1713,7 +1725,7 @@ class RouterConfigTest {
             hocon: String,
             monitor: String? = null,
         ) = assertFailsWith<IllegalArgumentException>(hocon + monitor.orEmpty()) {
-            RouterConfigLoader.parse(hocon, monitorHocon = monitor)
+            RouterConfigLoader.parse(hocon).copy(monitor = monitor?.let { RouterConfigLoader.parseMonitorConf(it) })
         }.message.orEmpty()
 
         val static = """streams { s { filter = { "kinds": [1] }, urls = %s } }"""

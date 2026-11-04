@@ -30,7 +30,6 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
-import kotlin.system.exitProcess
 
 /** Removed: the relay is the only writer. Read only to refuse a deployment still asking for `local`. */
 const val SYNC_INGEST_ENV = "SYNC_INGEST"
@@ -236,13 +235,15 @@ private const val SELF_KEY_WATCH_SECONDS = 30L
  * Stops the boot when the relay at [dial] states a key other than [ours], or none ([keyVerdict]).
  * A relay that never answers is not refused: the writer fails its batches until it does, and those
  * withhold their bands, so nothing is lost by starting. It is watched instead ([watchRelayKey]),
- * and the process stops the moment it answers with the wrong key, as the boot would have.
+ * and [onLateRefusal] runs the moment it answers with the wrong key: the entrypoint's to stop on.
  */
 fun refuseAnotherRelayKey(
     dial: NormalizedRelayUrl,
     ours: String,
     /** The log prefix: `sync` or `monitor`. */
     process: String,
+    /** What the boot would have refused, reached after it: the caller stops the process. */
+    onLateRefusal: (String) -> Unit,
 ) {
     val deadline = System.nanoTime() + SELF_KEY_WAIT_SECONDS * 1_000_000_000
     while (true) {
@@ -271,9 +272,8 @@ fun refuseAnotherRelayKey(
         pollMillis = SELF_KEY_WATCH_SECONDS * 1_000,
         onVerified = { System.err.println("$process: the relay at ${dial.url} now answers, and states this process's key") },
         onRefused = { reason ->
-            // What the boot would have refused, reached late: stop, so a supervisor restarts into that refusal.
             System.err.println("$process: STOPPING — $reason")
-            exitProcess(1)
+            onLateRefusal(reason)
         },
     )
 }

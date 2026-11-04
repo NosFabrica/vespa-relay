@@ -24,6 +24,11 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -94,7 +99,66 @@ class StoreCalls(
         val omitted: Int,
         val callers: List<Caller>,
         val ages: List<Age>,
-    )
+    ) {
+        /** The `store` section both client processes publish. Every count is written with its zeroes so the sums can always be checked. */
+        fun document(): JsonObject =
+            buildJsonObject {
+                put("outstanding", outstanding)
+                // The operator's own threshold, so the page marks rows by it, not a copy of the default.
+                put("slowAfterSec", slowAfterSec)
+                put("issued", issued)
+                put("returned", returned)
+                put("failed", failed)
+                put("cancelled", cancelled)
+                calls.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("calls") {
+                        for (c in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("caller", c.caller)
+                                    put("op", c.op)
+                                    // A summary of the ask, never the ask.
+                                    c.asked?.let { put("asked", it) }
+                                    put("issuedAt", c.issuedAt)
+                                    put("elapsedSec", c.elapsedSec)
+                                    put("outstandingAtIssue", c.outstandingAtIssue)
+                                },
+                            )
+                        }
+                    }
+                }
+                put("omitted", omitted)
+                callers.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("callers") {
+                        for (c in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("caller", c.caller)
+                                    put("issued", c.issued)
+                                    put("returned", c.returned)
+                                    put("failed", c.failed)
+                                    put("cancelled", c.cancelled)
+                                    put("outstanding", c.outstanding)
+                                    c.oldestOutstandingSec?.let { put("oldestOutstandingSec", it) }
+                                },
+                            )
+                        }
+                    }
+                }
+                ages.takeIf { rows -> rows.any { it.calls > 0 } }?.let { rows ->
+                    putJsonArray("ages") {
+                        for (a in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("fromSec", a.fromSec)
+                                    put("calls", a.calls)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+    }
 
     /** One call that has been issued and has not come back. */
     private class Open(
