@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.status
+package com.nosfabrica.vespa.relay.util
 
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
  * Rebuilds a status document on a timer, one instance per plane. Its own daemon thread, so
  * the page keeps refreshing while the mirror's dispatchers are saturated.
  */
-internal class StatusRollup(
+class StatusRollup(
     /** Names the thread and the log line a failed pass prints. */
     private val name: String,
     private val everySeconds: Long,

@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.monitor
+package com.nosfabrica.vespa.relay.fold
 
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -53,7 +53,7 @@ class StoredFold(
      * which socket to open.
      */
     suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
-        val collapsed = AliasFolding.readBack(record, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.takeIf { it != url }?.let { url to it } }.toMap()
+        val collapsed = FoldReading.readBack(record, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.takeIf { it != url }?.let { url to it } }.toMap()
         val folded = collapsed.aliases + collapsed.standIns + collapsed.waiting
         for (url in urls) last[url] = folded[url] ?: url
         return folded
@@ -89,7 +89,7 @@ class StoredFold(
                 RelayVerdictRecord(store, signer = null, readFrom = signers),
                 readWorld = {
                     val recorded = RelayDiscovery.recorded(store, signers, RelayVerdictRecord.DEFAULT_TTL_SECONDS, allowOnion)
-                    recorded - RelayDiscovery.undialable(store, signers, StreamWorld.DEAD_TTL_SECONDS, allowOnion)
+                    recorded - RelayDiscovery.undialable(store, signers, RelayVerdictRecord.DEAD_TTL_SECONDS, allowOnion)
                 },
             )
     }

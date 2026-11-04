@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.config.RelayExcludes
+import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
@@ -255,7 +256,7 @@ internal class StreamWorld(
     override suspend fun onEvent(event: Event) = onProbeEvent(event)
 
     companion object {
-        const val DEAD_TTL_SECONDS = 24L * 60 * 60
+        const val DEAD_TTL_SECONDS = RelayVerdictRecord.DEAD_TTL_SECONDS
 
         /** Of [urls], those [record] holds a current fitness grade for, measured at or after [floor]. */
         internal suspend fun gradedSince(

@@ -23,10 +23,8 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.monitor.AliasFolding
-import com.nosfabrica.vespa.relay.monitor.AliasProbe
-import com.nosfabrica.vespa.relay.monitor.RelayAliases
-import com.nosfabrica.vespa.relay.monitor.ServerIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
+import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -47,14 +45,6 @@ class RosterFoldTest {
 
     private fun newStore() = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
 
-    /** The fold's read half, as the engine wires it; nothing here may dial. */
-    private fun folding(store: NostrSemanticsStore) =
-        AliasFolding(
-            aliases = RelayAliases(),
-            record = RelayVerdictRecord(store, ours),
-            probe = AliasProbe(fetch = { _, _, _, _ -> error("the roster never dials") }),
-        )
-
     private fun roster(
         store: NostrSemanticsStore,
         config: String,
@@ -64,7 +54,7 @@ class RosterFoldTest {
         store = store,
         streams = RouterConfigLoader.parse(config.trimIndent()).streams,
         bands = SyncBands(null),
-        foldedAway = { urls -> folding(store).applyVerdicts(urls, world).let { it.aliases + it.standIns + it.waiting } },
+        foldedAway = { urls -> FoldReading.readBack(RelayVerdictRecord(store, ours), urls, world)!!.let { it.aliases + it.standIns + it.waiting } },
     )
 
     private val graded =

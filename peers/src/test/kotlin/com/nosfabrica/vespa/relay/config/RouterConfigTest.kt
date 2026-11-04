@@ -1049,15 +1049,10 @@ class RouterConfigTest {
             File(dir, "sync.conf").writeText("""include "streams.conf"""")
             File(dir, "monitor.conf").writeText("""include "sources.conf"""")
 
-            val cfg =
-                RouterConfigLoader.fromEnv(
-                    mapOf(
-                        "SYNC_CONFIG_FILE" to File(dir, "sync.conf").path,
-                        "MONITOR_CONFIG_FILE" to File(dir, "monitor.conf").path,
-                    ),
-                )
+            val cfg = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG_FILE" to File(dir, "sync.conf").path))
             assertEquals(listOf("included"), cfg!!.streams.map { it.name }, "the included streams file was dropped")
-            assertEquals(1, cfg.monitor?.sources?.size, "the included monitor sources file was dropped")
+            val monitor = RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG_FILE" to File(dir, "monitor.conf").path))
+            assertEquals(1, monitor.sources?.size, "the included monitor sources file was dropped")
         } finally {
             dir.deleteRecursively()
         }
@@ -1067,9 +1062,32 @@ class RouterConfigTest {
     fun `a config file that is not there is named, not read as an empty config`() {
         val missing = File(createTempDirectory("router-missing").toFile(), "nope.conf")
         assertFailsWith<IllegalArgumentException> { RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG_FILE" to missing.path)) }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "MONITOR_CONFIG_FILE" to missing.path))
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG_FILE" to missing.path)) }
+    }
+
+    @Test
+    fun `a monitor setting on the sync process stops its boot and says where it went`() {
+        // The monitor is its own process: left on the sync, these would configure nothing, and a
+        // deployment would stop measuring without a word.
+        for (name in RouterConfigLoader.MONITOR_ENV) {
+            val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, name to "x")) }
+            assertTrue(name in e.message!! && "monitor` compose service" in e.message!!, e.message)
         }
+        val block = streamsConfig + "\nmonitor { sources = [] }"
+        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to block)) }
+        assertTrue("monitor.conf" in e.message!!, e.message)
+    }
+
+    @Test
+    fun `the monitor process reads monitor conf alone and refuses one that never says what to measure`() {
+        val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.monitorFromEnv(emptyMap()) }
+        assertTrue("MONITOR_CONFIG_FILE" in e.message!!, e.message)
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG" to "fastLaneSeconds = 60")) }
+        val nothing = RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG" to "sources = []"))
+        assertNull(nothing.asDiscovery(), "`sources = []` boots and measures nothing")
+        assertEquals(MonitorConfig.DEFAULT_CONNECTION_TIMEOUT_SECONDS, nothing.connectionTimeoutSec)
+        assertEquals(7L, RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG" to "sources = []\nconnectionTimeout = 7")).connectionTimeoutSec)
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.monitorFromEnv(mapOf("MONITOR_CONFIG" to "sources = []", "MONITOR_CONFIG_FILE" to "/x")) }
     }
 
     @Test

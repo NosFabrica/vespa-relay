@@ -58,12 +58,10 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the shipped pair boots`() {
-        // The quickstart in sync.conf.example's own header copies BOTH files. Parsed together they
-        // have to survive the boot refusal too — an example that crash-loops is a broken feature,
-        // and the streams here all discover their relays.
-        RouterConfigLoader.refuseUndeclaredMonitor(example)
-        assertTrue(example.discoveryStreams().isNotEmpty(), "the shape: without a discovery stream the refusal cannot fire")
-        assertNotNull(example.monitorSources(), "…so the monitor half has to declare what it measures")
+        // sync.conf.example's header copies BOTH files; the monitor process refuses one that names no sources.
+        assertTrue(example.discoveryStreams().isNotEmpty(), "the shape: the streams discover their relays")
+        RouterConfigLoader.refuseUndeclaredSources(example.monitor!!)
+        assertNotNull(example.monitorSources(), "…and the monitor half declares what it measures")
     }
 
     @Test

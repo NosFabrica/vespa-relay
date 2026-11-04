@@ -80,10 +80,10 @@ class ModuleBoundariesTest {
     }
 
     @Test
-    fun `the two processes never depend on each other`() {
-        // Each is a process of its own so the mirror can restart without the relay noticing.
+    fun `the processes never depend on each other`() {
+        // Each is a process of its own so the mirror, the monitor and the relay restart without the others noticing.
         val processes = Repo.modules.filter { Repo.buildFile(it).contains("\n    application\n") }
-        assertEquals(setOf("relay", "sync"), processes.toSet(), "a new process module belongs in this rule")
+        assertEquals(setOf("relay", "sync", "monitor"), processes.toSet(), "a new process module belongs in this rule")
         processes.forEach { module ->
             val named = projectDeps(module).map { it.second }.filter { it in processes }
             assertTrue(named.isEmpty(), ":$module names $named, and a process is not a library")

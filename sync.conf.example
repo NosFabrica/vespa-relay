@@ -1,20 +1,22 @@
 # Example sync config — mirror events from other relays into this one.
 #
 # The mirror runs as its own process (the compose `sync` service; the profile is
-# the on-switch). TWO FILES: copy this one AND monitor.conf.example, because the
-# streams below discover their relays and a deployment that discovers without
-# declaring what it measures is refused at boot.
+# the on-switch), and the monitor as another (the `monitor` service, same
+# profile). TWO FILES: copy this one AND monitor.conf.example, because the
+# streams below roster the relays the monitor grades `prime`.
 #   cp sync.conf.example sync.conf
 #   cp monitor.conf.example monitor.conf
 #   SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
 #     docker compose --profile sync up -d --build
 #
-# Edited either? Restart only the mirror — the relay keeps serving:
-#   docker compose --profile sync restart sync
+# Edited one? Restart only its process — the relay keeps serving:
+#   docker compose --profile sync restart sync      # this file
+#   docker compose --profile sync restart monitor   # monitor.conf
 #
-# Running without Docker, set SYNC_CONFIG_FILE and MONITOR_CONFIG_FILE to your
-# copies on the SYNC process (`./gradlew :sync:run` / the vespa-sync binary) —
-# the relay refuses to boot with either set, because it runs neither plane.
+# Running without Docker, set SYNC_CONFIG_FILE on the sync process (`./gradlew
+# :sync:run` / vespa-sync) and MONITOR_CONFIG_FILE on the monitor (`./gradlew
+# :monitor:run` / vespa-monitor). Each refuses the other's setting, and the
+# relay refuses both, because a setting on the wrong process configures nothing.
 #
 # These two files as they stand are what we run — the values, the kinds and the
 # schedules of a live deployment — with one thing taken out: our monitor's

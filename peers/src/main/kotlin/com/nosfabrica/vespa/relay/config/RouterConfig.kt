@@ -118,6 +118,8 @@ data class MonitorConfig(
      * the most sockets the monitor plane holds.
      */
     val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
+    /** A probe's dial budget, before Tor's own slack; `sync.conf` has its own for the mirror. */
+    val connectionTimeoutSec: Long = DEFAULT_CONNECTION_TIMEOUT_SECONDS,
 ) {
     /** This block's own sources as a discovery config; the cadence fields carry the sweep. */
     fun asDiscovery(): RelayDiscoveryConfig? =
@@ -131,6 +133,8 @@ data class MonitorConfig(
         const val DEFAULT_FAST_LANE_SECONDS = 120L
 
         const val DEFAULT_DIAL_CONCURRENCY = 128
+
+        const val DEFAULT_CONNECTION_TIMEOUT_SECONDS = 20L
     }
 }
 

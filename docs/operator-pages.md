@@ -183,7 +183,7 @@ Up with the `sync` profile, each served by the process doing the work:
   said when it turned us away. Rows that need somebody come first, and the counts
   above the table stay complete even when the list is cut.
 
-- **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779) — what this router has
+- **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779, served by the monitor process) — what this router has
   decided about the relay urls it discovers: which are one server wearing several
   addresses, which cannot answer the same question twice, which are graded
   `prime`, and which are unreachable. Below the passes, a panel reads the signed

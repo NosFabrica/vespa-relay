@@ -667,9 +667,11 @@ reaches them.
 
 ## monitor.conf: what this deployment measures
 
-The monitor's config is its own file. `MONITOR_CONFIG_FILE` points at it,
-`MONITOR_CONFIG` carries it inline, and the file is the declaration's
-**contents** — no wrapper, because the file is already named for it:
+The monitor is its own process (`vespa-monitor`, the `monitor` compose service
+under the same `sync` profile), and its config is its own file.
+`MONITOR_CONFIG_FILE` points at it, `MONITOR_CONFIG` carries it inline, and the
+file is the declaration's **contents** — no wrapper, because the file is already
+named for it:
 
 ```hocon
 # monitor.conf
@@ -678,6 +680,7 @@ exclude         = []
 sweepSeconds    = 21600
 fastLaneSeconds = 120
 dialConcurrency = 128
+connectionTimeout = 20   # a probe's dial budget, seconds; sync.conf keeps the mirror's
 ```
 
 Every url derived here becomes a signed, public kind-30166 record — a claim
@@ -691,21 +694,22 @@ Where a stream scans a relay list the monitor should measure too, say so in both
 pointer from one to the other would put the two planes back in one config with
 extra steps.
 
-Three things are refused rather than resolved:
+Refused rather than resolved:
 
 - **A `monitor { }` wrapper inside `monitor.conf`.** It is the copy-paste out of
   a one-file config, and read past it would parse to a monitor with no sources —
   measuring nothing, quietly.
-- **Declaring the monitor twice**, in `monitor.conf` and in a `monitor { }`
-  block of the sync config. Two declarations cannot both be the truth, and
-  picking one silently is how a deployment measures a set nobody is looking at.
-  (One file with a `monitor { }` block is still a supported shape; it is only
-  having *both* that is refused.)
-- **No monitor declaration at all, while streams discover their relays.** That
-  configuration used to measure every one of those streams' sources and now
-  measures nothing, and both are legitimate deployments. `sources = []` is how
-  you say "mirror these streams and measure nothing" — a declaration, so it
-  boots.
+- **A `monitor.conf` with no `sources`**, one that only tunes the clocks. It
+  never said what to measure. `sources = []` is how you say "measure nothing"
+  — a declaration, so it boots, and the process still retires stale verdicts.
+- **A monitor setting on the sync process**: `MONITOR_CONFIG`,
+  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT`, `MONITOR_STATUS_FILE`, or a
+  `monitor { }` block in `sync.conf`. There they would configure nothing, so the
+  sync stops and names where they moved. The monitor refuses `SYNC_CONFIG` and
+  `SYNC_CONFIG_FILE` the same way.
+
+No monitor config at all is not refused: the monitor says this deployment
+measures nothing and exits 0, and compose (`restart: on-failure`) leaves it down.
 
 The number that says the two files have drifted apart is `unwatched`, on the
 mirror's `/stats.json` and its prime-relays card: (relay, stream) pairs the
@@ -1147,7 +1151,8 @@ use.
 ## Enabling it under docker compose
 
 The router is the `sync` service, behind the `sync` profile — the profile is
-the on-switch. Copy the bundled example, then start with the mirror on:
+the on-switch, and it starts the `monitor` service beside it. Copy the bundled
+examples, then start with both on:
 
 ```bash
 cp sync.conf.example sync.conf         # what to mirror: the relay list / filters
@@ -1156,12 +1161,13 @@ SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
   docker compose --profile sync up -d --build
 ```
 
-Plain `docker compose up` serves without mirroring. Edited either file?
-Restart only the mirror — the relay keeps serving, and the sync cursors make
-the re-run cost a diff, not a corpus:
+Plain `docker compose up` serves without mirroring. Edited a file? Restart only
+its process — the relay keeps serving, and the sync cursors make a mirror re-run
+cost a diff, not a corpus:
 
 ```bash
-docker compose --profile sync restart sync
+docker compose --profile sync restart sync      # sync.conf
+docker compose --profile sync restart monitor   # monitor.conf
 ```
 
 Setting `SYNC_CONFIG` / `SYNC_CONFIG_FILE` on the **relay** fails its boot

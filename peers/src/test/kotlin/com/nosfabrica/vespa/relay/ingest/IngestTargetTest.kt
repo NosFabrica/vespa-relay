@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.sync
+package com.nosfabrica.vespa.relay.ingest
 
 import com.sun.net.httpserver.HttpServer
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl

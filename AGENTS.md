@@ -3,27 +3,26 @@
 A Nostr relay with trust-ranked NIP-50 search: quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays into the same
-store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), two processes:
+store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), three processes:
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
-- `:sync` — the mirror, and the process that hosts the monitor beside it, so
-  the pair restarts without the relay or Vespa noticing. It writes nothing
-  itself: the store opens read-only, and every write goes to the relay. `SyncMain` builds both
-  engines over one `PeerClient`. Operators know the subsystem as the router
-  (`sync.conf` + `monitor.conf`, the `router:` log prefix).
-- `:monitor` — the measuring plane: the alias fold, the consistency gate and
-  the fitness grades, signed onto kind-30166 records the mirror's roster selects
-  on. It may not depend on `:sync`, and knows no mirror type: what it takes from
-  the mirror arrives through `MonitorEngine`'s constructor as the monitor's own
-  config, the relay lists it scans, a dial budget, and a sink for an event a
-  probe happened to see.
+- `:sync` — the mirror, its own process so it restarts without the relay or
+  Vespa noticing. It writes nothing itself: the store opens read-only, and every
+  write goes to the relay. Operators know the subsystem as the router
+  (`sync.conf`, the `router:` log prefix).
+- `:monitor` — the measuring plane, the third process (`MonitorMain`,
+  `monitor.conf`): the alias fold, the consistency gate and the fitness grades,
+  signed onto kind-30166 records and written through the relay like the mirror's
+  events. The two never depend on each other: the mirror reads the records back
+  from the store, from the signers `verdictsFrom` names, and that is all either
+  knows of the other.
 - `:common` — only what the serving relay also reads (`RelayIdentity`,
   `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, `ServingPressure`). Never
   quartz's relay client, never Ktor.
 - `:peers` — how this deployment talks to other relays, shared by the two
-  client-side planes: `PeerClient`, `RelaySockets`, `RelayVerdictRecord` and the
-  `Verdict` vocabulary, `RelayDiscovery`, `RouterConfig`, `IngestPipeline`,
-  `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
+  client-side processes: `PeerClient`, `RelaySockets`, `RelayWriter`,
+  `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
+  (`fold/`), `RelayDiscovery`, `RouterConfig`, `IngestPipeline`, `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
   `IngestPipeline`, which writes the relay's publishes the way it writes the
   mirror's downloads (`RELAY_INGEST`).
 - `:web` — every `.html`, `.js` and `.css` in the repo and the Ktor scaffolding
@@ -77,7 +76,7 @@ node web/src/test/browser/csp.probe.mjs          # every public page under the s
 # a second identical run is up-to-date-checked, skipped, and prints nothing.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i                       # how the five indexer relays end an empty page
 ./gradlew :sync:test --tests '*EnforceRetractionProbe*' -DenforceProbe=true -DenforceProviderRelay=wss://... --rerun -i   # stages a phantom score for the retraction audit
-./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i                        # both planes end to end against real relays
+./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i                        # the pool over a hand-graded roster against real relays
 ./gradlew :monitor:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true -DseedVerdictsNsec=nsec1... -DseedVerdictsCount=600 --rerun -i   # seeds a monitor corpus for the verdicts panel; -DseedVerdictsUrl=ws://localhost:7777 -DseedVerdictsLegacy=15
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true -Dseed10040Url=ws://localhost:7777 --rerun -i   # one signed 10040 into a local relay
 ./gradlew :monitor:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true -DonionFoldSocks=127.0.0.1:9050 --rerun -i   # can the fold measure a hidden service
@@ -114,9 +113,11 @@ cp sync.conf.example sync.conf && cp monitor.conf.example monitor.conf
 SYNC_CONFIG_LOCAL=./sync.conf MONITOR_CONFIG_LOCAL=./monitor.conf \
   docker compose --profile sync up -d --build                 # with the mirror and the monitor
 docker compose --profile onion up -d          # with the relay's own .onion
-docker compose --profile sync restart sync    # new sync.conf / monitor.conf, relay untouched
+docker compose --profile sync restart sync    # new sync.conf, relay and monitor untouched
+docker compose --profile sync restart monitor # new monitor.conf, relay and mirror untouched
 docker compose logs relay --since 5m
 docker compose logs sync --since 5m
+docker compose logs monitor --since 5m
 ```
 
 Bumping `vespaEventStore` is not done until the store's own integration gate
@@ -148,12 +149,13 @@ file with the reasoning, is [docs/layout.md](docs/layout.md).
 common/…/relay/
   identity/                   RelayIdentity (RELAY_NSEC: NIP-11 self, NIP-42, NIP-66 monitor) and PubKeys,
                               every pubkey setting (npub only, no bare hex) + adminPubkeysFromEnv;
-                              both processes read RELAY_NSEC and RELAY_ADMIN_PUBKEYS, so one parser each
+                              every process reads RELAY_NSEC and RELAY_ADMIN_PUBKEYS, so one parser each
   pressure/ServingPressure.kt EWMA of client read latency, served on GET /pressure
   pulse/                      PulseDocument (the store's own counters as GET /pulse.json), PulseSettings
-                              (PULSE_* parsing, the fail-closed admin check); here because both processes
-                              open a store, and because :web must not depend on one
-  store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), fmtDuration
+                              (PULSE_* parsing, the fail-closed admin check); here because every process
+                              opens a store, and because :web must not depend on one
+  store/, util/               SchemaDeploy, StoreTopology; QuartzLogLevel (QUARTZ_LOG_LEVEL), fmtDuration, BootClock,
+                              Guards (shutdownStep, repeatEvery), StatusRollup
   (test) arch/                the guards that read the checkout: ModuleBoundariesTest, the browser-file
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
@@ -161,26 +163,32 @@ peers/…/relay/
   peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
-  config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`)
+  config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`; monitorFromEnv
+                              reads monitor.conf for the monitor process)
+  fold/                       FoldReading, RelayAliases, ServerIndex, StoredFold: the duplicate-url fold as 30166
+                              records state it, read by the mirror's roster and the monitor's passes alike
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
                               the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
-                              ProbeTrouble, ParseAudit, refused/; Processors, InFlight, StoreCalls, StatusVocabulary
+                              ProbeTrouble, ParseAudit, refused/, IngestTarget (the relay dial and its NIP-11 key
+                              check, for both client processes); Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
+monitor/…/relay/
+  MonitorMain.kt              entrypoint (MONITOR_*, monitor.conf); its own PeerClient and RelayWriter
 monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
-  AliasFolding, AliasProbe, RelayAliases, StoredFold         which urls are one server; StoredFold is the roster's read of it
+  AliasFolding, AliasProbe                                   which urls are one server: the probe, and the fold that measures it
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
   ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
-  sync/                       SyncEngine (wiring; starts both planes) and HealthLine (the health line), VisitPool
+  sync/                       SyncEngine (wiring) and HealthLine (the health line), VisitPool
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
                               SyncManifest (SYNC_MANIFEST_FILE), PersistedJsonState (the three files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
-                              StatusRollup, SyncCoverageReport, RelayStatusReport, GaugeSeries
+                              SyncCoverageReport, RelayStatusReport, GaugeSeries
 relay/…/relay/
   RelayMain.kt                entrypoint: readSettings parses everything before the network, then named boot steps;
                               refuses to boot if SYNC_CONFIG* is set
@@ -222,9 +230,9 @@ already holds data, `docs/upgrading.md` what an operator does and sees moving to
 ## How the router works
 
 `SyncEngine` mirrors upstream events into the store. Its env vars are `SYNC_*`
-(a pre-rename `ROUTER_*` spelling is refused at boot), and the monitor beside
-it reads `MONITOR_CONFIG_FILE`; it is its own process,
-so a `sync.conf` / `monitor.conf` change is `restart sync`, never a relay outage. The long form
+(a pre-rename `ROUTER_*` spelling is refused at boot); the monitor is a process
+of its own and reads `MONITOR_*`, so a `sync.conf` change is `restart sync` and a
+`monitor.conf` change `restart monitor`, never a relay outage. The long form
 is [docs/router-internals.md](docs/router-internals.md); the config format is
 [docs/router.md](docs/router.md).
 
@@ -254,14 +262,13 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   unreadable for a day, counted under `cannotRun`.
   `.onion` urls go through Tor (`SYNC_TOR_SOCKS`, `SYNC_TOR_MAX_SOCKETS`,
   `SYNC_TOR_ALL`), gated separately (`DialGate`).
-- **The monitor.** Its own config file (`MONITOR_CONFIG_FILE`, `monitor.conf`;
-  a `monitor { }` block in the sync config still works, and declaring both is
-  refused). It names the relay lists it scans and nothing else — no stream lends
-  it anything, and nothing in it names a stream — because every derived url
-  becomes a signed public claim. `RouterConfig.monitorSources()` is the whole
-  of it. A deployment with discovery streams and no monitor declaration is
-  refused at boot (`RouterConfigLoader.refuseUndeclaredMonitor`); `sources = []`
-  is how you measure nothing on purpose. `unwatched` on the mirror's
+- **The monitor.** Its own process and config file (`MonitorMain`,
+  `MONITOR_CONFIG_FILE`, `monitor.conf`; a `MONITOR_*` variable or a
+  `monitor { }` block aimed at the sync stops the sync's boot). It names the
+  relay lists it scans and nothing else, because every derived url becomes a
+  signed public claim; `RouterConfigLoader.monitorFromEnv` reads it, refuses one
+  with no `sources`, and `sources = []` is how you measure nothing on purpose. With
+  no config at all the process says so and exits 0. `unwatched` on the mirror's
   `/stats.json` counts the pairs the two files have drifted apart on.
   `AliasMonitor` runs three passes in order over
   `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
@@ -287,7 +294,7 @@ measured, is [docs/instrumentation.md](docs/instrumentation.md); what each
 operator page shows and why is
 [docs/operator-pages.md](docs/operator-pages.md).
 
-- `boot: +NNNms <step>` lines on stderr, both processes: where a restart's
+- `boot: +NNNms <step>` lines on stderr, every process: where a restart's
   seconds went, from settings read to the first event stored.
 - The health line, once a minute: heap, ingest queue depth against capacity,
   ev/s in and out, relays transferring, fatals, events lost to store errors,

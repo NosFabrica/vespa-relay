@@ -18,7 +18,7 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.sync
+package com.nosfabrica.vespa.relay.ingest
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -30,6 +30,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import kotlin.system.exitProcess
 
 /** Removed: the relay is the only writer. Read only to refuse a deployment still asking for `local`. */
 const val SYNC_INGEST_ENV = "SYNC_INGEST"
@@ -67,8 +68,17 @@ fun ingestDialFromEnv(
             error("$SYNC_INGEST_ENV='$mode' is not a mode; the relay is the only writer, so unset it.")
         }
     }
-    val raw = env[SYNC_INGEST_URL_ENV]?.trim()?.takeIf { it.isNotEmpty() } ?: return relayUrl
-    return RelayUrlNormalizer.normalizeOrNull(raw) ?: error("$SYNC_INGEST_URL_ENV='$raw' is not a relay websocket url (ws://relay:7777).")
+    return relayDialFromEnv(env, relayUrl, SYNC_INGEST_URL_ENV)
+}
+
+/** The relay websocket a process writes to, from [urlVar], or [relayUrl] (`RELAY_URL`) when it is unset. */
+fun relayDialFromEnv(
+    env: Map<String, String>,
+    relayUrl: NormalizedRelayUrl,
+    urlVar: String,
+): NormalizedRelayUrl {
+    val raw = env[urlVar]?.trim()?.takeIf { it.isNotEmpty() } ?: return relayUrl
+    return RelayUrlNormalizer.normalizeOrNull(raw) ?: error("$urlVar='$raw' is not a relay websocket url (ws://relay:7777).")
 }
 
 /** What the relay's NIP-11 document says about its own key. */
@@ -210,3 +220,60 @@ fun watchRelayKey(
         isDaemon = true
         start()
     }
+
+/**
+ * How long the boot waits for the relay to state its key (compose starts both at once), and how
+ * often it asks meanwhile. Often, because the ask is one local HTTP request and everything that
+ * writes waits on the answer: at 5 s apart, a process heard its relay up to 5 s after it was ready.
+ */
+private const val SELF_KEY_WAIT_SECONDS = 60L
+private const val SELF_KEY_POLL_MILLIS = 250L
+
+/** How often [watchRelayKey] asks again once the boot has given up waiting. */
+private const val SELF_KEY_WATCH_SECONDS = 30L
+
+/**
+ * Stops the boot when the relay at [dial] states a key other than [ours], or none ([keyVerdict]).
+ * A relay that never answers is not refused: the writer fails its batches until it does, and those
+ * withhold their bands, so nothing is lost by starting. It is watched instead ([watchRelayKey]),
+ * and the process stops the moment it answers with the wrong key, as the boot would have.
+ */
+fun refuseAnotherRelayKey(
+    dial: NormalizedRelayUrl,
+    ours: String,
+    /** The log prefix: `sync` or `monitor`. */
+    process: String,
+) {
+    val deadline = System.nanoTime() + SELF_KEY_WAIT_SECONDS * 1_000_000_000
+    while (true) {
+        when (val verdict = keyVerdict(relaySelf(dial), dial, ours)) {
+            KeyVerdict.Ours -> {
+                return
+            }
+
+            is KeyVerdict.Refused -> {
+                error(verdict.reason)
+            }
+
+            KeyVerdict.Pending -> {
+                if (System.nanoTime() >= deadline) break
+                Thread.sleep(SELF_KEY_POLL_MILLIS)
+            }
+        }
+    }
+    System.err.println(
+        "$process: the relay at ${dial.url} did not answer its NIP-11 document after ${SELF_KEY_WAIT_SECONDS}s; " +
+            "starting anyway — writes fail, and their bands wait, until it answers; its key is checked every ${SELF_KEY_WATCH_SECONDS}s until then",
+    )
+    watchRelayKey(
+        dial,
+        ours,
+        pollMillis = SELF_KEY_WATCH_SECONDS * 1_000,
+        onVerified = { System.err.println("$process: the relay at ${dial.url} now answers, and states this process's key") },
+        onRefused = { reason ->
+            // What the boot would have refused, reached late: stop, so a supervisor restarts into that refusal.
+            System.err.println("$process: STOPPING — $reason")
+            exitProcess(1)
+        },
+    )
+}
