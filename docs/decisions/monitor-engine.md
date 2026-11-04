@@ -76,6 +76,15 @@ connection the plane needs nothing of the mirror's to write, which is one wire f
 it runs as its own process. An event a probe happens to see still goes through the mirror's
 ingest, and so its writer, because the mirror decides who wanted it.
 
+**The roster folds from our records, not from a running monitor.** `RosterBuilder` took
+`monitor::foldedAway`, the one place the mirror called into the plane. The decision was already in
+the store; what the live engine added was its world, the urls it knows, from which a server's
+stand-in is elected and which must match the url fitness grades. `StoredFold` rebuilds that world
+from our own records less our `dead` set, which is the monitor's world short of the urls it found
+this round and has not recorded yet: such a url cannot stand in until its first record, one fast
+lane later. A read the store refuses leaves each url's last answer standing, where the engine fell
+back to its in-memory fold, because answering nothing would un-hide every folded url for a round.
+
 **A probe dial is not an upstream, so its events are always verified.** The sink
 used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
 one declared upstream's events; an event here came off whichever relay a pass

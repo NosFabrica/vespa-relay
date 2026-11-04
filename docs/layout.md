@@ -102,6 +102,8 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
                           lists it scans, a dial budget, and a sink for an
                           event a probe happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
+  StoredFold.kt           the same answer read from our records alone, for the
+                          roster, so the mirror needs no monitor in its process
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
   StreamWorld.kt          the candidate set all three measure over — monitor.conf's
@@ -368,6 +370,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           then fitness
     AliasProbe.kt         the fingerprint: a relay's newest events, as ids
     AliasFolding.kt       apply() reads verdicts; measure() earns them
+    StoredFold.kt         readBack() over a world built from our records: what
+                          the roster folds on
     RelayAliases.kt       which discovered urls are ONE relay (see below)
     ConsistencyPass.kt    the pass that measures the stability gate
     RelayConsistency.kt   which relays answer one filter the same way twice
