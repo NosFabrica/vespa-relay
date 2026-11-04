@@ -281,7 +281,8 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   A verdict ages on its own stamp (`DEFAULT_TTL_SECONDS`) and on a rules epoch
   (`FOLD_EPOCH`, `CONSISTENCY_EPOCH`, `FITNESS_EPOCH`: bump one in the same
   commit as the rule it versions). No pass may join on its slowest url; every
-  unit of work runs under `AliasProbe.deadlineMs`.
+  dial runs under `AliasProbe.deadlineMs`, holding a dial permit only while it dials; the pre-probe, the
+  name lookup, the NIP-11 document and each standing read run under clocks of their own.
 - **The roster.** `RosterBuilder` reads the verdicts back (a plain store read;
   the mirror never calls into `:monitor`) and decides which (relay, stream)
   units exist and what each asks. `RelayStatusReport` says where each prime
