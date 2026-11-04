@@ -68,6 +68,14 @@ over. `SyncStream`, `RouterConfig` and `IngestPipeline` are gone from `:monitor`
 entirely; what crosses the seam is the `monitor { }` block, labelled
 derivations, a timeout and that sink.
 
+**The monitor writes over a socket of its own.** It shared the mirror's `RelayWriter` only
+because `SyncEngine` took one writer for everything it wrote. The relay chooses the mirror lane
+per connection, by the key it signed in with, so a second socket signed in as `RELAY_NSEC` is
+treated the same; the verdicts still queue in the relay's one mirror-lane ingest. With its own
+connection the plane needs nothing of the mirror's to write, which is one wire fewer to cut when
+it runs as its own process. An event a probe happens to see still goes through the mirror's
+ingest, and so its writer, because the mirror decides who wanted it.
+
 **A probe dial is not an upstream, so its events are always verified.** The sink
 used to pass `wanted.all { it.trusted }` as `skipVerify`. `trusted` vouches for
 one declared upstream's events; an event here came off whichever relay a pass

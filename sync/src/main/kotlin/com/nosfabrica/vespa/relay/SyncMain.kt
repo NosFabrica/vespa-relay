@@ -240,7 +240,7 @@ fun main() {
             BootClock.mark("sync: status pages bound")
             servers
         }
-    System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
+    System.err.println("sync: writes go to the relay at ${dial.url}, the mirror's and the monitor's on a socket each; the store is opened read-only")
 
     // The relay owns the schema: this process waits for it rather than deploying one (SchemaDeploy.AWAIT).
     val configUrl = env["VESPA_CONFIG_URL"] ?: VespaEventStore.deriveConfigUrl(vespaUrl)
@@ -332,6 +332,8 @@ fun main() {
     keyChecked.await()
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
     val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
+    // The monitor's own socket, signed in the same way: the relay picks the lane per connection.
+    val monitorWriter = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
     val engine =
         SyncEngine(
             store,
@@ -349,6 +351,7 @@ fun main() {
             knownIds = store.knownIdsProbe(),
             newestVersions = store.newestVersionsProbe(),
             writer = writer,
+            monitorWriter = monitorWriter,
         )
     // Not started yet: the pages get their first documents, and are bound, first, so a boot that
     // stalls in `start()` is exactly the state they exist to show.

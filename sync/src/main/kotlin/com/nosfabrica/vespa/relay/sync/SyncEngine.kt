@@ -108,10 +108,12 @@ class SyncEngine(
     /** Installed on this engine's scope, so every store call made from a coroutine of ours books itself. */
     private val storeCalls: StoreCalls = StoreCalls(),
     /**
-     * Where every write this engine makes goes: ingest's batches, the monitor's verdicts, the
-     * retraction audit's deletes. [store] stays the read side in either mode. Closed with the engine.
+     * Where the mirror's writes go: ingest's batches and the retraction audit's deletes. [store]
+     * stays the read side in either mode. Closed with the engine.
      */
     private val writer: StoreWriter = StoreWriter.local(store),
+    /** Where the monitor's verdicts go: a connection of its own, so the plane needs nothing of the mirror's to write. Closed with the engine. */
+    private val monitorWriter: StoreWriter = writer,
 ) : AutoCloseable {
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
@@ -198,7 +200,7 @@ class SyncEngine(
             },
             pinnedUrls = pinnedUrls,
             scope = scope,
-            writer = writer,
+            writer = monitorWriter,
         )
 
     /** The deleteMissing comparison for the pool's retracting asks. */
@@ -497,6 +499,7 @@ class SyncEngine(
         shutdownStep("close ingest") { ingest.close() }
         // Last: ingest's final batch may still be on its way to the relay.
         shutdownStep("close the writer") { writer.close() }
+        if (monitorWriter !== writer) shutdownStep("close the monitor's writer") { monitorWriter.close() }
         System.err.println(
             "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                 ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
