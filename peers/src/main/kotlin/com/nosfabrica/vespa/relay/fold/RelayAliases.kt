@@ -156,13 +156,12 @@ class RelayAliases(
      * "these are different relays".
      */
     fun reproducible(
-        first: Set<String>,
-        second: Set<String>,
+        first: Fingerprint,
+        second: Fingerprint,
     ): Boolean {
         val smaller = minOf(first.size, second.size)
         if (smaller < minSample) return false
-        val shared = if (first.size <= second.size) first.count { it in second } else second.count { it in first }
-        return shared.toDouble() / smaller >= minSelfOverlap
+        return first.shared(second).toDouble() / smaller >= minSelfOverlap
     }
 
     /** Has anything been decided about this url? False is "no verdict", not "distinct". */

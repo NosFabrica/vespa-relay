@@ -490,7 +490,7 @@ class AliasFolding(
         // Before anything is learned: a member the stopped writer kept us from asking is not a silent one.
         if (writesStopped(group)) return
         val result = group.view.learn(group.urls, leader, prints, lead.kinds)
-        if (result.distinct.isNotEmpty() && !yardstickHolds(group, leader, lead, anchor, result.distinct.size)) return
+        if (result.distinct.isNotEmpty() && !yardstickHolds(group, leader, lead, prints.getValue(leader), anchor, result.distinct.size)) return
         val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
         for ((alias, canonical) in result.folded) {
             val sampled = prints[alias]?.size ?: 0
@@ -521,13 +521,13 @@ class AliasFolding(
         group: Group,
         leader: NormalizedRelayUrl,
         lead: AliasProbe.Leader,
+        leaderPrint: Fingerprint,
         anchor: Long,
         distinct: Int,
     ): Boolean {
-        val leaderPrint = lead.ids
-        val again = ask(group, leader) { probe.fingerprint(leader, anchor, lead.kinds) }.also { group.count(it) }.answer
+        val again = ask(group, leader) { probe.fingerprint(leader, anchor, lead.kinds)?.let(Fingerprint::of) }.also { group.count(it) }.answer
         if (again != null && group.view.reproducible(leaderPrint, again)) return true
-        val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
+        val self = again?.let(leaderPrint::shared) ?: 0
         if (writesStopped(group)) return false
         group.cooldown = true
         group.undecided = Undecided.NOT_REPRODUCIBLE

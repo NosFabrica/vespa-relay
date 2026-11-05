@@ -494,3 +494,13 @@ no longer recounts. The rules are untouched and `FOLD_EPOCH` stands:
 folds, clearances, twins and evidence match it on 400 generated groups. On 1,000
 distinct paths of 500 ids, the reference took about 27 s on the build machine and
 the index about 150 ms.
+
+**A window is held as its ids' full 256 bits, not as strings and not as prefixes.**
+A fold window is up to 500 ids, each a 64-character `String` in a `HashSet`, and
+every member's window was held until its group decided. Each member's walk now
+hands back a `Fingerprint` as it lands, so the strings go with the walk and a
+group holds 32 bytes per id. A 64-bit prefix would have been a quarter of that,
+but a collision adds a shared id the windows do not have, and a fold sits on a
+ratio threshold that one id can cross; the full words make every count exact, so
+no decision can move and there is no collision argument to make. The yardstick's
+second walk and `reproducible` use the same type.
