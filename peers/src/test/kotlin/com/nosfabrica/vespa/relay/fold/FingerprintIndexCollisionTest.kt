@@ -27,13 +27,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The probe does not verify event ids, so a relay chooses every id it serves. FingerprintIndex
- * chains on the id's FIRST 64-bit word only, so ids that agree on it all land in one chain and
- * every lookup walks every entry of every head: quadratic in the host's whole id count, where the
- * pairwise merge it replaced was linear per pair. learn() never suspends, so this freezes the
- * group's coroutine, the pass's awaitAll, and with it AliasMonitor's one scheduler.
- *
- * Fails (times out the bound) if the finding is real; passes once the index keys on the whole id.
+ * A relay chooses every id it serves, so ids built to share a prefix must cost the fold's comparison what
+ * random ids cost: the index never chains distinct ids together.
  */
 class FingerprintIndexCollisionTest {
     private fun hex(

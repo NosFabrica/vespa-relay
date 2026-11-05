@@ -36,12 +36,8 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * The sweep's walk pages newest-first on `created_at`. A record of ours superseded while the walk is
- * between pages (a cut edit's EVENT re-sent from RelayWriter's outbox on reconnect: Quartz's pool
- * re-sends what a dropped socket lost) moves above the cursor while its old version, still below it,
- * is gone: the walk never sees the url. currentRecord then answers "no record" off the snapshot, and
- * the next edit signs a fresh record that drops every tag the url carried, including ones reported
- * stored sweeps ago. Before the snapshot, the edit's own `#d` read could not miss it. Fails today.
+ * A record of ours superseded while the sweep's walk is between pages is in neither page; the next edit
+ * of its url still reads the record by `#d`, and keeps every tag on it.
  */
 class SweepWalkMissedRecordTest {
     private val relay = RelayUrlNormalizer.normalize("ws://localhost:7777")
