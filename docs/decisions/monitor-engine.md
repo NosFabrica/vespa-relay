@@ -528,3 +528,15 @@ is closing, and otherwise log it as one failure, as `repeatEvery` does. The
 per-url catches inside the passes still rethrow: their deadlines work by
 cancellation. `SchedulerStrayCancellationTest` holds both cases, and
 `AliasMonitorTest`'s cancellation case now cancels the sweep's own job.
+
+**The sweep's walk belongs to the sweep.** The one-walk memo ran the walk in
+whichever reader installed it, so that reader's cancellation or edit deadline
+threw the walk away and each waiter started it again from page one, and a failed
+walk was redone by each waiter in turn. The walk now runs in a scope
+`beginSweep` creates and `endSweep` cancels, carrying the first reader's
+`StoreCalls` book; readers await it under their own deadlines, a failure fails
+every waiter once (a page past `readDeadlineMs` still as `ReadTimeout`) and clears
+the memo so the next read walks again, and the memo stays one CAS on an
+`AtomicReference`. A walk cancelled by its sweep ending reaches a live reader as
+an ordinary exception, never as a `CancellationException`.
+`SweepWalkSurvivesReaderCancelTest` holds both.

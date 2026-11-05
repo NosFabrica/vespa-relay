@@ -34,8 +34,14 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -46,6 +52,7 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * The monitor's verdicts, written to kind 30166 records whose `d` tag is the relay url. Each
@@ -274,8 +281,11 @@ class RelayVerdictRecord(
 
     /** One sweep's [OwnRecords], walked on first use. */
     private class Sweep {
+        /** Where the walk runs, so no reader's cancellation or deadline is the walk's; cancelled at [endSweep]. */
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         /** The one walk under way or done, installed by the first reader; cleared again if it fails. */
-        val walk = AtomicReference<CompletableDeferred<OwnRecords>?>(null)
+        val walk = AtomicReference<Deferred<OwnRecords>?>(null)
 
         /** The walk's records once it has answered. */
         @Volatile
@@ -290,7 +300,7 @@ class RelayVerdictRecord(
      * Called around one sweep, or the boot retirement before any sweep, so nothing else writes our records meanwhile.
      */
     fun beginSweep() {
-        if (signer != null) sweep = Sweep()
+        if (signer != null) replaceSweep(Sweep())
     }
 
     /**
@@ -302,48 +312,52 @@ class RelayVerdictRecord(
         val byD = ConcurrentHashMap<String, Event>()
         for (event in walked) if (event.pubKey == self) byD.takeNewest(event)
         val own = OwnRecords(byD)
-        sweep =
+        replaceSweep(
             Sweep().also {
                 it.records = own
                 it.walk.set(CompletableDeferred(own))
-            }
+            },
+        )
     }
 
     fun endSweep() {
-        sweep = null
+        replaceSweep(null)
+    }
+
+    private fun replaceSweep(next: Sweep?) {
+        val ended = sweep
+        sweep = next
+        ended?.scope?.cancel()
     }
 
     /**
-     * The sweep's records, walked now if this is the first read; null outside a sweep. Concurrent first
-     * readers await the one walk; when it fails its walker throws and each waiter walks again in turn.
+     * The sweep's records, walked now if this is the first read; null outside a sweep. Every reader awaits
+     * the one walk under its own deadline; a failed walk fails its waiters and the next read walks again.
      */
     private suspend fun sweepRecords(): OwnRecords? {
         val s = sweep ?: return null
+        s.records?.let { return it }
+        val walk = s.walk.get() ?: startWalk(s)
+        try {
+            return walk.await()
+        } catch (e: Exception) {
+            // Our own cancellation ends the read and leaves the walk running; the walk's failure is not kept.
+            currentCoroutineContext().ensureActive()
+            s.walk.compareAndSet(walk, null)
+            if (e is CancellationException) throw IllegalStateException("the sweep's walk was cancelled", e)
+            throw e
+        }
+    }
+
+    /** Installs a walk in [s]'s own scope, or returns the one another reader installed first. */
+    private suspend fun startWalk(s: Sweep): Deferred<OwnRecords> {
+        // The reader's store-call book, so the walk's pages are booked where a reader's own read would be.
+        val calls = currentCoroutineContext()[StoreCalls] ?: EmptyCoroutineContext
         while (true) {
-            s.records?.let { return it }
-            val running = s.walk.get()
-            if (running != null) {
-                try {
-                    return running.await()
-                } catch (e: Exception) {
-                    // Our own cancellation ends the read; the walk's failure, or its walker's, is retried.
-                    currentCoroutineContext().ensureActive()
-                    s.walk.compareAndSet(running, null)
-                    continue
-                }
-            }
-            val mine = CompletableDeferred<OwnRecords>()
-            if (!s.walk.compareAndSet(null, mine)) continue
-            try {
-                return walkOwn().also {
-                    s.records = it
-                    mine.complete(it)
-                }
-            } catch (e: Throwable) {
-                s.walk.compareAndSet(mine, null)
-                mine.completeExceptionally(e)
-                throw e
-            }
+            s.walk.get()?.let { return it }
+            val mine = s.scope.async(calls, start = CoroutineStart.LAZY) { walkOwn().also { s.records = it } }
+            if (s.walk.compareAndSet(null, mine)) return mine.also { it.start() }
+            mine.cancel()
         }
     }
 
