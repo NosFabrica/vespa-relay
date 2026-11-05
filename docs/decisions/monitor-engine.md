@@ -466,3 +466,12 @@ hours between sweeps would have to stay true across every write path of those
 hours to save them. `SweepRecordsTest` runs one sweep's reads and three passes'
 writes both ways over the same seeded store and compares every read and every
 record written.
+
+**The derivation's three reads run at once.** `StreamWorld.candidates` read the
+dead set, the relay lists and our own records one after another; none needs
+another's answer, so they now run concurrently, and the sweep's walk of our
+records (the first read of the sweep) overlaps the two store scans. Their
+outcomes are taken in the old order: a failed dead-set read fails the derivation
+before `listsReadFromSec` moves, a failed walk of our records after it, which
+`StreamWorldDerivationTest` pins. The source row's position is now set before
+the dead-set read instead of after it.

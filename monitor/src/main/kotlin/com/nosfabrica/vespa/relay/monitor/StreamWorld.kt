@@ -32,6 +32,8 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 /**
  * Every url the monitor measures, derived from the store when a pass runs rather than taken from
@@ -109,24 +111,35 @@ internal class StreamWorld(
      * declined in [reach], where the fold would report them as declined by our own transport.
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
-        val dead = ownDead()
-        // One unit per configured source, timed from after the dead-set read.
+        // One unit per configured source.
         progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        val readingFromSec = nowSeconds()
-        // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
-        val read =
-            derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
-                if (kept) all += url else excluded += url
+        var readingFromSec = 0L
+        // Three independent reads at once. A failed dead-set read fails the derivation before the lists'
+        // clock moves; a failed walk of our records, after it.
+        val (dead, read, recorded) =
+            coroutineScope {
+                val dead = async { attempt { ownDead() } }
+                val lists =
+                    async {
+                        readingFromSec = nowSeconds()
+                        // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
+                        derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
+                            if (kept) all += url else excluded += url
+                        }
+                    }
+                val recorded = async { attempt { ownRecords() } }
+                Triple(dead.await(), lists.await(), recorded.await())
             }
+        val held = dead.getOrThrow()
         if (read) listsReadFromSec = readingFromSec
         // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
         // url is kept is a function of the url, however many sources found it.
-        val recorded = ownRecords()
-        val recordedOnly = recorded.filterNot { it in all || it in excluded }
+        val ours = recorded.getOrThrow()
+        val recordedOnly = ours.filterNot { it in all || it in excluded }
         val known = all + recordedOnly
-        val live = known.filterNot { it in dead }
+        val live = known.filterNot { it in held }
         lastDerivation =
             Derivation(
                 sourced = all.size + excluded.size,
@@ -163,6 +176,16 @@ internal class StreamWorld(
         )
         return live
     }
+
+    /** [read]'s value or its failure, a cancellation excepted. */
+    private suspend fun <T> attempt(read: suspend () -> T): Result<T> =
+        try {
+            Result.success(read())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
 
     /** What the last round's relay lists named; null until a round has run. */
     private var lastSourced: Int? = null

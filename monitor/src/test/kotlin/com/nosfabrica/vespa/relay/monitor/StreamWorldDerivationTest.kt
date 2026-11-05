@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -248,6 +249,26 @@ class StreamWorldDerivationTest {
             world.candidates()
 
             assertTrue((world.listsReadFromSec ?: Long.MIN_VALUE) >= before)
+        }
+
+    @Test
+    fun `a failed walk of our own records fails the derivation after the lists were read, as it always did`(): Unit =
+        runBlocking {
+            val world =
+                StreamWorld(
+                    store = storeWithPerNpubUrls(),
+                    sources = sourcesWithExcludes(emptyList()),
+                    probe = ReachabilityProbe(null),
+                    monitorAuthors = emptyList(),
+                    self = "a".repeat(64),
+                    tor = null,
+                    ownRecordsSince = { error("the walk timed out") },
+                )
+
+            assertFailsWith<IllegalStateException> { world.candidates() }
+
+            assertNotNull(world.listsReadFromSec, "the lists were read, so the lane need not look behind them")
+            assertNull(world.lastDerivation, "a derivation that failed published numbers")
         }
 
     @Test
