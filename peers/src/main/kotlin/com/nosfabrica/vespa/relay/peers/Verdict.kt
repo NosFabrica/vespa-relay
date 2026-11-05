@@ -57,3 +57,9 @@ enum class Verdict(
     /** Answers only shaped queries this router cannot generally send. */
     RESTRICTED("restricted"),
 }
+
+/** One measured yes-or-no that rides beside a grade (`pageable`, `nip77`, `compliant`), and the evidence for it. */
+data class Fact(
+    val holds: Boolean,
+    val evidence: String,
+)

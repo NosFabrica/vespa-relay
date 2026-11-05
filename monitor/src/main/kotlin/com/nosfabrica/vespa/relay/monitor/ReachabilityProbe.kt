@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
@@ -35,6 +36,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.net.URI
 import java.net.UnknownHostException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -56,6 +58,31 @@ internal fun shouldPreProbe(
     url: NormalizedRelayUrl,
     tor: TorTransport?,
 ): Boolean = tor?.routes(url) != true
+
+/**
+ * The host and port a dial of a url opens, the scheme's port where none is written. Not
+ * [RelayAliases.authorityOf], which is one server across both schemes: `ws://x` and `wss://x` are two sockets.
+ */
+internal data class DialTarget(
+    val host: String,
+    val port: Int,
+) {
+    override fun toString(): String = "$host:$port"
+
+    companion object {
+        fun of(url: NormalizedRelayUrl): DialTarget? {
+            val uri = runCatching { URI(url.url) }.getOrNull() ?: return null
+            val host = uri.host ?: return null
+            val port =
+                when {
+                    uri.port > 0 -> uri.port
+                    url.url.startsWith("wss://", ignoreCase = true) -> 443
+                    else -> 80
+                }
+            return DialTarget(host, port)
+        }
+    }
+}
 
 /** What the guard in front of a dial learned. Only [PROVED_UNREACHABLE] is a fact about the relay. */
 enum class Reach {
@@ -112,8 +139,8 @@ internal class ReachabilityProbe(
             Thread(task, "reachability-lookup").apply { isDaemon = true }
         }.apply { allowCoreThreadTimeOut(true) }
 
-    /** Host:port -> an answer no claim is signed on, and when it was had; every pass of a sweep asks the same hosts. */
-    private val lately = ConcurrentHashMap<String, Pair<Reach, Long>>()
+    /** Host and port -> an answer no claim is signed on, and when it was had; every pass of a sweep asks the same hosts. */
+    private val lately = ConcurrentHashMap<DialTarget, Pair<Reach, Long>>()
 
     /**
      * Whether to dial, and when not, whose side the reason is on. One fresh lookup and connect:
@@ -123,10 +150,9 @@ internal class ReachabilityProbe(
     suspend fun reach(url: NormalizedRelayUrl): Reach {
         if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
         if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
-        val target = Target.of(url) ?: return Reach.REACHABLE
-        val key = "${target.host}:${target.port}"
-        lately[key]?.let { (answer, atMs) -> if (clock() - atMs < reuseMs) return answer }
-        return probe(target).also { answer -> if (answer in REUSABLE) remember(key, answer) }
+        val target = DialTarget.of(url) ?: return Reach.REACHABLE
+        lately[target]?.let { (answer, atMs) -> if (clock() - atMs < reuseMs) return answer }
+        return probe(target).also { answer -> if (answer in REUSABLE) remember(target, answer) }
     }
 
     /**
@@ -134,7 +160,7 @@ internal class ReachabilityProbe(
      * so the scan runs once per that many inserts: a forgotten host is only asked again.
      */
     private fun remember(
-        key: String,
+        key: DialTarget,
         answer: Reach,
     ) {
         if (lately.size >= maxRemembered) {
@@ -152,7 +178,7 @@ internal class ReachabilityProbe(
     }
 
     /** One lookup and connect, on the probe's own threads. */
-    private suspend fun probe(target: Target): Reach {
+    private suspend fun probe(target: DialTarget): Reach {
         val addresses =
             try {
                 lookup(target.host) ?: return Reach.UNEXPLAINED
@@ -175,7 +201,7 @@ internal class ReachabilityProbe(
      */
     suspend fun tls(url: NormalizedRelayUrl): TlsAnswer {
         if (!shouldPreProbe(url, tor) || !url.url.startsWith("wss://", ignoreCase = true)) return TlsAnswer.UNCHECKED
-        val target = Target.of(url) ?: return TlsAnswer.UNCHECKED
+        val target = DialTarget.of(url) ?: return TlsAnswer.UNCHECKED
         val addresses =
             try {
                 lookup(target.host) ?: return TlsAnswer.UNCHECKED
@@ -190,7 +216,7 @@ internal class ReachabilityProbe(
 
     private fun handshake(
         socket: Socket,
-        target: Target,
+        target: DialTarget,
     ): TlsAnswer =
         try {
             socket.soTimeout = TLS_READ_TIMEOUT_MS
@@ -206,26 +232,6 @@ internal class ReachabilityProbe(
             TlsAnswer.UNCHECKED
         }
 
-    /** Where a url's socket goes. */
-    private class Target(
-        val host: String,
-        val port: Int,
-    ) {
-        companion object {
-            fun of(url: NormalizedRelayUrl): Target? {
-                val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return null
-                val host = uri.host ?: return null
-                val port =
-                    when {
-                        uri.port > 0 -> uri.port
-                        url.url.startsWith("wss://", ignoreCase = true) -> 443
-                        else -> 80
-                    }
-                return Target(host, port)
-            }
-        }
-    }
-
     /** The first socket any address opened, or each tried address's failure; [complete] when none went untried. */
     private class Attempt(
         val socket: Socket?,
@@ -240,7 +246,7 @@ internal class ReachabilityProbe(
      * failures so far can only judge [Reach.REACHABLE].
      */
     private fun open(
-        target: Target,
+        target: DialTarget,
         addresses: Array<InetAddress>,
     ): Attempt {
         val deadline = clock() + TOTAL_TIMEOUT_MS

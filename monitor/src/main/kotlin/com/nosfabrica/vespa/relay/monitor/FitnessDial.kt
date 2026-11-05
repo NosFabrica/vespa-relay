@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.STAGE_LADDER
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.STAGE_NIP77
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.STAGE_REACHABILITY
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.STAGE_TLS_CHECK
+import com.nosfabrica.vespa.relay.peers.Fact
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -57,7 +58,7 @@ internal class FitnessDial(
 ) {
     /** The NEG-OPEN's answer, boxed so `withTimeoutOrNull` can tell null from the clock firing. */
     private class Reconciled(
-        val fact: Pair<Boolean, String>?,
+        val fact: Fact?,
     )
 
     /** What the second page came back with, boxed for [Reconciled]'s reason. */
@@ -66,11 +67,11 @@ internal class FitnessDial(
     )
 
     /** The `compliant` fact for one reading, or null where the bars do not support one. */
-    private fun factOf(reading: AliasProbe.Compliance): Pair<Boolean, String>? =
+    private fun factOf(reading: AliasProbe.Compliance): Fact? =
         when (compliance.decide(reading)) {
             RelayCompliance.Verdict.UNMEASURABLE -> null
-            RelayCompliance.Verdict.NONCOMPLIANT -> false to compliance.evidence(reading)
-            RelayCompliance.Verdict.COMPLIANT -> true to compliance.evidence(reading)
+            RelayCompliance.Verdict.NONCOMPLIANT -> Fact(false, compliance.evidence(reading))
+            RelayCompliance.Verdict.COMPLIANT -> Fact(true, compliance.evidence(reading))
         }
 
     /** The pre-probe, before any dial permit: true when the url is dialled, else its result is filed on [slot]. */
@@ -299,7 +300,7 @@ internal class FitnessDial(
             return FitnessOutcome(
                 Verdict.UNPAGEABLE,
                 "honoured the anchor and then ignored the cursor: page two came back entirely above it",
-                pageable = false to "page one walked to ${second.floor}; page two asked below it and answered ${second.window.seen} events, all above it",
+                pageable = Fact(false, "page one walked to ${second.floor}; page two asked below it and answered ${second.window.seen} events, all above it"),
                 rttReadMs = readMs,
                 compliant = factOf(walked + second.window),
             )
@@ -420,7 +421,7 @@ internal class FitnessDial(
         return FitnessOutcome(
             Verdict.UNPAGEABLE,
             "every event answered above the `until` it was asked for",
-            pageable = false to "${walked.offWindow} of ${walked.seen} events came back above the anchor — the cursor was ignored",
+            pageable = Fact(false, "${walked.offWindow} of ${walked.seen} events came back above the anchor — the cursor was ignored"),
             rttReadMs = readMs,
             // Asked of the judge, not asserted: one event above the anchor is below the compliance floors.
             compliant = factOf(walked),
@@ -479,14 +480,16 @@ internal class FitnessDial(
     }
 
     /** The `pageable` fact a second page that did not ignore the cursor earns. */
-    private fun pageableOf(second: SecondPage): Pair<Boolean, String> =
+    private fun pageableOf(second: SecondPage): Fact =
         if (second.window.seen == 0) {
             // A drain is the strongest answer: a relay ignoring the cursor would have served its newest again.
-            true to "page two below ${second.floor} drained — the walk terminates"
+            Fact(true, "page two below ${second.floor} drained — the walk terminates")
         } else {
-            true to
+            Fact(
+                true,
                 "walked two pages, cursor advanced past ${second.floor} " +
-                "(${second.window.seen - second.window.offWindow} of ${second.window.seen} event(s) below it)"
+                    "(${second.window.seen - second.window.offWindow} of ${second.window.seen} event(s) below it)",
+            )
         }
 
     /**
@@ -498,7 +501,7 @@ internal class FitnessDial(
         anchor: Long,
         shape: List<Int>?,
         slot: DialSlot,
-    ): Pair<Boolean, String>? {
+    ): Fact? {
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
         progress.holding(url.url, STAGE_NIP77)
         val reconciled =
@@ -506,11 +509,11 @@ internal class FitnessDial(
                 Reconciled(
                     try {
                         reconcile(url, sliver)
-                        true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
+                        Fact(true, "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window")
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: NegentropySyncException) {
-                        false to "declined the NEG-OPEN: ${e.reason}"
+                        Fact(false, "declined the NEG-OPEN: ${e.reason}")
                     } catch (_: Exception) {
                         // No fact: the failure was ours or the moment's, not the relay's.
                         null

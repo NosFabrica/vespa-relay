@@ -273,7 +273,7 @@ class SameServerTest {
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
                 // Port 443 of the host refuses the connect; port 7777 and anything else answer.
-                reach = { if (socketOf(it) == "gone.example:443") Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+                reach = { if (DialTarget.of(it) == DialTarget("gone.example", 443)) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
             ).measure(RunKind.SWEEP, listOf(root) + paths + listOf(otherPort, plain, answering))
 
             assertEquals(Verdict.DEAD.value, gradeOf(store, root)?.get(1))

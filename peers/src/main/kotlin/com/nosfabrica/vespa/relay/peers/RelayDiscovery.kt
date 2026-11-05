@@ -196,7 +196,7 @@ object RelayDiscovery {
         // Empty is a caller with no urls; null is a caller wanting all of them.
         if (among != null && among.isEmpty()) return emptySet()
         return verdicts(store, Verdict.DEAD, monitorAuthors, maxAgeSeconds, now, among)
-            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+            .mapNotNullTo(HashSet()) { dialableSubjectOf(it, allowOnion) }
     }
 
     /**
@@ -221,7 +221,7 @@ object RelayDiscovery {
     fun recordedIn(
         records: Iterable<Event>,
         allowOnion: Boolean = false,
-    ): Set<NormalizedRelayUrl> = records.mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+    ): Set<NormalizedRelayUrl> = records.mapNotNullTo(HashSet()) { dialableSubjectOf(it, allowOnion) }
 
     /**
      * Records whose current fitness label is [verdict], signed by these identities. The tag index
@@ -296,15 +296,14 @@ object RelayDiscovery {
             store.query<Event>(filter)
         }
 
-    /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
-    private fun urlOf(
+    /**
+     * A verdict record's subject as a url to dial: the relay-list rules, the onion gate included, because
+     * what this returns becomes a candidate. A verdict read keys on any url instead (`RelayVerdictRecord.subjectOf`).
+     */
+    private fun dialableSubjectOf(
         event: Event,
         allowOnion: Boolean,
-    ): NormalizedRelayUrl? =
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == "d" }
-            ?.get(1)
-            ?.let { normalize(it, allowOnion) }
+    ): NormalizedRelayUrl? = RelayVerdictRecord.subjectOf(event)?.let { normalize(it, allowOnion) }
 
     /**
      * Walk everything [filter] matches a page at a time, oldest-ward. `until` is inclusive, so

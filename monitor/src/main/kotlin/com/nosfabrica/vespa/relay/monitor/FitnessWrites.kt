@@ -42,9 +42,7 @@ internal class FitnessWrites(
     private val progress: Processors.Handle,
     /** The proxy, where there is one; the `n` tag must name what carried the measurement. */
     private val tor: TorTransport?,
-    private val publishDeadlineMs: Long,
-    private val publishWedgeBudgetMs: Long,
-    private val writeConcurrency: Int,
+    private val limits: WriteLimits,
 ) {
     /** How a batch's writes went, for its report. */
     class Written(
@@ -104,7 +102,7 @@ internal class FitnessWrites(
             val urls = (queued.keys - overtaken.keys).sortedBy { it.url }
             progress.measuring(urls.size, Processors.UNIT_VERDICT)
             val tally =
-                writeEach(urls, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, VerdictWrites.STAGE_PUBLISH) { url ->
+                writeEach(urls, limits, progress, STAGE_PUBLISH) { url ->
                     queued.getValue(url).write()
                 }
             // Removed only if still the write that landed: a batch may have queued a newer one meanwhile.
@@ -128,8 +126,8 @@ internal class FitnessWrites(
     private suspend fun readBeforeReplay(urls: Set<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts? {
         val why =
             try {
-                withTimeoutOrNull(publishDeadlineMs) { record.load(urls) }?.let { return it }
-                "the read outlived the ${fmtDuration(publishDeadlineMs)} write deadline"
+                withTimeoutOrNull(limits.deadlineMs) { record.load(urls) }?.let { return it }
+                "the read outlived the ${fmtDuration(limits.deadlineMs)} write deadline"
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -177,7 +175,7 @@ internal class FitnessWrites(
         val measuredAt = nowSeconds()
         val writes = toWrite.associateWith { url -> gradeWrite(url, outcomes.getValue(url), readings[url], measuredAt) }
         val tally =
-            writeEach(toWrite, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, VerdictWrites.STAGE_PUBLISH) { url ->
+            writeEach(toWrite, limits, progress, STAGE_PUBLISH) { url ->
                 writes.getValue(url)()
             }
         tally.resumeAt?.let { writeCursors[label] = it.url }
@@ -191,7 +189,7 @@ internal class FitnessWrites(
                 emptySet()
             } else {
                 progress.measuring(unprimed.size, Processors.UNIT_VERDICT)
-                writeEach(unprimed, writeConcurrency, publishDeadlineMs, VerdictWrites.PUBLISH_WEDGE_LIMIT, publishWedgeBudgetMs, progress, STAGE_WITHDRAW) { url ->
+                writeEach(unprimed, limits, progress, STAGE_WITHDRAW) { url ->
                     withdrawals.getValue(url)()
                 }.stored
             }

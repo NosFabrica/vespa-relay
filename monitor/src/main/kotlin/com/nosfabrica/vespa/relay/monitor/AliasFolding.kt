@@ -61,7 +61,7 @@ class AliasFolding(
     /** Where each pass reports, or null; [AliasMonitor] writes the clock to the same handle. */
     override val progress: Processors.Handle? = null,
     /** The wall clock on one verdict write. */
-    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
+    private val publishDeadlineMs: Long = WriteLimits.PUBLISH_DEADLINE_MS,
     /** The urls the monitor knows, so a narrower read still takes in the other urls on each candidate's server. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
     /** Whether the pre-probe lets a url be fingerprinted. */
@@ -243,12 +243,9 @@ class AliasFolding(
     /** The pass's writer, under the limits every pass's verdict writes share. */
     private fun newWriter() =
         VerdictWriter(
-            VerdictWrites.WRITE_CONCURRENCY,
-            publishDeadlineMs,
-            VerdictWrites.PUBLISH_WEDGE_LIMIT,
-            VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
+            WriteLimits(deadlineMs = publishDeadlineMs),
             progress,
-            VerdictWrites.STAGE_PUBLISH,
+            STAGE_PUBLISH,
             // The position counts hosts, not writes.
             tick = false,
         )
@@ -419,7 +416,7 @@ class AliasFolding(
         if (wanted.size < 2 || !wanted.all { it in search.spoke }) return false
         val survivor = wanted.first()
         val folds = group.view.foldUnreadable(wanted, survivor)
-        val landed = write(group, folds) { record.publishUnreadable(it, survivor, wanted.size) != null }
+        val landed = write(group, folds) { record.publishFold(it, survivor, FoldEvidence.unreadable(wanted.size)) != null }
         if (folds.folded.isNotEmpty()) group.cooldown = false
         if (landed.size < folds.folded.size) writesStopped(group)
         if (landed.isNotEmpty()) {
@@ -456,7 +453,7 @@ class AliasFolding(
         if (same.size < 2 || writesStopped(group)) return false
         val survivor = group.view.preferred(same) ?: return false
         val folds = group.view.foldOnto(same, survivor)
-        val landed = write(group, folds) { record.publishWholeStore(it, survivor, store.ids.size) != null }
+        val landed = write(group, folds) { record.publishFold(it, survivor, FoldEvidence.wholeStore(survivor, store.ids.size)) != null }
         if (folds.folded.isNotEmpty()) group.cooldown = false
         if (landed.size < folds.folded.size) writesStopped(group)
         if (landed.isNotEmpty()) {
@@ -552,10 +549,10 @@ class AliasFolding(
             val v = verdicts[url]
             // Both flags can be set at once; the twin form wins because the pairing is the argument.
             when {
-                v == null -> cleared[url]?.let { record.publishDistinct(url, it.sampled, it.comparedAgainst, it.bestShared) }
-                v.secureTwin -> record.publishSecureTwin(url, v.canonical, v.sampled, v.groupList)
-                v.groupList -> record.publishGroupList(url, v.canonical, v.sampled, v.shared)
-                else -> record.publish(url, v.canonical, v.sampled, v.shared)
+                v == null -> cleared[url]?.let { record.publishFold(url, url, FoldEvidence.distinct(it.sampled, it.comparedAgainst, it.bestShared)) }
+                v.secureTwin -> record.publishFold(url, v.canonical, FoldEvidence.secureTwin(v.canonical, v.sampled, v.groupList))
+                v.groupList -> record.publishFold(url, v.canonical, FoldEvidence.groupList(v.canonical, v.sampled, v.shared))
+                else -> record.publishFold(url, v.canonical, FoldEvidence.contained(v.canonical, v.sampled, v.shared))
             } != null
         }
     }
@@ -772,4 +769,47 @@ class AliasFolding(
 
         const val DEFAULT_FOLD_UNREADABLE_GROUPS = true
     }
+}
+
+/** The evidence each kind of fold signs beside its `same-as`. The words are published: a change is a change to every record. */
+internal object FoldEvidence {
+    /** The alias's window found in the canonical's. */
+    fun contained(
+        canonical: NormalizedRelayUrl,
+        sampled: Int,
+        shared: Int,
+    ): String = "$sampled newest events, $shared shared with ${canonical.url}"
+
+    /** The one fold whose evidence is not a containment: a `ws://` url and the `wss://` url of the same endpoint, both answering. */
+    fun secureTwin(
+        canonical: NormalizedRelayUrl,
+        sampled: Int,
+        /** True when the pair's windows came through [RelayAliases.GROUP_METADATA_KINDS]. */
+        groupList: Boolean,
+    ): String =
+        "same endpoint as ${canonical.url} over TLS, both answered; " +
+            if (groupList) "$sampled group definitions here" else "$sampled newest events here"
+
+    /** A fold decided on a relay's complete list of groups rather than a slice of its feed. */
+    fun groupList(
+        canonical: NormalizedRelayUrl,
+        sampled: Int,
+        shared: Int,
+    ): String = "same group list as ${canonical.url}: $shared of $sampled group definitions shared"
+
+    /** Both urls, and a path on their host no relay list names, served the same complete store: only a server ignoring the path does. */
+    fun wholeStore(
+        canonical: NormalizedRelayUrl,
+        events: Int,
+    ): String = "the same complete store of $events event(s) as ${canonical.url}, as a path no relay list names also serves"
+
+    /** The weakest fold: these urls share a host, every one answered, none would serve anything. */
+    fun unreadable(urls: Int): String = "nothing readable at any of $urls url(s) on this host; folded on the shared name, not on a measurement"
+
+    /** Fingerprinted and matched nothing it was held up against, signed as `same-as` its own url; [comparedAgainst] names what that was. */
+    fun distinct(
+        sampled: Int,
+        comparedAgainst: String,
+        bestShared: Int,
+    ): String = "$sampled newest events, best $bestShared shared with $comparedAgainst"
 }

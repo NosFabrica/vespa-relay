@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.fold.StoredFold
+import com.nosfabrica.vespa.relay.peers.Fact
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -61,11 +62,11 @@ class RosterReadsTest {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
         val record = RelayVerdictRecord(store, ours)
         val prime = listOf("wss://a.example/", "wss://a.example/x", "wss://b.example/", "wss://b.example/p", "wss://b.example/q", "wss://c.example/", "wss://d.example/one", "wss://d.example/two")
-        for ((i, u) in prime.withIndex()) record.publishFitness(url(u), "prime", "answered", pageable = null, nip77 = (i % 2 == 0) to "measured")
+        for ((i, u) in prime.withIndex()) record.publishFitness(url(u), "prime", "answered", pageable = null, nip77 = Fact(i % 2 == 0, "measured"))
         record.publish(url("wss://a.example/x"), url("wss://a.example/"), 500, 480)
         record.publishDistinct(url("wss://b.example/p"), 500, "2 compared endpoint(s) on this host", 3)
         record.publish(url("wss://c.example/"), url("wss://c.example:8443/"), 500, 470)
-        record.publishFitness(url("wss://declared.example/"), "prime", "answered", pageable = null, nip77 = true to "measured")
+        record.publishFitness(url("wss://declared.example/"), "prime", "answered", pageable = null, nip77 = Fact(true, "measured"))
         val writer = NostrSignerSync(KeyPair())
         store.insert(writer.sign<Event>(1_700_000_000L, 10002, arrayOf(arrayOf("r", "wss://a.example/x"), arrayOf("r", "wss://e.example/")), ""))
         return store

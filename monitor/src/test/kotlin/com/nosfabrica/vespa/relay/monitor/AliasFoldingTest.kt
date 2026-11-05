@@ -172,7 +172,7 @@ class AliasFoldingTest {
                 )
 
             val pass = async { withTimeout(30_000) { fold.measure(RunKind.SWEEP, hosts.flatten()) } }
-            withTimeout(30_000) { while (inserts.get() < VerdictWrites.PUBLISH_WEDGE_LIMIT) delay(10) }
+            withTimeout(30_000) { while (inserts.get() < WriteLimits.PUBLISH_WEDGE_LIMIT) delay(10) }
             // Past the write deadline of every write started so far, so the writer has stopped.
             delay(1_000)
             released.complete(Unit)

@@ -50,8 +50,8 @@ class ConsistencyPass(
     /** Where each pass reports how far it got. Null for every caller but the monitor. */
     override val progress: Processors.Handle? = null,
     /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
-    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
-    private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
+    private val publishDeadlineMs: Long = WriteLimits.PUBLISH_DEADLINE_MS,
+    private val writeConcurrency: Int = WriteLimits.WRITE_CONCURRENCY,
     /** Every url the monitor knows, by server: a stand-in may be a url outside this batch. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
     /** Whether the pre-probe lets a url be walked. */
@@ -156,15 +156,7 @@ class ConsistencyPass(
         // Outside the dial's deadline and permit: a slow store must not cost a verdict the relay earned.
         progress?.measuring(tally.earned.size, Processors.UNIT_VERDICT)
         val writes =
-            writeEach(
-                tally.earned.keys.sortedBy { it.url },
-                writeConcurrency,
-                publishDeadlineMs,
-                VerdictWrites.PUBLISH_WEDGE_LIMIT,
-                VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
-                progress,
-                VerdictWrites.STAGE_PUBLISH,
-            ) { url ->
+            writeEach(tally.earned.keys.sortedBy { it.url }, WriteLimits(writeConcurrency, publishDeadlineMs), progress, STAGE_PUBLISH) { url ->
                 val e = tally.earned.getValue(url)
                 record.publishConsistency(
                     url,

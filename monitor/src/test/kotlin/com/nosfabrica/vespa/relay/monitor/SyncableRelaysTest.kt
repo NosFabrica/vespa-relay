@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.config.RelayExcludes
 import com.nosfabrica.vespa.relay.config.RelaySelect
 import com.nosfabrica.vespa.relay.config.RelaySource
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
+import com.nosfabrica.vespa.relay.peers.Fact
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -95,7 +96,7 @@ class SyncableRelaysTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(good, "prime", "answered 20 events at a settled anchor", pageable = true to "all at or below", nip77 = null)
+            record.publishFitness(good, "prime", "answered 20 events at a settled anchor", pageable = Fact(true, "all at or below"), nip77 = null)
             record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
             // The authors filter is what keeps a stranger's records from steering our fan-out.
             RelayVerdictRecord(store, stranger).publishFitness(forged, "prime", "trust me", pageable = null, nip77 = null)
@@ -142,7 +143,7 @@ class SyncableRelaysTest {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
-            record.publishFitness(good, "unpageable", "ignored `until`", pageable = false to "ignored", nip77 = null)
+            record.publishFitness(good, "unpageable", "ignored `until`", pageable = Fact(false, "ignored"), nip77 = null)
             record.publishFitness(stale, "alias", "folds onto wss://good.example", pageable = null, nip77 = null)
 
             assertEquals(

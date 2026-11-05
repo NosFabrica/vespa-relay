@@ -20,11 +20,12 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.peers.Fact
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import java.net.URI
 
 /** Why a url was set aside with no verdict. */
 internal enum class Deferral(
@@ -50,10 +51,10 @@ internal enum class Deferral(
 internal class FitnessOutcome(
     val verdict: Verdict,
     val evidence: String,
-    val pageable: Pair<Boolean, String>? = null,
-    val nip77: Pair<Boolean, String>? = null,
+    val pageable: Fact? = null,
+    val nip77: Fact? = null,
     /** Did the events match the filter that asked for them. */
-    val compliant: Pair<Boolean, String>? = null,
+    val compliant: Fact? = null,
     /** NIP-66's `rtt-read`: the first page of the rung that answered, never the whole walk. */
     val rttReadMs: Long? = null,
     /** The relay refused our NIP-42 key. Only ever true: a clean read is no evidence of `!auth`. */
@@ -176,7 +177,7 @@ internal class FitnessBatch(
     fun deferredFor(why: Deferral): Set<NormalizedRelayUrl> = deferred.filterValues { it == why }.keys
 
     /** The hosts of [urls]: one host's failure repeats across all of its paths, so it counts once. */
-    fun hostsOf(urls: Collection<NormalizedRelayUrl>): Int = urls.mapTo(HashSet()) { runCatching { URI(it.url).host }.getOrNull() ?: it.url }.size
+    fun hostsOf(urls: Collection<NormalizedRelayUrl>): Int = urls.mapTo(HashSet()) { RelayAliases.hostOf(it.url) }.size
 
     /** The hosts of every blind deferral, the share of the batch guard they count for. */
     fun blindHosts(): Int = hostsOf(deferred.filterValues { it.blind }.keys)
@@ -301,23 +302,8 @@ internal fun inheritedSocketProof(
     for ((url, standIn) in heldBack) {
         if (url in outcomes) continue
         val proof = outcomes[standIn]?.takeIf { it.verdict == Verdict.DEAD && (it.preProbe || it.tls) } ?: continue
-        val socket = socketOf(url) ?: continue
-        if (socket == socketOf(standIn)) inherited[url] = proof
+        val socket = DialTarget.of(url) ?: continue
+        if (socket == DialTarget.of(standIn)) inherited[url] = proof
     }
     return inherited
-}
-
-/** The host and port a dial of [url] opens, the scheme's port where none is written. */
-internal fun socketOf(url: NormalizedRelayUrl): String? {
-    val uri = runCatching { URI(url.url) }.getOrNull() ?: return null
-    val host = uri.host ?: return null
-    val port =
-        if (uri.port > 0) {
-            uri.port
-        } else if (url.url.startsWith("wss://", ignoreCase = true)) {
-            443
-        } else {
-            80
-        }
-    return "$host:$port"
 }

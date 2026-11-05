@@ -38,7 +38,7 @@ class VerdictWritesTest {
             // From the third write on the store never answers; four writes are in flight when it trips.
             val started = Collections.synchronizedList(mutableListOf<Int>())
             val tally =
-                writeEach(urls, concurrency = 4, deadlineMs = 100L, wedgeLimit = 3, wedgeBudgetMs = Long.MAX_VALUE, progress = null, stage = "write") { url ->
+                writeEach(urls, WriteLimits(concurrency = 4, deadlineMs = 100L, wedgeLimit = 3, wedgeBudgetMs = Long.MAX_VALUE), progress = null, stage = "write") { url ->
                     val i = urls.indexOf(url)
                     started += i
                     if (i >= 2) CompletableDeferred<Unit>().await()
@@ -54,7 +54,7 @@ class VerdictWritesTest {
     @Test
     fun `a batch that ran to its end leaves no cursor`() =
         runBlocking {
-            val tally = writeEach(urls, concurrency = 4, deadlineMs = 1_000L, wedgeLimit = 3, wedgeBudgetMs = Long.MAX_VALUE, progress = null, stage = "write") { true }
+            val tally = writeEach(urls, WriteLimits(concurrency = 4, deadlineMs = 1_000L, wedgeLimit = 3, wedgeBudgetMs = Long.MAX_VALUE), progress = null, stage = "write") { true }
             assertEquals(null, tally.resumeAt)
             assertEquals(urls.size, tally.published)
         }

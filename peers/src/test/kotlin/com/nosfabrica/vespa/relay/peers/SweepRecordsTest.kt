@@ -64,9 +64,9 @@ class SweepRecordsTest {
         record: RelayVerdictRecord,
     ) {
         record.publish(urls[0], urls[1], 100, 80)
-        record.publishFitness(urls[1], "prime", "answered", pageable = true to "drained", nip77 = null, measuredAt = measuredAt)
+        record.publishFitness(urls[1], "prime", "answered", pageable = Fact(true, "drained"), nip77 = null, measuredAt = measuredAt)
         record.publishConsistency(urls[3], true, 100, 100, 99, 0.99, 7)
-        record.publishFitness(urls[4], "prime", "answered", pageable = null, nip77 = false to "declined", measuredAt = measuredAt)
+        record.publishFitness(urls[4], "prime", "answered", pageable = null, nip77 = Fact(false, "declined"), measuredAt = measuredAt)
         val old = nowSeconds() - RelayVerdictRecord.DEFAULT_TTL_SECONDS - 1_000
         store.insert(
             signer.sign(
@@ -89,7 +89,7 @@ class SweepRecordsTest {
         record.publishConsistency(urls[2], false, 100, 30, 10, 0.1, 7)
         read += record.load(urls + urls)
         // Fitness, a withdrawal among it.
-        for (url in urls.take(3)) record.publishFitness(url, "prime", "answered", pageable = true to "drained", nip77 = true to "spoke", measuredAt = measuredAt)
+        for (url in urls.take(3)) record.publishFitness(url, "prime", "answered", pageable = Fact(true, "drained"), nip77 = Fact(true, "spoke"), measuredAt = measuredAt)
         record.retireFitness(urls[4])
         read += record.load(urls)
         read += record.loadAll()

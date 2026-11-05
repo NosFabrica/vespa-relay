@@ -133,13 +133,8 @@ object FitnessRetirement {
 
     private const val RETIRE_CONCURRENCY = 16
 
-    /** This monitor's grade on a record, told apart by namespace: `l` is shared vocabulary. */
-    private fun ourGrade(event: RelayDiscoveryEvent): Array<String>? =
-        event.tags.firstOrNull {
-            it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
-                it[0] == RelayVerdictRecord.LABEL_TAG &&
-                it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
-        }
+    /** This monitor's grade on a record. */
+    private fun ourGrade(event: RelayDiscoveryEvent): Array<String>? = event.tags.firstOrNull(RelayVerdictRecord::isFitnessLabel)
 
     /** What the old build could have written on `s`. May only grow; must not follow a later rename. */
     val LEGACY_GRADES = Verdict.entries.map { it.value } + "syncable"

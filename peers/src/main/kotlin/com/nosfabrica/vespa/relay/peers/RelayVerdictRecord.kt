@@ -362,8 +362,7 @@ class RelayVerdictRecord(
         event: Event,
         floor: Long,
     ) {
-        val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return
-        val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
+        val from = subjectUrlOf(event) ?: return
         // Before any currency check: the record existing is what says this url is in our corpus.
         recorded += from
         event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.let { tag ->
@@ -376,28 +375,10 @@ class RelayVerdictRecord(
                 measured += from
             }
         }
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
-            ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
-            ?.get(1)
-            ?.let { answer ->
-                when (answer) {
-                    CONSISTENT_YES -> {
-                        consistent += from
-                        measured += from
-                    }
-
-                    CONSISTENT_NO -> {
-                        inconsistent += from
-                        measured += from
-                    }
-
-                    // An unreadable answer is no verdict, not "unstable".
-                    else -> {
-                        Unit
-                    }
-                }
-            }
+        currentAnswer(event, SELF_CONSISTENT_TAG, CONSISTENCY_EPOCH, floor)?.let { yes ->
+            if (yes) consistent += from else inconsistent += from
+            measured += from
+        }
         // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
         // and it carries neither a fold answer nor a NIP-77 one.
         currentFitnessLabel(event, floor)
@@ -409,28 +390,32 @@ class RelayVerdictRecord(
                         StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX), label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull())
                 }
             }
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
-            ?.takeIf { current(it, FITNESS_EPOCH, floor) }
-            ?.get(1)
-            ?.let { answer ->
-                when (answer) {
-                    "true" -> {
-                        speaksNegentropy[from] = true
-                        measured += from
-                    }
-
-                    "false" -> {
-                        speaksNegentropy[from] = false
-                        measured += from
-                    }
-
-                    else -> {
-                        Unit
-                    }
-                }
-            }
+        currentAnswer(event, NIP77_TAG, FITNESS_EPOCH, floor)?.let { yes ->
+            speaksNegentropy[from] = yes
+            measured += from
+        }
     }
+
+    /**
+     * [event]'s `true`/`false` answer on its [name] tag, if current under [epoch]; null when absent, stale,
+     * or unreadable, which is no verdict rather than a "no".
+     */
+    private fun currentAnswer(
+        event: Event,
+        name: String,
+        epoch: String,
+        floor: Long,
+    ): Boolean? =
+        when (
+            event.tags
+                .firstOrNull { it.size > 1 && it[0] == name }
+                ?.takeIf { current(it, epoch, floor) }
+                ?.get(1)
+        ) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
 
     /**
      * Sign and store what a stability pass measured: did this url answer one filter, at one
@@ -470,10 +455,10 @@ class RelayVerdictRecord(
         url: NormalizedRelayUrl,
         status: String,
         evidence: String,
-        pageable: Pair<Boolean, String>?,
-        nip77: Pair<Boolean, String>?,
+        pageable: Fact?,
+        nip77: Fact?,
         /** Did the answer match the ask. Null for a dial that got no page to check. */
-        compliant: Pair<Boolean, String>? = null,
+        compliant: Fact? = null,
         facts: RelayFacts = RelayFacts(),
         /** When the grade was measured; a write retried after the store recovered keeps its measurement's time. */
         measuredAt: Long = nowSeconds(),
@@ -519,79 +504,11 @@ class RelayVerdictRecord(
             else -> name in RelayFacts.OWNED
         }
 
-    /** Sign and store one fold; null when there is no signer. The evidence goes in the tag, never the content. */
-    suspend fun publish(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        shared: Int,
-    ): Event? = write(alias, canonical, "$sampled newest events, $shared shared with ${canonical.url}")
-
     /**
-     * The one fold whose evidence is not a containment: a `ws://` url and the `wss://` url of
-     * the same endpoint, both of which answered. Its own call so the evidence names that argument.
+     * Sign and store one fold answer: [subject] is the same server as [sameAs], or its own relay when the
+     * two are one url. Null when there is no signer. The evidence goes in the tag, never the content.
      */
-    suspend fun publishSecureTwin(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        /** True when the pair's windows came through [RelayAliases.GROUP_METADATA_KINDS]. */
-        groupList: Boolean = false,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "same endpoint as ${canonical.url} over TLS, both answered; " +
-                if (groupList) "$sampled group definitions here" else "$sampled newest events here",
-        )
-
-    /** A fold decided on a relay's complete list of groups rather than a slice of its feed. */
-    suspend fun publishGroupList(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        shared: Int,
-    ): Event? = write(alias, canonical, "same group list as ${canonical.url}: $shared of $sampled group definitions shared")
-
-    /**
-     * A fold on a store too small to sample: both urls served the same complete store, and so did a
-     * path on their host that no relay list names, which only a server ignoring the path does.
-     */
-    suspend fun publishWholeStore(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        events: Int,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "the same complete store of $events event(s) as ${canonical.url}, as a path no relay list names also serves",
-        )
-
-    /** The weakest fold: these urls share a host, every one answered, none would serve anything. */
-    suspend fun publishUnreadable(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        urls: Int,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "nothing readable at any of $urls url(s) on this host; folded on the shared name, not on a measurement",
-        )
-
-    /**
-     * This url was fingerprinted and matched nothing it was compared to, written as `same-as`
-     * pointing at its own url. [comparedAgainst] names what was actually held up against it.
-     */
-    suspend fun publishDistinct(
-        url: NormalizedRelayUrl,
-        sampled: Int,
-        comparedAgainst: String,
-        bestShared: Int,
-    ): Event? = write(url, url, "$sampled newest events, best $bestShared shared with $comparedAgainst")
-
-    private suspend fun write(
+    suspend fun publishFold(
         subject: NormalizedRelayUrl,
         sameAs: NormalizedRelayUrl,
         evidence: String,
@@ -727,10 +644,16 @@ class RelayVerdictRecord(
         }.maxByOrNull { it.createdAt }
     }
 
-    /** The url a record is about, as written. */
-    private fun subjectOf(event: Event): String? = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1)
-
     companion object {
+        /** The url a record is about, its `d` tag as written. */
+        fun subjectOf(event: Event): String? = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1)
+
+        /**
+         * [subjectOf] as a key to verdicts: any url quartz normalizes, `.onion` included, since a read
+         * answers about urls its caller already holds. [RelayDiscovery] turns a subject into a url to dial instead.
+         */
+        private fun subjectUrlOf(event: Event): NormalizedRelayUrl? = subjectOf(event)?.let(RelayUrlNormalizer::normalizeOrNull)
+
         /** Every record [self] signed that [store] holds stamped at or after [since], in one paged walk. */
         suspend fun ownRecordsIn(
             store: IEventStore,
@@ -742,8 +665,8 @@ class RelayVerdictRecord(
             return found
         }
 
-        /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
-        private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+        /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE], told apart by namespace since `l` is shared vocabulary. */
+        fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
 
         /**
          * [event]'s fitness label if it is one we would still act on: under [FITNESS_EPOCH] and measured
@@ -840,7 +763,7 @@ class RelayVerdictRecord(
         /** How long a `dead` verdict holds a url out of the passes and the fold. */
         const val DEAD_TTL_SECONDS = 24L * 60 * 60
 
-        /** The wall clock on one whole [edit]. Wider than `VerdictWrites.PUBLISH_DEADLINE_MS`, which must fire first. */
+        /** The wall clock on one whole [edit]. Wider than `WriteLimits.PUBLISH_DEADLINE_MS`, which must fire first. */
         const val EDIT_DEADLINE_MS = 120_000L
 
         private const val EDIT_FAILURE_LOG_MS = 60_000L

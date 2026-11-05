@@ -64,13 +64,13 @@ class FitnessPass(
     /** The monitor's one dial gate, shared with every other pass. */
     private val gate: DialGate = DialGate(AliasFolding.DEFAULT_DIAL_CONCURRENCY),
     /** The wall clock on one verdict write. */
-    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
+    private val publishDeadlineMs: Long = WriteLimits.PUBLISH_DEADLINE_MS,
     /** The wall clock on the NEG-OPEN. */
     private val nip77DeadlineMs: Long = NIP77_DEADLINE_MS,
     /** How much wall time one batch may lose to a store that is not answering. */
-    private val publishWedgeBudgetMs: Long = VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
+    private val publishWedgeBudgetMs: Long = WriteLimits.PUBLISH_WEDGE_BUDGET_MS,
     /** Verdict writes in flight at once. */
-    private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
+    private val writeConcurrency: Int = WriteLimits.WRITE_CONCURRENCY,
     /** A direct handshake to a url whose dial failed TLS, on the pre-probe's route; the default checks nothing. */
     private val tlsCheck: suspend (NormalizedRelayUrl) -> TlsAnswer = { TlsAnswer.UNCHECKED },
     /** The NEG-OPEN, the only thing this pass asks [client] for. */
@@ -86,7 +86,7 @@ class FitnessPass(
 ) : AliasMonitor.Pass {
     private val dials = FitnessDial(probe, compliance, progress, document, tor, tlsCheck, reconcile, nip77DeadlineMs, reach, sockets)
 
-    private val writes = FitnessWrites(record, progress, tor, publishDeadlineMs, publishWedgeBudgetMs, writeConcurrency)
+    private val writes = FitnessWrites(record, progress, tor, WriteLimits(writeConcurrency, publishDeadlineMs, wedgeBudgetMs = publishWedgeBudgetMs))
 
     private val backoff = DeferralBackoff(sweepMs)
 

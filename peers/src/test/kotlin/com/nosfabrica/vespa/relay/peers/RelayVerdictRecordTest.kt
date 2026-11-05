@@ -274,8 +274,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "declined the NEG-OPEN"))
             record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
 
             suspend fun labelIn(url: NormalizedRelayUrl) =
@@ -308,8 +308,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "declined the NEG-OPEN"))
 
             val labels = recordFor(store, alias.url)!!.tags.filter { it[0] == "l" && it.getOrNull(2) == RelayVerdictRecord.NEGENTROPY_NAMESPACE }
             assertEquals(listOf(RelayVerdictRecord.REFUSES_NEGENTROPY), labels.map { it[1] }, "the stale verdict is still selectable")
@@ -325,8 +325,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "no NEG-OPEN")
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "no NEG-OPEN"))
             record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
 
             val read = record.load(listOf(canonical, alias, self)).speaksNegentropy
