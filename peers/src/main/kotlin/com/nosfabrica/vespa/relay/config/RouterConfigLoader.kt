@@ -161,7 +161,7 @@ object RouterConfigLoader {
     fun refuseSyncEnv(env: Map<String, String>) {
         val set = SYNC_ENV.filter { !env[it].isNullOrBlank() }
         require(set.isEmpty()) {
-            "router: ${set.joinToString()} set on the monitor process, which does not mirror. The mirror is its own process " +
+            "monitor: ${set.joinToString()} set on the monitor process, which does not mirror. The mirror is its own process " +
                 "(vespa-sync, the `sync` compose service): move these to it and unset them here"
         }
     }
@@ -193,15 +193,15 @@ object RouterConfigLoader {
         val inline = env["MONITOR_CONFIG"]?.takeIf { it.isNotBlank() }
         val file = env["MONITOR_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let(::File)
         require(inline == null || file == null) {
-            "router: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
+            "monitor: MONITOR_CONFIG and MONITOR_CONFIG_FILE are both set — one monitor declaration, not two. Unset whichever is stale"
         }
         require(inline != null || file != null) {
-            "router: MONITOR_CONFIG or MONITOR_CONFIG_FILE is required — the monitor measures what its own config names and " +
+            "monitor: MONITOR_CONFIG or MONITOR_CONFIG_FILE is required — the monitor measures what its own config names and " +
                 "nothing else. Point MONITOR_CONFIG_FILE at a monitor.conf (start from monitor.conf.example)"
         }
         // A file is parsed as a file, so its `include` resolves against its own directory.
         val origin = file.takeIf { inline == null }
-        require(origin == null || origin.isFile) { "router: MONITOR_CONFIG_FILE points at ${origin?.path}, which is not a readable file" }
+        require(origin == null || origin.isFile) { "monitor: MONITOR_CONFIG_FILE points at ${origin?.path}, which is not a readable file" }
         val monitor = parseMonitorConf(inline, origin)
         refuseUndeclaredSources(monitor)
         return monitor
@@ -210,7 +210,7 @@ object RouterConfigLoader {
     /** A monitor config with no `sources`: it only tuned the clocks, and would run the passes over nothing. */
     fun refuseUndeclaredSources(monitor: MonitorConfig) {
         require(monitor.sources != null) {
-            "router: the monitor config names no `sources`, so it never said what to measure. Name the relay lists to scan " +
+            "monitor: the monitor config names no `sources`, so it never said what to measure. Name the relay lists to scan " +
                 "(start from monitor.conf.example), or declare `sources = []` to measure nothing on purpose"
         }
     }
@@ -497,7 +497,7 @@ object RouterConfigLoader {
         val value = m.getLong("fastLaneSeconds")
         if (value == 0L) return null
         require(value >= 30L) {
-            "router: $MONITOR_CONFIG has `fastLaneSeconds = $value` — it must be at least 30, or 0 to turn the fast lane off"
+            "monitor: $MONITOR_CONFIG has `fastLaneSeconds = $value` — it must be at least 30, or 0 to turn the fast lane off"
         }
         return value
     }
@@ -513,7 +513,7 @@ object RouterConfigLoader {
     ): Config {
         val parsed = document(hocon, origin)
         require(!parsed.hasPath("monitor")) {
-            "router: the monitor config has a `monitor { }` block wrapped around it. The file IS the block — " +
+            "monitor: the monitor config has a `monitor { }` block wrapped around it. The file IS the block — " +
                 "unwrap it, so `sources`, `exclude` and the clocks sit at the top level"
         }
         return parsed

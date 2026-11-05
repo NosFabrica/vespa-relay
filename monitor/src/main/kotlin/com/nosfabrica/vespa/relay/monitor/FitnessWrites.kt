@@ -108,7 +108,7 @@ internal class FitnessWrites(
             // Removed only if still the write that landed: a batch may have queued a newer one meanwhile.
             for (url in tally.stored) pending.remove(url, queued.getValue(url))
             System.err.println(
-                "router: fitness — ${tally.stored.size} of ${urls.size} pending write(s) landed" +
+                "monitor: fitness — ${tally.stored.size} of ${urls.size} pending write(s) landed" +
                     (if (overtaken.isEmpty()) "" else ", ${overtaken.size} dropped as overtaken by the record") +
                     (tally.stoppedBy?.let { "; the rest wait again because $it" }.orEmpty()),
             )
@@ -133,7 +133,7 @@ internal class FitnessWrites(
             } catch (e: Exception) {
                 "the read failed (${e.javaClass.simpleName})"
             }
-        System.err.println("router: fitness [$RETRYING_WRITES] — could not read the record before replaying ${urls.size} pending write(s): $why; they stay queued for the next retry")
+        System.err.println("monitor: fitness [$RETRYING_WRITES] — could not read the record before replaying ${urls.size} pending write(s): $why; they stay queued for the next retry")
         return null
     }
 

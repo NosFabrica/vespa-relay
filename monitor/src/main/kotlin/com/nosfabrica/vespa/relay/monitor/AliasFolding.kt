@@ -146,7 +146,7 @@ class AliasFolding(
         val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates, after) else null
         if (cleaned != null && (probed > 0 || learned > 0)) {
             System.err.println(
-                "router: $label measured $probed fingerprint(s) — $learned new alias(es), " +
+                "monitor: $label measured $probed fingerprint(s) — $learned new alias(es), " +
                     "${candidates.size} url(s) now fold onto ${cleaned.dial.size} relay(s) " +
                     "(${after.size()} known, ${cleaned.unmeasured.size} unmeasured) " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
@@ -421,7 +421,7 @@ class AliasFolding(
         if (landed.size < folds.folded.size) writesStopped(group)
         if (landed.isNotEmpty()) {
             System.err.println(
-                "router: ${group.run.label} ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
+                "monitor: ${group.run.label} ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
                     "${wanted.size} url(s) and every one answered — ${landed.size} folded onto ${survivor.url} " +
                     "on the shared name, WITHOUT a measurement",
             )
@@ -458,7 +458,7 @@ class AliasFolding(
         if (landed.size < folds.folded.size) writesStopped(group)
         if (landed.isNotEmpty()) {
             System.err.println(
-                "router: ${group.run.label} ${RelayAliases.hostOf(survivor.url)} serves one complete store of ${store.ids.size} event(s) " +
+                "monitor: ${group.run.label} ${RelayAliases.hostOf(survivor.url)} serves one complete store of ${store.ids.size} event(s) " +
                     "at every path, a made-up one included — ${landed.size} url(s) folded onto ${survivor.url}",
             )
         }
@@ -529,7 +529,7 @@ class AliasFolding(
         group.cooldown = true
         group.undecided = Undecided.NOT_REPRODUCIBLE
         System.err.println(
-            "router: ${group.run.label} ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
+            "monitor: ${group.run.label} ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
                 "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor, " +
                 // A short second walk is a relay or our transport cutting it; a full one, a window that moved.
                 "${again?.let { "which returned ${it.size}" } ?: "which never answered"}) — " +
@@ -583,7 +583,7 @@ class AliasFolding(
     ) {
         if (writer.unwritten == 0) return
         System.err.println(
-            "router: $label fold — ${writer.unwritten} verdict(s) NOT written (${writer.wedged} hit the write deadline, " +
+            "monitor: $label fold — ${writer.unwritten} verdict(s) NOT written (${writer.wedged} hit the write deadline, " +
                 "${writer.declined} failed outright, ${writer.refused} never started" +
                 (writer.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
                 "); those hosts are measured again next pass",
@@ -598,7 +598,7 @@ class AliasFolding(
         if (undecided.isEmpty()) return
         val byReason = undecided.entries.groupBy({ it.value }, { it.key })
         System.err.println(
-            "router: $label alias pass left ${undecided.size} host(s) undecided — " +
+            "monitor: $label alias pass left ${undecided.size} host(s) undecided — " +
                 Undecided.entries
                     .filter { byReason.containsKey(it) }
                     .joinToString("; ") { reason ->
@@ -724,7 +724,7 @@ class AliasFolding(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            System.err.println("router: fold [$label] — the walk over every verdict failed (${whyUnread(e)}); reading the candidates' own instead")
+            System.err.println("monitor: fold [$label] — the walk over every verdict failed (${whyUnread(e)}); reading the candidates' own instead")
             record.load(candidates + world().matesOf(candidates))
         }
 

@@ -54,7 +54,7 @@ internal class FitnessReport(
             }
         val counts = byVerdict.entries.sortedByDescending { it.value }.joinToString { "${it.key.value} x${it.value}" }
         System.err.println(
-            "router: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts" +
+            "monitor: fitness [$label] — $candidates candidate(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s: $counts" +
                 "; ${batch.downloaded} event(s) downloaded",
         )
         reportSetAside(label, batch)
@@ -78,7 +78,7 @@ internal class FitnessReport(
         label: String,
         lines: List<Line>,
     ) {
-        for (line in lines) if (line.count > 0) System.err.println("router: fitness [$label] — " + line.sentence(line.count))
+        for (line in lines) if (line.count > 0) System.err.println("monitor: fitness [$label] — " + line.sentence(line.count))
     }
 
     /** One line per way a url left this batch with no verdict, or with less of one; only when there were any. */
@@ -98,16 +98,16 @@ internal class FitnessReport(
                 },
                 Line(lookups.size) {
                     "$it url(s) on ${batch.hostsOf(lookups)} host(s) failed the lookup with no reason left " +
-                        "to read, no verdict written; counted once per host as this router failing to dial, since our resolver " +
+                        "to read, no verdict written; counted once per host as this monitor failing to dial, since our resolver " +
                         "fails that way as readily as the name"
                 },
                 Line(unrecognised.size) {
                     "$it url(s) on ${batch.hostsOf(unrecognised)} host(s) gave up in words " +
-                        "we do not recognise, no verdict written; counted once per host as this router failing to dial, since a reset, " +
+                        "we do not recognise, no verdict written; counted once per host as this monitor failing to dial, since a reset, " +
                         "an EOF or a cancellation is our own socket layer as readily as the relay"
                 },
                 Line(deferredCounts.values.sum()) {
-                    "$it url(s) set aside, no verdict written and NOT counted as this router failing to dial: " +
+                    "$it url(s) set aside, no verdict written and NOT counted as this monitor failing to dial: " +
                         deferredCounts.entries.sortedByDescending { e -> e.value }.joinToString { e -> "${e.value} x ${e.key}" }
                 },
                 Line(batch.backingOff.size) {

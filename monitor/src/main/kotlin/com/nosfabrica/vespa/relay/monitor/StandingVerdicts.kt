@@ -39,7 +39,7 @@ internal suspend fun readStanding(
         throw e
     } catch (e: Exception) {
         System.err.println(
-            "router: $pass [$label] — could not read the standing verdicts (${whyUnread(e)}); " +
+            "monitor: $pass [$label] — could not read the standing verdicts (${whyUnread(e)}); " +
                 "nothing measured or published, every url is measured again next pass",
         )
         null

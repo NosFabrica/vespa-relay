@@ -102,6 +102,8 @@ object RelayDiscovery {
         now: Long = nowSeconds(),
         /** Called as each of [RelayDiscoveryConfig.sources] finishes, the only unit this walk is counted in. */
         onSource: () -> Unit = {},
+        /** The calling process's log prefix: `router` for the sync, `monitor` for the monitor. */
+        logPrefix: String = "router",
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -126,7 +128,7 @@ object RelayDiscovery {
                 }
             }
             if (stillPaged.isNotEmpty()) {
-                scan(store, bounded, pageSize) { event ->
+                scan(store, bounded, pageSize, logPrefix = logPrefix) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
                         oversizedLists++
                         return@scan
@@ -155,7 +157,7 @@ object RelayDiscovery {
                     .toSet()
                     .size
             System.err.println(
-                "router: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
+                "$logPrefix: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
                     "authors per relay min=${perRelay.minOrNull()} median=${perRelay.sorted().getOrNull(perRelay.size / 2)} " +
                     "max=${perRelay.maxOrNull()} total=${perRelay.sum()}; " +
                     "${found.size - narrowing.size} relay(s) found with NO authors attached",
@@ -164,7 +166,7 @@ object RelayDiscovery {
 
         if (oversizedLists > 0) {
             System.err.println(
-                "router: discovery skipped $oversizedLists relay list(s) over ${dynamic.maxRelaysPerList} entries " +
+                "$logPrefix: discovery skipped $oversizedLists relay list(s) over ${dynamic.maxRelaysPerList} entries " +
                     "— see RelayDiscoveryConfig.maxRelaysPerList",
             )
         }
@@ -320,6 +322,8 @@ object RelayDiscovery {
         maxAsk: Int = maxOf(pageSize, SCAN_PAGE),
         /** The wall clock on each page, past which the scan throws [RelayVerdictRecord.ReadTimeout]; null waits. */
         pageDeadlineMs: Long? = null,
+        /** The calling process's log prefix. */
+        logPrefix: String = "router",
         onEach: (Event) -> Unit,
     ) {
         // An explicit `limit` is the caller's budget for the whole scan; only events handed to [onEach] spend it.
@@ -353,7 +357,7 @@ object RelayDiscovery {
             for (event in page) if (event.createdAt == oldest) newBoundary.add(event.id)
             if (newBoundary.size == page.size) {
                 // Still one timestamp after growing: step below it, and say so when that skips events.
-                if (ask >= maxAsk && ask < budget) reportTruncatedSecond(filter, oldest, ask)
+                if (ask >= maxAsk && ask < budget) reportTruncatedSecond(filter, oldest, ask, logPrefix)
                 until = oldest - 1
                 boundaryIds = emptySet()
             } else {
@@ -370,8 +374,9 @@ object RelayDiscovery {
         filter: Filter,
         createdAt: Long,
         ask: Int,
+        logPrefix: String,
     ) = System.err.println(
-        "router: scan of ${StoreCalls.summarise(filter)} TRUNCATED — more than $ask events share created_at $createdAt, " +
+        "$logPrefix: scan of ${StoreCalls.summarise(filter)} TRUNCATED — more than $ask events share created_at $createdAt, " +
             "the most one page may ask for; the rest of that second is skipped",
     )
 

@@ -46,6 +46,8 @@ class StoreCalls(
     /** How long before a call still running is named again. */
     private val rewarnAfterMs: Long = DEFAULT_REWARN_AFTER_MS,
     private val now: () -> Long = System::currentTimeMillis,
+    /** The owning process's log prefix on [warnSlow]'s lines. */
+    private val logPrefix: String = "router",
 ) : AbstractCoroutineContextElement(StoreCalls) {
     /** One call in flight: one call our code is suspended in, which may fan out inside the store. */
     class Call(
@@ -302,7 +304,7 @@ class StoreCalls(
 
     /**
      * Log lines for every call past [slowAfterMs], repeated every [rewarnAfterMs] while it is
-     * still out. Nothing here cuts a call. Returns the lines so the caller owns the prefix.
+     * still out. Nothing here cuts a call. Returns the lines for the caller to print.
      */
     fun warnSlow(nowMs: Long = now()): List<String> {
         if (slowAfterMs <= 0) return emptyList()
@@ -315,7 +317,7 @@ class StoreCalls(
         for (row in out) row.warnedAtMs = nowMs
         val lines =
             out.map { row ->
-                "router: store call SLOW — ${row.caller} ${row.op}" +
+                "$logPrefix: store call SLOW — ${row.caller} ${row.op}" +
                     (row.asked?.let { " ($it)" } ?: "") +
                     " has been running ${fmtDuration(nowMs - row.issuedMs)} " +
                     "(${outstanding.get()} store call(s) outstanding, ${row.outstandingAtIssue} when this one was issued). " +
@@ -323,7 +325,7 @@ class StoreCalls(
             }
         // The tail is disclosed, not dropped; the unnamed keep their clock.
         return if (due.size > out.size) {
-            lines + "router: store call SLOW — and ${due.size - out.size} more past the same bound, named on a later pass"
+            lines + "$logPrefix: store call SLOW — and ${due.size - out.size} more past the same bound, named on a later pass"
         } else {
             lines
         }

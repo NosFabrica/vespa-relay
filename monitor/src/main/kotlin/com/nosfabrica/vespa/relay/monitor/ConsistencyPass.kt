@@ -174,7 +174,7 @@ class ConsistencyPass(
         val refused = landed.count { !it.value }
         if (writes.published < tally.earned.size) {
             System.err.println(
-                "router: $label stability — ${tally.earned.size - writes.published} earned verdict(s) NOT written " +
+                "monitor: $label stability — ${tally.earned.size - writes.published} earned verdict(s) NOT written " +
                     "(${writes.wedged} hit the write deadline, ${writes.declined} failed outright" +
                     (writes.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
                     "); those urls are measured again next pass",
@@ -184,7 +184,7 @@ class ConsistencyPass(
         val silent = tally.findings
         if (decided > 0 || silent.isNotEmpty()) {
             System.err.println(
-                "router: $label stability walked ${tally.walked} of ${wanted.size} url(s) — $decided decided " +
+                "monitor: $label stability walked ${tally.walked} of ${wanted.size} url(s) — $decided decided " +
                     "($refused refused as inconsistent), ${silent.size} proved nothing" +
                     breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
                     ", ${candidates.count { verdictOf(it, held, landed) == false }} url(s) now refused in total " +
@@ -193,12 +193,12 @@ class ConsistencyPass(
         }
         if (waiting.isNotEmpty()) {
             System.err.println(
-                "router: $label stability — ${waiting.size} url(s) on ${waiting.values.toSet().size} server(s) wait on the fold " +
+                "monitor: $label stability — ${waiting.size} url(s) on ${waiting.values.toSet().size} server(s) wait on the fold " +
                     "behind another url of the same server, not walked",
             )
         }
         if (tally.unplaced.isNotEmpty()) {
-            System.err.println("router: $label stability could not classify ${tally.unplaced.size} terminal reason(s): " + tally.unplaced.joinToString(" | "))
+            System.err.println("monitor: $label stability could not classify ${tally.unplaced.size} terminal reason(s): " + tally.unplaced.joinToString(" | "))
         }
         report(label, candidates, held, landed, dialled = tally.walked, decided = decided, unmeasurable = silent + waitingFindings)
         return decided

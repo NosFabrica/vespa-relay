@@ -329,7 +329,7 @@ operator page shows and why is
   config question (monitor.conf against sync.conf), never a relay one.
 - `ingest stages`: per-stage timing (`dedup`, `write`, `proj.fetch`,
   `proj.write`, `versions`, `verify`, `dedup.pre`).
-- Log prefixes: `router:`, `store call SLOW`, `visit … aborted`,
+- Log prefixes: `router:` (the sync; the monitor prints `monitor:`), `store call SLOW`, `visit … aborted`,
   `could not derive <label>` when a discovery source fails. `SYNC_WIRE_LOG`
   (`sent` / `full`; empty still logs `NOTICE` and `CLOSED`), `SYNC_STREAMS` to
   run one stream alone, `SYNC_DIAGNOSE` for one stream, `QUARTZ_LOG_LEVEL`.

@@ -57,6 +57,8 @@ class PeerClient(
     connectionTimeoutSec: Long = 10,
     /** How every upstream frame is read. */
     decoder: MessageDecoder = MessageDecoder.Default,
+    /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
+    private val logPrefix: String = "router",
 ) : AutoCloseable {
     private val okhttp = relayHttpBuilder(connectionTimeoutSec, relayDns()).build()
 
@@ -94,7 +96,7 @@ class PeerClient(
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
-                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
+                        "$logPrefix: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
                     )
                 }
                 RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
@@ -114,7 +116,7 @@ class PeerClient(
         tor?.let {
             val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
             System.err.println(
-                "router: tor SOCKS ${it.settings.socksAddress} $reach" +
+                "$logPrefix: tor SOCKS ${it.settings.socksAddress} $reach" +
                     (if (it.settings.routeAll) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
             )
         }

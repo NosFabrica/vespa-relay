@@ -67,6 +67,9 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.system.exitProcess
 
+/** Every line this process prints starts with it; `router:` is the sync's. */
+private const val LOG = "monitor"
+
 /** The monitor's own status page; `/stats.html` serves every plane. */
 private const val DEFAULT_STATUS_PORT = 7779
 
@@ -108,14 +111,14 @@ fun main() {
     val configUrl = ReadOnlyStore.awaitSchema(env, boot.vespaUrl, boot.storeTuning, process = "monitor")
     val store = ReadOnlyStore.open(env, boot.vespaUrl, boot.relayUrl, configUrl, boot.storeTuning, process = "monitor")
 
-    val storeCalls = StoreCalls()
+    val storeCalls = StoreCalls(logPrefix = LOG)
     // From here on a pass runs on pool threads; one killed by an OutOfMemoryError must say so.
     val fatals = AtomicLong().also { watchForFatals("monitor", it) }
     keyChecked.await()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + storeCalls)
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
     val writer = RelayWriter(boot.dial, boot.relayUrl, boot.identity, CoroutineScope(Dispatchers.IO + SupervisorJob()), process = "monitor")
-    val peers = PeerClient(scope, boot.identity, boot.torSettings, boot.wireLogMode, boot.config.connectionTimeoutSec, MessageDecoder.Default)
+    val peers = PeerClient(scope, boot.identity, boot.torSettings, boot.wireLogMode, boot.config.connectionTimeoutSec, MessageDecoder.Default, logPrefix = LOG)
     val engine =
         MonitorEngine(
             store = store,
@@ -125,7 +128,7 @@ fun main() {
             peers = peers,
             signer = boot.identity,
             processors = Processors(),
-            sockets = RelaySockets(peers.client, pinnedUrls = emptySet()),
+            sockets = RelaySockets(peers.client, pinnedUrls = emptySet(), logPrefix = LOG),
             scope = scope,
             writer = writer,
         )
@@ -240,7 +243,7 @@ private fun startRollup(
 
     fun publish() = snapshot.publish(status.document())
     publish()
-    return StatusRollup("monitor", boot.statusEverySeconds, ::publish).start()
+    return StatusRollup("monitor", boot.statusEverySeconds, ::publish, logPrefix = LOG).start()
 }
 
 /** The health line, once a minute: heap, fatals, slow store calls and the urls held out as dead. */
@@ -251,7 +254,7 @@ private fun startHealthLine(
     engine: MonitorEngine,
 ) {
     scope.launch {
-        repeatEvery(HEALTH_INTERVAL_MS, "health") {
+        repeatEvery(HEALTH_INTERVAL_MS, "health", LOG) {
             val rt = Runtime.getRuntime()
             val fatal = fatals.get()
             System.err.println(
@@ -260,7 +263,7 @@ private fun startHealthLine(
             )
             storeCalls.warnSlow().forEach { System.err.println(it) }
             engine.heldOutDead().takeIf { it > 0 }?.let { dead ->
-                System.err.println("router: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes")
+                System.err.println("monitor: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes")
             }
         }
     }
@@ -277,13 +280,13 @@ private fun installShutdownHook(
 ) {
     Runtime.getRuntime().addShutdownHook(
         Thread {
-            shutdownStep("stop the status rollup") { rollup?.close() }
-            shutdownStep("stop the status page") { stopPage() }
-            shutdownStep("cancel the passes") { scope.cancel() }
-            shutdownStep("close the peer client") { peers.close() }
+            shutdownStep("stop the status rollup", LOG) { rollup?.close() }
+            shutdownStep("stop the status page", LOG) { stopPage() }
+            shutdownStep("cancel the passes", LOG) { scope.cancel() }
+            shutdownStep("close the peer client", LOG) { peers.close() }
             // After the passes: a verdict mid-write may still be on its way to the relay.
-            shutdownStep("close the writer") { writer.close() }
-            shutdownStep("close the store") { store.close() }
+            shutdownStep("close the writer", LOG) { writer.close() }
+            shutdownStep("close the store", LOG) { store.close() }
         },
     )
 }

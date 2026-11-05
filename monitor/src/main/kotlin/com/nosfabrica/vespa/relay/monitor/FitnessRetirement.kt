@@ -65,6 +65,7 @@ object FitnessRetirement {
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(author)),
             SCAN_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            logPrefix = "monitor",
         ) { event ->
             val held = event as? RelayDiscoveryEvent ?: return@scan
             val url = held.relay() ?: return@scan
@@ -76,13 +77,13 @@ object FitnessRetirement {
         val result = Retired(stale.count { it in retired }, legacy.count { it in retired })
         if (stale.isNotEmpty()) {
             System.err.println(
-                "router: fitness — retired ${result.staleEpochs} of ${stale.size} verdict(s) taken under older rules; " +
+                "monitor: fitness — retired ${result.staleEpochs} of ${stale.size} verdict(s) taken under older rules; " +
                     "they read as unmeasured until the next sweep re-takes them",
             )
         }
         if (legacy.isNotEmpty()) {
             System.err.println(
-                "router: fitness — retired ${result.legacyGrades} of ${legacy.size} grade(s) still written on the `s` tag; " +
+                "monitor: fitness — retired ${result.legacyGrades} of ${legacy.size} grade(s) still written on the `s` tag; " +
                     "they re-grade onto NIP-32 labels on the next sweep",
             )
         }

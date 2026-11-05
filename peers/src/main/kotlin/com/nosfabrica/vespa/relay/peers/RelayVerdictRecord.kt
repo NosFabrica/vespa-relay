@@ -219,6 +219,7 @@ class RelayVerdictRecord(
             RECORD_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             pageDeadlineMs = readDeadlineMs,
+            logPrefix = MONITOR_LOG,
         ) { event -> if (several != null) several += event else held.take(event, floor) }
         several?.let { held.take(newestPerUrl(it), floor) }
         return held.verdicts()
@@ -309,6 +310,7 @@ class RelayVerdictRecord(
             RECORD_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             pageDeadlineMs = readDeadlineMs,
+            logPrefix = MONITOR_LOG,
         ) { event ->
             val d = subjectOf(event) ?: return@scan
             // The newest, as a `#d` read of one url takes it.
@@ -592,7 +594,7 @@ class RelayVerdictRecord(
             }
         }
 
-    /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. */
+    /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. Only the monitor signs, so only it edits. */
     private fun editFailed(
         url: NormalizedRelayUrl,
         stage: String,
@@ -603,7 +605,7 @@ class RelayVerdictRecord(
         val last = editFailureLoggedAt.get()
         if (now - last < EDIT_FAILURE_LOG_MS || !editFailureLoggedAt.compareAndSet(last, now)) return
         System.err.println(
-            "router: verdict edit for ${url.url} FAILED at $stage — ${e.javaClass.simpleName}: ${e.message?.take(200)} " +
+            "$MONITOR_LOG: verdict edit for ${url.url} FAILED at $stage — ${e.javaClass.simpleName}: ${e.message?.take(200)} " +
                 "($failed failed edit(s) so far)",
         )
     }
@@ -661,7 +663,7 @@ class RelayVerdictRecord(
             since: Long,
         ): List<Event> {
             val found = ArrayList<Event>()
-            RelayDiscovery.scan(store, Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = since), RelayDiscovery.SCAN_PAGE) { found += it }
+            RelayDiscovery.scan(store, Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = since), RelayDiscovery.SCAN_PAGE, logPrefix = MONITOR_LOG) { found += it }
             return found
         }
 
@@ -781,5 +783,8 @@ class RelayVerdictRecord(
         const val READ_DEADLINE_MS = 60_000L
 
         private const val RECORD_PAGE = 2_000
+
+        /** The prefix on the lines a whole-corpus walk prints: only the monitor walks, and only it edits. */
+        private const val MONITOR_LOG = "monitor"
     }
 }

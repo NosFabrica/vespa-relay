@@ -227,9 +227,9 @@ internal fun refusesToPublish(
     val blind = batch.unmeasured.size + batch.abandoned.size + blindHosts
     if (wentOut < FitnessPass.GUARD_FLOOR || blind <= wentOut * FitnessPass.GUARD_SHARE) return false
     System.err.println(
-        "router: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
+        "monitor: fitness [$label] — REFUSING TO PUBLISH: $blind of $wentOut dial(s) came back with no " +
             "answer at all (${(100.0 * blind / wentOut).toInt()}%, over the ${(100 * FitnessPass.GUARD_SHARE).toInt()}% " +
-            "guard). A network does not go dark in one pass — this router could not dial. " +
+            "guard). A network does not go dark in one pass — this monitor could not dial. " +
             "${batch.earned.size} verdict(s) dropped unwritten; every url is measured again next pass.",
     )
     return true
@@ -246,7 +246,7 @@ internal fun withheldTlsDead(
     val tlsDialled = toDial.count { it.url.startsWith("wss://", ignoreCase = true) && tor?.routes(it) != true && outcomes[it]?.preProbe != true }
     if (tlsDead.size <= tlsDialled * FitnessPass.TLS_GUARD_SHARE) return emptySet()
     System.err.println(
-        "router: fitness [$label] — WITHHOLDING ${tlsDead.size} TLS `dead` verdict(s): our own direct handshake " +
+        "monitor: fitness [$label] — WITHHOLDING ${tlsDead.size} TLS `dead` verdict(s): our own direct handshake " +
             "failed too on ${tlsDead.size} of $tlsDialled wss dial(s), over the ${(100 * FitnessPass.TLS_GUARD_SHARE).toInt()}% guard. " +
             "That many certificates do not fail at once — this is more likely our truststore or clock. " +
             "They are measured again next pass.",
@@ -270,7 +270,7 @@ internal fun withheldUnspoken(
     val unspoken = toDial.filterTo(LinkedHashSet()) { url -> outcomes[url]?.let { it.tested && !it.reachedServer } == true }
     if (unspoken.isEmpty()) return emptySet()
     System.err.println(
-        "router: fitness [$label] — WITHHOLDING ${unspoken.size} `dead`/`silent` verdict(s): $provedGone of " +
+        "monitor: fitness [$label] — WITHHOLDING ${unspoken.size} `dead`/`silent` verdict(s): $provedGone of " +
             "${toDial.size} dial(s) failed the pre-probe and $reached reached a server. A network does not go dark " +
             "at once — this is more likely our resolver or egress. They are measured again next pass.",
     )

@@ -32,6 +32,8 @@ import java.util.concurrent.ConcurrentHashMap
 class RelaySockets(
     private val client: NostrClient,
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
+    private val logPrefix: String = "router",
 ) : Sockets {
     private val held = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
@@ -61,7 +63,7 @@ class RelaySockets(
             }
         }
         if (unclaimed) {
-            System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
+            System.err.println("$logPrefix: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
         }
     }
 

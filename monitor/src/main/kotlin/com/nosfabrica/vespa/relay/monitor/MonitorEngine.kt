@@ -217,7 +217,7 @@ class MonitorEngine(
             BootClock.mark("monitor: off (no sources)")
             return false
         }
-        System.err.println("router: monitor passes gated at ${gate.describe()}")
+        System.err.println("monitor: monitor passes gated at ${gate.describe()}")
         // The passes sign on what they read, so they start after the retraction.
         BootClock.mark("monitor: retiring its own stale verdicts before the passes")
         scope.launch {
@@ -252,7 +252,7 @@ class MonitorEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            System.err.println("router: could not retire $what: ${e.message}")
+            System.err.println("monitor: could not retire $what: ${e.message}")
         }
     }
 

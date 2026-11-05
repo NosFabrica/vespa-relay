@@ -156,7 +156,7 @@ internal class StreamWorld(
         val shrunk = previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE
         if (shrunk) {
             System.err.println(
-                "router: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
+                "monitor: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
                     "a drop of ${(100 - 100 * all.size / previous)}%. The relay lists in the store do not change that " +
                     "fast; suspect the read (a loading content node, a degraded search) before believing the network. " +
                     "The passes still walk ${live.size} url(s), because the corpus is our own records too.",
@@ -164,7 +164,7 @@ internal class StreamWorld(
         }
         if (read && !shrunk) lastSourced = all.size
         System.err.println(
-            "router: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
+            "monitor: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
                 "; ${all.size} named by a relay list this round" +
                 (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
                 (
@@ -214,11 +214,12 @@ internal class StreamWorld(
                         ticked++
                         onSource()
                     },
+                    logPrefix = "monitor",
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
+                System.err.println("monitor: $what could not derive the monitor's sources: ${e.message}")
                 null
             }
         repeat(discovery.sources.size - ticked) { onSource() }

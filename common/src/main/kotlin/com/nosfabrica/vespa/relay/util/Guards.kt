@@ -27,12 +27,14 @@ import kotlinx.coroutines.ensureActive
 /** One step of a shutdown: a throw is logged under [what] and swallowed, so the steps after it still run. */
 inline fun shutdownStep(
     what: String,
+    /** The owning process's log prefix. */
+    logPrefix: String = "router",
     step: () -> Unit,
 ) {
     try {
         step()
     } catch (e: Throwable) {
-        System.err.println("router: shutdown could not $what: ${e.javaClass.simpleName}: ${e.message?.take(120)}")
+        System.err.println("$logPrefix: shutdown could not $what: ${e.javaClass.simpleName}: ${e.message?.take(120)}")
     }
 }
 
@@ -43,6 +45,8 @@ inline fun shutdownStep(
 suspend fun repeatEvery(
     periodMs: Long,
     what: String,
+    /** The owning process's log prefix. */
+    logPrefix: String = "router",
     tick: suspend () -> Unit,
 ) {
     while (true) {
@@ -52,7 +56,7 @@ suspend fun repeatEvery(
         } catch (e: Exception) {
             // Shutdown rethrows here; a stray CancellationException while still active is one failed tick.
             currentCoroutineContext().ensureActive()
-            System.err.println("router: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(120)}")
+            System.err.println("$logPrefix: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(120)}")
         }
     }
 }

@@ -196,7 +196,7 @@ class AliasMonitor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            System.err.println("router: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            System.err.println("monitor: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             null
         }
 
@@ -215,7 +215,7 @@ class AliasMonitor(
         // Never behind the last sweep's read: what it saw is graded, and a read outage must not grow the window without bound.
         val fresh = src.candidatesSince(maxOf(sinceSec, src.listsReadFromSec ?: sinceSec))
         if (fresh.isEmpty()) return 0
-        System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
+        System.err.println("monitor: fast lane — ${fresh.size} url(s) named since the last look")
         return runEach(fastLanePasses, RunKind.FAST_LANE, fresh)
     }
 
@@ -240,7 +240,7 @@ class AliasMonitor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            System.err.println("router: alias source failed to derive: ${e.message}")
+            System.err.println("monitor: alias source failed to derive: ${e.message}")
             emptyList()
         } finally {
             src.progress?.finish()
