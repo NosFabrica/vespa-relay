@@ -137,7 +137,8 @@ class SweepRecordsTest {
                 ?.issued ?: 0
             val writes = 8L
             assertEquals(2 * writes, issued(plainCalls, StoreCalls.CALLER_MONITOR_PUBLISH), "each edit read its record, then wrote it")
-            assertEquals(writes, issued(sweptCalls, StoreCalls.CALLER_MONITOR_PUBLISH), "an edit inside the sweep read its record from the store")
+            // Plus one `#d` read: urls[2] has no record yet, and a url the walk did not see is read afresh.
+            assertEquals(writes + 1, issued(sweptCalls, StoreCalls.CALLER_MONITOR_PUBLISH), "an edit inside the sweep read a record the walk held from the store")
             assertEquals(1L, issued(sweptCalls, StoreCalls.CALLER_MONITOR_VERDICTS), "the sweep read its records more than once")
         }
 

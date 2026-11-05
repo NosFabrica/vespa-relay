@@ -661,11 +661,14 @@ class RelayVerdictRecord(
     /** [this] as the typed record quartz edits; a store that hands back a plain [Event] still keeps every tag. */
     private fun Event.asDiscovery(): RelayDiscoveryEvent = this as? RelayDiscoveryEvent ?: RelayDiscoveryEvent(id, pubKey, createdAt, tags, content, sig)
 
-    /** This url's current record, null when nothing holds one, and a throw when the store cannot answer. */
+    /**
+     * This url's current record, null when nothing holds one, and a throw when the store cannot answer.
+     * A url the walk did not see is read by `#d`: a record superseded between the walk's pages is in neither.
+     */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
         val own = sweepRecords()
-        if (own != null && url.url !in own.unknown) return own.byD[url.url]
+        if (own != null && url.url !in own.unknown) own.byD[url.url]?.let { return it }
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url)))
         return storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
             store.query<Event>(filter)

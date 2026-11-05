@@ -490,3 +490,15 @@ chunks, which the tests pinning a stopped batch (`PublishDeadlineTest`,
 `PendingWritesTest`, `VerdictCadenceTest`, all through `StoreWriter.insert`)
 would have to be rewritten to, and nothing measured shows the writes are what a
 sweep waits on. It waits for a measurement of the write stage.
+
+**An edit reads `#d` for a url the sweep's walk did not see.** The walk pages
+newest-first with `until` as its cursor, so a record of ours superseded between
+two pages (a cut edit's EVENT re-sent from the writer's outbox on reconnect)
+moves above the cursor while its old version, below it, is gone: the walk holds
+neither, and `currentRecord` answered "no record", so the next edit signed a
+fresh record without every tag the url carried. A miss in the walk is now read
+from the store like an unknown url. Only urls with no record pay the read, which
+is one more `monitor.publish` query per new url in `SweepRecordsTest`; a url the
+walk saw at an older version is not caught, but the only thing that can land
+over it is an edit this process reported as failed. `SweepWalkMissedRecordTest`
+lands the newer version between the walk's pages.
