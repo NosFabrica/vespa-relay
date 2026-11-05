@@ -30,8 +30,9 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
   posts yet.
 - **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
   read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
-- **The sync answers `GET /coverage/<pubkey>`** to any origin: every stream that
-  asks a relay for that author and how far each has got. It caches an author for
+- **The sync answers `GET /coverage/<pubkey>?relay=…`** to any origin: every
+  stream that reads that author on the relays named (or is bound to them
+  anywhere) and how far each has got, and the named relays nothing reads. It caches an author for
   30 s and gives at most 20 fresh answers a second; past that it answers 429.
 
 ## Store refusals and the phrase band (November 2026)

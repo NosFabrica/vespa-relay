@@ -59,6 +59,8 @@ class AuthorCoverageTest {
                 listOf(
                     PoolFixture.stream("aliceNotes", url, Filter(kinds = listOf(1), authors = listOf(alice))),
                     PoolFixture.stream("bobNotes", url, Filter(kinds = listOf(1), authors = listOf(bob))),
+                    // Bound to nobody: reads everyone's events on this relay.
+                    PoolFixture.stream("everyone", url, Filter(kinds = listOf(1))),
                 )
             val bands = SyncBands(null)
             val corpus = listOf(PoolFixture.event(1, now() - 600, pubKey = alice), PoolFixture.event(2, now() - 300, pubKey = bob))
@@ -71,7 +73,7 @@ class AuthorCoverageTest {
                         withTimeout(10_000) {
                             while (RelayStatusReport.build(bands.snapshot(), pool.primeUnits(), now())?.let { report ->
                                     report["rows"]!!.jsonArray.count { it.jsonObject["syncStatus"]!!.jsonPrimitive.content == RelayStatusReport.COMPLETE }
-                                } != 2
+                                } != 3
                             ) {
                                 delay(20)
                             }
@@ -82,16 +84,27 @@ class AuthorCoverageTest {
                 }
             val coverage = AuthorCoverage(bands, pool::primeUnitsFor)
 
-            val forAlice = coverage.answer(alice)!!
+            val forAlice = coverage.answer(alice, emptyMap())!!
             assertTrue(forAlice["followed"]!!.jsonPrimitive.boolean)
             val row = rows(forAlice).single()
-            assertEquals("aliceNotes", row["stream"]!!.jsonPrimitive.content, "only the pair that asks for this author: $forAlice")
+            assertEquals("aliceNotes", row["stream"]!!.jsonPrimitive.content, "only the pair bound to this author, with no relay of theirs named: $forAlice")
             assertEquals(url.url, row["relay"]!!.jsonPrimitive.content)
             assertEquals(RelayStatusReport.COMPLETE, row["syncStatus"]!!.jsonPrimitive.content, "a walk that drained reads complete: $row")
 
-            val forCarol = coverage.answer(carol)!!
-            assertFalse(forCarol["followed"]!!.jsonPrimitive.boolean, "no stream asks for this author")
+            val forCarol = coverage.answer(carol, emptyMap())!!
+            assertFalse(forCarol["followed"]!!.jsonPrimitive.boolean, "no stream is bound to this author, and no relay of theirs was named")
             assertTrue(rows(forCarol).isEmpty())
+
+            // Named as Carol's write relay, the stream bound to nobody reads her events there.
+            val elsewhere = "wss://unread.example/"
+            val withRelays = coverage.answer(carol, mapOf("relay" to listOf("wss://outbox.example", elsewhere, "not a relay")))!!
+            assertTrue(withRelays["followed"]!!.jsonPrimitive.boolean)
+            assertEquals(listOf("everyone"), rows(withRelays).map { it["stream"]!!.jsonPrimitive.content }, "$withRelays")
+            assertEquals(
+                listOf(elsewhere),
+                withRelays["unread"]!!.jsonArray.map { it.jsonPrimitive.content },
+                "a relay of hers nothing reads is named, and what is not a relay is dropped",
+            )
         }
 
     @Test
@@ -110,9 +123,9 @@ class AuthorCoverageTest {
                 abortSaid = "blocked: internal policy note",
                 abortAtSec = now() - 60,
             )
-        val coverage = AuthorCoverage(bands = { null }, units = { listOf(unit) })
+        val coverage = AuthorCoverage(bands = { null }, units = { _, _ -> listOf(unit) })
 
-        val row = rows(coverage.answer(alice)!!).single()
+        val row = rows(coverage.answer(alice, emptyMap())!!).single()
         assertEquals(RelayStatusReport.REFUSED, row["syncStatus"]!!.jsonPrimitive.content)
         for (member in listOf("relaySaid", "refusedFor", "refusedAgoSec", "kindCap", "unwatched", "fault", "asks")) {
             assertNull(row[member], "the public row carries $member: $row")
@@ -125,15 +138,15 @@ class AuthorCoverageTest {
         val coverage =
             AuthorCoverage(
                 bands = { null },
-                units = { emptyList() },
+                units = { _, _ -> emptyList() },
                 clock = { now },
                 gate = AuthorCoverage.RateGate(perSecond = 1, burst = 1, nowMs = { 1_000_000L }),
             )
-        assertEquals(alice, coverage.answer(alice)!!["pubkey"]!!.jsonPrimitive.content)
-        assertNull(coverage.answer(bob), "a second fresh answer in the same instant is over the rate")
-        assertEquals(alice, coverage.answer(alice)!!["pubkey"]!!.jsonPrimitive.content, "a fresh answer is served from the cache")
+        assertEquals(alice, coverage.answer(alice, emptyMap())!!["pubkey"]!!.jsonPrimitive.content)
+        assertNull(coverage.answer(bob, emptyMap()), "a second fresh answer in the same instant is over the rate")
+        assertEquals(alice, coverage.answer(alice, emptyMap())!!["pubkey"]!!.jsonPrimitive.content, "a fresh answer is served from the cache")
         now += AuthorCoverage.CACHE_SECONDS
-        assertNull(coverage.answer(alice), "an expired answer is a fresh one, and pays the rate")
+        assertNull(coverage.answer(alice, emptyMap()), "an expired answer is a fresh one, and pays the rate")
     }
 
     @Test

@@ -178,8 +178,9 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 {
   assert.equal(assess({ ...healthy(), posts: posts(["wss://relay.damus.io/", "complete"], ["wss://nos.lol/", "complete"]) }).state, "ready");
   assert.equal(assess({ ...healthy(), posts: null }).state, "ready", "no sync to ask is not a verdict");
-  const v = assess({ ...healthy(), posts: { followed: false, relays: [] } });
+  const v = assess({ ...healthy(), posts: { followed: false, relays: [], unread: ["wss://nos.lol/"] } });
   assert.equal(v.state, "posts-not-followed");
+  assert.deepEqual(v.unread, ["wss://nos.lol/"], "the relays nothing here reads ride with the verdict, for the words");
   assert.equal(v.tone, "working");
   assert.equal(statusOf(v, "posts"), "aside");
   ok("every relay finished is ready; a reader nobody follows is said, not counted");
@@ -193,8 +194,8 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   assert.ok(!src.includes("postCounts"), "the page counts posts on two relays again");
   assert.ok(!src.includes("mirrors.js"), "the page reads the relay's mirror scope again");
   const run = src.slice(src.indexOf("async function run("), src.indexOf("// ---- the asks"));
-  assert.match(run, /const coverage = await readCoverage\(me\);/);
-  const after = run.slice(run.indexOf("const coverage = await readCoverage(me);"));
+  assert.match(run, /const coverage = await readCoverage\(me, \{ relays: facts\.relayList\.writeRelays \}\);/);
+  const after = run.slice(run.indexOf("const coverage = await readCoverage("));
   assert.match(
     after.slice(0, after.indexOf("facts.posts = coverage")),
     /if \(gen !== generation\) return;/,

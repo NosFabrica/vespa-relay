@@ -797,8 +797,9 @@ relay/src/main/resources/
                         than only to this page.
                         Its quietest line is about your own posts, and the sync
                         answers it: shared/coverage.js asks the sync process at
-                        <meta name="sync-url">/coverage/<pubkey> (the relay
-                        writes the meta from SYNC_PUBLIC_URL) and the line says
+                        <meta name="sync-url">/coverage/<pubkey>, naming your
+                        write relays (the relay writes the meta from
+                        SYNC_PUBLIC_URL), and the line says
                         how many of the relays the mirror follows you on it has
                         read to the start. It used to count your posts here
                         against your write relay's NIP-45 COUNT, scoped to the

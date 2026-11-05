@@ -79,7 +79,7 @@ async function run(me, gen) {
   if (assess(facts).state !== "ready") return;
   // The sync answers for its own walk; a relay that names no sync, or one that does not answer,
   // means no posts stage at all.
-  const coverage = await readCoverage(me);
+  const coverage = await readCoverage(me, { relays: facts.relayList.writeRelays });
   // Sign-out across the await above must stop the paint.
   if (gen !== generation) return;
   if (coverage) facts.posts = coverage;
@@ -339,10 +339,11 @@ function words(v) {
         body:
           "This doesn’t change how results are ranked — it only means searching for something you " +
           "wrote may not find it yet.",
-        hint: pending.length
-          ? `Still going: ${pending.slice(0, 3).map((r) => `${esc(relayAddress(r.relay))} (${esc(STATUS_WORDS[r.status] || r.status)})`).join(", ")}` +
-            (pending.length > 3 ? ` and ${many(pending.length - 3, "more")}` : "") + "."
-          : "",
+        hint:
+          (pending.length
+            ? `Still going: ${pending.slice(0, 3).map((r) => `${esc(relayAddress(r.relay))} (${esc(STATUS_WORDS[r.status] || r.status)})`).join(", ")}` +
+              (pending.length > 3 ? ` and ${many(pending.length - 3, "more")}` : "") + ". "
+            : "") + unreadNote(v.unread),
       };
     }
 
@@ -354,6 +355,7 @@ function words(v) {
           "It copies posts from the write relays in your relay list once its monitor has checked them " +
           "and found them working. None of yours is on that list yet, so searching for something you " +
           "wrote may not find it.",
+        hint: unreadNote(v.unread),
       };
 
     default:
@@ -362,6 +364,13 @@ function words(v) {
 }
 
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
+
+/** The reader's relays nothing here reads, named; empty when there are none. */
+const unreadNote = (unread) =>
+  unread && unread.length
+    ? `Not read here: ${unread.slice(0, 3).map((u) => esc(relayAddress(u))).join(", ")}` +
+      (unread.length > 3 ? ` and ${many(unread.length - 3, "more")}` : "") + "."
+    : "";
 
 /** The sync's word for a relay it has not finished, as a reader would say it. */
 const STATUS_WORDS = {

@@ -25,15 +25,17 @@ function row(r) {
 }
 
 /**
- * The sync's `/coverage/<pubkey>` document as the verdict reads it: `{followed, relays}`, or null
- * for anything that is not one, which skips the stage like no answer at all.
+ * The sync's `/coverage/<pubkey>` document as the verdict reads it: `{followed, relays, unread}`, or
+ * null for anything that is not one, which skips the stage like no answer at all. `unread` is the
+ * reader's own relays that nothing here reads.
  */
 export function coverageOf(doc) {
   if (!doc || typeof doc !== "object" || typeof doc.followed !== "boolean" || !Array.isArray(doc.relays)) return null;
   const relays = doc.relays.map(row).filter(Boolean);
   // `followed` with no readable row is a document this page cannot read, not a reader nobody follows.
   if (doc.followed && !relays.length) return null;
-  return { followed: doc.followed, relays };
+  const unread = Array.isArray(doc.unread) ? doc.unread.filter((u) => typeof u === "string" && u) : [];
+  return { followed: doc.followed, relays, unread };
 }
 
 /**
@@ -62,11 +64,19 @@ const rank = (status) => {
   return at < 0 ? 0 : at;
 };
 
-/** The coverage for [pubkey] off the sync, null for every way the read can fail. [fetcher] is injectable for tests. */
-export async function readCoverage(pubkey, { base = syncUrl(), fetcher = (url, init) => globalThis.fetch(url, init) } = {}) {
+/** How many of the reader's relays are named; the sync reads no more than this many. */
+const MAX_RELAYS = 20;
+
+/**
+ * The coverage for [pubkey] off the sync, null for every way the read can fail. [relays] are the
+ * reader's write relays: a stream that reads everyone on a relay reads them there, and only the
+ * reader's own list says where. [fetcher] is injectable for tests.
+ */
+export async function readCoverage(pubkey, { relays = [], base = syncUrl(), fetcher = (url, init) => globalThis.fetch(url, init) } = {}) {
   if (!base || !/^[0-9a-f]{64}$/.test(pubkey || "")) return null;
+  const query = relays.slice(0, MAX_RELAYS).map((r) => `relay=${encodeURIComponent(r)}`).join("&");
   try {
-    const res = await fetcher(`${base}/coverage/${pubkey}`, { headers: { accept: "application/json" } });
+    const res = await fetcher(`${base}/coverage/${pubkey}${query ? `?${query}` : ""}`, { headers: { accept: "application/json" } });
     if (!res || !res.ok) return null;
     return coverageOf(await res.json());
   } catch (e) {

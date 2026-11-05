@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.web
 
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -43,30 +44,39 @@ class PubkeyDocumentTest {
     fun `any origin may read it, a non-key is refused, and a starting service says so`() =
         testApplication {
             var source: PubkeyDocuments? = null
-            application { routing { pubkeyDocument("/coverage/{pubkey}", 30, { source }) } }
+            // Mounted as a status site mounts it: its defaults are where cross-origin reads are allowed.
+            application {
+                installPageDefaults()
+                routing { pubkeyDocument("/coverage/{pubkey}", 30, { source }) }
+            }
 
             assertEquals(HttpStatusCode.BadRequest, client.get("/coverage/not-a-key").status)
             assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/coverage/$key").status, "nothing to answer with yet")
 
-            source = PubkeyDocuments { pubkey -> buildJsonObject { put("pubkey", pubkey) } }
-            val res = client.get("/coverage/${key.uppercase()}")
+            source =
+                PubkeyDocuments { pubkey, query ->
+                    buildJsonObject {
+                        put("pubkey", pubkey)
+                        put("relays", query["relay"].orEmpty().joinToString(" "))
+                    }
+                }
+            val res =
+                client.get("/coverage/${key.uppercase()}?relay=wss%3A%2F%2Fa.example&relay=wss%3A%2F%2Fb.example") {
+                    header(HttpHeaders.Origin, "https://relay.example")
+                }
             assertEquals(HttpStatusCode.OK, res.status)
-            assertEquals("*", res.headers[HttpHeaders.AccessControlAllowOrigin], "the asking page is another service's")
+            // Exactly one: a browser refuses `*, *`, which a client without an Origin never sees.
+            assertEquals(listOf("*"), res.headers.getAll(HttpHeaders.AccessControlAllowOrigin), "the asking page is another service's")
             assertEquals("public, max-age=30", res.headers[HttpHeaders.CacheControl])
-            assertEquals(
-                key,
-                Json
-                    .parseToJsonElement(res.bodyAsText())
-                    .jsonObject["pubkey"]!!
-                    .jsonPrimitive.content,
-                "taken in either case, asked lowercase",
-            )
+            val body = Json.parseToJsonElement(res.bodyAsText()).jsonObject
+            assertEquals(key, body["pubkey"]!!.jsonPrimitive.content, "taken in either case, asked lowercase")
+            assertEquals("wss://a.example wss://b.example", body["relays"]!!.jsonPrimitive.content, "the query reaches the source, every value in order")
         }
 
     @Test
     fun `a source over its rate is a 429 that says when to come back`() =
         testApplication {
-            application { routing { pubkeyDocument("/coverage/{pubkey}", 30, { PubkeyDocuments { null } }) } }
+            application { routing { pubkeyDocument("/coverage/{pubkey}", 30, { PubkeyDocuments { _, _ -> null } }) } }
 
             val res = client.get("/coverage/$key")
             assertEquals(HttpStatusCode.TooManyRequests, res.status)

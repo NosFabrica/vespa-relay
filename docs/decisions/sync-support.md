@@ -340,6 +340,11 @@ NIP-45 `COUNT` as the denominator, and nothing at all from a relay that caps or
 refuses it. The sync already holds the answer per (relay, stream) pair, the
 relay table's `complete` / `paging` / `notStarted` / `refused`, and
 `UnitAsks.byAuthor` narrows it to one author's asks with a map lookup per unit.
+An ask bound to nobody reads everyone on its relay, which in the shipped config
+is how `contentViaOutbox` reads every author, so the asker also names the
+author's write relays (`?relay=`, from their kind 10002, which the page already
+read) and those relays' author-free asks count too; without them a first run
+answered "not followed" for every one of 105 recent authors.
 So it serves `GET /coverage/<pubkey>` (`AuthorCoverage`), the page asks it from
 the reader's browser at the address the relay writes into it
 (`SYNC_PUBLIC_URL` → `<meta name="sync-url">`), and the manifest, `MirrorReport`,

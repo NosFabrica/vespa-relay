@@ -996,8 +996,13 @@ missing nothing, the whole gap being kinds no stream asks for), and a relay that
 caps or refuses `COUNT` answers nothing at all.
 
 The router knows the answer outright, so it serves it: `GET /coverage/<pubkey>`
-on its status port lists every stream that asks a relay for that author's events
-and how far each such pair has got, in the relay table's words:
+on its status port lists every (relay, stream) pair that reads that author's
+events and how far it has got, in the relay table's words. A pair reads them
+when its ask is bound to that author, or when it is bound to nobody and the
+relay is one the author writes to. The second case is the common one
+(`contentViaOutbox` asks every `prime` relay for every author), and only the
+author's relay list says where they write, so the asker names those relays,
+`?relay=wss://…&relay=…` (at most 20):
 
 ```json
 {
@@ -1009,12 +1014,14 @@ and how far each such pair has got, in the relay table's words:
      "behind": "today", "coveredFrom": 1690000000, "coveredTo": 1769990000, "verifiedAgoSec": 5400},
     {"relay": "wss://nos.lol/", "stream": "contentViaOutbox", "syncStatus": "paging",
      "behind": "thisWeek", "coveredFrom": 1760000000, "coveredTo": 1769500000}
-  ]
+  ],
+  "unread": ["wss://relay.example/"]
 }
 ```
 
-`followed: false` means no stream asks any relay for this author: their relay
-list names no relay the monitor rates as working, or none at all. The relay's
+`unread` is the named relays nothing here reads: not rated working by the
+monitor, or a stream's `exclude`. `followed: false` means nothing here reads
+this author's events at all. The relay's
 search page asks this from the reader's browser and says under the search box
 whether the mirror has their posts yet, so the path is public: it answers any
 origin, carries none of the operator's detail (why a relay refused us, kind

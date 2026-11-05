@@ -24,8 +24,13 @@ const doc = (relays, followed = relays.length > 0) => ({ pubkey: me, generatedAt
   assert.deepEqual(c, {
     followed: true,
     relays: [{ relay: "wss://a.example/", stream: "content", syncStatus: "complete", coveredTo: 1754899000, verifiedAgoSec: null, tailed: true }],
+    unread: [],
   });
-  assert.deepEqual(coverageOf(doc([], false)), { followed: false, relays: [] }, "nobody reads this reader's relays");
+  assert.deepEqual(
+    coverageOf({ ...doc([], false), unread: ["wss://b.example/", 7, ""] }),
+    { followed: false, relays: [], unread: ["wss://b.example/"] },
+    "nobody reads this reader's relays, and the sync names the ones it does not read",
+  );
   assert.equal(coverageOf({ error: "too many coverage requests" }), null);
   assert.equal(coverageOf(doc([{ stream: "content" }], true)), null, "followed with no readable row is a document we cannot read");
   assert.equal(coverageOf(null), null);
@@ -62,6 +67,15 @@ const doc = (relays, followed = relays.length > 0) => ({ pubkey: me, generatedAt
   const c = await readCoverage(me, { base: "https://sync.example.com", fetcher });
   assert.equal(c.followed, true);
   assert.deepEqual(asked, [`https://sync.example.com/coverage/${me}`]);
+  await readCoverage(me, { base: "https://sync.example.com", fetcher, relays: ["wss://a.example/", "wss://b.example/x?y"] });
+  assert.equal(
+    asked.pop(),
+    `https://sync.example.com/coverage/${me}?relay=wss%3A%2F%2Fa.example%2F&relay=wss%3A%2F%2Fb.example%2Fx%3Fy`,
+    "the reader's write relays ride along, each escaped",
+  );
+  const many = Array.from({ length: 30 }, (_, i) => `wss://r${i}.example/`);
+  await readCoverage(me, { base: "https://s", fetcher, relays: many });
+  assert.equal((asked.pop().match(/relay=/g) || []).length, 20, "no more relays than the sync reads");
 
   assert.equal(await readCoverage(me, { base: null, fetcher }), null, "no sync named, nothing asked");
   assert.equal(await readCoverage("not-hex", { base: "https://sync.example.com", fetcher }), null);

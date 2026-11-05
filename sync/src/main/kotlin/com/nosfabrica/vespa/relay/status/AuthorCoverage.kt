@@ -22,8 +22,12 @@ package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.web.PubkeyDocuments
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -40,14 +44,15 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class AuthorCoverage internal constructor(
     private val bands: () -> JsonObject?,
-    private val units: (String) -> List<RelayStatusReport.PrimeUnit>,
+    /** The units reading an author's events: bound to them, or bound to nobody on the given relays. */
+    private val units: (String, Set<NormalizedRelayUrl>) -> List<RelayStatusReport.PrimeUnit>,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val cacheSeconds: Long = CACHE_SECONDS,
     private val gate: RateGate = RateGate(PER_SECOND, BURST),
 ) : PubkeyDocuments {
     internal constructor(
         bands: SyncBands,
-        units: (String) -> List<RelayStatusReport.PrimeUnit>,
+        units: (String, Set<NormalizedRelayUrl>) -> List<RelayStatusReport.PrimeUnit>,
     ) : this({ bands.snapshot() }, units)
 
     private class Cached(
@@ -57,32 +62,55 @@ class AuthorCoverage internal constructor(
 
     private val cache = ConcurrentHashMap<String, Cached>()
 
-    /** [pubkey]'s document, or null when the route is over its rate and nothing fresh is cached. */
-    override fun answer(pubkey: String): JsonObject? {
+    /**
+     * [pubkey]'s document, or null when over the rate with nothing fresh cached. `relay` in [query] names
+     * the author's own write relays, at most [MAX_RELAYS]: a stream bound to nobody reads everyone's events
+     * on a relay, so it reads theirs wherever they write, and only they can say where that is.
+     */
+    override fun answer(
+        pubkey: String,
+        query: Map<String, List<String>>,
+    ): JsonObject? {
+        val relays =
+            query["relay"]
+                .orEmpty()
+                .asSequence()
+                .mapNotNull { RelayUrlNormalizer.normalizeOrNull(it.trim()) }
+                .distinct()
+                .take(MAX_RELAYS)
+                .sortedBy { it.url }
+                .toList()
+        val key = pubkey + relays.joinToString("") { " " + it.url }
         val now = clock()
-        cache[pubkey]?.takeIf { now - it.atSec < cacheSeconds }?.let { return it.doc }
+        cache[key]?.takeIf { now - it.atSec < cacheSeconds }?.let { return it.doc }
         if (!gate.take()) return null
-        val doc = document(pubkey, now)
+        val doc = document(pubkey, relays, now)
         // Bounded by dropping the lot: the entries are seconds old, so a refill costs little.
         if (cache.size >= MAX_CACHED) cache.clear()
-        cache[pubkey] = Cached(now, doc)
+        cache[key] = Cached(now, doc)
         return doc
     }
 
     private fun document(
         pubkey: String,
+        relays: List<NormalizedRelayUrl>,
         now: Long,
     ): JsonObject {
-        val units = units(pubkey)
+        val units = units(pubkey, relays.toSet())
         val report = if (units.isEmpty()) null else RelayStatusReport.build(bands(), units, now)
-        val rows = (report?.get("rows") as? JsonArray).orEmpty()
+        val rows = (report?.get("rows") as? JsonArray).orEmpty().map { it.jsonObject }
+        val read = rows.mapTo(HashSet()) { (it["relay"] as? JsonPrimitive)?.content }
         return buildJsonObject {
             put("pubkey", pubkey)
             put("generatedAt", now)
-            // False is "no stream asks any relay for this author", not "nothing found".
+            // False is "nothing here reads this author's events", not "nothing found".
             put("followed", rows.isNotEmpty())
             putJsonArray("relays") {
-                for (row in rows) add(publicRow(row.jsonObject))
+                for (row in rows) add(publicRow(row))
+            }
+            // The author's own relays no stream reads: not rated working, or not asked for these kinds.
+            putJsonArray("unread") {
+                for (url in relays) if (url.url !in read) add(url.url)
             }
         }
     }
@@ -121,6 +149,9 @@ class AuthorCoverage internal constructor(
         const val BURST = 40
 
         const val MAX_CACHED = 4_096
+
+        /** Relays one request may name; a relay list longer than this is not one a person writes to. */
+        const val MAX_RELAYS = 20
 
         /** The row members a reader may see: the walk and the reconcile, never why a relay refused us. */
         private val PUBLIC_MEMBERS =

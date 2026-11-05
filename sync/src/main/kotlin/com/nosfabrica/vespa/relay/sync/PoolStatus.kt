@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.status.StreamPhases
 import com.nosfabrica.vespa.relay.sync.VisitPool.VisitKey
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.atomic.AtomicLong
 
 /** What a row is doing: the pool word the page groups by, and the sentence it prints. */
@@ -130,12 +131,19 @@ internal class PoolStatus(
     fun primeUnits(): List<RelayStatusReport.PrimeUnit> = units(author = null)
 
     /**
-     * The units with an ask bound to [author], each owing only that author's asks: the rows that say how
-     * far this mirror has got with one person's events. Empty when no stream asks any relay for them.
+     * The rows that say how far this mirror has got with one person's events: each unit owes the asks
+     * bound to [author], and on [relays] (the author's own write relays) also the asks bound to nobody,
+     * which read everyone's events there, the author's included. Empty when nothing reads them.
      */
-    fun primeUnitsFor(author: String): List<RelayStatusReport.PrimeUnit> = units(author)
+    fun primeUnitsFor(
+        author: String,
+        relays: Set<NormalizedRelayUrl> = emptySet(),
+    ): List<RelayStatusReport.PrimeUnit> = units(author, relays)
 
-    private fun units(author: String?): List<RelayStatusReport.PrimeUnit> {
+    private fun units(
+        author: String?,
+        relays: Set<NormalizedRelayUrl> = emptySet(),
+    ): List<RelayStatusReport.PrimeUnit> {
         val snapshot = roster()
         // One pass for the whole table; asked per row, it would scan the map once per row.
         val cannotReconcile = bands.cannotReconcileByUnit()
@@ -151,7 +159,10 @@ internal class PoolStatus(
                     if (author == null) {
                         unit.identity
                     } else {
-                        unit.byAuthor[author]?.mapTo(HashSet()) { it.filter.toJson() } ?: continue
+                        val bound = unit.byAuthor[author].orEmpty()
+                        val everyone = if (url in relays) unit.asks.filter { it.filter.authors.isNullOrEmpty() } else emptyList()
+                        if (bound.isEmpty() && everyone.isEmpty()) continue
+                        (bound + everyone).mapTo(HashSet()) { it.filter.toJson() }
                     }
                 val key = VisitKey(url, stream)
                 val abort = aborts.last(stream, url)

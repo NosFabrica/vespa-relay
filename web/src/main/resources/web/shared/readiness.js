@@ -101,13 +101,13 @@ export function assess(facts) {
   if (!posts.followed) {
     // Nothing reads this reader's relays, so nothing of theirs is arriving: worth saying, not a break.
     chain.push({ key: "posts", status: "aside", detail: { followed: false } });
-    return { state: "posts-not-followed", tone: "working", percent: null, chain };
+    return { state: "posts-not-followed", tone: "working", percent: null, chain, unread: posts.unread || [] };
   }
   const progress = progressOf(posts);
   const postPct = progress.total ? progress.done / progress.total : null;
   chain.push({ key: "posts", status: "aside", detail: { ...progress, percent: postPct } });
   if (progress.done < progress.total) {
-    return { state: "posts-behind", tone: "working", percent: postPct, chain, progress };
+    return { state: "posts-behind", tone: "working", percent: postPct, chain, progress, unread: posts.unread || [] };
   }
   return { state: "ready", tone: "ok", percent: null, chain };
 }
