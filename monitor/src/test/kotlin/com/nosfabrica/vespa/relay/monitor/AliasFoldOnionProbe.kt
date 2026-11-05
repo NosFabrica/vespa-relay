@@ -128,7 +128,7 @@ class AliasFoldOnionProbe {
         val prints = LinkedHashMap<NormalizedRelayUrl, Set<String>>()
 
         val leadAt = System.currentTimeMillis()
-        val lead = runBlocking { probe.leaderPrint(leader, anchor) {} }.leader
+        val lead = runBlocking { probe.leaderPrint(leader, anchor) }.leader
         val leadMs = System.currentTimeMillis() - leadAt
         val asked = lead?.kinds?.let { "kinds=$it" } ?: "bare filter"
         if (lead == null) {
@@ -145,7 +145,7 @@ class AliasFoldOnionProbe {
 
         for (url in group.filter { it != leader }) {
             val at = System.currentTimeMillis()
-            val print = runBlocking { probe.fingerprint(url, anchor, lead.kinds) {} }
+            val print = runBlocking { probe.fingerprint(url, anchor, lead.kinds) }
             val ms = System.currentTimeMillis() - at
             if (print == null || print.isEmpty()) {
                 println("    ${short(url)}: NOTHING in ${ms}ms — no verdict, stays in the fan-out")

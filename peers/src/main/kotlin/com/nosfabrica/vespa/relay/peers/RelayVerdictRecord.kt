@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.peers
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.progress.storeCall
+import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -32,8 +33,27 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * The monitor's verdicts, written to kind 30166 records whose `d` tag is the relay url. Each
@@ -48,7 +68,16 @@ class RelayVerdictRecord(
     private val writer: StoreWriter = StoreWriter.local(store),
     /** Whose records [load] and [loadAll] read; an edit only ever reads [signer]'s own. */
     private val readFrom: List<String> = listOfNotNull(signer?.pubKey),
+    /** The wall clock on each store query [load] and [loadAll] make; past it the read throws [ReadTimeout]. */
+    private val readDeadlineMs: Long = READ_DEADLINE_MS,
+    /** The wall clock on one whole [edit]. */
+    private val editDeadlineMs: Long = EDIT_DEADLINE_MS,
 ) {
+    /** A verdict read the store did not answer within [deadlineMs]; an ordinary failure, so a caller skips as on any other. */
+    class ReadTimeout(
+        val deadlineMs: Long,
+    ) : Exception("the read outlived its ${fmtDuration(deadlineMs)} deadline")
+
     /** What this monitor has decided and still stands behind. */
     data class Verdicts(
         /** Folded url -> the url that stands in for it. */
@@ -68,7 +97,7 @@ class RelayVerdictRecord(
          */
         val measured: Set<NormalizedRelayUrl> = emptySet(),
         /**
-         * Urls a record of ours exists for AT ALL, whatever its tags now say. The corpus this
+         * Urls a record of ours exists for at all, whatever its tags now say. The corpus this
          * monitor covers, which is a question about the config; [measured] is a question about
          * freshness, and an epoch bump or a lapsed TTL empties that without narrowing this.
          */
@@ -79,11 +108,13 @@ class RelayVerdictRecord(
         val staleFolds: Set<NormalizedRelayUrl> = emptySet(),
     )
 
-    /** One chunked record read, booked as the monitor's. */
+    /** One chunked record read, booked as the monitor's and bounded by [readDeadlineMs]. */
     private suspend fun readRecords(filter: Filter): List<Event> =
-        storeCall(StoreCalls.CALLER_MONITOR_VERDICTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
-            store.query<Event>(filter)
-        }
+        withTimeoutOrNull(readDeadlineMs) {
+            storeCall(StoreCalls.CALLER_MONITOR_VERDICTS, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+                store.query<Event>(filter)
+            }
+        } ?: throw ReadTimeout(readDeadlineMs)
 
     /**
      * Read back every verdict covering [candidates]. Throws when the store cannot answer, and
@@ -93,21 +124,102 @@ class RelayVerdictRecord(
         if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
-        for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
-            held.take(
-                newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk)))),
-                floor,
-            )
+        val own = ownSweep()
+        if (own != null) {
+            val (asked, kept) = own.split(candidates.mapTo(LinkedHashSet()) { it.url })
+            held.take(kept, floor)
+            val pages = readByD(asked)
+            for (page in pages) held.take(page, floor)
+            learn(own, asked, pages)
+            return held.verdicts()
         }
+        return loadFromStore(candidates)
+    }
+
+    /** [load] by `#d` straight from the store, never off a sweep's walk: the narrow read to fall back on when that walk failed. */
+    suspend fun loadFromStore(candidates: Collection<NormalizedRelayUrl>): Verdicts {
+        if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
+        val floor = nowSeconds() - ttlSeconds
+        val held = Building()
+        for (page in readByD(candidates.map { it.url })) held.take(page, floor)
         return held.verdicts()
     }
+
+    /** The records of these `d` values, chunked, each chunk's newest per url, in chunk order once all have answered. */
+    private suspend fun readByD(subjects: Collection<String>): List<Collection<Event>> {
+        if (subjects.isEmpty()) return emptyList()
+        val permits = Semaphore(LOAD_CONCURRENCY)
+        return coroutineScope {
+            subjects
+                .chunked(QUERY_CHUNK)
+                .map { chunk ->
+                    async {
+                        permits.withPermit {
+                            newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk))))
+                        }
+                    }
+                }.awaitAll()
+        }
+    }
+
+    /**
+     * [load] over one short job, each url's records read from the store once and held, so a later
+     * load over urls already read is built from what was held, as a store read of them would be.
+     * For one coroutine at a time.
+     */
+    inner class Held internal constructor() {
+        /** Subject -> the records a `#d` read of it returned, empty for none. */
+        private val bySubject = HashMap<String, List<Event>>()
+
+        /** The first read that failed: the job's later reads fail with it at once rather than each waiting out a deadline. */
+        private var failed: Exception? = null
+
+        /** [load]'s answer over [candidates], reading only the urls not read before. Throws like [load]. */
+        suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
+            if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
+            val subjects = candidates.mapTo(LinkedHashSet()) { it.url }
+            val missing = subjects.filter { it !in bySubject }
+            if (missing.isNotEmpty()) {
+                failed?.let { throw StoreUnread(it) }
+                val pages =
+                    try {
+                        readByD(missing)
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        failed = e
+                        throw e
+                    }
+                val found = HashMap<String, MutableList<Event>>()
+                val wanted = missing.toHashSet()
+                for (page in pages) {
+                    for (event in page) {
+                        // Under every subject it answers for, as the `#d` filter matched it.
+                        for (tag in event.tags) if (tag.size > 1 && tag[0] == "d" && tag[1] in wanted) found.getOrPut(tag[1]) { ArrayList() } += event
+                    }
+                }
+                for (subject in missing) bySubject[subject] = found[subject].orEmpty()
+            }
+            val floor = nowSeconds() - ttlSeconds
+            val held = Building()
+            for (subject in subjects) bySubject[subject]?.let { held.take(it, floor) }
+            return held.verdicts()
+        }
+    }
+
+    /** A [Held] read refused because an earlier one of the same job failed, carrying that failure. */
+    class StoreUnread(
+        cause: Exception,
+    ) : Exception("an earlier read of this job failed: ${cause.message}", cause)
+
+    /** A fresh [Held], for one job's reads. */
+    fun held(): Held = Held()
 
     /** One record per url: with several signers the newest speaks for it, so no url mixes two monitors' tags. */
     private fun newestPerUrl(records: List<Event>): Collection<Event> {
         if (readFrom.size < 2) return records
         val newest = HashMap<String, Event>(records.size)
         for (event in records) {
-            val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
+            val subject = subjectOf(event) ?: continue
             if (event.createdAt > (newest[subject]?.createdAt ?: Long.MIN_VALUE)) newest[subject] = event
         }
         return newest.values
@@ -133,6 +245,11 @@ class RelayVerdictRecord(
         if (readFrom.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
+        val own = ownSweep()
+        if (own != null) {
+            held.take(ownSince(own, floor), floor)
+            return held.verdicts()
+        }
         // Buffered only when several signers can name one url; one signer's records stream through.
         val several = if (readFrom.size > 1) ArrayList<Event>() else null
         RelayDiscovery.scan(
@@ -140,9 +257,233 @@ class RelayVerdictRecord(
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, since = floor),
             RECORD_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            pageDeadlineMs = readDeadlineMs,
+            logPrefix = MONITOR_LOG,
         ) { event -> if (several != null) several += event else held.take(event, floor) }
         several?.let { held.take(newestPerUrl(it), floor) }
         return held.verdicts()
+    }
+
+    /**
+     * Every record of ours stamped at or after [since]: off the sweep's walk while one is under way,
+     * else one paged walk of the store. Throws when the store cannot answer.
+     */
+    suspend fun ownRecordsSince(since: Long): List<Event> {
+        val self = signer?.pubKey ?: return emptyList()
+        sweepRecords()?.let { return ownSince(it, since) }
+        return ownRecordsIn(store, self, since)
+    }
+
+    /** [own]'s records stamped at or after [since], those of urls an edit failed on read afresh. */
+    private suspend fun ownSince(
+        own: OwnRecords,
+        since: Long,
+    ): List<Event> {
+        val (asked, kept) = own.split(null)
+        return (kept + readByD(asked).flatten()).filter { it.createdAt >= since }
+    }
+
+    /**
+     * Our own records as one paged walk read them, with every edit since folded in: what a sweep reads
+     * in place of the store. A url whose edit failed is [unknown], since the store may or may not hold it.
+     */
+    private class OwnRecords(
+        /** Raw `d` value -> our newest record for it. */
+        val byD: ConcurrentHashMap<String, Event>,
+    ) {
+        val unknown: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Urls a `#d` read since the walk found no record of ours for: absent from the walk, and from the store too. */
+        val absent: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /**
+         * Of [subjects] (null for all), the ones to read afresh, and the records held for the rest. A subject the
+         * walk did not see is read afresh too: a record superseded between the walk's pages is in neither.
+         */
+        fun split(subjects: Collection<String>?): Pair<List<String>, List<Event>> {
+            val asked = ArrayList<String>()
+            val held = ArrayList<Event>()
+            if (subjects == null) {
+                asked += unknown
+                for ((d, event) in byD) if (d !in unknown) held += event
+            } else {
+                for (d in subjects) {
+                    if (d in unknown) {
+                        asked += d
+                    } else {
+                        val event = byD[d]
+                        if (event != null) {
+                            held += event
+                        } else if (d !in absent) {
+                            asked += d
+                        }
+                    }
+                }
+            }
+            return asked to held
+        }
+    }
+
+    /**
+     * Folds a `#d` read of [asked] into [own], so the sweep's later reads of them are served from it. A url an
+     * edit failed on stays unknown; one an edit landed on keeps the newer record, ours being stamped strictly newer.
+     */
+    private fun learn(
+        own: OwnRecords,
+        asked: List<String>,
+        pages: List<Collection<Event>>,
+    ) {
+        val found = HashSet<String>()
+        for (page in pages) {
+            for (event in page) {
+                val d = subjectOf(event) ?: continue
+                found += d
+                own.byD.takeNewest(event)
+            }
+        }
+        for (d in asked) if (d !in found) own.absent += d
+    }
+
+    /** One sweep's [OwnRecords], walked on first use. */
+    private class Sweep {
+        /** Where the walk runs, so no reader's cancellation or deadline is the walk's; cancelled at [endSweep]. */
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /** The one walk under way or done, installed by the first reader; cleared again if it fails. */
+        val walk = AtomicReference<Deferred<OwnRecords>?>(null)
+
+        /** The walk's records once it has answered. */
+        @Volatile
+        var records: OwnRecords? = null
+
+        /** Walks that failed; at [SWEEP_WALKS] the sweep stops walking and its reads go to the store. */
+        val failed = AtomicInteger()
+
+        /** Urls an edit settled before [records] was set: a walk under way may have read them before the edit landed. */
+        val settledEarly: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    }
+
+    @Volatile
+    private var sweep: Sweep? = null
+
+    /**
+     * Serve the reads of our own records from one paged walk, taken on the first read, until [endSweep].
+     * Called around one sweep, or the boot retirement before any sweep, so nothing else writes our records meanwhile.
+     */
+    fun beginSweep() {
+        if (signer != null) replaceSweep(Sweep())
+    }
+
+    /**
+     * [beginSweep] over a walk of our records the caller already took, so the sweep takes none of its own.
+     * A url [walked] lacks costs its edit one `#d` read, never its other tags.
+     */
+    fun beginSweep(walked: Collection<Event>) {
+        val self = signer?.pubKey ?: return
+        val byD = ConcurrentHashMap<String, Event>()
+        for (event in walked) if (event.pubKey == self) byD.takeNewest(event)
+        val own = OwnRecords(byD)
+        replaceSweep(
+            Sweep().also {
+                it.records = own
+                it.walk.set(CompletableDeferred(own))
+            },
+        )
+    }
+
+    fun endSweep() {
+        replaceSweep(null)
+    }
+
+    private fun replaceSweep(next: Sweep?) {
+        val ended = sweep
+        sweep = next
+        ended?.scope?.cancel()
+    }
+
+    /**
+     * The sweep's records, walked now if this is the first read; null outside a sweep, or once its walks
+     * have failed [SWEEP_WALKS] times. Every reader awaits the one walk under its own deadline; a failed
+     * walk fails its waiters, and the next read walks again.
+     */
+    private suspend fun sweepRecords(): OwnRecords? {
+        val s = sweep ?: return null
+        s.records?.let { return it }
+        if (s.failed.get() >= SWEEP_WALKS) return null
+        val walk = s.walk.get() ?: startWalk(s)
+        try {
+            return walk.await()
+        } catch (e: Exception) {
+            // Our own cancellation ends the read and leaves the walk running; the walk's failure is not kept.
+            currentCoroutineContext().ensureActive()
+            if (s.walk.compareAndSet(walk, null)) s.failed.incrementAndGet()
+            if (e is CancellationException) throw IllegalStateException("the sweep's walk was cancelled", e)
+            throw e
+        }
+    }
+
+    /** Installs a walk in [s]'s own scope, or returns the one another reader installed first. */
+    private suspend fun startWalk(s: Sweep): Deferred<OwnRecords> {
+        // The reader's store-call book, so the walk's pages are booked where a reader's own read would be.
+        val calls = currentCoroutineContext()[StoreCalls] ?: EmptyCoroutineContext
+        while (true) {
+            s.walk.get()?.let { return it }
+            val mine = s.scope.async(calls, start = CoroutineStart.LAZY) { walkOwn().also { install(s, it) } }
+            if (s.walk.compareAndSet(null, mine)) return mine.also { it.start() }
+            mine.cancel()
+        }
+    }
+
+    /** [sweepRecords], for a reader whose signers are exactly our own. */
+    private suspend fun ownSweep(): OwnRecords? = if (readFrom == listOfNotNull(signer?.pubKey)) sweepRecords() else null
+
+    private suspend fun walkOwn(): OwnRecords {
+        val self = checkNotNull(signer).pubKey
+        val byD = ConcurrentHashMap<String, Event>()
+        RelayDiscovery.scan(
+            store,
+            Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self)),
+            RECORD_PAGE,
+            caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            pageDeadlineMs = readDeadlineMs,
+            logPrefix = MONITOR_LOG,
+        ) { event -> byD.takeNewest(event) }
+        return OwnRecords(byD)
+    }
+
+    /** Holds [event] under its `d` if it is the newest seen there, as a `#d` read of one url takes it. */
+    private fun ConcurrentHashMap<String, Event>.takeNewest(event: Event) {
+        val d = subjectOf(event) ?: return
+        merge(d, event) { held, next -> if (next.createdAt > held.createdAt) next else held }
+    }
+
+    /**
+     * Makes [own] the sweep's records, every url settled while it was walked read afresh. Set before the
+     * early urls are read, so an edit settling meanwhile is caught here or finds [Sweep.records] set.
+     */
+    private fun install(
+        s: Sweep,
+        own: OwnRecords,
+    ) {
+        s.records = own
+        own.unknown += s.settledEarly
+    }
+
+    /** What an edit of [url] did to the sweep's records: its signed record, or null when the store may not hold it. */
+    private fun settled(
+        url: NormalizedRelayUrl,
+        event: Event?,
+    ) {
+        val s = sweep ?: return
+        // Before [records] is read, so a walk installing meanwhile still sees it: see [install].
+        if (s.records == null) s.settledEarly += url.url
+        val own = s.records ?: return
+        if (event == null) {
+            own.unknown += url.url
+        } else {
+            own.byD[url.url] = event
+            own.unknown -= url.url
+        }
     }
 
     /** The sets [Verdicts] carries while a walk fills them in. */
@@ -176,8 +517,7 @@ class RelayVerdictRecord(
         event: Event,
         floor: Long,
     ) {
-        val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return
-        val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
+        val from = subjectUrlOf(event) ?: return
         // Before any currency check: the record existing is what says this url is in our corpus.
         recorded += from
         event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.let { tag ->
@@ -190,28 +530,10 @@ class RelayVerdictRecord(
                 measured += from
             }
         }
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
-            ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
-            ?.get(1)
-            ?.let { answer ->
-                when (answer) {
-                    CONSISTENT_YES -> {
-                        consistent += from
-                        measured += from
-                    }
-
-                    CONSISTENT_NO -> {
-                        inconsistent += from
-                        measured += from
-                    }
-
-                    // An unreadable answer is no verdict, not "unstable".
-                    else -> {
-                        Unit
-                    }
-                }
-            }
+        currentAnswer(event, SELF_CONSISTENT_TAG, CONSISTENCY_EPOCH, floor)?.let { yes ->
+            if (yes) consistent += from else inconsistent += from
+            measured += from
+        }
         // The fitness label too: a relay graded `prime` is the most measured thing on the roster,
         // and it carries neither a fold answer nor a NIP-77 one.
         currentFitnessLabel(event, floor)
@@ -223,28 +545,32 @@ class RelayVerdictRecord(
                         StandingGrade(label[1], label.getOrNull(LABEL_EVIDENCE_INDEX), label.getOrNull(LABEL_MEASURED_AT_INDEX)?.toLongOrNull())
                 }
             }
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == NIP77_TAG }
-            ?.takeIf { current(it, FITNESS_EPOCH, floor) }
-            ?.get(1)
-            ?.let { answer ->
-                when (answer) {
-                    "true" -> {
-                        speaksNegentropy[from] = true
-                        measured += from
-                    }
-
-                    "false" -> {
-                        speaksNegentropy[from] = false
-                        measured += from
-                    }
-
-                    else -> {
-                        Unit
-                    }
-                }
-            }
+        currentAnswer(event, NIP77_TAG, FITNESS_EPOCH, floor)?.let { yes ->
+            speaksNegentropy[from] = yes
+            measured += from
+        }
     }
+
+    /**
+     * [event]'s `true`/`false` answer on its [name] tag, if current under [epoch]; null when absent, stale,
+     * or unreadable, which is no verdict rather than a "no".
+     */
+    private fun currentAnswer(
+        event: Event,
+        name: String,
+        epoch: String,
+        floor: Long,
+    ): Boolean? =
+        when (
+            event.tags
+                .firstOrNull { it.size > 1 && it[0] == name }
+                ?.takeIf { current(it, epoch, floor) }
+                ?.get(1)
+        ) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
 
     /**
      * Sign and store what a stability pass measured: did this url answer one filter, at one
@@ -268,7 +594,7 @@ class RelayVerdictRecord(
                     arrayOf(
                         SELF_CONSISTENT_TAG,
                         if (consistent) CONSISTENT_YES else CONSISTENT_NO,
-                        "$first + $second events at a ${anchorDays}d anchor, $shared shared -> %.3f".format(score),
+                        "$first + $second events at a ${anchorDays}d anchor, $shared shared -> %.3f".format(Locale.ROOT, score),
                         nowSeconds().toString(),
                         CONSISTENCY_EPOCH,
                     ),
@@ -284,10 +610,10 @@ class RelayVerdictRecord(
         url: NormalizedRelayUrl,
         status: String,
         evidence: String,
-        pageable: Pair<Boolean, String>?,
-        nip77: Pair<Boolean, String>?,
+        pageable: Fact?,
+        nip77: Fact?,
         /** Did the answer match the ask. Null for a dial that got no page to check. */
-        compliant: Pair<Boolean, String>? = null,
+        compliant: Fact? = null,
         facts: RelayFacts = RelayFacts(),
         /** When the grade was measured; a write retried after the store recovered keeps its measurement's time. */
         measuredAt: Long = nowSeconds(),
@@ -300,13 +626,8 @@ class RelayVerdictRecord(
                 pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 nip77?.let { (yes, why) ->
                     add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH))
-                    // The same measured fact again, as a NIP-32 label, because NIP-01 indexes
-                    // single-letter tags ONLY: `nip77` above can never be a `#` filter, so a
-                    // stream could not select on it and would be left with the relay's own
-                    // NIP-11 claim — which is the thing the monitor exists to not believe.
-                    // Measured: 11 of the 37 relays advertising NIP-77 declined our NEG-OPEN.
-                    // Its own namespace, so `#l` on the grade and `#l` on this stay separable
-                    // and a stream ANDs them with `gatedBy`.
+                    // The same fact as a NIP-32 label: NIP-01 indexes single-letter tags only, so a stream
+                    // can select on this and never on `nip77`; its own namespace keeps it apart from the grade.
                     add(arrayOf(LABEL_TAG, if (yes) SPEAKS_NEGENTROPY else REFUSES_NEGENTROPY, NEGENTROPY_NAMESPACE, why, at, FITNESS_EPOCH))
                     add(arrayOf(LABEL_NAMESPACE_TAG, NEGENTROPY_NAMESPACE))
                 }
@@ -333,79 +654,11 @@ class RelayVerdictRecord(
             else -> name in RelayFacts.OWNED
         }
 
-    /** Sign and store one fold; null when there is no signer. The evidence goes in the tag, never the content. */
-    suspend fun publish(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        shared: Int,
-    ): Event? = write(alias, canonical, "$sampled newest events, $shared shared with ${canonical.url}")
-
     /**
-     * The one fold whose evidence is not a containment: a `ws://` url and the `wss://` url of
-     * the same endpoint, both of which answered. Its own call so the evidence names that argument.
+     * Sign and store one fold answer: [subject] is the same server as [sameAs], or its own relay when the
+     * two are one url. Null when there is no signer. The evidence goes in the tag, never the content.
      */
-    suspend fun publishSecureTwin(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        /** True when the pair's windows came through [RelayAliases.GROUP_METADATA_KINDS]. */
-        groupList: Boolean = false,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "same endpoint as ${canonical.url} over TLS, both answered; " +
-                if (groupList) "$sampled group definitions here" else "$sampled newest events here",
-        )
-
-    /** A fold decided on a relay's complete list of groups rather than a slice of its feed. */
-    suspend fun publishGroupList(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        sampled: Int,
-        shared: Int,
-    ): Event? = write(alias, canonical, "same group list as ${canonical.url}: $shared of $sampled group definitions shared")
-
-    /**
-     * A fold on a store too small to sample: both urls served the same complete store, and so did a
-     * path on their host that no relay list names, which only a server ignoring the path does.
-     */
-    suspend fun publishWholeStore(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        events: Int,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "the same complete store of $events event(s) as ${canonical.url}, as a path no relay list names also serves",
-        )
-
-    /** The weakest fold: these urls share a host, every one answered, none would serve anything. */
-    suspend fun publishUnreadable(
-        alias: NormalizedRelayUrl,
-        canonical: NormalizedRelayUrl,
-        urls: Int,
-    ): Event? =
-        write(
-            alias,
-            canonical,
-            "nothing readable at any of $urls url(s) on this host; folded on the shared name, not on a measurement",
-        )
-
-    /**
-     * This url was fingerprinted and matched nothing it was compared to, written as `same-as`
-     * pointing at its own url. [comparedAgainst] names what was actually held up against it.
-     */
-    suspend fun publishDistinct(
-        url: NormalizedRelayUrl,
-        sampled: Int,
-        comparedAgainst: String,
-        bestShared: Int,
-    ): Event? = write(url, url, "$sampled newest events, best $bestShared shared with $comparedAgainst")
-
-    private suspend fun write(
+    suspend fun publishFold(
         subject: NormalizedRelayUrl,
         sameAs: NormalizedRelayUrl,
         evidence: String,
@@ -419,7 +672,8 @@ class RelayVerdictRecord(
     /**
      * Read this url's record, rewrite it through quartz's [RelayDiscoveryEvent.edit] (every tag this
      * writer does not [owns] kept, [add] appended, stamped strictly newer), sign and store it. Bounded
-     * whole by [EDIT_DEADLINE_MS]. Callers serialize edits per url (the passes never overlap).
+     * whole by [editDeadlineMs]. A second edit of [url] while one is under way throws: both would
+     * read the same record, and the later write would erase the earlier's tags.
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
@@ -427,7 +681,30 @@ class RelayVerdictRecord(
         add: List<Array<String>>,
     ): Event? {
         val signer = signer ?: return null
-        return withTimeoutOrNull(EDIT_DEADLINE_MS) {
+        // Said on stderr too: a pass's writer counts a throw as a declined write.
+        check(editing.add(url)) { "two verdict edits of ${url.url} overlapped".also { System.err.println("monitor: BUG — $it") } }
+        var written: Event? = null
+        try {
+            written = editOnce(url, owns, add, signer)
+            return written
+        } finally {
+            // In the finally, so a cut edit, which may have landed, is read afresh too.
+            settled(url, written)
+            editing.remove(url)
+        }
+    }
+
+    /** The urls an [edit] is under way on. */
+    private val editing: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
+
+    /** [edit]'s read, rewrite, sign and insert, once the url is its own. */
+    private suspend fun editOnce(
+        url: NormalizedRelayUrl,
+        owns: (Array<String>) -> Boolean,
+        add: List<Array<String>>,
+        signer: NostrSigner,
+    ): Event? =
+        withTimeoutOrNull(editDeadlineMs) {
             // A failed read aborts the edit; a fresh record would erase other writers' tags.
             val current =
                 try {
@@ -464,9 +741,8 @@ class RelayVerdictRecord(
                 null
             }
         }
-    }
 
-    /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. */
+    /** One failed [edit], logged at most once a minute with the count since; the caller sees only null. Only the monitor signs, so only it edits. */
     private fun editFailed(
         url: NormalizedRelayUrl,
         stage: String,
@@ -477,7 +753,7 @@ class RelayVerdictRecord(
         val last = editFailureLoggedAt.get()
         if (now - last < EDIT_FAILURE_LOG_MS || !editFailureLoggedAt.compareAndSet(last, now)) return
         System.err.println(
-            "router: verdict edit for ${url.url} FAILED at $stage — ${e.javaClass.simpleName}: ${e.message?.take(200)} " +
+            "$MONITOR_LOG: verdict edit for ${url.url} FAILED at $stage — ${e.javaClass.simpleName}: ${e.message?.take(200)} " +
                 "($failed failed edit(s) so far)",
         )
     }
@@ -507,9 +783,21 @@ class RelayVerdictRecord(
     /** [this] as the typed record quartz edits; a store that hands back a plain [Event] still keeps every tag. */
     private fun Event.asDiscovery(): RelayDiscoveryEvent = this as? RelayDiscoveryEvent ?: RelayDiscoveryEvent(id, pubKey, createdAt, tags, content, sig)
 
-    /** This url's current record, null when nothing holds one, and a throw when the store cannot answer. */
+    /**
+     * This url's current record, null when nothing holds one, and a throw when the store cannot answer.
+     * A url the walk did not see is read by `#d`: a record superseded between the walk's pages is in neither.
+     */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
+        // An edit never needs the walk: when it fails, the `#d` read below is what an edit read before sweeps.
+        val own =
+            try {
+                sweepRecords()
+            } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
+                null
+            }
+        if (own != null && url.url !in own.unknown) own.byD[url.url]?.let { return it }
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url)))
         return storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
             store.query<Event>(filter)
@@ -517,8 +805,28 @@ class RelayVerdictRecord(
     }
 
     companion object {
-        /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
-        private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
+        /** The url a record is about, its `d` tag as written. */
+        fun subjectOf(event: Event): String? = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1)
+
+        /**
+         * [subjectOf] as a key to verdicts: any url quartz normalizes, `.onion` included, since a read
+         * answers about urls its caller already holds. [RelayDiscovery] turns a subject into a url to dial instead.
+         */
+        private fun subjectUrlOf(event: Event): NormalizedRelayUrl? = subjectOf(event)?.let(RelayUrlNormalizer::normalizeOrNull)
+
+        /** Every record [self] signed that [store] holds stamped at or after [since], in one paged walk. */
+        suspend fun ownRecordsIn(
+            store: IEventStore,
+            self: String,
+            since: Long,
+        ): List<Event> {
+            val found = ArrayList<Event>()
+            RelayDiscovery.scan(store, Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = since), RelayDiscovery.SCAN_PAGE, logPrefix = MONITOR_LOG) { found += it }
+            return found
+        }
+
+        /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE], told apart by namespace since `l` is shared vocabulary. */
+        fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
 
         /**
          * [event]'s fitness label if it is one we would still act on: under [FITNESS_EPOCH] and measured
@@ -568,14 +876,13 @@ class RelayVerdictRecord(
         const val FITNESS_NAMESPACE = "relay.fitness"
 
         /**
-         * The NIP-32 namespace for what the monitor MEASURED about NIP-77, kept apart from the
-         * grade so a stream can filter on either. Both are `l` tags, and NIP-01 ORs the values
-         * inside one `#l` — so "prime AND speaks negentropy" is two sources, the grade on
-         * `relaySource` and this on `gatedBy`, which intersects them.
+         * The NIP-32 namespace for what the monitor measured about NIP-77, apart from the grade: NIP-01
+         * ORs the values inside one `#l`, so "prime and speaks negentropy" is the grade on `relaySource`
+         * and this on `gatedBy`, which intersects them.
          */
         const val NEGENTROPY_NAMESPACE = "relay.negentropy"
 
-        /** Answered a NEG-OPEN when the fitness pass asked. NEVER the relay's own NIP-11 claim. */
+        /** Answered a NEG-OPEN when the fitness pass asked; never the relay's own NIP-11 claim. */
         const val SPEAKS_NEGENTROPY = "negentropy"
 
         /** Declined it. A relay with no measurement carries neither, which is not a "no". */
@@ -595,7 +902,7 @@ class RelayVerdictRecord(
 
         const val LABEL_EPOCH_INDEX = 5
 
-        /** Where the grade used to live, now the software field; `FitnessPass.retireLegacyGrades` queries it. */
+        /** Where the grade used to live, now the software field; `FitnessRetirement.retireStale` looks for it. */
         const val LEGACY_STATUS_TAG = RelayFacts.SOFTWARE_TAG
 
         /** Measured: does the relay honour `until`, so a paged walk can terminate? */
@@ -607,7 +914,7 @@ class RelayVerdictRecord(
         /** Measured: did it answer a NEG-OPEN? */
         const val NIP77_TAG = "nip77"
 
-        /** The fitness verdict's rules version; `FitnessPass.retireStaleEpochs` takes back older ones at boot. */
+        /** The fitness verdict's rules version; `FitnessRetirement.retireStale` takes back older ones at boot. */
         const val FITNESS_EPOCH = "3"
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
@@ -615,7 +922,7 @@ class RelayVerdictRecord(
         /** How long a `dead` verdict holds a url out of the passes and the fold. */
         const val DEAD_TTL_SECONDS = 24L * 60 * 60
 
-        /** The wall clock on one whole [edit]. Wider than `VerdictWrites.PUBLISH_DEADLINE_MS`, which must fire first. */
+        /** The wall clock on one whole [edit]. Wider than `WriteLimits.PUBLISH_DEADLINE_MS`, which must fire first. */
         const val EDIT_DEADLINE_MS = 120_000L
 
         private const val EDIT_FAILURE_LOG_MS = 60_000L
@@ -623,6 +930,21 @@ class RelayVerdictRecord(
         /** Urls per `#d` query, shared with [RelayDiscovery.undialable]. */
         internal const val QUERY_CHUNK = 500
 
+        /** `#d` queries one [load] has in flight at once. */
+        internal const val LOAD_CONCURRENCY = 4
+
+        /**
+         * The wall clock on one verdict query. The passes read under the monitor's pass gate, so a
+         * query that never answers would stop every pass behind it.
+         */
+        const val READ_DEADLINE_MS = 60_000L
+
         private const val RECORD_PAGE = 2_000
+
+        /** Walks one sweep tries before its reads go to the store: the first, and one retry. */
+        private const val SWEEP_WALKS = 2
+
+        /** The prefix on the lines a whole-corpus walk prints: only the monitor walks, and only it edits. */
+        private const val MONITOR_LOG = "monitor"
     }
 }

@@ -1,6 +1,6 @@
 # Alias fold decisions
 
-The history behind `monitor/.../RelayAliases.kt`, `AliasProbe.kt`,
+The history behind `peers/.../fold/RelayAliases.kt` and `monitor/.../AliasProbe.kt`,
 `AliasFolding.kt` and `AliasMonitor.kt`, moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
@@ -396,6 +396,23 @@ candidates plus every survivor the record names) and every lapsed cooldown.
 A fast-lane batch is a handful of urls, never the set, so it prunes nothing.
 The store stays the authority; a url that comes back is re-read from it.
 
+**The fold is an immutable view per pass, and a group returns what it
+learned.** `adoptWorld` replaced the whole world from the store at the top of
+every pass, so the maps carried across passes were vestigial: only the
+test-only fallback in `applyVerdicts` read them, and `retainOnly` and `forget`
+existed to bound them. `RelayAliases` is now a value built once per pass by
+`FoldReading.view(held, urls)`; `learn` and `foldOnto` return a `Learned` delta
+and leave the view alone, and `plus` is the one place a fold lands, where four
+copies of the same three-map update kept the invariants before. Each group
+returns its landed delta, undecided reason, cooldown and dial count, and the
+pass merges them after the join, so a write the store refused is never learned
+and a host that cannot reproduce itself discards its delta instead of
+re-resolving every chain in the store. A group is one host, so its own
+`Semaphore(DIALS_PER_HOST)` replaces the per-host map. `applyVerdicts` and the
+`aliases` parameter are gone: every reader goes through `FoldReading.readBack`,
+which says when the store could not answer. One log detail moved: a fast-lane
+fold's "N known" counts its own world's folds, not those the last sweep held.
+
 **A stopped writer stops the dialling too.** Once the pass's `VerdictWriter`
 stopped, every later fold write was refused, but each group still searched
 for a yardstick, fingerprinted its members and walked the reproducibility
@@ -462,3 +479,59 @@ with a store of its own, jaunters' `/inbox`, stays undecided. It adds a rule and
 changes none, so `FOLD_EPOCH` stands. In the profiled sample it folded 81 urls on
 4 hosts, each re-checked live against two paths of our own making, and declined
 2 whose made-up path answered 403 and 404.
+
+**A host's paths are compared through one index over the cluster heads.** `learn`
+held each url that missed the leader up against every head found so far, and the
+pass then held every cleared url against every other to state its best shared
+count: two pairwise sweeps, quadratic in the paths on a host. Now each window is a
+`Fingerprint` (the ids as sorted 256-bit words, any id that is not 64 lowercase
+hex kept as written, so a count is exact), the heads go into a `FingerprintIndex`
+keyed by id, and one lookup per id of a new url counts what it shares with every
+head at once. The first head it matches, and every count the evidence names, come
+out of that one pass, so `learn` returns them (`Learned.shared`) and the fold pass
+no longer recounts. The rules are untouched and `FOLD_EPOCH` stands:
+`FoldComparisonTest` keeps the pairwise algorithm as a reference and checks that
+folds, clearances, twins and evidence match it on 400 generated groups. On 1,000
+distinct paths of 500 ids, the reference took about 27 s on the build machine and
+the index about 150 ms.
+
+**A window is held as its ids' full 256 bits, not as strings and not as prefixes.**
+A fold window is up to 500 ids, each a 64-character `String` in a `HashSet`, and
+every member's window was held until its group decided. Each member's walk now
+hands back a `Fingerprint` as it lands, so the strings go with the walk and a
+group holds 32 bytes per id. A 64-bit prefix would have been a quarter of that,
+but a collision adds a shared id the windows do not have, and a fold sits on a
+ratio threshold that one id can cross; the full words make every count exact, so
+no decision can move and there is no collision argument to make. The yardstick's
+second walk and `reproducible` use the same type.
+
+**The comparison index keys on the whole id, under a seed.** `FingerprintIndex`
+chained on an id's first 64-bit word, and `AliasProbe` takes the ids a relay
+serves as given, so a relay serving ids that share 16 hex digits put every head's
+ids in one chain and each lookup walked all of them: quadratic in the host's id
+count, inside `learn`, which never suspends, so no deadline could cut it and every
+pass waited behind it. A slot now holds exactly one id, found by a seeded mix of
+all four words and confirmed against the chain's first entry, so a chain is the
+windows carrying that id and the counts stay exact. The seed is drawn per index,
+so ids chosen to collide in one pass's table do not collide in the next.
+`FingerprintIndexCollisionTest` times 200 paths of colliding ids against random ones.
+
+**A fold pass applies its groups' deltas once.** `AliasFolding.measure` added
+each group's `Learned` to the view in turn, and every `RelayAliases.plus` copies
+`folded`, `distinct` and `canonicals`, so a pass cost groups times the whole
+recorded world in copies. `plus(Collection<Learned>)` now merges the deltas and
+builds the view once, with the rules one delta at a time keeps: a later fold of
+a url replaces an earlier one, every fold's target is a canonical, and a fold
+outranks a clearance whichever delta carried which. `RelayAliasesMergeTest`
+checks the two orders agree on random deltas.
+
+**Inside a sweep the fold's fallback reads by `#d`.** `readWorld` falls back to
+the candidates and their mates when `loadAll` fails, but inside a sweep both go
+through the sweep's walk, so the fallback walked the whole corpus again and one
+page past the read deadline failed the fold where the narrower read would have
+answered. The fallback now calls `RelayVerdictRecord.loadFromStore`, the `#d`
+read `load` makes outside a sweep. The same failure took the fold's writes down
+too, since every edit's `currentRecord` read off the walk, so an edit now reads
+its record by `#d` when the walk fails, and a sweep tries its walk twice at most
+before every read goes to the store as outside a sweep. `StandingReadTest` runs
+the fold inside a sweep whose walk the store refuses.

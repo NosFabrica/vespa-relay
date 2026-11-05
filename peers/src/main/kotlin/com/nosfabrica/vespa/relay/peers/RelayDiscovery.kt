@@ -34,6 +34,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.utils.Hex
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired it with.
@@ -101,6 +102,8 @@ object RelayDiscovery {
         now: Long = nowSeconds(),
         /** Called as each of [RelayDiscoveryConfig.sources] finishes, the only unit this walk is counted in. */
         onSource: () -> Unit = {},
+        /** The calling process's log prefix: `router` for the sync, `monitor` for the monitor. */
+        logPrefix: String = "router",
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -125,7 +128,7 @@ object RelayDiscovery {
                 }
             }
             if (stillPaged.isNotEmpty()) {
-                scan(store, bounded, pageSize) { event ->
+                scan(store, bounded, pageSize, logPrefix = logPrefix) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
                         oversizedLists++
                         return@scan
@@ -154,7 +157,7 @@ object RelayDiscovery {
                     .toSet()
                     .size
             System.err.println(
-                "router: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
+                "$logPrefix: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
                     "authors per relay min=${perRelay.minOrNull()} median=${perRelay.sorted().getOrNull(perRelay.size / 2)} " +
                     "max=${perRelay.maxOrNull()} total=${perRelay.sum()}; " +
                     "${found.size - narrowing.size} relay(s) found with NO authors attached",
@@ -163,7 +166,7 @@ object RelayDiscovery {
 
         if (oversizedLists > 0) {
             System.err.println(
-                "router: discovery skipped $oversizedLists relay list(s) over ${dynamic.maxRelaysPerList} entries " +
+                "$logPrefix: discovery skipped $oversizedLists relay list(s) over ${dynamic.maxRelaysPerList} entries " +
                     "— see RelayDiscoveryConfig.maxRelaysPerList",
             )
         }
@@ -195,12 +198,12 @@ object RelayDiscovery {
         // Empty is a caller with no urls; null is a caller wanting all of them.
         if (among != null && among.isEmpty()) return emptySet()
         return verdicts(store, Verdict.DEAD, monitorAuthors, maxAgeSeconds, now, among)
-            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+            .mapNotNullTo(HashSet()) { dialableSubjectOf(it, allowOnion) }
     }
 
     /**
      * Every url [authors] hold a current record about, whatever it says. The monitor passes its own
-     * key alone, not [undialable]'s trust set; empty [authors] is a router with no signer.
+     * key alone, not [undialable]'s trust set; empty [authors] is a process with no signer.
      */
     suspend fun recorded(
         store: IEventStore,
@@ -211,10 +214,16 @@ object RelayDiscovery {
     ): Set<NormalizedRelayUrl> {
         if (authors.isEmpty()) return emptySet()
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = authors, since = now - maxAgeSeconds)
-        val found = HashSet<NormalizedRelayUrl>()
-        scan(store, filter, SCAN_PAGE) { event -> urlOf(event, allowOnion)?.let(found::add) }
-        return found
+        val found = ArrayList<Event>()
+        scan(store, filter, SCAN_PAGE) { found += it }
+        return recordedIn(found, allowOnion)
     }
+
+    /** The urls these records are about, by [recorded]'s rule. */
+    fun recordedIn(
+        records: Iterable<Event>,
+        allowOnion: Boolean = false,
+    ): Set<NormalizedRelayUrl> = records.mapNotNullTo(HashSet()) { dialableSubjectOf(it, allowOnion) }
 
     /**
      * Records whose current fitness label is [verdict], signed by these identities. The tag index
@@ -272,9 +281,12 @@ object RelayDiscovery {
         filter: Filter,
         until: Long?,
         ask: Int,
+        deadlineMs: Long?,
     ): List<Event> {
         val asked = filter.copy(until = until, limit = ask)
-        return storeCall(caller, StoreCalls.OP_QUERY, StoreCalls.summarise(asked)) { store.query(asked) }
+        val read = suspend { storeCall(caller, StoreCalls.OP_QUERY, StoreCalls.summarise(asked)) { store.query<Event>(asked) } }
+        if (deadlineMs == null) return read()
+        return withTimeoutOrNull(deadlineMs) { read() } ?: throw RelayVerdictRecord.ReadTimeout(deadlineMs)
     }
 
     /** One verdict read, booked as the round-up's rather than the monitor's. */
@@ -286,15 +298,14 @@ object RelayDiscovery {
             store.query<Event>(filter)
         }
 
-    /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
-    private fun urlOf(
+    /**
+     * A verdict record's subject as a url to dial: the relay-list rules, the onion gate included, because
+     * what this returns becomes a candidate. A verdict read keys on any url instead (`RelayVerdictRecord.subjectOf`).
+     */
+    private fun dialableSubjectOf(
         event: Event,
         allowOnion: Boolean,
-    ): NormalizedRelayUrl? =
-        event.tags
-            .firstOrNull { it.size > 1 && it[0] == "d" }
-            ?.get(1)
-            ?.let { normalize(it, allowOnion) }
+    ): NormalizedRelayUrl? = RelayVerdictRecord.subjectOf(event)?.let { normalize(it, allowOnion) }
 
     /**
      * Walk everything [filter] matches a page at a time, oldest-ward. `until` is inclusive, so
@@ -309,6 +320,10 @@ object RelayDiscovery {
         caller: String = StoreCalls.CALLER_SOURCE_RELAY_LISTS,
         /** The widest page ever asked for; past the store's `maxHits` the whole scan is refused. */
         maxAsk: Int = maxOf(pageSize, SCAN_PAGE),
+        /** The wall clock on each page, past which the scan throws [RelayVerdictRecord.ReadTimeout]; null waits. */
+        pageDeadlineMs: Long? = null,
+        /** The calling process's log prefix. */
+        logPrefix: String = "router",
         onEach: (Event) -> Unit,
     ) {
         // An explicit `limit` is the caller's budget for the whole scan; only events handed to [onEach] spend it.
@@ -318,13 +333,13 @@ object RelayDiscovery {
         while (remaining > 0) {
             val budget = remaining.toLong() + boundaryIds.size
             var ask = minOf(minOf(pageSize, maxAsk).toLong(), budget).toInt()
-            var page: List<Event> = queryPage(store, caller, filter, until, ask)
+            var page: List<Event> = queryPage(store, caller, filter, until, ask, pageDeadlineMs)
             if (page.isEmpty()) return
 
             // A page whose ends share a `created_at` is one timestamp and the cursor has nowhere to go.
             while (page.size == ask && ask < budget && ask < maxAsk && page.first().createdAt == page.last().createdAt) {
                 ask = minOf(ask.toLong() * 2, budget, maxAsk.toLong()).toInt()
-                page = queryPage(store, caller, filter, until, ask)
+                page = queryPage(store, caller, filter, until, ask, pageDeadlineMs)
             }
 
             var oldest = Long.MAX_VALUE
@@ -342,7 +357,7 @@ object RelayDiscovery {
             for (event in page) if (event.createdAt == oldest) newBoundary.add(event.id)
             if (newBoundary.size == page.size) {
                 // Still one timestamp after growing: step below it, and say so when that skips events.
-                if (ask >= maxAsk && ask < budget) reportTruncatedSecond(filter, oldest, ask)
+                if (ask >= maxAsk && ask < budget) reportTruncatedSecond(filter, oldest, ask, logPrefix)
                 until = oldest - 1
                 boundaryIds = emptySet()
             } else {
@@ -352,15 +367,16 @@ object RelayDiscovery {
         }
     }
 
-    private const val SCAN_PAGE = 10_000
+    internal const val SCAN_PAGE = 10_000
 
     /** A `created_at` holding more matches than one page may ask for; it is the only cursor the store pages on. */
     private fun reportTruncatedSecond(
         filter: Filter,
         createdAt: Long,
         ask: Int,
+        logPrefix: String,
     ) = System.err.println(
-        "router: scan of ${StoreCalls.summarise(filter)} TRUNCATED — more than $ask events share created_at $createdAt, " +
+        "$logPrefix: scan of ${StoreCalls.summarise(filter)} TRUNCATED — more than $ask events share created_at $createdAt, " +
             "the most one page may ask for; the rest of that second is skipped",
     )
 
@@ -392,36 +408,12 @@ object RelayDiscovery {
         return false
     }
 
-    /** The distinct relay urls one event advertises across every applicable select. */
-    fun urlsIn(
-        event: Event,
-        selects: List<RelaySelect>,
-    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, selects, it) }
-
-    private fun urlsIn(
-        event: Event,
-        selects: List<RelaySelect>,
-        into: MutableSet<NormalizedRelayUrl>,
-    ) {
-        for (select in selects) {
-            if (select.kind != null && select.kind != event.kind) continue
-            urlsIn(event, select, into)
-        }
-    }
-
-    /** The relay urls one event advertises for a single [select]. */
-    fun urlsIn(
+    /** The relay urls one event advertises for a single [select], by the rules [discover] reads lists with; for tests. */
+    internal fun urlsIn(
         event: Event,
         select: RelaySelect,
         allowOnion: Boolean = false,
-    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, select, it, allowOnion) }
-
-    private fun urlsIn(
-        event: Event,
-        select: RelaySelect,
-        into: MutableSet<NormalizedRelayUrl>,
-        allowOnion: Boolean = false,
-    ) = bindingsIn(event, select, allowOnion) { url, _ -> into.add(url) }
+    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { into -> bindingsIn(event, select, allowOnion) { url, _ -> into += url } }
 
     /**
      * Every (url, bound values) pair one event yields for one select. Each matching tag calls

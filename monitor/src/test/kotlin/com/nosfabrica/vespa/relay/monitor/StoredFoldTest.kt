@@ -23,10 +23,9 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.StoredFold
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -87,19 +86,16 @@ class StoredFoldTest {
         urls: List<NormalizedRelayUrl>,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         val world =
-            StreamWorld(
+            CandidateSet(
                 store = store,
                 sources = sources,
                 probe = ReachabilityProbe(null),
                 monitorAuthors = MonitorEngine.deadVerdictSigners(ours.pubKey, sources),
                 self = ours.pubKey,
                 tor = null,
-                sockets = Sockets.NONE,
-                onProbeEvent = { error("nothing here dials") },
             )
         world.candidates()
-        val folding = AliasFolding(RelayAliases(), RelayVerdictRecord(store, ours), AliasProbe(fetch = { _, _, _, _ -> error("the roster never dials") }))
-        return folding.applyVerdicts(urls, world.known).let { it.aliases + it.standIns + it.waiting }
+        return FoldReading.readBack(RelayVerdictRecord(store, ours)::load, urls, world.known)!!.let { it.aliases + it.standIns + it.waiting }
     }
 
     private fun storedFold(store: IEventStore) = StoredFold.over(store, listOf(ours.pubKey), allowOnion = false)

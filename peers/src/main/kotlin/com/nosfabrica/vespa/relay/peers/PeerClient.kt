@@ -39,8 +39,8 @@ import java.util.concurrent.Executors
 
 /**
  * How this process talks to other relays: one websocket client, one socket budget, one Tor
- * transport, one NIP-42 answer, shared by both planes so [RelaySockets] has one pool to count.
- * The owner calls [connect] once everything is registered and [close] after the planes stop.
+ * transport, one NIP-42 answer, shared by everything the process dials so [RelaySockets] has one
+ * pool to count. The owner calls [connect] once everything is registered and [close] after its work stops.
  */
 class PeerClient(
     private val scope: CoroutineScope,
@@ -57,6 +57,8 @@ class PeerClient(
     connectionTimeoutSec: Long = 10,
     /** How every upstream frame is read. */
     decoder: MessageDecoder = MessageDecoder.Default,
+    /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
+    private val logPrefix: String = "router",
 ) : AutoCloseable {
     private val okhttp = relayHttpBuilder(connectionTimeoutSec, relayDns()).build()
 
@@ -94,7 +96,7 @@ class PeerClient(
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
-                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
+                        "$logPrefix: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
                     )
                 }
                 RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
@@ -114,13 +116,13 @@ class PeerClient(
         tor?.let {
             val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
             System.err.println(
-                "router: tor SOCKS ${it.settings.socksAddress} $reach" +
+                "$logPrefix: tor SOCKS ${it.settings.socksAddress} $reach" +
                     (if (it.settings.routeAll) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
             )
         }
     }
 
-    /** Stop dialling. Called after the planes' own scopes are cancelled. */
+    /** Stop dialling. Called after the owner's own scopes are cancelled. */
     override fun close() {
         runCatching { authenticator?.destroy() }
         runCatching { client.close() }

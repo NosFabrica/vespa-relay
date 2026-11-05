@@ -22,9 +22,9 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -37,6 +37,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
@@ -102,7 +103,7 @@ class ProbeDeadlineTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("blind batch", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure(RunKind.SWEEP, blind + fine)
 
             for (url in blind + fine) {
                 assertNull(gradeOf(store, url), "a blind pass wrote a verdict for ${url.url}")
@@ -121,7 +122,7 @@ class ProbeDeadlineTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                 )
-            refusedCorpus(fine).measure("refused corpus", blind + fine, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            refusedCorpus(fine).measure(RunKind.SWEEP, blind + fine)
             assertEquals(Verdict.SILENT.value, gradeOf(refused, blind.first()), "a transport word is evidence and must still publish")
 
             // The same words from every dial, with nothing answering, are our own network's.
@@ -131,7 +132,7 @@ class ProbeDeadlineTest {
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot: Failed to connect to /1.2.3.4:443 (ConnectException)") },
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("dark corpus", blind, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, blind)
             assertNull(gradeOf(dark, blind.first()), "a batch where nothing reached a server publishes no `silent`")
         }
 
@@ -147,7 +148,8 @@ class ProbeDeadlineTest {
                     probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure("proxy down", urls, reach = { Reach.TRANSPORT_DOWN }, onEvent = {}, sockets = Sockets.NONE)
+                    reach = { Reach.TRANSPORT_DOWN },
+                ).measure(RunKind.SWEEP, urls)
                 for (url in urls) assertNull(gradeOf(store, url), "our proxy being down was signed onto ${url.url}")
             }
         }
@@ -168,13 +170,8 @@ class ProbeDeadlineTest {
                     probe = probe { _, want, until, _ -> paged(corpus(), want, until) },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure(
-                    "dark",
-                    dead + live,
                     reach = { if (it in dead) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
-                    onEvent = {},
-                    sockets = Sockets.NONE,
-                )
+                ).measure(RunKind.SWEEP, dead + live)
                 return dead.map { gradeOf(store, it) } to live.map { gradeOf(store, it) }
             }
 
@@ -208,13 +205,8 @@ class ProbeDeadlineTest {
                     probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure(
-                    "one",
-                    listOf(url, answering),
                     reach = { if (it == url && !reachable) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
-                    onEvent = {},
-                    sockets = Sockets.NONE,
-                )
+                ).measure(RunKind.SWEEP, listOf(url, answering))
                 return gradeOf(store, url)
             }
 
@@ -256,7 +248,8 @@ class ProbeDeadlineTest {
                         },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure("one", listOf(url, answering), reach = { if (it == url) Reach.UNANSWERED else Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    reach = { if (it == url) Reach.UNANSWERED else Reach.REACHABLE },
+                ).measure(RunKind.SWEEP, listOf(url, answering))
                 return gradeOf(store, url)
             }
 
@@ -281,7 +274,8 @@ class ProbeDeadlineTest {
                         },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure("one", listOf(url, answering), reach = { if (it == url) reach else Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                    reach = { if (it == url) reach else Reach.REACHABLE },
+                ).measure(RunKind.SWEEP, listOf(url, answering))
                 if (dialled) assertTrue(MonitorEngine.gateDials(reach), "fitness dials a url the pre-probe called $reach and the gate does not")
             }
         }
@@ -305,7 +299,7 @@ class ProbeDeadlineTest {
                     },
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("one", listOf(url, answering), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, listOf(url, answering))
             assertEquals(Verdict.SILENT.value, gradeOf(store, url))
             assertEquals(1, asks, "a second rung would wait on the same dial's clock")
         }
@@ -322,7 +316,7 @@ class ProbeDeadlineTest {
                     probe = probe { at, want, until, _ -> if (at == answering) paged(corpus(), want, until) else AliasProbe.Page(events = null, reason = reason) },
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
-                ).measure("one", listOf(url, answering), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(RunKind.SWEEP, listOf(url, answering))
                 return gradeOf(store, url)
             }
 
@@ -360,13 +354,7 @@ class ProbeDeadlineTest {
 
             // The assertion is the call completing at all.
             withTimeout(deadlineMs() * 20) {
-                pass.measure(
-                    "deadline",
-                    listOf(wedged, answering),
-                    reach = { Reach.REACHABLE },
-                    onEvent = {},
-                    sockets = Sockets.NONE,
-                )
+                pass.measure(RunKind.SWEEP, listOf(wedged, answering))
             }
 
             assertEquals(Verdict.PRIME.value, gradeOf(store, answering))
@@ -377,21 +365,44 @@ class ProbeDeadlineTest {
         }
 
     @Test
+    fun `a verdict earned before the deadline cut is published, and the url cut before earning one is not`() =
+        runBlocking {
+            val store = newStore()
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe(stalling()),
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                    // The NEG-OPEN outlives the url's own deadline, so the clock cuts a url that already earned its grade.
+                    nip77DeadlineMs = deadlineMs() * 50,
+                    reconcile = { _, _ -> awaitCancellation() },
+                )
+
+            withTimeout(deadlineMs() * 20) {
+                pass.measure(RunKind.SWEEP, listOf(wedged, answering))
+            }
+
+            assertEquals(Verdict.PRIME.value, gradeOf(store, answering), "the grade was earned before our clock fired")
+            assertNull(gradeOf(store, wedged))
+        }
+
+    @Test
     fun `a stability pass ends, and calls the url it abandoned exactly that`() =
         runBlocking {
             val processors = Processors()
             val handle = processors.of("consistency")
-            val consistency = RelayConsistency()
+            val store = newStore()
             val pass =
                 ConsistencyPass(
-                    consistency = consistency,
-                    record = RelayVerdictRecord(newStore(), signer),
+                    consistency = RelayConsistency(),
+                    record = RelayVerdictRecord(store, signer),
                     probe = probe(stalling()),
                     progress = handle,
                 )
 
             withTimeout(deadlineMs() * 20) {
-                pass.measure("deadline", listOf(wedged, answering), canDial = { true })
+                pass.measure(RunKind.SWEEP, listOf(wedged, answering))
             }
 
             // Its own reason, not the probe-threw bucket.
@@ -407,7 +418,7 @@ class ProbeDeadlineTest {
                 ConsistencyPass.Unmeasured.ABANDONED.reason in reasons,
                 "the abandoned url must be named as abandoned, not as a probe failure: $reasons",
             )
-            assertEquals(emptySet<NormalizedRelayUrl>(), listOf(wedged).filterTo(HashSet(), consistency::isInconsistent))
+            assertEquals(emptySet<NormalizedRelayUrl>(), RelayVerdictRecord(store, signer).load(listOf(wedged)).inconsistent)
         }
 
     @Test
@@ -416,12 +427,11 @@ class ProbeDeadlineTest {
             // Both urls of the group hang, so it has no yardstick.
             val a = RelayUrlNormalizer.normalize("wss://wedged.example/one")
             val b = RelayUrlNormalizer.normalize("wss://wedged.example/two")
-            val aliases = RelayAliases()
+            val store = newStore()
             val hits = AtomicInteger()
             val fold =
                 AliasFolding(
-                    aliases = aliases,
-                    record = RelayVerdictRecord(newStore(), signer),
+                    record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
                             fetch = { _, _, _, _ ->
@@ -437,13 +447,13 @@ class ProbeDeadlineTest {
 
             val learned =
                 withTimeout(deadlineMs() * 40) {
-                    fold.measure("deadline", listOf(a, b), canDial = { true })
+                    fold.measure(RunKind.SWEEP, listOf(a, b))
                 }
 
             assertEquals(0, learned, "a fold that never got a fingerprint must learn nothing")
             assertTrue(hits.get() > 0, "the pass has to have actually dialled, or this proves nothing")
             // Nothing written, so the group comes back next pass instead of carrying a fold signed off our timeout.
-            assertTrue(aliases.unresolved(listOf(a, b)).isNotEmpty())
+            assertTrue(FoldReading.view(RelayVerdictRecord(store, signer).load(listOf(a, b)), listOf(a, b)).unresolved(listOf(a, b)).isNotEmpty())
         }
 
     @Test
@@ -475,7 +485,7 @@ class ProbeDeadlineTest {
                 }
             watcher.start()
             withTimeout(deadlineMs() * 20) {
-                pass.measure("deadline", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, listOf(wedged))
             }
             watcher.interrupt()
             watcher.join()
@@ -498,7 +508,7 @@ class ProbeDeadlineTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                 )
-            pass.measure("silence", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            pass.measure(RunKind.SWEEP, listOf(wedged))
             assertNull(gradeOf(store, wedged), "an instrument that learned nothing must not sign a verdict")
 
             // A relay that closes every rung has spoken and is read as a drain; `restricted` is unreachable
@@ -509,7 +519,7 @@ class ProbeDeadlineTest {
                 probe = probe { _, _, _, _ -> AliasProbe.Page(events = emptyList(), reason = "closed: blocked: can't handle empty filters") },
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
-            ).measure("refusal", listOf(wedged), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, listOf(wedged))
             assertEquals(Verdict.PRIME.value, gradeOf(refusing, wedged))
         }
 

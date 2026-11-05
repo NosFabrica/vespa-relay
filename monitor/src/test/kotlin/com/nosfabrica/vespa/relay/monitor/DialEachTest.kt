@@ -44,7 +44,7 @@ class DialEachTest {
             val cut = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
             val measured = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
-            dialEach(urls, DialGate.over(3, null), { 50L }, progress, cut = { cut += it }) { url ->
+            dialEach(urls, DialGate.over(3, null), { 50L }, progress, cut = { _, url -> cut += url }) { _, url ->
                 progress.holding(url.url, "dialling")
                 if (url in stalls) awaitCancellation()
                 measured += url

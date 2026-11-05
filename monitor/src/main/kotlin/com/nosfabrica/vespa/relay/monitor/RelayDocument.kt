@@ -38,9 +38,13 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -52,11 +56,14 @@ import kotlin.coroutines.resumeWithException
  */
 class RelayDocument(
     private val clientFor: (NormalizedRelayUrl) -> OkHttpClient,
+    /** The clock on one call, started when the call leaves the dispatcher's queue. */
     private val timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+    /** The wall clock over the queue and the call together, so a document never waiting for a slot still ends. */
+    private val outerSeconds: Long = timeoutSeconds * OUTER_FACTOR,
     /** Documents in flight at once: the passes' dials, each of which asks for one. */
     concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
-    /** Its own, so a fetch neither waits behind the mirror's live tails on the shared client nor holds a slot they need. */
+    /** Its own, so a fetch neither waits behind the passes' dials on the shared client nor holds a slot they need. */
     private val dispatcher =
         Dispatcher().apply {
             maxRequests = concurrency
@@ -87,8 +94,8 @@ class RelayDocument(
         val timer = ConnectTimer()
         val body =
             try {
-                // Over the queue as well as the call: OkHttp's own clock starts only once a call leaves it.
-                withTimeoutOrNull(timeoutSeconds * 1000) { fetch(url, address, timer) }
+                // The call's own clock starts once it leaves the queue; this one only keeps a slot that never frees from hanging the read.
+                withTimeoutOrNull(outerSeconds * 1000) { fetch(url, address, timer) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -98,7 +105,10 @@ class RelayDocument(
         return Reading(doc = body?.let { parse(it) }, openMs = timer.openMs)
     }
 
-    /** The document's body, or null for a status that is not success. Cancelling the caller cancels the call. */
+    /**
+     * The document's body, or null for a status that is not success or a document another host served:
+     * a redirect is followed only on the url's own host. Cancelling the caller cancels the call.
+     */
     private suspend fun fetch(
         url: NormalizedRelayUrl,
         address: String,
@@ -119,6 +129,7 @@ class RelayDocument(
                 .get()
                 .build()
         val call = client.newCall(request)
+        val host = request.url.host
         return suspendCancellableCoroutine { waiting ->
             waiting.invokeOnCancellation { call.cancel() }
             call.enqueue(
@@ -134,7 +145,7 @@ class RelayDocument(
                     ) {
                         val body =
                             try {
-                                response.use { if (it.isSuccessful) it.peekBody(MAX_DOCUMENT_BYTES).string() else null }
+                                response.use { if (it.isSuccessful && it.request.url.host == host) it.peekBody(MAX_DOCUMENT_BYTES).string() else null }
                             } catch (e: IOException) {
                                 waiting.resumeWithException(e)
                                 return
@@ -146,28 +157,34 @@ class RelayDocument(
         }
     }
 
-    /** Brackets the TCP and TLS handshake alone. One instance per call. */
-    private class ConnectTimer : okhttp3.EventListener() {
-        @Volatile private var startedAt: Long? = null
+    /**
+     * Brackets the TCP and TLS handshake alone, one instance per call. OkHttp races an address's attempts
+     * (`fastFallback`), so each start is kept by its address; only the first connect, to the url's own address, is timed.
+     */
+    internal class ConnectTimer(
+        private val nanoTime: () -> Long = System::nanoTime,
+    ) : okhttp3.EventListener() {
+        private val startedAt = ConcurrentHashMap<InetSocketAddress, Long>()
 
         @Volatile var openMs: Long? = null
             private set
 
         override fun connectStart(
-            call: okhttp3.Call,
-            inetSocketAddress: java.net.InetSocketAddress,
-            proxy: java.net.Proxy,
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
         ) {
-            startedAt = System.nanoTime()
+            startedAt[inetSocketAddress] = nanoTime()
         }
 
         override fun connectEnd(
-            call: okhttp3.Call,
-            inetSocketAddress: java.net.InetSocketAddress,
-            proxy: java.net.Proxy,
-            protocol: okhttp3.Protocol?,
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
+            protocol: Protocol?,
         ) {
-            startedAt?.let { openMs = (System.nanoTime() - it) / 1_000_000 }
+            // A followed redirect connects again, to an address the websocket never dials.
+            if (openMs == null) startedAt[inetSocketAddress]?.let { openMs = (nanoTime() - it) / 1_000_000 }
         }
     }
 
@@ -175,6 +192,9 @@ class RelayDocument(
         const val NIP11_CONTENT_TYPE = "application/nostr+json"
 
         const val DEFAULT_TIMEOUT_SECONDS = 10L
+
+        /** The outer bound in calls' worth: a few calls ahead on one host's slots, never a queue that does not move. */
+        const val OUTER_FACTOR = 6L
 
         /** Documents asked of one host at once; a host serving many paths is still one server. */
         const val DOCUMENTS_PER_HOST = 4

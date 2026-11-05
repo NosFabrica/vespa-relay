@@ -20,24 +20,21 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
-import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Ask every relay the same question twice and drop the ones that answer differently. The pair
@@ -48,20 +45,20 @@ class ConsistencyPass(
     private val consistency: RelayConsistency,
     private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
-    private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
-    /** Where each pass reports how far it got. Null for every caller but the router. */
-    val progress: Processors.Handle? = null,
-    /** The proxy, for the gate alone. */
-    tor: TorTransport? = null,
+    /** The monitor's one dial gate, shared with every other pass. */
+    private val gate: DialGate = DialGate(DEFAULT_DIAL_CONCURRENCY),
+    /** Where each pass reports how far it got. Null for every caller but the monitor. */
+    override val progress: Processors.Handle? = null,
     /** The wall clock on one verdict write, which runs after the dial and outside its deadline. */
-    private val publishDeadlineMs: Long = VerdictWrites.PUBLISH_DEADLINE_MS,
-    private val writeConcurrency: Int = VerdictWrites.WRITE_CONCURRENCY,
+    private val publishDeadlineMs: Long = WriteLimits.PUBLISH_DEADLINE_MS,
+    private val writeConcurrency: Int = WriteLimits.WRITE_CONCURRENCY,
     /** Every url the monitor knows, by server: a stand-in may be a url outside this batch. */
     private val world: () -> ServerIndex = { ServerIndex.EMPTY },
-) {
-    /** One gate for every pass this component runs. */
-    private val gate = DialGate.over(concurrency, tor)
-
+    /** Whether the pre-probe lets a url be walked. */
+    private val canDial: suspend (NormalizedRelayUrl) -> Boolean = { true },
+    /** The socket refcount; without one every walk leaves a websocket behind. */
+    private val sockets: Sockets = Sockets.NONE,
+) : AliasMonitor.Pass {
     /**
      * Every way a url survives a pass with nothing written down. Exactly one is assigned to every
      * url attempted and not decided, so the counts sum to `unmeasured`.
@@ -112,66 +109,55 @@ class ConsistencyPass(
      * Measure the urls nothing is known about yet and publish what that proves. Returns how many
      * new verdicts were reached. Run in the monitor's sequence so two writers never share a record.
      */
-    suspend fun measure(
-        label: String,
+    override suspend fun measure(
+        kind: RunKind,
         candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit = {},
-        sockets: Sockets = Sockets.NONE,
     ): Int {
         if (candidates.isEmpty()) return 0
+        val label = kind.label
         val startedMs = System.currentTimeMillis()
         // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
         val mates = world().matesOf(candidates)
-        val held = adopt(label, candidates, mates) ?: return 0
-        // A sweep's candidates are the whole set; a fast-lane batch is a handful of urls.
-        if (label != AliasMonitor.FAST_LANE) consistency.retainOnly(candidates)
+        val held = readStanding("stability", label) { record.load(candidates + mates) }
         // A folded url is never walked; the monitor hands every pass the raw pre-fold list.
         val folded = held.aliases.keys
 
-        val open = consistency.toProbe(candidates).filter { it !in folded }
+        val open = candidates.filter { it !in folded && verdictOf(it, held) == null }
         // A path the fold has not decided waits behind its server's stand-in, the rule fitness keeps:
         // otherwise every path of one server is paired-walked, over Tor a socket for minutes each.
-        val waiting = AliasFolding.heldAmong(held, open, mates)
+        val waiting = FoldReading.heldAmong(held, open, mates)
         val wanted = open.filter { it !in waiting }
         val waitingFindings = waiting.keys.associateWith { Finding(Unmeasured.WAITING) }
         if (wanted.isEmpty()) {
             // Reported, not skipped: "nothing left to measure" is the state the gate works towards.
-            report(label, candidates, folded, dialled = 0, decided = 0, unmeasurable = waitingFindings)
+            report(label, candidates, held, emptyMap(), dialled = 0, decided = 0, unmeasurable = waitingFindings)
             return 0
         }
 
         progress?.measuring(wanted.size, Processors.UNIT_URL)
-        val decided = AtomicInteger()
-        val refused = AtomicInteger()
-        // Urls a socket was opened for; a url [canDial] held back is not one.
-        val walked = AtomicInteger()
-        val silent = ConcurrentHashMap<NormalizedRelayUrl, Finding>()
-        // Terminal text Silence could not place, sampled so the table grows from real strings.
-        val unplaced = ConcurrentHashMap.newKeySet<String>()
         // One anchor for the whole pass.
         val anchor = RelayConsistency.settledAnchor(nowSeconds())
-        val earned = ConcurrentHashMap<NormalizedRelayUrl, Earned>()
-
-        // Nothing is published about a url the deadline cut: the clock is ours. A url cut after
-        // its verdict was earned keeps it.
-        dialEach(wanted, gate, probe::deadlineMs, progress, cut = { if (!earned.containsKey(it)) silent[it] = Finding(Unmeasured.ABANDONED) }) { url ->
-            measureOne(url, anchor, canDial, onEvent, sockets, walked, decided, refused, silent, unplaced, earned)
+        // One slot per url, written only by its own coroutine; null is a url the deadline cut.
+        val outcomes = arrayOfNulls<Outcome>(wanted.size)
+        dialEach(
+            wanted,
+            gate,
+            probe::deadlineMs,
+            progress,
+            before = { i, url ->
+                outcomes[i] = declined(url)
+                outcomes[i] == null
+            },
+        ) { i, url ->
+            outcomes[i] = measureOne(url, anchor)
         }
+        val tally = Tally.of(wanted, outcomes)
 
         // Outside the dial's deadline and permit: a slow store must not cost a verdict the relay earned.
-        progress?.measuring(earned.size, Processors.UNIT_VERDICT)
+        progress?.measuring(tally.earned.size, Processors.UNIT_VERDICT)
         val writes =
-            writeEach(
-                earned.keys.sortedBy { it.url },
-                writeConcurrency,
-                publishDeadlineMs,
-                VerdictWrites.PUBLISH_WEDGE_LIMIT,
-                VerdictWrites.PUBLISH_WEDGE_BUDGET_MS,
-                progress,
-                VerdictWrites.STAGE_PUBLISH,
-            ) { url ->
-                val e = earned.getValue(url)
+            writeEach(tally.earned.keys.sortedBy { it.url }, WriteLimits(writeConcurrency, publishDeadlineMs), progress, STAGE_PUBLISH) { url ->
+                val e = tally.earned.getValue(url)
                 record.publishConsistency(
                     url,
                     consistent = e.consistent,
@@ -182,36 +168,118 @@ class ConsistencyPass(
                     anchorDays = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60),
                 ) != null
             }
-        if (writes.published < earned.size) {
+        // Only a verdict the store took is held or counted: one it refused is measured again next pass.
+        val landed = writes.stored.associateWith { tally.earned.getValue(it).consistent }
+        val decided = landed.size
+        val refused = landed.count { !it.value }
+        if (writes.published < tally.earned.size) {
             System.err.println(
-                "router: $label stability — ${earned.size - writes.published} earned verdict(s) NOT written " +
+                "monitor: $label stability — ${tally.earned.size - writes.published} earned verdict(s) NOT written " +
                     "(${writes.wedged} hit the write deadline, ${writes.declined} failed outright" +
                     (writes.stoppedBy?.let { "; stopped because $it" }.orEmpty()) +
                     "); those urls are measured again next pass",
             )
         }
 
-        if (decided.get() > 0 || silent.isNotEmpty()) {
+        val silent = tally.findings
+        if (decided > 0 || silent.isNotEmpty()) {
             System.err.println(
-                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) — ${decided.get()} decided " +
-                    "(${refused.get()} refused as inconsistent), ${silent.size} proved nothing" +
+                "monitor: $label stability walked ${tally.walked} of ${wanted.size} url(s) — $decided decided " +
+                    "($refused refused as inconsistent), ${silent.size} proved nothing" +
                     breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
-                    ", ${consistency.refusedCount()} url(s) now refused in total " +
+                    ", ${candidates.count { verdictOf(it, held, landed) == false }} url(s) now refused in total " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
         if (waiting.isNotEmpty()) {
             System.err.println(
-                "router: $label stability — ${waiting.size} url(s) on ${waiting.values.toSet().size} server(s) wait on the fold " +
+                "monitor: $label stability — ${waiting.size} url(s) on ${waiting.values.toSet().size} server(s) wait on the fold " +
                     "behind another url of the same server, not walked",
             )
         }
-        if (unplaced.isNotEmpty()) {
-            System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
+        if (tally.unplaced.isNotEmpty()) {
+            System.err.println("monitor: $label stability could not classify ${tally.unplaced.size} terminal reason(s): " + tally.unplaced.joinToString(" | "))
         }
-        report(label, candidates, folded, dialled = walked.get(), decided = decided.get(), unmeasurable = silent + waitingFindings)
-        return decided.get()
+        report(label, candidates, held, landed, dialled = tally.walked, decided = decided, unmeasurable = silent + waitingFindings)
+        return decided
     }
+
+    /** What one url's dial came to. None at all is a url the deadline cut, [Unmeasured.ABANDONED]. */
+    private sealed interface Outcome {
+        /** A verdict the relay earned, held from the dial to the write. */
+        class Earned(
+            val consistent: Boolean,
+            val first: Int,
+            val second: Int,
+            val shared: Int,
+            val score: Double,
+        ) : Outcome
+
+        /** No verdict, and why; [unplaced] is the transport's words where [Silence] could not place them. */
+        class Unproven(
+            val finding: Finding,
+            /** A socket was opened for it; a url the pre-probe held back is not walked. */
+            val walked: Boolean,
+            val unplaced: String? = null,
+        ) : Outcome
+    }
+
+    /** One pass's outcomes after the join, read on one coroutine. */
+    private class Tally(
+        val earned: Map<NormalizedRelayUrl, Outcome.Earned>,
+        val findings: Map<NormalizedRelayUrl, Finding>,
+        val walked: Int,
+        /** Terminal text Silence could not place, sampled so the table grows from real strings. */
+        val unplaced: Set<String>,
+    ) {
+        companion object {
+            fun of(
+                urls: List<NormalizedRelayUrl>,
+                outcomes: Array<Outcome?>,
+            ): Tally {
+                val earned = HashMap<NormalizedRelayUrl, Outcome.Earned>()
+                val findings = HashMap<NormalizedRelayUrl, Finding>()
+                val unplaced = LinkedHashSet<String>()
+                var walked = 0
+                for ((i, url) in urls.withIndex()) {
+                    when (val outcome = outcomes[i]) {
+                        // Nothing is published about a url the deadline cut: the clock is ours.
+                        null -> {
+                            walked++
+                            findings[url] = Finding(Unmeasured.ABANDONED)
+                        }
+
+                        is Outcome.Earned -> {
+                            walked++
+                            earned[url] = outcome
+                        }
+
+                        is Outcome.Unproven -> {
+                            if (outcome.walked) walked++
+                            findings[url] = outcome.finding
+                            outcome.unplaced?.let { if (unplaced.size < MAX_UNPLACED_SAMPLES) unplaced += it }
+                        }
+                    }
+                }
+                return Tally(earned, findings, walked, unplaced)
+            }
+        }
+    }
+
+    /**
+     * A url's verdict after this pass, true consistent and null none: what landed in [landed], else what
+     * [held] read. A refusal read wins over a consistent one.
+     */
+    private fun verdictOf(
+        url: NormalizedRelayUrl,
+        held: RelayVerdictRecord.Verdicts,
+        landed: Map<NormalizedRelayUrl, Boolean> = emptyMap(),
+    ): Boolean? =
+        landed[url] ?: when (url) {
+            in held.inconsistent -> false
+            in held.consistent -> true
+            else -> null
+        }
 
     /** The undecided urls by finding, commonest first. */
     private fun breakdown(silent: Map<NormalizedRelayUrl, Finding>): List<Pair<Finding, Int>> = order(silent.values.groupingBy { it }.eachCount())
@@ -233,7 +301,8 @@ class ConsistencyPass(
     private fun report(
         label: String,
         candidates: List<NormalizedRelayUrl>,
-        folded: Set<NormalizedRelayUrl>,
+        held: RelayVerdictRecord.Verdicts,
+        landed: Map<NormalizedRelayUrl, Boolean>,
         dialled: Int,
         decided: Int,
         unmeasurable: Map<NormalizedRelayUrl, Finding>,
@@ -244,11 +313,14 @@ class ConsistencyPass(
         var inconsistent = 0
         var unmeasured = 0
         for (url in candidates) {
-            when {
-                url in folded -> foldedAway++
-                consistency.isConsistent(url) -> consistent++
-                consistency.isInconsistent(url) -> inconsistent++
-                else -> unmeasured++
+            if (url in held.aliases) {
+                foldedAway++
+                continue
+            }
+            when (verdictOf(url, held, landed)) {
+                true -> consistent++
+                false -> inconsistent++
+                null -> unmeasured++
             }
         }
         val urls = HashMap<Finding, Int>()
@@ -308,10 +380,11 @@ class ConsistencyPass(
             }
     }
 
-    /** Both rungs of the filter ladder, and which of them the verdict is read from. */
+    /** Both rungs of the filter ladder, which of them the verdict is read from, and what it decided. */
     private data class Ladder(
         val bare: Answers,
         val fallback: Answers?,
+        val decided: RelayConsistency.Decided?,
     ) {
         /** The attempt that got furthest. */
         val best: Answers get() = if (fallback != null && fallback.depth > bare.depth) fallback else bare
@@ -337,20 +410,8 @@ class ConsistencyPass(
             }
     }
 
-    /** One url's paired walk, so the deadline has something to wrap. */
-    private suspend fun measureOne(
-        url: NormalizedRelayUrl,
-        anchor: Long,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit,
-        sockets: Sockets,
-        walked: AtomicInteger,
-        decided: AtomicInteger,
-        refused: AtomicInteger,
-        silent: ConcurrentHashMap<NormalizedRelayUrl, Finding>,
-        unplaced: MutableSet<String>,
-        earned: ConcurrentHashMap<NormalizedRelayUrl, Earned>,
-    ) {
+    /** The pre-probe, before any dial permit: null when the url is walked, else what it ends as. */
+    private suspend fun declined(url: NormalizedRelayUrl): Outcome? {
         progress?.holding(url.url, STAGE_REACHABILITY)
         // Not runCatching: it swallows CancellationException and would file a shutdown as probe failures.
         val reachable =
@@ -359,19 +420,21 @@ class ConsistencyPass(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                silent[url] = Finding(Unmeasured.FAILED)
-                return
+                return Outcome.Unproven(Finding(Unmeasured.FAILED), walked = false)
             }
-        if (!reachable) {
-            silent[url] = Finding(Unmeasured.TRANSPORT)
-            return
-        }
-        walked.incrementAndGet()
+        return if (reachable) null else Outcome.Unproven(Finding(Unmeasured.TRANSPORT), walked = false)
+    }
+
+    /** One url's paired walk, so the deadline has something to wrap. */
+    private suspend fun measureOne(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+    ): Outcome {
         progress?.holding(url.url, STAGE_LADDER)
         sockets.claim(url)
         val attempt =
             try {
-                ladder(url, anchor, onEvent)
+                ladder(url, anchor)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -380,44 +443,23 @@ class ConsistencyPass(
             } finally {
                 sockets.release(url)
             }
-        if (attempt == null) {
-            silent[url] = Finding(Unmeasured.FAILED)
-            return
-        }
-        val answer = consistency.judge(attempt.best.first.ids, attempt.best.second.ids)
+        if (attempt == null) return Outcome.Unproven(Finding(Unmeasured.FAILED), walked = true)
+        val answer = attempt.decided
         if (answer == null) {
             val why = attempt.why()
             // The transport's words only under the one reason they explain.
             val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
-            if (cause == Silence.UNKNOWN && unplaced.size < MAX_UNPLACED_SAMPLES) {
-                attempt.saidWhat()?.let { unplaced += it }
-            }
-            silent[url] = Finding(why, cause)
-            return
+            return Outcome.Unproven(Finding(why, cause), walked = true, unplaced = attempt.saidWhat().takeIf { cause == Silence.UNKNOWN })
         }
-        val (verdict, first, second) = answer
-        // No suspension point from here to the end, so the deadline cannot split the three.
-        earned[url] =
-            Earned(
-                consistent = verdict == RelayConsistency.Verdict.CONSISTENT,
-                first = first.size,
-                second = second.size,
-                shared = consistency.shared(first, second),
-                score = consistency.containment(first, second),
-            )
-        consistency.learn(url, verdict)
-        decided.incrementAndGet()
-        if (verdict == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
+        // Learned only once the write lands, in [measure].
+        return Outcome.Earned(
+            consistent = answer.verdict == RelayConsistency.Verdict.CONSISTENT,
+            first = answer.first.size,
+            second = answer.second.size,
+            shared = answer.shared,
+            score = answer.score,
+        )
     }
-
-    /** One decided url's numbers, held from the dial to the write. */
-    private class Earned(
-        val consistent: Boolean,
-        val first: Int,
-        val second: Int,
-        val shared: Int,
-        val score: Double,
-    )
 
     /**
      * The bare filter, then the kinds fallback only when the first proved nothing. An auth
@@ -427,13 +469,15 @@ class ConsistencyPass(
     private suspend fun ladder(
         url: NormalizedRelayUrl,
         anchor: Long,
-        onEvent: suspend (Event) -> Unit,
     ): Ladder {
-        val bare = walkPair(url, anchor, null, onEvent)
-        val decided = consistency.decide(bare.first.ids, bare.second.ids) != RelayConsistency.Verdict.UNMEASURABLE
+        val bare = walkPair(url, anchor, null)
+        consistency.judge(bare.first.ids, bare.second.ids)?.let { return Ladder(bare, null, it) }
         val timedOut = probe.endsLadder(url, bare.first) && probe.endsLadder(url, bare.second)
-        if (decided || bare.authRefused || timedOut) return Ladder(bare, null)
-        return Ladder(bare, walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent))
+        if (bare.authRefused || timedOut) return Ladder(bare, null, null)
+        val fallback = walkPair(url, anchor, AliasProbe.FALLBACK_KINDS)
+        // The verdict is read from the deeper rung, and an undecided bare pair decides nothing.
+        val decided = if (fallback.depth > bare.depth) consistency.judge(fallback.first.ids, fallback.second.ids) else null
+        return Ladder(bare, fallback, decided)
     }
 
     /**
@@ -444,7 +488,6 @@ class ConsistencyPass(
         url: NormalizedRelayUrl,
         anchor: Long,
         kinds: List<Int>?,
-        onEvent: suspend (Event) -> Unit,
     ): Answers =
         coroutineScope {
             val walks =
@@ -452,7 +495,7 @@ class ConsistencyPass(
                     async {
                         // Not runCatching: it would turn a cancellation into a silent walk.
                         try {
-                            probe.window(url, anchor, kinds, onEvent)
+                            probe.window(url, anchor, kinds)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (_: Exception) {
@@ -462,20 +505,6 @@ class ConsistencyPass(
                 }.awaitAll()
             Answers(walks[0], walks[1])
         }
-
-    /**
-     * Pull the stored verdicts into memory; a url whose verdict has aged out comes back with none,
-     * which is "dial it". Null when the read failed, which leaves what [consistency] holds alone.
-     */
-    private suspend fun adopt(
-        label: String,
-        candidates: List<NormalizedRelayUrl>,
-        mates: List<NormalizedRelayUrl>,
-    ): RelayVerdictRecord.Verdicts? {
-        val held = readStanding("stability", label) { record.load(candidates + mates) } ?: return null
-        consistency.replace(candidates, held.consistent, held.inconsistent)
-        return held
-    }
 
     companion object {
         const val DEFAULT_DIAL_CONCURRENCY = AliasFolding.DEFAULT_DIAL_CONCURRENCY

@@ -35,6 +35,8 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.KeyStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -68,6 +70,7 @@ class ReachabilityProbeTest {
         addresses: List<InetAddress>,
         failures: Map<InetAddress, IOException?>,
         clock: () -> Long = System::currentTimeMillis,
+        maxRemembered: Int = 50_000,
         onConnect: (InetSocketAddress, Int) -> Unit = { _, _ -> },
     ) = ReachabilityProbe(
         tor = null,
@@ -78,6 +81,7 @@ class ReachabilityProbeTest {
             Socket()
         },
         clock = clock,
+        maxRemembered = maxRemembered,
     )
 
     private fun reach(
@@ -152,6 +156,29 @@ class ReachabilityProbeTest {
     }
 
     @Test
+    fun `a full cache forgets its oldest hosts, a tenth at a time, and keeps the rest`() {
+        var now = 0L
+        val hosts = (0..10).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
+        var connects = 0
+        val counting = probe(listOf(v4), mapOf(v4 to null), clock = { now }, maxRemembered = 10) { _, _ -> connects++ }
+
+        runBlocking {
+            for (i in 0 until 10) {
+                now++
+                counting.reach(hosts[i])
+            }
+            // The eleventh fills it: the oldest one goes, the other nine are reused.
+            now++
+            counting.reach(hosts[10])
+            connects = 0
+            for (i in 1..10) counting.reach(hosts[i])
+            assertEquals(0, connects, "a host still in the cache was asked again")
+            counting.reach(hosts[0])
+            assertEquals(1, connects, "the oldest host was not the one forgotten")
+        }
+    }
+
+    @Test
     fun `a host with many slow addresses costs one deadline, and the untried ones prove nothing`() {
         // Each connect spends the whole timeout it is handed and is then refused.
         var now = 0L
@@ -176,6 +203,29 @@ class ReachabilityProbeTest {
         assertEquals(Reach.UNEXPLAINED, lookup(UnknownHostException("dual.example")))
         assertEquals(Reach.PROVED_UNREACHABLE, lookup(UnknownHostException("dual.example: Name or service not known")))
         assertEquals(Reach.TRANSPORT_DOWN, lookup(UnknownHostException("dual.example: Temporary failure in name resolution")))
+    }
+
+    @Test
+    fun `a lookup that outlives its clock ends within it and claims nothing`() {
+        // Blocking DNS cannot be cancelled, so only a lookup bounded off the caller's thread returns on time.
+        val stalled = CountDownLatch(1)
+        val probe =
+            ReachabilityProbe(
+                tor = null,
+                resolve = {
+                    stalled.await(10, TimeUnit.SECONDS)
+                    arrayOf(v4)
+                },
+                lookupMs = 100,
+            )
+        try {
+            val startedMs = System.currentTimeMillis()
+            assertEquals(Reach.UNEXPLAINED, runBlocking { probe.reach(url) }, "our resolver stalling is no proof about the relay")
+            assertEquals(TlsAnswer.UNCHECKED, runBlocking { probe.tls(url) })
+            assertTrue(System.currentTimeMillis() - startedMs < 5_000, "the probe waited out the resolver")
+        } finally {
+            stalled.countDown()
+        }
     }
 
     private val dir =

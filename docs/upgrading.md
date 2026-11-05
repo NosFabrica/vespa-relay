@@ -28,6 +28,9 @@ the `monitor` service in `docker-compose.yml`, under the same `sync` profile, so
 - **A `vespa-monitor` container**, with the monitor page on 7779 as before and
   its own `boot:` and health lines. `restart sync` no longer restarts the
   monitor; `restart monitor` does, and neither touches the other.
+- **The monitor's lines start `monitor:`, not `router:`.** The fold, stability
+  and fitness lines, `store call SLOW` and the socket and Tor lines included;
+  grep `docker compose logs monitor` for `monitor:`. `router:` is the sync's.
 - **No monitor config, no monitor.** Without `MONITOR_CONFIG_LOCAL` the monitor
   prints that this deployment measures nothing and exits 0, and compose leaves
   it down. A sync whose streams discover their relays is no longer refused for

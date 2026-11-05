@@ -88,12 +88,6 @@ class AliasFoldLiveProbe {
                 val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
                 val record = RelayVerdictRecord(store, signer)
                 val aliases = RelayAliases()
-                val folding =
-                    AliasFolding(
-                        aliases = aliases,
-                        record = record,
-                        probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS },
-                    )
                 val outstanding = ConcurrentHashMap<NormalizedRelayUrl, Int>()
                 val claims = AtomicInteger()
                 val sockets =
@@ -108,6 +102,12 @@ class AliasFoldLiveProbe {
                             runCatching { client.getOrCreateRelay(url).disconnect() }
                         }
                     }
+                val folding =
+                    AliasFolding(
+                        record = record,
+                        probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS },
+                        sockets = sockets,
+                    )
                 // The same walk the pass makes; the leader is walked twice for its self-score.
                 val probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS }
                 val anchor = AliasProbe.settledAnchor(System.currentTimeMillis() / 1000)
@@ -116,7 +116,7 @@ class AliasFoldLiveProbe {
                 var lead: AliasProbe.Leader? = null
                 for (candidate in wanted.take(AliasFolding.YARDSTICK_ATTEMPTS)) {
                     leader = candidate
-                    lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(candidate, anchor) {}.leader } }
+                    lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(candidate, anchor).leader } }
                     if (lead != null) break
                     println("    ${candidate.url} said nothing — trying the next url on the host")
                 }
@@ -125,11 +125,11 @@ class AliasFoldLiveProbe {
                 } else {
                     val asked = lead.kinds?.let { "kinds=$it" } ?: "bare filter"
                     println("    leader ${leader.url}: ${lead.ids.size} id(s) via $asked")
-                    val again = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(leader, anchor, lead.kinds) {} } }
+                    val again = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(leader, anchor, lead.kinds) } }
                     println("      vs ITSELF on a second walk: ${containment(lead.ids, again.orEmpty(), lead.kinds)}")
                     val twin = aliases.plainTwinIn(group, leader)
                     for (url in group.filter { it != leader }) {
-                        val print = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(url, anchor, lead.kinds) {} } }
+                        val print = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(url, anchor, lead.kinds) } }
                         val pairing = if (url == twin) "  [scheme twin — folds on the pairing, not on this number]" else ""
                         println("      vs ${url.url}: ${containment(lead.ids, print.orEmpty(), lead.kinds)}$pairing")
                     }
@@ -138,7 +138,7 @@ class AliasFoldLiveProbe {
                 val learned =
                     runBlocking {
                         withTimeoutOrNull(PER_GROUP_MS) {
-                            folding.measure("live", group, canDial = { true }, sockets = sockets)
+                            folding.measure(RunKind.SWEEP, group)
                         }
                     }
                 val tookMs = System.currentTimeMillis() - startedMs

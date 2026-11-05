@@ -22,9 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -35,10 +33,15 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** A pass that cannot read the verdicts it would publish against dials nothing and signs nothing. */
@@ -80,9 +83,9 @@ class StandingReadTest {
     fun `the fold skips a sweep whose standing read failed`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
+            val fold = AliasFolding(record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertFailsWith<StandingUnread> { fold.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "fold")
         }
 
@@ -100,9 +103,32 @@ class StandingReadTest {
     fun `the fold reads its candidates' own verdicts when the walk over every verdict fails`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
+            val fold = AliasFolding(record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
 
-            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a narrower read that answered skipped the whole fold")
+            assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a narrower read that answered skipped the whole fold")
+        }
+
+    @Test
+    fun `inside a sweep the fold's fallback reads its candidates by d rather than walking again`(): Unit =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+            val walks = AtomicInteger()
+            val failing =
+                object : IEventStore by store {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        if (filter.tags?.containsKey("d") != true) walks.incrementAndGet()
+                        return WalkFails(store).query(filter)
+                    }
+                }
+            val record = RelayVerdictRecord(failing, signer)
+            val fold = AliasFolding(record = record, probe = probe())
+            record.beginSweep()
+            try {
+                assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a walk that failed took the fallback or the fold's writes down with it")
+            } finally {
+                record.endSweep()
+            }
+            assertTrue(walks.get() <= 2, "the sweep walked ${walks.get()} times after its walk failed, where it retries once")
         }
 
     @Test
@@ -111,7 +137,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val pass = ConsistencyPass(consistency = RelayConsistency(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, pass.measure("t", urls, canDial = { true }))
+            assertFailsWith<StandingUnread> { pass.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "stability")
         }
 
@@ -128,7 +154,60 @@ class StandingReadTest {
                     reconcile = { _, _ -> },
                 )
 
-            pass.measure("t", urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            assertFailsWith<StandingUnread> { pass.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "fitness")
         }
+
+    /** Reads never answer, writes land: a store wedged under the pass gate. */
+    private class Silent(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    /** [pass] run to its end within a few deadlines, and what it said on stderr. */
+    private fun withinDeadline(pass: suspend () -> Unit): String {
+        val captured = ByteArrayOutputStream()
+        val realErr = System.err
+        System.setErr(PrintStream(captured, true))
+        try {
+            // The assertion is the pass ending at all: a hung read would hold the pass gate for good.
+            runBlocking { withTimeout(20 * READ_DEADLINE_MS) { pass() } }
+        } finally {
+            System.setErr(realErr)
+        }
+        return captured.toString()
+    }
+
+    private fun silentRecord(store: NostrSemanticsStore) = RelayVerdictRecord(Silent(store), signer, readDeadlineMs = READ_DEADLINE_MS)
+
+    @Test
+    fun `a standing read the store never answers ends every pass, which publishes nothing and names the deadline`() {
+        val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+        val fold = AliasFolding(record = silentRecord(store), probe = probe())
+        val stability = ConsistencyPass(consistency = RelayConsistency(), record = silentRecord(store), probe = probe())
+        val fitness =
+            FitnessPass(
+                record = silentRecord(store),
+                probe = probe(),
+                client = EmptyNostrClient(),
+                progress = Processors().of("fitness"),
+                reconcile = { _, _ -> },
+            )
+
+        val said =
+            listOf(
+                "fold" to withinDeadline { assertFailsWith<StandingUnread> { fold.measure(RunKind.SWEEP, urls) } },
+                "stability" to withinDeadline { assertFailsWith<StandingUnread> { stability.measure(RunKind.SWEEP, urls) } },
+                "fitness" to withinDeadline { assertFailsWith<StandingUnread> { fitness.measure(RunKind.SWEEP, urls) } },
+            )
+        for ((pass, err) in said) {
+            assertNothingSigned(store, pass)
+            assertTrue("could not read the standing verdicts (the read outlived its" in err, "the $pass pass did not name the deadline: $err")
+        }
+    }
+
+    private companion object {
+        const val READ_DEADLINE_MS = 50L
+    }
 }

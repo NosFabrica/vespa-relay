@@ -25,39 +25,45 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * One socket refcount across every stream and every probe pass: a socket closes only when
- * its last holder releases it, under the url's lock, so no claim lands between that decision
- * and the close. Pinned urls are never closed.
+ * One socket refcount across every stream and every probe pass: a socket closes only when its
+ * last holder releases it, inside that url's atomic remap of [held], so no claim lands between
+ * the count reaching zero and the close. Pinned urls are never closed.
  */
 class RelaySockets(
     private val client: NostrClient,
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
+    private val logPrefix: String = "router",
 ) : Sockets {
     private val held = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
-    /** Striped rather than per url, so the set of locks does not grow with every url ever dialled. */
-    private val locks = Array(LOCK_STRIPES) { Any() }
-
-    private fun lockFor(url: NormalizedRelayUrl): Any = locks[Math.floorMod(url.hashCode(), LOCK_STRIPES)]
-
     override fun claim(url: NormalizedRelayUrl) {
-        synchronized(lockFor(url)) { held.merge(url, 1, Int::plus) }
+        held.merge(url, 1, Int::plus)
     }
 
     override fun release(url: NormalizedRelayUrl) {
-        synchronized(lockFor(url)) {
-            val n = held[url]
-            // A release nobody claimed must not disconnect a socket its real holder is still on.
-            if (n == null) {
-                System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
-                return
+        var unclaimed = false
+        held.compute(url) { _, n ->
+            when {
+                // A release nobody claimed must not disconnect a socket its real holder is still on.
+                n == null -> {
+                    unclaimed = true
+                    null
+                }
+
+                n > 1 -> {
+                    n - 1
+                }
+
+                else -> {
+                    // Inside the remap: [close] touches only the client, never [held].
+                    if (url !in pinnedUrls) close(url)
+                    null
+                }
             }
-            if (n > 1) {
-                held[url] = n - 1
-                return
-            }
-            held.remove(url)
-            if (url !in pinnedUrls) close(url)
+        }
+        if (unclaimed) {
+            System.err.println("$logPrefix: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
         }
     }
 
@@ -68,9 +74,5 @@ class RelaySockets(
     private fun close(url: NormalizedRelayUrl) {
         if (url !in client.availableRelaysFlow().value) return
         runCatching { client.getOrCreateRelay(url).disconnect() }
-    }
-
-    private companion object {
-        const val LOCK_STRIPES = 64
     }
 }

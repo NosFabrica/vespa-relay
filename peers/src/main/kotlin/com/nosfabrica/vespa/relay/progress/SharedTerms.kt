@@ -56,7 +56,7 @@ internal val SHARED_TERMS: JsonObject =
             "WHO ASKED, in this router's own subsystem names: `ingest.dedup` / `ingest.versions` / " +
                 "`ingest.write` (a batch pass's three calls, told apart at last), `visit.negentropy`, " +
                 "`heal.resolve`, `audit.retraction`, `push.upstream`, `monitor.verdicts`, `monitor.publish`, " +
-                "`source.relayLists`. Every one is greppable straight back to the code that makes the call, " +
+                "`source.relayLists`, `health.verdictSupply`. Every one is greppable straight back to the code that makes the call, " +
                 "which a category word like \"probe\" would not be. `other callers` is the overflow bucket — a " +
                 "folded tally, never a subsystem.",
         )

@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.peers.Verdict
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,6 +35,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -45,10 +49,11 @@ import kotlin.test.assertTrue
 
 /** A NIP-11 document is a stranger's JSON: every field optional, every type a suggestion. */
 class RelayDocumentTest {
-    /** A loopback server that reads one request and answers with [reply], or never answers when it is null. */
+    /** A loopback server that reads one request and answers with [reply] [afterMs] later, or never answers when it is null. */
     private fun serve(
         reply: String?,
         closed: CompletableFuture<Unit> = CompletableFuture(),
+        afterMs: Long = 0,
     ): ServerSocket {
         val server = ServerSocket(0)
         thread(isDaemon = true) {
@@ -56,6 +61,7 @@ class RelayDocumentTest {
                 val input = socket.getInputStream().bufferedReader()
                 while (input.readLine().orEmpty().isNotEmpty()) Unit
                 if (reply != null) {
+                    Thread.sleep(afterMs)
                     socket.getOutputStream().write(reply.toByteArray())
                     socket.getOutputStream().flush()
                 }
@@ -79,7 +85,7 @@ class RelayDocumentTest {
         }
 
     @Test
-    fun `a cancelled read lets go of its connection at once rather than at its own timeout`() =
+    fun `a cancelled read lets go of its connection at once rather than at its own timeout`(): Unit =
         runBlocking {
             val closed = CompletableFuture<Unit>()
             serve(reply = null, closed = closed).use { server ->
@@ -127,12 +133,63 @@ class RelayDocumentTest {
         }
 
     @Test
-    fun `a document still waiting for a slot ends on its own clock`() =
+    fun `a document queued behind a slow one still gets its whole clock`(): Unit =
+        runBlocking {
+            val json = """{ "software": "strfry" }"""
+            val silent = serve(reply = null)
+            try {
+                serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json", afterMs = 500).use { answering ->
+                    // One slot, held for the silent relay's whole clock; the second relay answers well within a clock of its own.
+                    val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 1, outerSeconds = 10, concurrency = 1)
+                    val slow = async { document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${silent.localPort}")) }
+                    delay(100)
+                    val queued = document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${answering.localPort}"))
+                    slow.await()
+
+                    assertEquals("strfry", queued.doc?.software, "the queue's wait was charged to the document's own clock")
+                }
+            } finally {
+                silent.close()
+            }
+        }
+
+    /** Answers one request with a redirect to [location]. */
+    private fun redirecting(location: String) = serve("HTTP/1.1 301 Moved Permanently\r\nLocation: $location\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    @Test
+    fun `a redirect on the url's own host is followed, and rtt-open is the url's own connect`(): Unit =
+        runBlocking {
+            val json = """{ "software": "strfry" }"""
+            serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { target ->
+                redirecting("http://127.0.0.1:${target.localPort}/").use { server ->
+                    val reading = RelayDocument({ OkHttpClient() }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}"))
+
+                    assertEquals("strfry", reading.doc?.software, "the same server's redirect lost its document")
+                    assertTrue(reading.openMs != null, "the url's own connect was not timed")
+                }
+            }
+        }
+
+    @Test
+    fun `a document another host serves is not this url's`(): Unit =
+        runBlocking {
+            val json = """{ "software": "someone-else" }"""
+            serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { target ->
+                redirecting("http://localhost:${target.localPort}/").use { server ->
+                    val reading = RelayDocument({ OkHttpClient() }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}"))
+
+                    assertNull(reading.doc, "another host's document was read as this url's")
+                }
+            }
+        }
+
+    @Test
+    fun `a document still waiting for a slot ends within the outer bound`() =
         runBlocking {
             val servers = (0 until 3).map { serve(reply = null) }
             try {
-                // One slot, three relays that never answer: each read's clock covers its wait for the slot.
-                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 2, concurrency = 1)
+                // One slot, three relays that never answer: the outer bound covers the wait for the slot.
+                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 2, outerSeconds = 2, concurrency = 1)
                 val startedMs = System.currentTimeMillis()
                 val readings =
                     servers
@@ -215,5 +272,23 @@ class RelayDocumentTest {
         private val OBJECT_MEMBERS =
             setOf("equals", "hashCode", "toString", "copy") +
                 (1..8).map { "component$it" }
+    }
+
+    @Test
+    fun `rtt-open is timed from the start of the attempt that connected, not the last one begun`() {
+        // OkHttp starts a second address while the first is still connecting; the first may win.
+        var nowNs = 0L
+        val timer = RelayDocument.ConnectTimer { nowNs }
+        val call = OkHttpClient().newCall(Request.Builder().url("http://dual.example/").build())
+        val v6 = InetSocketAddress(InetAddress.getByAddress("dual.example", ByteArray(16).also { it[15] = 1 }), 80)
+        val v4 = InetSocketAddress(InetAddress.getByAddress("dual.example", byteArrayOf(192.toByte(), 0, 2, 1)), 80)
+
+        timer.connectStart(call, v6, Proxy.NO_PROXY)
+        nowNs = 250_000_000L
+        timer.connectStart(call, v4, Proxy.NO_PROXY)
+        nowNs = 300_000_000L
+        timer.connectEnd(call, v6, Proxy.NO_PROXY, null)
+
+        assertEquals(300L, timer.openMs)
     }
 }

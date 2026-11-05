@@ -439,3 +439,18 @@ that cannot sync a directory, the write still counted as saved, and `close`'s
 flush then saw nothing owed: the rename was never made durable. The flusher
 now waits on a latch `close` counts down, `close` joins it, and only then
 writes what is outstanding.
+
+**A roster rebuild reads the verdicts once.** `RosterBuilder` asked
+`StoredFold.foldedAway` once per discovering stream, each a
+`record.load(urls + mates)`, and then loaded the roster's own verdicts again over
+every url it kept: per rebuild, one verdict read per stream plus one → 1. The
+rebuild now gathers every url its streams name (the cached source scans, the
+declared urls), and `StoredFold.reads()` reads them and their servers' other urls
+in one go into a `RelayVerdictRecord.Held`; each stream's fold and the roster's
+verdicts are built from what it holds, and a url outside it (a survivor no source
+names) is read as it comes. A `Held` answer is built from the same records per
+url that a `#d` read of those urls returns, so each stream folds exactly as
+before; `RosterReadsTest` builds one roster both ways and compares them. One
+difference under a failing store: the one read failing now fails every stream's
+fold in the rebuild (each keeps its last answer, as before), where the per-stream
+reads could fail one at a time.

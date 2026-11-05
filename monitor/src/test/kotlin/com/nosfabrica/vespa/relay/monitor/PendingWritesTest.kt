@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -108,7 +107,7 @@ class PendingWritesTest {
         reconcile = { _, _ -> },
     )
 
-    private suspend fun FitnessPass.sweep(urls: List<NormalizedRelayUrl>) = withTimeout(60_000) { measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE) }
+    private suspend fun FitnessPass.sweep(urls: List<NormalizedRelayUrl>) = withTimeout(60_000) { measure(RunKind.SWEEP, urls) }
 
     private suspend fun gradeOf(
         store: IEventStore,
@@ -259,11 +258,8 @@ class PendingWritesTest {
             val pass =
                 object : AliasMonitor.Pass {
                     override suspend fun measure(
-                        label: String,
+                        kind: RunKind,
                         candidates: List<NormalizedRelayUrl>,
-                        reach: suspend (NormalizedRelayUrl) -> Reach,
-                        onEvent: suspend (Event) -> Unit,
-                        sockets: Sockets,
                     ): Int = 0
 
                     override suspend fun flushPending(): Int = flushed.incrementAndGet()

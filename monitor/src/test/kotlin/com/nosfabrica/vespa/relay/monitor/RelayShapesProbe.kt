@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -77,7 +76,7 @@ class RelayShapesProbe {
             for (url in urls) {
                 println("  ${url.url}")
                 for (shape in AliasProbe.SHAPES) {
-                    val w = runBlocking { withTimeoutOrNull(PER_URL_MS) { probe.window(url, anchor, shape) {} } }
+                    val w = runBlocking { withTimeoutOrNull(PER_URL_MS) { probe.window(url, anchor, shape) } }
                     val said =
                         when {
                             w == null -> "cut at ${PER_URL_MS / 1000}s"
@@ -93,7 +92,7 @@ class RelayShapesProbe {
                 runBlocking {
                     withTimeoutOrNull(4 * PER_URL_MS) {
                         FitnessPass(RelayVerdictRecord(store, signer), probe, client, progress = Processors().of("fitness"))
-                            .measure("probe", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                            .measure(RunKind.SWEEP, listOf(url))
                     }
                 }
                 val label =

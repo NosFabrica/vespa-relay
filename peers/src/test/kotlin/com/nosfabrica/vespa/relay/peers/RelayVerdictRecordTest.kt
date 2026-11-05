@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.peers
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.peers.RelayFacts
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -35,12 +36,23 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -262,8 +274,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "declined the NEG-OPEN"))
             record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
 
             suspend fun labelIn(url: NormalizedRelayUrl) =
@@ -296,8 +308,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "declined the NEG-OPEN")
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "declined the NEG-OPEN"))
 
             val labels = recordFor(store, alias.url)!!.tags.filter { it[0] == "l" && it.getOrNull(2) == RelayVerdictRecord.NEGENTROPY_NAMESPACE }
             assertEquals(listOf(RelayVerdictRecord.REFUSES_NEGENTROPY), labels.map { it[1] }, "the stale verdict is still selectable")
@@ -313,8 +325,8 @@ class RelayVerdictRecordTest {
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = true to "answered a NEG-OPEN")
-            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = false to "no NEG-OPEN")
+            record.publishFitness(canonical, "prime", "answered", pageable = null, nip77 = Fact(true, "answered a NEG-OPEN"))
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = Fact(false, "no NEG-OPEN"))
             record.publishFitness(self, "prime", "answered", pageable = null, nip77 = null)
 
             val read = record.load(listOf(canonical, alias, self)).speaksNegentropy
@@ -584,5 +596,132 @@ class RelayVerdictRecordTest {
             }
             val publish = calls.snapshot().callers.single { it.caller == StoreCalls.CALLER_MONITOR_PUBLISH }
             assertEquals(2L, publish.issued, "a read the store hangs on must show under `store` like the insert does")
+        }
+
+    /** A store whose queries never answer; writes never get that far. */
+    private class SilentStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    @Test
+    fun `a verdict read the store never answers fails within its deadline`(): Unit =
+        runBlocking {
+            val record = RelayVerdictRecord(SilentStore(newStore()), signer, readDeadlineMs = 50)
+            val urls = (0 until 1_200).map { RelayUrlNormalizer.normalize("wss://r$it.example") }
+
+            // The assertion is each read ending at all, as a failure the passes already skip on.
+            withTimeout(5_000) {
+                assertFailsWith<RelayVerdictRecord.ReadTimeout> { record.load(urls) }
+                assertFailsWith<RelayVerdictRecord.ReadTimeout> { record.loadAll() }
+            }
+        }
+
+    /** Answers like [inner], counting the queries in flight at once. */
+    private class CountingStore(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        val inFlight = AtomicInteger()
+        val most = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            most.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+            try {
+                delay(20)
+                return inner.query(filter)
+            } finally {
+                inFlight.decrementAndGet()
+            }
+        }
+    }
+
+    @Test
+    fun `a wide read asks several chunks at once and never more than its bound`() =
+        runBlocking {
+            val store = newStore()
+            val urls = (0 until 10 * 500).map { RelayUrlNormalizer.normalize("wss://r$it.example") }
+            RelayVerdictRecord(store, signer).publishDistinct(urls.last(), 500, "nothing", 0)
+            val counting = CountingStore(store)
+
+            val held = RelayVerdictRecord(counting, signer).load(urls)
+
+            assertEquals(setOf(urls.last()), held.distinct, "a concurrent read must still take in every chunk")
+            assertTrue(counting.most.get() in 2..4, "chunks in flight at once: ${counting.most.get()}")
+        }
+
+    @Test
+    fun `a stability score reads the same whatever the box's locale`() =
+        runBlocking {
+            val store = newStore()
+            val previous = Locale.getDefault()
+            Locale.setDefault(Locale.GERMANY)
+            try {
+                RelayVerdictRecord(store, signer).publishConsistency(alias, consistent = true, first = 40, second = 40, shared = 20, score = 0.5, anchorDays = 7)
+            } finally {
+                Locale.setDefault(previous)
+            }
+            val evidence = recordFor(store, alias.url)?.tags?.single { it[0] == RelayVerdictRecord.SELF_CONSISTENT_TAG }?.get(2)
+            assertTrue(evidence?.endsWith("-> 0.500") == true, "a signed record must not carry a decimal comma: $evidence")
+        }
+
+    @Test
+    fun `two overlapping edits of one url fail loudly, and another url is untouched`(): Unit =
+        runBlocking {
+            // Both would read the same record, and the later write would erase the earlier's tags.
+            val store = newStore()
+            val inserting = CompletableDeferred<Unit>()
+            val proceed = CompletableDeferred<Unit>()
+            val local = StoreWriter.local(store)
+            val holding =
+                object : StoreWriter by local {
+                    override suspend fun insert(event: Event) {
+                        if (event.tags.any { it[0] == "d" && it[1] == alias.url } && !proceed.isCompleted) {
+                            inserting.complete(Unit)
+                            proceed.await()
+                        }
+                        local.insert(event)
+                    }
+                }
+            val record = RelayVerdictRecord(store, signer, writer = holding)
+
+            val first = async { record.publishDistinct(alias, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2) }
+            withTimeout(10_000) { inserting.await() }
+            // Bounded, so an overlap that is let through waits on the held insert and fails here instead of hanging.
+            val overlapping = runCatching { withTimeoutOrNull(2_000) { record.publish(alias, canonical, sampled = 500, shared = 498) } }
+            assertTrue(overlapping.exceptionOrNull() is IllegalStateException && overlapping.exceptionOrNull() !is CancellationException, "the overlap was let through: $overlapping")
+            assertNotNull(record.publishDistinct(canonical, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2), "another url is its own record")
+
+            proceed.complete(Unit)
+            assertNotNull(first.await(), "the edit under way still lands")
+            assertNotNull(record.publish(alias, canonical, sampled = 500, shared = 498), "the url is free again once its edit ended")
+            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
+        }
+
+    /** A store that refuses every query, counting them. */
+    private class RefusingStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        val queries = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            queries.incrementAndGet()
+            error("the store cannot answer")
+        }
+    }
+
+    @Test
+    fun `one job's reads stop asking a store once it failed, and fail at once`(): Unit =
+        runBlocking {
+            val store = RefusingStore(newStore())
+            val held = RelayVerdictRecord(store, signer).held()
+
+            assertTrue(runCatching { held.load(listOf(alias)) }.isFailure, "a refused read answered anyway")
+            val asked = store.queries.get()
+            val again = runCatching { held.load(listOf(canonical)) }.exceptionOrNull()
+            assertTrue(again is RelayVerdictRecord.StoreUnread, "the job's next read did not fail with the first failure: $again")
+            assertEquals(asked, store.queries.get(), "the job asked a store that already failed it again")
+            assertTrue(RelayVerdictRecord(store, signer).held().runCatching { load(listOf(canonical)) }.isFailure)
+            assertTrue(store.queries.get() > asked, "a fresh job did not read the store afresh")
         }
 }

@@ -1,6 +1,8 @@
 # Fitness pass decisions
 
-The history behind `monitor/.../FitnessPass.kt`, `ConsistencyPass.kt`,
+The history behind `monitor/.../FitnessPass.kt` (with `FitnessDial.kt`,
+`FitnessBatch.kt`, `FitnessWrites.kt`, `DeferralBackoff.kt`, `FitnessReport.kt`
+and `FitnessRetirement.kt`), `ConsistencyPass.kt`,
 `RelayConsistency.kt`, `RelayCompliance.kt`, `ReachabilityProbe.kt`,
 `Silence.kt`, `HostStrikes.kt` and `Unreachability.kt`, moved out of the
 source so the code reads on its own. One paragraph per decision; `git log -L`
@@ -180,6 +182,30 @@ window on a fan-out of thousands in which every refusal was gone and none
 re-adopted; this object is shared by every stream, and another stream's
 `unusable` call inside that window put every inconsistent relay back into its
 cycle.
+
+**`RelayConsistency` holds no verdicts; a stability pass returns one outcome
+per url.** The two sets were rebuilt from the store at the top of every pass
+and read only by that pass, so the store read plus the writes that landed say
+the same thing; the one difference is a fast-lane log line, whose "refused in
+total" now counts its own candidates instead of the last sweep's. The dials
+shared three atomics, two concurrent maps and a locked sample set; each url's
+coroutine now returns a sealed `Outcome` into its own slot, and the counts, the
+unplaced-reason sample and the decided tally are read after the join. A url
+with no slot is one the deadline cut; a slot written first wins over a late
+cut. `judge` counts the shared ids once and carries the score.
+
+**A fitness batch is one slot per dialled url, read after the joins.** The
+batch held six concurrent maps, six atomics and a key set, and kept "a url is
+in at most one of outcomes, deferred, unmeasured" with `containsKey` checks
+scattered through the dial. Each url's coroutine now writes one `Slot` (a
+sealed `Result` and its flags; the deadline's `cut` runs on that coroutine,
+and the NIP-11 child writes only `reading`), and once the dials and the
+documents have joined, the guards are functions from the earned map to what
+they withhold. The fields that outlive a batch are plain maps: every reader,
+the lane's `backingOff` included, runs on the one scheduler coroutine, except
+`pending`, whose size the status thread reads. Two log details moved: the
+abandoned urls named are the first 32 by name rather than the first 32 cut,
+and verdicts tied on count print in batch order rather than hash order.
 
 **The consistency pass has no per-pass budget, and it filters out folded
 urls.** The budget it once carried stopped a pass measuring its whole set. A
@@ -564,9 +590,8 @@ live tails, whose dispatcher is sized for sockets across both planes, so a
 document could wait behind tails, or hold a slot a tail needed, and OkHttp's
 call timeout starts only once a call leaves the queue. Each fetch now runs on
 a dispatcher of its own sized to the passes' dials over both transports
-(one document per dial), four at a time per host, and its wall clock covers
-the wait for a slot as well as the call. Cancelling the caller still cancels
-the call.
+(one document per dial), four at a time per host. Cancelling the caller still
+cancels the call.
 
 **The pre-probe says when no address took a connect inside its whole window.**
 Every url `MonitorProfileProbe` saw hang a dial for its full idle window and
@@ -595,9 +620,13 @@ spent 619 permit-seconds pre-probing in the sample, and 81 after.
 **The NIP-11 document is fetched beside the dial, not before it.** The two
 fail independently, and a host that hangs one usually hangs both, so the
 document's ten-second clock was paid in full in front of every dead url's
-ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. The
-url's stage reads `nip-11 document` only while the dial has finished and the
-document has not.
+ladder: 13.5% of fitness's dial time in the sample, 1.3% beside the dial. It
+is joined by the batch, not by the url: a url waiting on its document after the
+dial ended held a dial permit for up to the document's whole clock, so the
+permit now goes back with the dial and the document is bounded by its own clock.
+The pre-probe likewise runs before the permit is taken; `ReachabilityProbe`
+bounds its own concurrency, and its lookup has its own clock because the
+resolver cannot be cancelled.
 
 **A url waiting on the fold on a server that answered HTTP is asked once.** The fold
 fingerprints what a path serves, so a path its server will not upgrade (a 404,
@@ -624,7 +653,7 @@ moves the role on, so the server's other grades are what say it is up.
 our own TLS handshake test a host and port, which every path on them shares, but
 only the stand-in was dialled, so a dead server's paths were graded one per
 sweep as each took the role: `haven.almostmachines.dev`'s 113 at four sweeps a
-day is four weeks. A held url on the stand-in's socket (`socketOf`, the scheme's
+day is four weeks. A held url on the stand-in's socket (`DialTarget`, the scheme's
 port where none is written, so `ws://` and `wss://` on one host stay apart) now
 takes that `dead` with its evidence, after the TLS and dark-network guards, so
 it inherits only proof that survived them. Production held 597 urls on 39
@@ -637,3 +666,63 @@ so an OkHttp dial wrapper around `Network is unreachable` stays quiet.
 `RelayFacts` writes through quartz's NIP-66 tag codecs and `RelayDocument`
 maps NIP-11 limits through `RequirementTag.fromNip11`, each key still read
 on its own; `RelayVerdictRecord.edit` is `RelayDiscoveryEvent.edit`.
+
+**The boot retirement is one walk.** `retireStaleEpochs` walked our graded
+records through `#l` and `retireLegacyGrades` our records through `#s`, and a
+url both found was retired twice. `FitnessRetirement.retireStale` walks our records
+once, asks each one the two questions the tag filters asked (an `l` value among
+our grades with our label on an older epoch; an `s` value among the old grade
+words), retires the union once, and counts the retirements that landed rather
+than the ones attempted. A store that cannot be walked now skips both
+retirements together, where the second walk used to run anyway.
+
+**The boot retirement's edits read off its own scan.** They read their records
+off the sweep bracket's walk, which the first edit took inside its own
+`EDIT_DEADLINE_MS`: a corpus slower to walk than that cut the walker, each waiter
+restarted it with less time, and nothing was retired while the boot waited, the
+corpus walked twice besides. `retireStale`'s scan reads the same filter, so it now
+keeps what it read and opens the bracket over it (`beginSweep(walked)`, newest
+per `d`): one walk at boot, under the scan's own page clock, and no edit pays for
+a walk. A url the scan missed costs its edit a `#d` read, as in a sweep. The edit
+deadline is a constructor parameter, so `RetirementWalkDeadlineTest` runs in a second.
+
+**The second page and the NEG-OPEN stay in sequence.** Both go to the url on
+the same client socket. Run together, a relay that caps the subscriptions one
+connection may hold, or rate-limits them, can refuse one of the two because of
+the other. A refused second page is a CLOSED with no events, which `pageBelow`
+reads as a page that drained, so `pageable` would be published `true` on a walk
+that never happened; a refused NEG-OPEN is a `NegentropySyncException`, published
+as `nip77 = false`, a signed negative claim about a relay that does speak NIP-77.
+The order also decides which facts a per-url deadline cut leaves on the record.
+
+**`rtt-open` is the document call's first connect, and a redirect stays on the
+url's host.** The NIP-11 client follows redirects, and one call's listener sees
+every connect it makes, so a 301 from `http://` to `https://` overwrote `openMs`
+with the TLS connect to `:443`, an address the `ws://` dial never opens.
+`ConnectTimer` now keeps the first completed connect, the one to the url's own
+address. Redirects are still followed for the document on the url's own host,
+since an `http`→`https` or trailing-slash 301 is that server answering for the
+address the websocket shares; a document served by another host is dropped, since
+its software and NIPs would describe another server under this url's signature,
+and the websocket dial does not follow a redirect there either.
+`ConnectTimerRedirectTest` and `RelayDocumentTest` hold both.
+
+**A document's clock starts when its call leaves the queue.** The ten-second
+wall clock covered the wait for one of the dispatcher's slots, four per host, so
+documents queued behind slow ones on a many-path host expired without being
+asked, and the record lost the software, the NIPs and `rtt-open` (never a
+verdict). The clock is now OkHttp's `callTimeout`, which starts when the call is
+dispatched, and the wall clock over queue and call together is a looser
+`OUTER_FACTOR` of it, there only so a slot that never frees cannot hang the
+batch, which joins every document. `RelayDocumentTest` queues a document behind
+one that holds its slot for a whole clock.
+
+**A dialled url left with no result is abandoned.** Every path through the
+pre-probe and the ladder files a result, and the per-url deadline files
+`Abandoned`; only a stray `CancellationException` ending a url's coroutine
+leaves `DialSlot.result` null, and such a url fell in no `FitnessBatch` bucket,
+so the batch guard's blind count missed it and a batch broken on our side could
+publish the verdicts the rest earned. `FitnessBatch.abandoned` now counts a
+non-held slot with no result, as `ConsistencyPass` files a missing outcome
+`ABANDONED`; a held url still writes nothing either way and stays outside the
+count. `FitnessBatchUnfiledTest` holds both.

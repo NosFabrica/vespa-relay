@@ -26,7 +26,6 @@ import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
-import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.probeIdleMs
@@ -34,17 +33,14 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.nowSeconds
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * The monitor plane: three passes over one candidate set, on their own clock. The fold decides
@@ -53,8 +49,8 @@ import kotlin.coroutines.EmptyCoroutineContext
  */
 class MonitorEngine(
     private val store: IEventStore,
-    /** `monitor.conf`. Null is a deployment with no monitor. */
-    private val settings: MonitorConfig?,
+    /** `monitor.conf`. */
+    private val settings: MonitorConfig,
     /**
      * The relay lists this plane scans, from the monitor's own config. Every url they name becomes
      * a signed public claim, so the set is declared here and never inferred from a stream.
@@ -63,19 +59,15 @@ class MonitorEngine(
     /** The dial budget a probe starts with, before Tor's own slack. */
     private val connectionTimeoutMs: Long,
     private val peers: PeerClient,
-    /** The identity every verdict is signed under. Null is a deployment with no monitor. */
-    private val signer: NostrSigner?,
+    /** The identity every verdict is signed under. */
+    private val signer: NostrSigner,
     /** This plane's own report. */
     private val processors: Processors = Processors(),
     /** The socket refcount the passes share, so one pass never closes a socket another is on. */
-    private val sockets: RelaySockets,
-    /** Where an event a probe dial happened to see goes; the monitor process drops it, having no mirror to hand it to. */
-    private val onProbeEvent: suspend (Event) -> Unit,
-    /** Relays another holder keeps live in this process, never closed by a pass; empty in the monitor process. */
-    private val pinnedUrls: Set<NormalizedRelayUrl>,
+    private val sockets: Sockets,
     private val scope: CoroutineScope,
-    /** Where a verdict is written; [store] is still where it is read back from. */
-    private val writer: StoreWriter = StoreWriter.local(store),
+    /** Where a verdict is written; [store] is opened read-only, and is only where it is read back from. */
+    private val writer: StoreWriter,
 ) {
     private val client = peers.client
     private val tor = peers.tor
@@ -83,61 +75,28 @@ class MonitorEngine(
     /** Decided once for the start gate and the `off` rows, so they cannot disagree. */
     private val hasSources = sources != null
 
-    private val monitorConcurrency = settings?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+    private val sweepSeconds = settings.sweepSeconds
 
-    /** One NIP-11 fetch for every dial the passes may hold at once, over either transport. */
-    private val documentConcurrency = DialGate.over(monitorConcurrency, tor).let { it.clearnetPermits + if (tor != null) it.torPermits else 0 }
+    /** How often a pass's unwritten verdicts are replayed, for the scheduler and the lines that promise it. */
+    private val retryMs = AliasMonitor.DEFAULT_RETRY_MS
 
-    /** How often the fast lane looks, or null for a lane that is off. */
-    private val fastLaneSeconds = fastLaneSecondsFor(settings)
+    /** Every pass dials through this one gate, so `dialConcurrency` bounds the plane rather than each pass. */
+    private val gate = DialGate.over(settings.dialConcurrency, tor)
 
-    private val sweepSeconds = settings?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS
+    /** The one record every pass and the retirement edit: only one instance can see two edits of a url overlap. */
+    private val record = RelayVerdictRecord(store, signer, writer = writer)
+
+    // The rows, in the order the document draws them: [Processors.of] registers in call order.
+    private val sourceRow = processors.of(SOURCE_PROCESSOR)
+    private val foldRow = processors.of(FOLD_PROCESSOR)
+    private val stabilityRow = processors.of(STABILITY_PROCESSOR)
+    private val fitnessRow = processors.of(FITNESS_PROCESSOR)
 
     /** Of [urls], those carrying a fitness grade of ours taken within the last sweep period. */
-    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> {
-        val s = signer ?: return emptySet()
-        return StreamWorld.gradedSince(RelayVerdictRecord(store, s, writer = writer), urls, nowSeconds() - sweepSeconds)
-    }
+    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = CandidateSet.gradedSince(record, urls, nowSeconds() - sweepSeconds)
 
     /** Of [urls], those fitness is still backing off from after a deferral. */
-    private fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = fitness?.backingOff(urls).orEmpty()
-
-    /**
-     * The derivation's row. Declared above the passes it feeds: [Processors.of] registers in
-     * call order and the document draws in that order.
-     */
-    private val sourceProgress = signer?.let { processors.of(SOURCE_PROCESSOR) }
-
-    /** The duplicate-url fold. One instance for the reader and the prober. */
-    private val folding =
-        signer?.let {
-            AliasFolding(
-                aliases = RelayAliases(),
-                record = RelayVerdictRecord(store, it, writer = writer),
-                // The idle budget is per url: a `.onion` on the clearnet budget times out mid-circuit.
-                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency = monitorConcurrency,
-                progress = processors.of(FOLD_PROCESSOR),
-                // Hidden services gate on Tor's own socket budget, not the clearnet permits.
-                tor = tor,
-                world = { world.known },
-            )
-        }
-
-    /** The stability gate. Its probe is separate from the fold's; they walk to different depths. */
-    private val consistency = RelayConsistency()
-    private val consistencyPass =
-        signer?.let {
-            ConsistencyPass(
-                consistency = consistency,
-                record = RelayVerdictRecord(store, it, writer = writer),
-                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
-                concurrency = monitorConcurrency,
-                progress = processors.of(STABILITY_PROCESSOR),
-                tor = tor,
-                world = { world.known },
-            )
-        }
+    private fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = fitness.backingOff(urls)
 
     /** The three passes' probe: same transport and timeout budget, only the target depth differs. */
     private fun probeOver(target: Int) =
@@ -145,178 +104,168 @@ class MonitorEngine(
             probeIdleMs(url, tor, connectionTimeoutMs)
         }
 
-    private val probe = ReachabilityProbe(tor, threads = monitorConcurrency, reuseMs = minOf(ReachabilityProbe.REUSE_MS, sweepSeconds * 1000L))
+    private val probe = ReachabilityProbe(tor, threads = settings.dialConcurrency, reuseMs = minOf(ReachabilityProbe.REUSE_MS, sweepSeconds * 1000L))
 
     /** What the passes measure. */
     private val world =
-        StreamWorld(
+        CandidateSet(
             store,
             sources,
             probe,
-            monitorAuthors = deadVerdictSigners(signer?.pubKey, sources),
-            self = signer?.pubKey,
+            monitorAuthors = deadVerdictSigners(signer.pubKey, sources),
+            self = signer.pubKey,
             tor = tor,
-            sockets = sockets,
-            onProbeEvent = onProbeEvent,
-            progress = sourceProgress,
+            progress = sourceRow,
             recentlyGraded = ::recentlyGraded,
             backingOff = ::backingOff,
+            ownRecordsSince = record::ownRecordsSince,
+        )
+
+    /** The duplicate-url fold. One instance for the reader and the prober. */
+    private val folding =
+        AliasFolding(
+            record = record,
+            // The idle budget is per url: a `.onion` on the clearnet budget times out mid-circuit.
+            probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
+            gate = gate,
+            progress = foldRow,
+            world = { world.known },
+            canDial = { foldDials(world.reach(it)) },
+            sockets = sockets,
+        )
+
+    /** The stability gate. Its probe is separate from the fold's; they walk to different depths. */
+    private val consistencyPass =
+        ConsistencyPass(
+            consistency = RelayConsistency(),
+            record = record,
+            probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
+            gate = gate,
+            progress = stabilityRow,
+            world = { world.known },
+            canDial = { gateDials(world.reach(it)) },
+            sockets = sockets,
         )
 
     /**
-     * The grade the sync plane selects on plus the facts a visit reads back. Third in pass order:
+     * The grade the mirror's roster selects on plus the facts a visit reads back. Third in pass order:
      * it turns the fold's and the consistency pass's standing verdicts into refusals without re-dialling.
      */
     private val fitness =
-        signer?.let { s ->
-            FitnessPass(
-                record = RelayVerdictRecord(store, s, writer = writer),
-                probe = probeOver(FitnessPass.FITNESS_TARGET),
-                client = client,
-                // The fold and the stability gate are read off the pass's one load of the record.
-                progress = processors.of(FITNESS_PROCESSOR),
-                // The per-url transport, so a `.onion` document is fetched inside the circuit.
-                document = RelayDocument(peers::httpFor, concurrency = documentConcurrency),
-                tor = tor,
-                concurrency = monitorConcurrency,
-                tlsCheck = probe::tls,
-                world = { world.known },
-                sweepMs = sweepSeconds * 1000L,
-            )
-        }
+        FitnessPass(
+            record = record,
+            probe = probeOver(FitnessPass.FITNESS_TARGET),
+            client = client,
+            progress = fitnessRow,
+            // The per-url transport, so a `.onion` document is fetched inside the circuit; one per dial the gate admits.
+            document = RelayDocument(peers::httpFor, concurrency = gate.permits),
+            tor = tor,
+            gate = gate,
+            tlsCheck = probe::tls,
+            world = { world.known },
+            sweepMs = sweepSeconds * 1000L,
+            retryMs = retryMs,
+            reach = world::reach,
+            sockets = sockets,
+        )
 
-    /** One pass as [AliasMonitor] sees it: the work, plus the row it reports on. */
-    private fun entry(
-        handle: Processors.Handle?,
-        flush: suspend () -> Int = { 0 },
-        run: suspend (String, List<NormalizedRelayUrl>, suspend (NormalizedRelayUrl) -> Reach, suspend (Event) -> Unit, Sockets) -> Int,
-    ) = object : AliasMonitor.Pass {
-        override val progress = handle
+    private val aliasMonitor =
+        AliasMonitor(
+            listOf(folding, consistencyPass, fitness),
+            scope,
+            intervalMs = sweepSeconds * 1000L,
+            source = world,
+            retryEveryMs = retryMs,
+            // Stability then fitness, so a first `prime` waits on the stability answer; the fold
+            // needs a host's whole group and rides the sweep.
+            fastLaneEveryMs = settings.fastLaneSeconds?.times(1000L),
+            fastLanePasses = listOf(consistencyPass, fitness),
+            sweepRecords =
+                object : AliasMonitor.SweepRecords {
+                    override fun begin() = record.beginSweep()
 
-        override suspend fun flushPending(): Int = flush()
+                    override fun end() = record.endSweep()
+                },
+        )
 
-        override suspend fun measure(
-            label: String,
-            candidates: List<NormalizedRelayUrl>,
-            reach: suspend (NormalizedRelayUrl) -> Reach,
-            onEvent: suspend (Event) -> Unit,
-            sockets: Sockets,
-        ): Int = run(label, candidates, reach, onEvent, sockets)
+    init {
+        // The derivation's numbers on every row that shares it, as suppliers rather than copies.
+        sourceRow.counts { derivationCounts(withCandidates = true) }
+        foldRow.counts { derivationCounts(withCandidates = false) }
+        stabilityRow.counts { derivationCounts(withCandidates = false) }
     }
 
-    /** The fold and the stability gate learn nothing from why a url was declined, only that it was. */
-    private val foldEntry = folding?.let { f -> entry(f.progress) { l, c, reach, e, s -> f.measure(l, c, { foldDials(reach(it)) }, e, s) } }
-
-    private val stabilityEntry = consistencyPass?.let { g -> entry(g.progress) { l, c, reach, e, s -> g.measure(l, c, { gateDials(reach(it)) }, e, s) } }
-
-    private val fitnessEntry = fitness?.let { f -> entry(f.progress, f::flushPending, f::measure) }
-
-    private val aliasMonitor: AliasMonitor? =
-        listOfNotNull(foldEntry, stabilityEntry, fitnessEntry)
-            .takeIf { it.isNotEmpty() }
-            ?.let { passes ->
-                AliasMonitor(
-                    passes,
-                    scope,
-                    intervalMs = sweepSeconds * 1000L,
-                    source = world,
-                    // Stability then fitness, so a first `prime` waits on the stability answer; the fold
-                    // needs a host's whole group and rides the sweep.
-                    fastLaneEveryMs = fastLaneSeconds?.times(1000L),
-                    fastLanePasses = listOfNotNull(stabilityEntry, fitnessEntry),
-                )
-            }
-            // The derivation's numbers on every row that shares it, as suppliers rather than copies.
-            ?.also {
-                sourceProgress?.counts {
-                    // Nothing until a walk has run: zeros would read as a measurement.
-                    if (!world.derived) {
-                        emptyList()
-                    } else {
-                        listOf(
-                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
-                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
-                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
-                            Processors.Count("candidates", world.lastDerivation.candidates.toLong()),
-                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
-                        )
-                    }
-                }
-                for (pass in listOfNotNull(folding?.progress, consistencyPass?.progress)) {
-                    pass.counts {
-                        listOf(
-                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
-                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
-                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
-                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
-                        )
-                    }
-                }
-            }
+    /**
+     * One row's share of the last derivation, read once so a sweep publishing meanwhile cannot tear
+     * `sourced = excluded + heldOutDead + candidates`. Nothing before the first: zeros would read as a measurement.
+     */
+    private fun derivationCounts(withCandidates: Boolean): List<Processors.Count> {
+        val d = world.lastDerivation ?: return emptyList()
+        return listOfNotNull(
+            Processors.Count("sourced", d.sourced.toLong()),
+            Processors.Count("excluded", d.excluded.toLong()),
+            Processors.Count("heldOutDead", d.heldOutDead.toLong()),
+            Processors.Count("candidates", d.candidates.toLong()).takeIf { withCandidates },
+            Processors.Count("recordedOnly", d.recordedOnly.toLong()),
+        )
+    }
 
     /** How many candidate urls a current `dead` verdict of ours holds out of the passes. */
-    fun heldOutDead(): Int = world.lastDerivation.heldOutDead
+    fun heldOutDead(): Int = world.lastDerivation?.heldOutDead ?: 0
 
     /** Runs the passes if there is anything for them to work on; returns whether they were started. */
     fun start(): Boolean {
-        // Runs regardless of the gate, off the boot path: the passes wait for it and the mirror does not.
+        // Runs with or without sources, off the boot path; the passes wait for it.
         val retired = scope.async { retireOwnStaleVerdicts() }
         if (!hasSources) {
             // Every row, fitness included: one left at `starting` reads as a pass about to run.
-            sourceProgress?.phase(Processors.OFF)
-            folding?.progress?.phase(Processors.OFF)
-            consistencyPass?.progress?.phase(Processors.OFF)
-            fitness?.progress?.phase(Processors.OFF)
+            for (row in listOf(sourceRow, foldRow, stabilityRow, fitnessRow)) row.phase(Processors.OFF)
             BootClock.mark("monitor: off (no sources)")
             return false
         }
-        System.err.println("router: monitor passes gated at ${DialGate.over(monitorConcurrency, tor).describe()}")
+        System.err.println("monitor: monitor passes gated at ${gate.describe()}")
         // The passes sign on what they read, so they start after the retraction.
         BootClock.mark("monitor: retiring its own stale verdicts before the passes")
         scope.launch {
-            retired.await()
-            aliasMonitor?.start()
+            try {
+                retired.await()
+            } catch (e: Exception) {
+                // The passes start after a retirement that failed, as after one that did nothing; only shutdown stops them.
+                currentCoroutineContext().ensureActive()
+                System.err.println("monitor: the boot retirement ended without finishing (${e.javaClass.simpleName}); starting the passes")
+            }
+            aliasMonitor.start()
             BootClock.mark("monitor: passes started")
         }
         return true
     }
 
     /**
-     * Retires the verdicts this router signed that it would no longer sign: stale epochs and
+     * Retires the verdicts this monitor signed that it would no longer sign: stale epochs and
      * legacy `s` grades. A paged walk of the whole graded corpus, so it runs off the boot path.
      */
     private suspend fun retireOwnStaleVerdicts() {
-        signer?.let { s ->
-            val record = RelayVerdictRecord(store, s, writer = writer)
-            // On the fitness row, since every pass waits on it and a long one otherwise reads as `starting`;
-            // never on a row that is `off`, which this runs beside.
-            val row = fitness?.progress?.takeIf { hasSources }
-            row?.phase(Processors.RETIRING)
-            // Two guards: a throw in the first must not skip the second.
-            guarded("stale-epoch verdicts") { withContext(booked) { FitnessPass.retireStaleEpochs(store, record, s.pubKey, row) } }
-            guarded("legacy `s` grades") { withContext(booked) { FitnessPass.retireLegacyGrades(store, record, s.pubKey, row) } }
-            row?.clearMeasuring()
-            row?.phase(Processors.STARTING)
-        }
+        // On the fitness row, since every pass waits on it and a long one otherwise reads as `starting`;
+        // never on a row that is `off`, which this runs beside.
+        val row = fitnessRow.takeIf { hasSources }
+        row?.phase(Processors.RETIRING)
+        guarded("stale-epoch verdicts and legacy `s` grades") { FitnessRetirement.retireStale(store, record, signer.pubKey, row) }
+        row?.clearMeasuring()
+        row?.phase(Processors.STARTING)
     }
 
-    /** One boot retraction, its failure logged and contained; a cancellation still ends the boot. */
+    /** One boot retraction, its failure logged and contained; only this coroutine's own cancellation ends the boot. */
     private suspend fun guarded(
         what: String,
         retire: suspend () -> Unit,
     ) {
         try {
             retire()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
-            System.err.println("router: could not retire $what: ${e.message}")
+            currentCoroutineContext().ensureActive()
+            System.err.println("monitor: could not retire $what: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
-
-    /** The [StoreCalls] element of [scope] alone; its `Job` and dispatcher decide other things. */
-    private val booked: CoroutineContext
-        get() = scope.coroutineContext[StoreCalls] ?: EmptyCoroutineContext
 
     companion object {
         /**
@@ -333,12 +282,6 @@ class MonitorEngine(
 
         /** What the stability gate walks: an unanswered host too, since fitness's longer dial may grade it `prime`. */
         internal fun gateDials(reach: Reach): Boolean = reach == Reach.REACHABLE || reach == Reach.UNANSWERED
-
-        /**
-         * How often the fast lane looks, or null for a lane that is off. No `monitor` block takes
-         * the default; `fastLaneSeconds = 0` inside a block is the off switch and survives.
-         */
-        internal fun fastLaneSecondsFor(settings: MonitorConfig?): Long? = settings?.let { it.fastLaneSeconds } ?: MonitorConfig.DEFAULT_FAST_LANE_SECONDS.takeIf { settings == null }
 
         /** The published names of the monitor's jobs; a rename changes a chart. */
         const val FOLD_PROCESSOR = "aliasFold"

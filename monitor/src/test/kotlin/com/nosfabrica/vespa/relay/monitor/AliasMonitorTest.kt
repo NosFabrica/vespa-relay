@@ -20,22 +20,26 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
-import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The monitor's bookkeeping between passes: what it holds, and what it does when a pass throws. */
@@ -46,21 +50,18 @@ class AliasMonitorTest {
 
     /** Records what each pass was asked to measure, and can be told to fail. */
     private class Recording(
-        private val throwOn: Map<String, () -> Throwable> = emptyMap(),
+        private val throwOn: Map<RunKind, () -> Throwable> = emptyMap(),
     ) : AliasMonitor.Pass {
-        val passes = mutableListOf<Pair<String, List<NormalizedRelayUrl>>>()
+        val passes = mutableListOf<Pair<RunKind, List<NormalizedRelayUrl>>>()
         val calls = AtomicInteger()
 
         override suspend fun measure(
-            label: String,
+            kind: RunKind,
             candidates: List<NormalizedRelayUrl>,
-            reach: suspend (NormalizedRelayUrl) -> Reach,
-            onEvent: suspend (Event) -> Unit,
-            sockets: Sockets,
         ): Int {
             calls.incrementAndGet()
-            passes += label to candidates
-            throwOn[label]?.let { throw it() }
+            passes += kind to candidates
+            throwOn[kind]?.let { throw it() }
             return 0
         }
     }
@@ -86,12 +87,6 @@ class AliasMonitorTest {
             fail?.let { throw it() }
             return urls
         }
-
-        override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-        override suspend fun onEvent(event: Event) = Unit
-
-        override val sockets = Sockets.NONE
     }
 
     private fun sourced(
@@ -109,8 +104,39 @@ class AliasMonitorTest {
             m.runPass()
 
             assertEquals(1, world.derivations.get(), "the world is derived once per pass, when the pass runs")
-            assertEquals(listOf(AliasMonitor.ALL_STREAMS), pass.passes.map { it.first })
+            assertEquals(listOf(RunKind.SWEEP), pass.passes.map { it.first })
             assertEquals(listOf(a, b, c), pass.passes.single().second)
+        }
+
+    @Test
+    fun `a sweep reads our records off one walk from derivation to its last pass, and the lane does not`(): Unit =
+        runBlocking {
+            var open = false
+            val seen = mutableListOf<Pair<RunKind, Boolean>>()
+            val pass = AliasMonitor.Pass { kind, _ -> 0.also { seen += kind to open } }
+            val world =
+                object : AliasMonitor.CandidateSource {
+                    override suspend fun candidates(): List<NormalizedRelayUrl> = listOf(a, b).also { seen += RunKind.SWEEP to open }
+
+                    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = listOf(c)
+                }
+            val records =
+                object : AliasMonitor.SweepRecords {
+                    override fun begin() {
+                        open = true
+                    }
+
+                    override fun end() {
+                        open = false
+                    }
+                }
+            val m = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined), source = world, fastLanePasses = listOf(pass), sweepRecords = records)
+
+            m.runPass()
+            m.runFastLane(0)
+
+            assertEquals(listOf(RunKind.SWEEP to true, RunKind.SWEEP to true, RunKind.FAST_LANE to false), seen)
+            assertTrue(!open, "the sweep's walk outlived it")
         }
 
     @Test
@@ -178,7 +204,7 @@ class AliasMonitorTest {
     @Test
     fun `one pass failing does not skip the passes after it`() =
         runBlocking {
-            val failing = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { IllegalStateException("upstream went away") }))
+            val failing = Recording(throwOn = mapOf(RunKind.SWEEP to { IllegalStateException("upstream went away") }))
             val after = Recording()
             val m = AliasMonitor(listOf(failing, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
 
@@ -188,13 +214,20 @@ class AliasMonitorTest {
         }
 
     @Test
-    fun `cancellation ends the pass rather than being logged`() =
+    fun `cancellation ends the pass rather than being logged`(): Unit =
         runBlocking {
-            val cancelling = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { CancellationException("scope closing") }))
+            // The scope running the sweep closes while the first pass runs.
+            val cancelling =
+                AliasMonitor.Pass { _, _ ->
+                    currentCoroutineContext().job.cancel(CancellationException("scope closing"))
+                    awaitCancellation()
+                }
             val after = Recording()
             val m = AliasMonitor(listOf(cancelling, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
 
-            assertFailsWith<CancellationException> { m.runPass() }
+            val sweep = launch { m.runPass() }
+            sweep.join()
+            assertTrue(sweep.isCancelled, "the sweep outlived its own cancellation")
             assertEquals(0, after.calls.get(), "the run continued past a cancellation")
         }
 
@@ -207,12 +240,6 @@ class AliasMonitorTest {
                     val asked = AtomicInteger()
 
                     override suspend fun candidates() = if (asked.incrementAndGet() > 1) listOf(a, b) else emptyList()
-
-                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-                    override suspend fun onEvent(event: Event) = Unit
-
-                    override val sockets = Sockets.NONE
                 }
             val scope = CoroutineScope(Dispatchers.Default)
             val m =
@@ -243,12 +270,6 @@ class AliasMonitorTest {
                         get() = if (reads.incrementAndGet() == 2) throw IllegalStateException("the row broke") else null
 
                     override suspend fun candidates() = listOf(a, b)
-
-                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-                    override suspend fun onEvent(event: Event) = Unit
-
-                    override val sockets = Sockets.NONE
                 }
             val scope = CoroutineScope(Dispatchers.Default)
             try {
@@ -263,7 +284,7 @@ class AliasMonitorTest {
     @Test
     fun `a fast-lane window whose lists could not be read is looked at again`() =
         runBlocking {
-            val asked = java.util.concurrent.CopyOnWriteArrayList<Long>()
+            val asked = CopyOnWriteArrayList<Long>()
             val source =
                 object : AliasMonitor.CandidateSource {
                     override suspend fun candidates() = emptyList<NormalizedRelayUrl>()
@@ -273,12 +294,6 @@ class AliasMonitorTest {
                         if (asked.size == 1) throw IllegalStateException("the store cannot answer")
                         return emptyList()
                     }
-
-                    override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-
-                    override suspend fun onEvent(event: Event) = Unit
-
-                    override val sockets = Sockets.NONE
                 }
             val scope = CoroutineScope(Dispatchers.Default)
             try {
@@ -300,4 +315,111 @@ class AliasMonitorTest {
 
             assertEquals(asked[0], asked[1], "the failed tick's window was skipped")
         }
+
+    @Test
+    fun `no two jobs overlap, and a clock that came due during a sweep runs once after it`(): Unit =
+        runBlocking {
+            val running = AtomicInteger()
+            val overlaps = AtomicInteger()
+            val ran = CopyOnWriteArrayList<String>()
+            val sweeping = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+
+            suspend fun job(what: String) {
+                if (running.incrementAndGet() > 1) overlaps.incrementAndGet()
+                try {
+                    ran += what
+                    if (what == RunKind.SWEEP.label) {
+                        sweeping.complete(Unit)
+                        release.await()
+                    }
+                } finally {
+                    running.decrementAndGet()
+                }
+            }
+            val pass =
+                object : AliasMonitor.Pass {
+                    override suspend fun measure(
+                        kind: RunKind,
+                        candidates: List<NormalizedRelayUrl>,
+                    ): Int {
+                        job(kind.label)
+                        return 0
+                    }
+
+                    override suspend fun flushPending(): Int {
+                        job("retry")
+                        return 0
+                    }
+                }
+            val source =
+                object : AliasMonitor.CandidateSource {
+                    override suspend fun candidates() = listOf(a)
+
+                    override suspend fun candidatesSince(since: Long) = listOf(b)
+                }
+            val scope = CoroutineScope(Dispatchers.Default)
+            try {
+                AliasMonitor(
+                    listOf(pass),
+                    scope,
+                    intervalMs = 3_600_000,
+                    startupDelayMs = 0,
+                    source = source,
+                    fastLaneEveryMs = PERIOD_MS,
+                    fastLanePasses = listOf(pass),
+                    retryEveryMs = PERIOD_MS,
+                ).start()
+                withTimeout(5_000) { sweeping.await() }
+                // Many lane and retry periods go by while the sweep holds the scheduler.
+                delay(PERIOD_MS * 10)
+                assertEquals(listOf(RunKind.SWEEP.label), ran.toList(), "a job ran beside the sweep")
+
+                release.complete(Unit)
+                delay(PERIOD_MS / 2)
+                assertEquals(
+                    listOf(RunKind.SWEEP.label, RunKind.FAST_LANE.label, "retry"),
+                    ran.toList(),
+                    "each clock that came due ran once after the sweep, not once per period it missed",
+                )
+            } finally {
+                scope.cancel()
+            }
+            assertEquals(0, overlaps.get())
+        }
+
+    @Test
+    fun `the next sweep's time is published from the start, and withdrawn while a sweep runs`(): Unit =
+        runBlocking {
+            val processors = Processors()
+            val row = processors.of("aliasFold")
+            val duringSweep = CompletableDeferred<Long?>()
+            val pass =
+                object : AliasMonitor.Pass {
+                    override val progress = row
+
+                    override suspend fun measure(
+                        kind: RunKind,
+                        candidates: List<NormalizedRelayUrl>,
+                    ): Int {
+                        duringSweep.complete(processors.snapshot().single().nextInSec)
+                        return 0
+                    }
+                }
+            val scope = CoroutineScope(Dispatchers.Default)
+            try {
+                val m = AliasMonitor(listOf(pass), scope, intervalMs = 3_600_000, startupDelayMs = 300, source = World(listOf(a)), retryEveryMs = null)
+                m.start()
+                assertTrue((processors.snapshot().single().nextInSec ?: -1) >= 0, "a boot waiting on its first sweep says when it is due")
+                assertNull(withTimeout(5_000) { duringSweep.await() }, "a running sweep read as a late one")
+                withTimeout(5_000) { while (processors.snapshot().single().nextInSec == null) delay(10) }
+                assertTrue(processors.snapshot().single().nextInSec!! > 3_000, "the sweep after one with work is a whole interval away")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    private companion object {
+        const val PERIOD_MS = 100L
+    }
 }

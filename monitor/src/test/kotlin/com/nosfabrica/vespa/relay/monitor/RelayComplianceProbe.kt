@@ -92,7 +92,7 @@ class RelayComplianceProbe {
                 println("  ${url.url}")
 
                 val ladderAt = System.currentTimeMillis()
-                val ladder = runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.window(url, anchor, null) {} } }
+                val ladder = runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.window(url, anchor, null) } }
                 val ladderMs = System.currentTimeMillis() - ladderAt
                 if (ladder?.ids == null) {
                     println("    bare      no window came back${ladder?.reason?.let { " ($it)" }.orEmpty()}")
@@ -107,7 +107,7 @@ class RelayComplianceProbe {
                     if (floor == null) {
                         null
                     } else {
-                        runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.pageBelow(url, floor - 1, null) {} } }
+                        runBlocking { withTimeoutOrNull(PER_ASK_MS) { probe.pageBelow(url, floor - 1, null) } }
                     }
                 val narrowMs = System.currentTimeMillis() - narrowAt
                 if (narrow == null) {

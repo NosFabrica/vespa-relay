@@ -25,7 +25,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * What bounds a probe pass's dials: one gate per transport, chosen by [routesTor] so the gate
+ * What bounds the monitor's dials: one gate per transport, chosen by [routesTor] so the gate
  * a url waits on and the OkHttp dispatcher it lands in cannot disagree. Not to be confused
  * with `ingest.ProbeGate`, the store-probe hit-rate gate.
  */
@@ -51,6 +51,9 @@ class DialGate(
         url: NormalizedRelayUrl,
         block: suspend () -> T,
     ): T = (if (routesTor(url)) tor else clearnet).withPermit { block() }
+
+    /** Every dial this gate admits at once, over either transport. */
+    val permits: Int get() = clearnetPermits + if (proxied) torPermits else 0
 
     /** What a pass is bounded by, for the monitor's boot line. */
     fun describe(): String = if (!proxied) "$clearnetPermits dial(s)" else "$clearnetPermits clearnet dial(s), $torPermits over Tor"

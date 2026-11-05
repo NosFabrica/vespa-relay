@@ -22,7 +22,10 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.fold.ServerIndex
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -36,6 +39,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -47,6 +51,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -117,7 +123,6 @@ class AliasFoldingTest {
 
     private fun stuckFold(hang: Boolean) =
         AliasFolding(
-            aliases = RelayAliases(),
             record = RelayVerdictRecord(StuckWrites(newStore(), hang), signer),
             probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
             publishDeadlineMs = 300L,
@@ -126,7 +131,7 @@ class AliasFoldingTest {
     @Test
     fun `a store that stops taking writes stops the fold's writes and not the pass`() =
         runBlocking {
-            val learned = withTimeout(30_000) { stuckFold(hang = true).measure("t", sixHosts, canDial = { true }) }
+            val learned = withTimeout(30_000) { stuckFold(hang = true).measure(RunKind.SWEEP, sixHosts) }
 
             assertEquals(0, learned, "a fold the store never took was counted as learned")
         }
@@ -150,7 +155,6 @@ class AliasFoldingTest {
             val contacted: MutableSet<NormalizedRelayUrl> = ConcurrentHashMap.newKeySet()
             val fold =
                 AliasFolding(
-                    aliases = RelayAliases(),
                     record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
@@ -163,12 +167,12 @@ class AliasFoldingTest {
                             page = 40,
                             fallbackPage = 40,
                         ),
-                    concurrency = 16,
+                    gate = DialGate(16),
                     publishDeadlineMs = 100L,
                 )
 
-            val pass = async { withTimeout(30_000) { fold.measure("t", hosts.flatten(), canDial = { true }) } }
-            withTimeout(30_000) { while (inserts.get() < VerdictWrites.PUBLISH_WEDGE_LIMIT) delay(10) }
+            val pass = async { withTimeout(30_000) { fold.measure(RunKind.SWEEP, hosts.flatten()) } }
+            withTimeout(30_000) { while (inserts.get() < WriteLimits.PUBLISH_WEDGE_LIMIT) delay(10) }
             // Past the write deadline of every write started so far, so the writer has stopped.
             delay(1_000)
             released.complete(Unit)
@@ -183,22 +187,54 @@ class AliasFoldingTest {
     @Test
     fun `a fold the store refused is not counted as learned`() =
         runBlocking {
-            assertEquals(0, stuckFold(hang = false).measure("t", sixHosts, canDial = { true }))
+            assertEquals(0, stuckFold(hang = false).measure(RunKind.SWEEP, sixHosts))
+        }
+
+    @Test
+    fun `a fold the store refused is not held either`() =
+        runBlocking {
+            val processors = Processors()
+            val fold =
+                AliasFolding(
+                    record = RelayVerdictRecord(StuckWrites(newStore(), hang = false), signer),
+                    probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+                    progress = processors.of("aliasFold"),
+                )
+
+            fold.measure(RunKind.SWEEP, sixHosts)
+
+            val work =
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+            assertEquals(0, work.decided)
+            assertEquals(sixHosts.size, work.unmeasured, "what the store refused still reads as decided")
         }
 
     private fun folding(
         store: NostrSemanticsStore,
         upstreams: Upstreams,
-        aliases: RelayAliases = RelayAliases(),
         undecidableCooldownMs: Long = AliasFolding.DEFAULT_UNDECIDABLE_COOLDOWN_MS,
         foldUnreadableGroups: Boolean = AliasFolding.DEFAULT_FOLD_UNREADABLE_GROUPS,
+        canDial: suspend (NormalizedRelayUrl) -> Boolean = { true },
+        sockets: Sockets = Sockets.NONE,
     ) = AliasFolding(
-        aliases = aliases,
         record = RelayVerdictRecord(store, signer),
         probe = AliasProbe(fetch = upstreams::fetch, target = 40, page = 40, fallbackPage = 40),
         undecidableCooldownMs = undecidableCooldownMs,
         foldUnreadableGroups = foldUnreadableGroups,
+        canDial = canDial,
+        sockets = sockets,
     )
+
+    /** What a reader collapses [urls] to off [store]'s verdicts, with no probe. */
+    private suspend fun applied(
+        store: NostrSemanticsStore,
+        urls: List<NormalizedRelayUrl>,
+        world: ServerIndex = ServerIndex.EMPTY,
+    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer)::load, urls, world))
 
     /** Every url serves the same events, so any two of them fold. */
     private fun upstreams(): Upstreams {
@@ -230,8 +266,8 @@ class AliasFoldingTest {
             val fold = folding(store, groupsUpstreams(groups = 7))
             val group = listOf(canonical, alias)
 
-            assertEquals(1, fold.measure("t", group, canDial = { true }), "the group list is a perfectly good fingerprint")
-            assertEquals(listOf(canonical), fold.applyVerdicts(group).dial)
+            assertEquals(1, fold.measure(RunKind.SWEEP, group), "the group list is a perfectly good fingerprint")
+            assertEquals(listOf(canonical), applied(store, group).dial)
         }
 
     @Test
@@ -249,9 +285,9 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val group = listOf(canonical, alias)
 
-            assertEquals(0, fold.measure("t", group, canDial = { true }))
-            assertEquals(group, fold.applyVerdicts(group).dial, "an undecided host must stay in the fan-out")
-            assertEquals(group, fold.applyVerdicts(group).unmeasured, "and must carry no verdict at all")
+            assertEquals(0, fold.measure(RunKind.SWEEP, group))
+            assertEquals(group, applied(store, group).dial, "an undecided host must stay in the fan-out")
+            assertEquals(group, applied(store, group).unmeasured, "and must carry no verdict at all")
         }
 
     /** Every url answers and none serves anything. */
@@ -264,8 +300,8 @@ class AliasFoldingTest {
             val fold = folding(store, unreadableUpstreams())
             val group = listOf(canonical, alias)
 
-            assertEquals(1, fold.measure("t", group, canDial = { true }))
-            assertEquals(listOf(canonical), fold.applyVerdicts(group).dial, "the survivor is the preferred url")
+            assertEquals(1, fold.measure(RunKind.SWEEP, group))
+            assertEquals(listOf(canonical), applied(store, group).dial, "the survivor is the preferred url")
         }
 
     @Test
@@ -278,8 +314,8 @@ class AliasFoldingTest {
             val host = "wss://nwc.example"
             val urls = (listOf(host) + (0 until 99).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
 
-            assertEquals(99, fold.measure("t", urls, canDial = { true }), "the whole host must collapse")
-            assertEquals(listOf(urls.first()), fold.applyVerdicts(urls).dial, "100 urls, one dial")
+            assertEquals(99, fold.measure(RunKind.SWEEP, urls), "the whole host must collapse")
+            assertEquals(listOf(urls.first()), applied(store, urls).dial, "100 urls, one dial")
             assertEquals(100, up.contacted.size, "every url has to answer before the group may fold")
             assertEquals(
                 100 * AliasProbe.SHAPES.size,
@@ -302,11 +338,11 @@ class AliasFoldingTest {
             val host = "wss://late.example"
             val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d").map { RelayUrlNormalizer.normalize(it) }
 
-            val learned = fold.measure("t", urls, canDial = { true })
+            val learned = fold.measure(RunKind.SWEEP, urls)
 
             // A measured fold, not the shared-name default.
             assertEquals(1, learned, "the window the sweep turned up was discarded")
-            val dial = fold.applyVerdicts(urls).dial
+            val dial = applied(store, urls).dial
             assertTrue(RelayUrlNormalizer.normalize("$host/d") !in dial, "the measured duplicate is still being dialled")
             assertTrue(RelayUrlNormalizer.normalize("$host/c") in dial, "the survivor must be the url that answered")
         }
@@ -329,9 +365,9 @@ class AliasFoldingTest {
             val host = "wss://mixed.example"
             val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d", "$host/e").map { RelayUrlNormalizer.normalize(it) }
 
-            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a thin window beat a usable one")
+            assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a thin window beat a usable one")
             assertTrue(
-                RelayUrlNormalizer.normalize("$host/e") !in fold.applyVerdicts(urls).dial,
+                RelayUrlNormalizer.normalize("$host/e") !in applied(store, urls).dial,
                 "the two urls serving an identical window were left unfolded",
             )
         }
@@ -347,8 +383,8 @@ class AliasFoldingTest {
             val host = "wss://thinonly.example"
             val urls = listOf(host, "$host/a", "$host/b", "$host/c").map { RelayUrlNormalizer.normalize(it) }
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
-            assertEquals(urls, fold.applyVerdicts(urls).dial, "a host that served a window was folded on its name")
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
+            assertEquals(urls, applied(store, urls).dial, "a host that served a window was folded on its name")
         }
 
     @Test
@@ -363,8 +399,8 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val group = listOf(canonical, alias)
 
-            assertEquals(0, fold.measure("t", group, canDial = { true }))
-            assertEquals(group, fold.applyVerdicts(group).dial, "a group holding a silent url must stay in the fan-out")
+            assertEquals(0, fold.measure(RunKind.SWEEP, group))
+            assertEquals(group, applied(store, group).dial, "a group holding a silent url must stay in the fan-out")
         }
 
     @Test
@@ -376,9 +412,9 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val group = listOf(canonical, alias)
 
-            fold.measure("t", group, canDial = { true })
+            fold.measure(RunKind.SWEEP, group)
 
-            assertEquals(group, fold.applyVerdicts(group).dial, "an empty path was folded away while the host was readable")
+            assertEquals(group, applied(store, group).dial, "an empty path was folded away while the host was readable")
         }
 
     @Test
@@ -389,8 +425,8 @@ class AliasFoldingTest {
             val group = listOf(canonical, alias)
             for (refuses in listOf<(NormalizedRelayUrl) -> Boolean>({ RelayAliases.pathOf(it.url).isNotEmpty() }, { true })) {
                 val fold = folding(store, Upstreams(serves = { false }, refuses = refuses) { emptyList() })
-                assertEquals(0, fold.measure("t", group, canDial = { true }))
-                assertEquals(group, fold.applyVerdicts(group).dial, "a host refusing our key was folded on its name")
+                assertEquals(0, fold.measure(RunKind.SWEEP, group))
+                assertEquals(group, applied(store, group).dial, "a host refusing our key was folded on its name")
             }
         }
 
@@ -401,8 +437,8 @@ class AliasFoldingTest {
             val fold = folding(store, unreadableUpstreams(), foldUnreadableGroups = false)
             val group = listOf(canonical, alias)
 
-            assertEquals(0, fold.measure("t", group, canDial = { true }))
-            assertEquals(group, fold.applyVerdicts(group).dial)
+            assertEquals(0, fold.measure(RunKind.SWEEP, group))
+            assertEquals(group, applied(store, group).dial)
         }
 
     @Test
@@ -412,8 +448,8 @@ class AliasFoldingTest {
             val store = newStore()
             val up = upstreams()
             val fold = folding(store, up)
-            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
-            assertEquals(mapOf(alias to canonical), AliasFolding.foldsAmong(RelayVerdictRecord(store, signer).load(listOf(alias)), listOf(alias)))
+            assertEquals(1, fold.measure(RunKind.SWEEP, listOf(canonical, alias)))
+            assertEquals(mapOf(alias to canonical), FoldReading.foldsAmong(RelayVerdictRecord(store, signer).load(listOf(alias)), listOf(alias)))
 
             val fitness =
                 FitnessPass(
@@ -424,7 +460,7 @@ class AliasFoldingTest {
                     reconcile = { _, _ -> },
                 )
             for (batch in listOf(listOf(alias), listOf(canonical, alias), listOf(alias))) {
-                fitness.measure("t", batch, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                fitness.measure(RunKind.SWEEP, batch)
                 assertEquals(Verdict.ALIAS.value, gradeOf(store, alias), "graded on batch ${batch.map { it.url }}")
             }
         }
@@ -441,32 +477,10 @@ class AliasFoldingTest {
             ?.get(1)
 
     @Test
-    fun `a read over a narrower set leaves what the fold holds untouched`() =
+    fun `a set with no verdicts reads as dial it as it stands`() =
         runBlocking {
-            // The mirror's roster reads one stream's urls at a time, outside the monitor's pass gate.
-            val aliases = RelayAliases()
-            val fold = folding(newStore(), upstreams(), aliases = aliases)
-            val group = listOf(canonical, alias)
-            assertEquals(1, fold.measure("t", group, canDial = { true }))
-            val held = aliases.verdicts()
-            val measured = group.map { aliases.measured(it) }
+            val cleaned = applied(newStore(), listOf(canonical, alias))
 
-            assertEquals(mapOf(alias to canonical), fold.applyVerdicts(group).aliases)
-            fold.applyVerdicts(listOf(canonical))
-            fold.applyVerdicts(listOf(alias))
-
-            assertEquals(held, aliases.verdicts(), "a read changed the fold's verdicts")
-            assertEquals(measured, group.map { aliases.measured(it) }, "a read dropped a canonical the fold had measured")
-        }
-
-    @Test
-    fun `apply never dials, however much there is to learn`() =
-        runBlocking {
-            val up = upstreams()
-            val cleaned = folding(newStore(), up).applyVerdicts(listOf(canonical, alias))
-
-            assertEquals(0, up.dials.get(), "apply() opened ${up.dials.get()} socket(s); it runs on the cycle's critical path")
-            // "No verdict" reads as "dial it as it stands".
             assertEquals(listOf(canonical, alias), cleaned.dial)
             assertTrue(cleaned.aliases.isEmpty())
         }
@@ -478,9 +492,9 @@ class AliasFoldingTest {
             val up = upstreams()
             val fold = folding(store, up)
 
-            assertEquals(2, fold.applyVerdicts(listOf(canonical, alias)).dial.size)
-            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
-            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
+            assertEquals(2, applied(store, listOf(canonical, alias)).dial.size)
+            assertEquals(1, fold.measure(RunKind.SWEEP, listOf(canonical, alias)))
+            assertEquals(listOf(canonical), applied(store, listOf(canonical, alias)).dial)
         }
 
     @Test
@@ -489,10 +503,10 @@ class AliasFoldingTest {
             // A fresh RelayAliases is a router that just booted.
             val store = newStore()
             val prober = upstreams()
-            folding(store, prober).measure("t", listOf(canonical, alias), canDial = { true })
+            folding(store, prober).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             val reader = upstreams()
-            val cleaned = folding(store, reader).applyVerdicts(listOf(canonical, alias))
+            val cleaned = applied(store, listOf(canonical, alias))
 
             assertEquals(listOf(canonical), cleaned.dial)
             assertEquals(mapOf(alias to canonical), cleaned.aliases)
@@ -503,20 +517,20 @@ class AliasFoldingTest {
     fun `a url that arrives alone on a measured host folds against the stored world`() =
         runBlocking {
             val store = newStore()
-            folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
+            folding(store, upstreams()).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             // The host's history exists only in the store.
             val newcomer = RelayUrlNormalizer.normalize("wss://nos.lol/delta-new")
             val up = upstreams()
             val fold = folding(store, up)
 
-            assertEquals(1, fold.measure("t", listOf(newcomer), canDial = { true }), "the newcomer had a canonical to measure against")
+            assertEquals(1, fold.measure(RunKind.SWEEP, listOf(newcomer)), "the newcomer had a canonical to measure against")
             assertEquals(
                 listOf(canonical),
-                fold.applyVerdicts(listOf(canonical, newcomer)).dial,
+                applied(store, listOf(canonical, newcomer)).dial,
                 "one new url, measured against the host's history, and the fan-out dials the survivor",
             )
-            assertEquals(mapOf(newcomer to canonical), fold.applyVerdicts(listOf(canonical, newcomer)).aliases)
+            assertEquals(mapOf(newcomer to canonical), applied(store, listOf(canonical, newcomer)).aliases)
             assertTrue(canonical in up.contacted, "the survivor is the yardstick and has to answer for itself")
             assertTrue(alias !in up.contacted, "a url that already carries a verdict must not cost a dial")
         }
@@ -526,13 +540,13 @@ class AliasFoldingTest {
         runBlocking {
             // Consumers apply the map by dropping the alias, so an absent survivor would empty the fan-out.
             val store = newStore()
-            folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
+            folding(store, upstreams()).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             val fold = folding(store, upstreams())
-            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
+            assertEquals(listOf(canonical), applied(store, listOf(canonical, alias)).dial)
 
             // The canonical held out as dead, or gone from the relay list.
-            val stranded = fold.applyVerdicts(listOf(alias))
+            val stranded = applied(store, listOf(alias))
             assertEquals(listOf(alias), stranded.dial, "the only live address we have must still be dialled")
             assertTrue(stranded.aliases.isEmpty(), "a drop-only consumer would take the relay out of the fan-out")
             assertTrue(stranded.unmeasured.isEmpty(), "…and it is still a MEASURED url: nothing here needs re-probing")
@@ -548,14 +562,14 @@ class AliasFoldingTest {
             val paths = listOf("$host/tango-jade", "$host/onyx", "$host/ember-november").map { RelayUrlNormalizer.normalize(it) }
             val fold = folding(store, upstreams())
 
-            fold.measure("t", listOf(root) + paths, canDial = { true })
+            fold.measure(RunKind.SWEEP, listOf(root) + paths)
             assertEquals(
                 paths.associateWith { root },
-                fold.applyVerdicts(listOf(root) + paths).aliases,
+                applied(store, listOf(root) + paths).aliases,
                 "the fixture needs all three paths folded onto the bare host",
             )
 
-            val stranded = fold.applyVerdicts(paths)
+            val stranded = applied(store, paths)
             val survivor = RelayUrlNormalizer.normalize("$host/onyx")
             assertEquals(listOf(survivor), stranded.dial, "one server is still one dial, and the shortest path wins it")
             assertEquals(
@@ -568,7 +582,7 @@ class AliasFoldingTest {
             // `aliases` is what gets signed, and these paths were never measured against each other.
             assertTrue(stranded.aliases.isEmpty(), "an inferred pairing must never reach the map a verdict is signed from")
 
-            val recovered = fold.applyVerdicts(listOf(root) + paths)
+            val recovered = applied(store, listOf(root) + paths)
             assertEquals(
                 paths.associateWith { root },
                 recovered.aliases,
@@ -583,8 +597,8 @@ class AliasFoldingTest {
             val store = newStore()
             val host = "wss://shuffles.example"
             val settled = listOf("$host/a", "$host/b").map { RelayUrlNormalizer.normalize(it) }
-            folding(store, upstreams()).measure("t", settled, canDial = { true })
-            assertEquals(1, folding(store, upstreams()).applyVerdicts(settled).aliases.size, "the fixture needs a stored fold")
+            folding(store, upstreams()).measure(RunKind.SWEEP, settled)
+            assertEquals(1, applied(store, settled).aliases.size, "the fixture needs a stored fold")
 
             // A different window on every ask, which `reproducible` refuses to decide on.
             val shuffling = AtomicInteger()
@@ -596,15 +610,14 @@ class AliasFoldingTest {
             val processors = Processors()
             val fold =
                 AliasFolding(
-                    aliases = RelayAliases(),
                     record = RelayVerdictRecord(store, signer),
                     probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
                     progress = processors.of("aliasFold"),
                 )
             val newcomer = RelayUrlNormalizer.normalize("$host/c")
-            fold.measure("t", settled + newcomer, canDial = { true })
+            fold.measure(RunKind.SWEEP, settled + newcomer)
 
-            val after = fold.applyVerdicts(settled + newcomer)
+            val after = applied(store, settled + newcomer)
             assertEquals(1, after.aliases.size, "an adopted verdict is the store's, not this pass's to drop")
             val work =
                 processors
@@ -627,13 +640,12 @@ class AliasFoldingTest {
             val group = listOf(canonical, alias)
             val fold =
                 AliasFolding(
-                    aliases = RelayAliases(),
                     record = RelayVerdictRecord(store, signer),
                     probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
                     progress = handle,
                 )
 
-            fold.measure("t", group, canDial = { true })
+            fold.measure(RunKind.SWEEP, group)
             assertEquals(
                 2,
                 processors
@@ -645,7 +657,7 @@ class AliasFoldingTest {
                 "both urls arrived with no verdict",
             )
 
-            fold.measure("t", group, canDial = { true })
+            fold.measure(RunKind.SWEEP, group)
             assertEquals(
                 0,
                 processors
@@ -658,31 +670,26 @@ class AliasFoldingTest {
             )
         }
 
-    /** A failed read must arrive as a failure, or `adopt` forgets verdicts it cannot re-adopt. */
+    /** A failed read must arrive as a failure, or a reader takes "no verdicts" and unfolds the fan-out. */
     @Test
-    fun `a store that cannot be read leaves the verdicts already held alone`() =
+    fun `a store that cannot be read is a failure, not an empty fold`() =
         runBlocking {
             val store = newStore()
-            val aliases = RelayAliases()
-            val fold = folding(store, upstreams(), aliases)
-            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
-            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
+            val fold = folding(store, upstreams())
+            assertEquals(1, fold.measure(RunKind.SWEEP, listOf(canonical, alias)))
+            assertEquals(listOf(canonical), applied(store, listOf(canonical, alias)).dial)
 
-            val blind =
-                AliasFolding(
-                    aliases = aliases,
-                    record = RelayVerdictRecord(Unreadable(store), signer),
-                    probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
-                )
-
-            assertEquals(listOf(canonical), blind.applyVerdicts(listOf(canonical, alias)).dial, "a failed read unfolded the fan-out")
+            assertNull(
+                FoldReading.readBack(RelayVerdictRecord(Unreadable(store), signer)::load, listOf(canonical, alias)),
+                "a failed read unfolded the fan-out",
+            )
         }
 
     @Test
     fun `measure honours the caller's transport guard`() =
         runBlocking {
             val up = upstreams()
-            val learned = folding(newStore(), up).measure("t", listOf(canonical, alias), canDial = { false })
+            val learned = folding(newStore(), up, canDial = { false }).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             assertEquals(0, learned)
             assertEquals(0, up.dials.get())
@@ -706,7 +713,7 @@ class AliasFoldingTest {
                     }
                 }
             val up = upstreams()
-            folding(newStore(), up).measure("t", listOf(canonical, alias), canDial = { true }, sockets = sockets)
+            folding(newStore(), up, sockets = sockets).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             assertEquals(2, claims.get(), "the leader and its member are each one dial, each one claim")
             assertTrue(held.isEmpty(), "the pass returned holding ${held.keys}, so those sockets can never be closed")
@@ -727,7 +734,7 @@ class AliasFoldingTest {
                         held.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } }
                     }
                 }
-            folding(newStore(), upstreams()).measure("t", listOf(canonical, alias), canDial = { false }, sockets = sockets)
+            folding(newStore(), upstreams(), canDial = { false }, sockets = sockets).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             assertTrue(held.isEmpty(), "a refused url left a claim behind")
         }
@@ -745,15 +752,15 @@ class AliasFoldingTest {
                     val n = served.getAndIncrement()
                     (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "dial$n-e$it") }
                 }
-            val fold = folding(store, shuffling, RelayAliases())
+            val fold = folding(store, shuffling)
 
-            assertEquals(0, fold.measure("t", listOf(a, b), canDial = { true }), "nothing may be folded on this evidence")
+            assertEquals(0, fold.measure(RunKind.SWEEP, listOf(a, b)), "nothing may be folded on this evidence")
 
             val held = RelayVerdictRecord(store, signer).load(listOf(a, b))
             assertTrue(held.aliases.isEmpty(), "a fold was published against a yardstick that cannot repeat itself")
             assertTrue(held.distinct.isEmpty(), "published ${held.distinct.size} url(s) as their own relay on unreproducible evidence")
             // Nothing is held in memory either, so the next pass re-measures.
-            assertEquals(listOf(a, b), fold.applyVerdicts(listOf(a, b)).dial)
+            assertEquals(listOf(a, b), applied(store, listOf(a, b)).dial)
         }
 
     @Test
@@ -763,11 +770,11 @@ class AliasFoldingTest {
             val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
             val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
             val first = distinctUpstreams()
-            assertEquals(0, folding(store, first).measure("t", listOf(a, b), canDial = { true }))
+            assertEquals(0, folding(store, first).measure(RunKind.SWEEP, listOf(a, b)))
             assertTrue(first.dials.get() > 0, "the first pass never dialled, so this proves nothing")
 
             val second = distinctUpstreams()
-            assertEquals(0, folding(store, second).measure("t", listOf(a, b), canDial = { true }))
+            assertEquals(0, folding(store, second).measure(RunKind.SWEEP, listOf(a, b)))
 
             assertEquals(0, second.dials.get(), "a cleared url was fingerprinted again")
         }
@@ -778,10 +785,10 @@ class AliasFoldingTest {
             // The leader everything folded onto is nobody's alias; `unresolved` must not hand it back.
             val store = newStore()
             val first = upstreams()
-            assertEquals(1, folding(store, first).measure("t", listOf(canonical, alias), canDial = { true }))
+            assertEquals(1, folding(store, first).measure(RunKind.SWEEP, listOf(canonical, alias)))
 
             val second = upstreams()
-            folding(store, second).measure("t", listOf(canonical, alias), canDial = { true })
+            folding(store, second).measure(RunKind.SWEEP, listOf(canonical, alias))
 
             assertEquals(0, second.dials.get(), "a settled host was re-probed with nothing left to learn")
         }
@@ -793,10 +800,10 @@ class AliasFoldingTest {
             val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
             val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
             val c = RelayUrlNormalizer.normalize("wss://nostr.ac/v2")
-            folding(store, distinctUpstreams()).measure("t", listOf(a, b), canDial = { true })
+            folding(store, distinctUpstreams()).measure(RunKind.SWEEP, listOf(a, b))
 
             val next = distinctUpstreams()
-            folding(store, next).measure("t", listOf(a, b, c), canDial = { true })
+            folding(store, next).measure(RunKind.SWEEP, listOf(a, b, c))
 
             assertTrue(next.dials.get() > 0, "a newly discovered url was never fingerprinted")
         }
@@ -819,7 +826,7 @@ class AliasFoldingTest {
                     corpus
                 }
 
-            val pass = launch { folding(store, up).measure("t", listOf(fast, fastAlias, slow, slowAlias), canDial = { true }) }
+            val pass = launch { folding(store, up).measure(RunKind.SWEEP, listOf(fast, fastAlias, slow, slowAlias)) }
             val reader = RelayVerdictRecord(store, signer)
             try {
                 withTimeout(10_000) {
@@ -844,7 +851,7 @@ class AliasFoldingTest {
             // Routed by path: a path no list names serves nothing, so the shared store is not proof of one relay.
             val up = Upstreams { at -> if (at in urls) thin else emptyList() }
 
-            folding(store, up).measure("t", urls, canDial = { true })
+            folding(store, up).measure(RunKind.SWEEP, urls)
 
             // The search still costs its few probes per pass, which is how a recovery is noticed, and one
             // made-up path; a server answering that one as the rest is folded instead (`one store too small`).
@@ -862,11 +869,11 @@ class AliasFoldingTest {
             val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
             val up = Upstreams { thin }
 
-            assertEquals(1, folding(store, up).measure("t", listOf(secure, plain, other), canDial = { true }))
+            assertEquals(1, folding(store, up).measure(RunKind.SWEEP, listOf(secure, plain, other)))
 
             // The third url was asked as a yardstick and is still too thin to be measured against.
             assertTrue(up.contacted.size <= AliasFolding.YARDSTICK_ATTEMPTS)
-            val reader = folding(store, upstreams()).applyVerdicts(listOf(secure, plain, other))
+            val reader = applied(store, listOf(secure, plain, other))
             assertEquals(mapOf(plain to secure), reader.aliases)
             assertEquals(listOf(secure, other), reader.dial)
         }
@@ -879,7 +886,7 @@ class AliasFoldingTest {
             val plain = RelayUrlNormalizer.normalize("ws://quiet.example")
             val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
 
-            folding(store, Upstreams { thin }).measure("t", listOf(secure, plain), canDial = { true })
+            folding(store, Upstreams { thin }).measure(RunKind.SWEEP, listOf(secure, plain))
 
             val record =
                 store
@@ -899,8 +906,8 @@ class AliasFoldingTest {
             val full: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
             val up = Upstreams { at -> if (at.url.startsWith("wss://")) emptyList() else full }
 
-            assertEquals(0, folding(store, up).measure("t", listOf(secure, plain), canDial = { true }))
-            assertEquals(listOf(secure, plain), folding(store, upstreams()).applyVerdicts(listOf(secure, plain)).dial)
+            assertEquals(0, folding(store, up).measure(RunKind.SWEEP, listOf(secure, plain)))
+            assertEquals(listOf(secure, plain), applied(store, listOf(secure, plain)).dial)
         }
 
     @Test
@@ -909,8 +916,8 @@ class AliasFoldingTest {
             val store = newStore()
             val fold = folding(store, upstreams())
 
-            assertEquals(0, fold.measure("t", listOf(canonical, elsewhere), canDial = { true }))
-            assertEquals(listOf(canonical, elsewhere), fold.applyVerdicts(listOf(canonical, elsewhere)).dial)
+            assertEquals(0, fold.measure(RunKind.SWEEP, listOf(canonical, elsewhere)))
+            assertEquals(listOf(canonical, elsewhere), applied(store, listOf(canonical, elsewhere)).dial)
         }
 
     /** A host our transport gives up on; unlike [unreadableUpstreams] nothing answers, so nothing folds. */
@@ -924,27 +931,12 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val urls = listOf(canonical, alias)
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             val firstPass = up.dials.get()
             assertTrue(firstPass > 0, "the first pass has to actually dial it — that is how we learn it is silent")
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             assertEquals(firstPass, up.dials.get(), "the second pass re-dialled a host the first one already proved silent")
-        }
-
-    @Test
-    fun `what the fold holds about a url lasts only while a sweep names it`() =
-        runBlocking {
-            val store = newStore()
-            val aliases = RelayAliases()
-            val fold = folding(store, upstreams(), aliases)
-            fold.measure(AliasMonitor.ALL_STREAMS, listOf(canonical, alias), canDial = { true })
-            assertEquals(mapOf(alias to canonical), aliases.verdicts())
-
-            // The fold's own record still names the canonical, so it stays in the world; the alias does not.
-            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere), canDial = { true })
-
-            assertEquals(emptyMap(), aliases.verdicts())
         }
 
     @Test
@@ -953,11 +945,11 @@ class AliasFoldingTest {
             val up = silentUpstreams()
             val fold = folding(newStore(), up)
             val urls = listOf(canonical, alias)
-            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
-            fold.measure(AliasMonitor.ALL_STREAMS, listOf(elsewhere, RelayUrlNormalizer.normalize("wss://nostr.mom/beta")), canDial = { true })
+            fold.measure(RunKind.SWEEP, urls)
+            fold.measure(RunKind.SWEEP, listOf(elsewhere, RelayUrlNormalizer.normalize("wss://nostr.mom/beta")))
             val before = up.dials.get()
 
-            fold.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { true })
+            fold.measure(RunKind.SWEEP, urls)
 
             assertTrue(up.dials.get() > before, "a cooldown outlived every sweep that could have used it")
         }
@@ -970,9 +962,9 @@ class AliasFoldingTest {
             val fold = folding(store, up, undecidableCooldownMs = 0L)
             val urls = listOf(canonical, alias)
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             val firstPass = up.dials.get()
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
 
             assertTrue(up.dials.get() > firstPass, "a lapsed cooldown still held the host back")
         }
@@ -990,8 +982,8 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val urls = listOf(quietHost, quietAlias, canonical, alias)
 
-            assertEquals(1, fold.measure("t", urls, canDial = { true }), "the foldable host was not measured")
-            assertEquals(listOf(quietHost, quietAlias, canonical), fold.applyVerdicts(urls).dial)
+            assertEquals(1, fold.measure(RunKind.SWEEP, urls), "the foldable host was not measured")
+            assertEquals(listOf(quietHost, quietAlias, canonical), applied(store, urls).dial)
         }
 
     @Test
@@ -1006,11 +998,11 @@ class AliasFoldingTest {
             val fold = folding(store, up)
             val urls = listOf(bare, first, second)
 
-            assertEquals(1, fold.measure("t", urls, canDial = { true }), "the group was abandoned on its silent leader")
+            assertEquals(1, fold.measure(RunKind.SWEEP, urls), "the group was abandoned on its silent leader")
 
             // The bare url stays in the fan-out because nothing was proved about it.
-            assertEquals(listOf(bare, first), fold.applyVerdicts(urls).dial)
-            assertEquals(mapOf(second to first), fold.applyVerdicts(urls).aliases)
+            assertEquals(listOf(bare, first), applied(store, urls).dial)
+            assertEquals(mapOf(second to first), applied(store, urls).aliases)
         }
 
     @Test
@@ -1023,17 +1015,14 @@ class AliasFoldingTest {
             val second = RelayUrlNormalizer.normalize("wss://mixed.example/beacon")
             val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
             val up = Upstreams { corpus }
-            val fold = folding(store, up)
             val refusals = AtomicInteger()
-            val canDial: suspend (NormalizedRelayUrl) -> Boolean = { url ->
-                url != flaky || refusals.getAndIncrement() > 0
-            }
+            val fold = folding(store, up, canDial = { url -> url != flaky || refusals.getAndIncrement() > 0 })
 
-            val learned = fold.measure("t", listOf(flaky, first, second), canDial = canDial)
+            val learned = fold.measure(RunKind.SWEEP, listOf(flaky, first, second))
 
             assertEquals(2, learned, "the url refused during the search was never re-asked once the transport recovered")
             assertTrue(flaky in up.contacted, "it was dropped from the member walk rather than dialled")
-            assertEquals(listOf(first), fold.applyVerdicts(listOf(flaky, first, second)).dial)
+            assertEquals(listOf(first), applied(store, listOf(flaky, first, second)).dial)
         }
 
     @Test
@@ -1044,7 +1033,7 @@ class AliasFoldingTest {
             val urls = (listOf(host) + (0 until 5).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
             val up = silentUpstreams()
 
-            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+            assertEquals(0, folding(store, up).measure(RunKind.SWEEP, urls))
 
             assertEquals(
                 AliasFolding.YARDSTICK_ATTEMPTS,
@@ -1069,9 +1058,9 @@ class AliasFoldingTest {
             val urls = listOf(inbox) + paths
 
             assertEquals(inbox, RelayAliases().toProbe(urls.sortedWith(compareBy { it.url.length })).first())
-            assertEquals(2, fold.measure("t", urls, canDial = { true }), "the minted paths were never compared to each other")
+            assertEquals(2, fold.measure(RunKind.SWEEP, urls), "the minted paths were never compared to each other")
 
-            val cleaned = fold.applyVerdicts(urls)
+            val cleaned = applied(store, urls)
             assertEquals(listOf(inbox, paths.first()), cleaned.dial)
             assertEquals(paths.drop(1).associateWith { paths.first() }, cleaned.aliases)
         }
@@ -1088,7 +1077,6 @@ class AliasFoldingTest {
             val store = newStore()
             val fold =
                 AliasFolding(
-                    aliases = RelayAliases(),
                     record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
@@ -1109,12 +1097,12 @@ class AliasFoldingTest {
                         ),
                 )
 
-            fold.measure("t", urls, canDial = { true })
+            fold.measure(RunKind.SWEEP, urls)
 
             for (host in hosts) {
                 assertTrue((most[host] ?: 0) <= AliasFolding.DIALS_PER_HOST, "$host had ${most[host]} dials at once")
             }
-            assertEquals(hosts.size, fold.applyVerdicts(urls).dial.size, "each host's twenty paths fold onto one url")
+            assertEquals(hosts.size, applied(store, urls).dial.size, "each host's twenty paths fold onto one url")
         }
 
     /** A host whose paths [storeAt] answers from; a path no fixture names is whatever [storeAt] says of it. */
@@ -1139,7 +1127,7 @@ class AliasFoldingTest {
             val (urls, up) = tinyHost(listOf("", "alpha-haven-xray", "beacon-beacon-ivory", "hotel")) { whole }
             val store = newStore()
 
-            assertEquals(3, folding(store, up).measure("t", urls, canDial = { true }))
+            assertEquals(3, folding(store, up).measure(RunKind.SWEEP, urls))
 
             val held = RelayVerdictRecord(store, signer).load(urls)
             assertEquals(urls.drop(1).toSet(), held.aliases.keys)
@@ -1156,7 +1144,7 @@ class AliasFoldingTest {
             val (urls, up) = tinyHost(paths) { path -> if (path in paths) store("own-$path", 5) else emptyList() }
             val store = newStore()
 
-            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+            assertEquals(0, folding(store, up).measure(RunKind.SWEEP, urls))
             assertTrue(RelayVerdictRecord(store, signer).load(urls).aliases.isEmpty())
         }
 
@@ -1170,7 +1158,7 @@ class AliasFoldingTest {
             val (urls, up) = tinyHost(paths) { path -> if (path in paths) five else emptyList() }
             val store = newStore()
 
-            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+            assertEquals(0, folding(store, up).measure(RunKind.SWEEP, urls))
             assertTrue(RelayVerdictRecord(store, signer).load(urls).aliases.isEmpty())
         }
 
@@ -1183,7 +1171,7 @@ class AliasFoldingTest {
             val (urls, up) = tinyHost(listOf("", "echo", "cipher-titan", "inbox")) { path -> if (path == "inbox") inbox else pool }
             val store = newStore()
 
-            folding(store, up).measure("t", urls, canDial = { true })
+            folding(store, up).measure(RunKind.SWEEP, urls)
 
             val aliases = RelayVerdictRecord(store, signer).load(urls).aliases
             val inboxUrl = urls.last()
@@ -1214,9 +1202,9 @@ class AliasFoldingTest {
                     }
                 }
             val store = newStore()
-            val fold = AliasFolding(RelayAliases(), RelayVerdictRecord(store, signer), AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40))
+            val fold = AliasFolding(RelayVerdictRecord(store, signer), AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40))
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             assertTrue(up.contacted.all { it in urls }, "no made-up path is asked for a window that is not a whole store")
         }
 
@@ -1243,18 +1231,34 @@ class AliasFoldingTest {
                 }
             val fold = folding(store, up)
 
-            assertEquals(0, fold.measure("t", urls, canDial = { true }), "distinct endpoints were folded together")
-            assertEquals(urls, fold.applyVerdicts(urls).dial)
+            assertEquals(0, fold.measure(RunKind.SWEEP, urls), "distinct endpoints were folded together")
+            assertEquals(urls, applied(store, urls).dial)
+            // Each endpoint was held up against the three others, the yardstick among them once.
+            for (url in urls) {
+                val evidence = sameAsOf(store, url)?.get(2)
+                assertTrue(evidence?.contains("with 3 compared endpoint(s) on this host") == true, "${url.url}: $evidence")
+            }
         }
+
+    private suspend fun sameAsOf(
+        store: NostrSemanticsStore,
+        url: NormalizedRelayUrl,
+    ): Array<String>? =
+        store
+            .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), tags = mapOf("d" to listOf(url.url))))
+            .maxByOrNull { it.createdAt }
+            ?.tags
+            ?.firstOrNull { it[0] == RelayVerdictRecord.SAME_AS_TAG }
 
     @Test
     fun `a single url is returned untouched by both halves`() =
         runBlocking {
             val up = upstreams()
-            val fold = folding(newStore(), up)
+            val store = newStore()
+            val fold = folding(store, up)
 
-            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical)).dial)
-            assertEquals(0, fold.measure("t", listOf(canonical), canDial = { true }))
+            assertEquals(listOf(canonical), applied(store, listOf(canonical)).dial)
+            assertEquals(0, fold.measure(RunKind.SWEEP, listOf(canonical)))
             assertEquals(0, up.dials.get())
         }
 }

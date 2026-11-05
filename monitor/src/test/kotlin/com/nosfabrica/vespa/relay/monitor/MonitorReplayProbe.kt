@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
+import com.nosfabrica.vespa.relay.peers.DialGate
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -69,16 +70,28 @@ class MonitorReplayProbe {
         val processors = Processors()
 
         fun probe(target: Int) = AliasProbe.over(peers.client, target) { CONNECT_SEC * 1000L }
-        val folding = AliasFolding(RelayAliases(), record, probe(RelayAliases.DEFAULT_PROBE_TARGET), CONCURRENCY, progress = processors.of("aliasFold"))
+        // One gate for both passes, as the monitor has.
+        val gate = DialGate(CONCURRENCY)
+        val folding =
+            AliasFolding(
+                record,
+                probe(RelayAliases.DEFAULT_PROBE_TARGET),
+                gate,
+                progress = processors.of("aliasFold"),
+                canDial = { reach.reach(it) == Reach.REACHABLE },
+                sockets = sockets,
+            )
         val fitness =
             FitnessPass(
                 record = record,
                 probe = probe(FitnessPass.FITNESS_TARGET),
                 client = peers.client,
                 progress = processors.of("fitness"),
-                concurrency = CONCURRENCY,
+                gate = gate,
                 tlsCheck = reach::tls,
                 world = { ServerIndex(urls.toSet()) },
+                reach = reach::reach,
+                sockets = sockets,
             )
         // Where the sweep is, every minute, for a run that takes an hour.
         val ticker =
@@ -94,8 +107,8 @@ class MonitorReplayProbe {
             peers.connect()
             System.err.println("replay: ${urls.size} url(s)")
             runBlocking {
-                folding.measure(AliasMonitor.ALL_STREAMS, urls, canDial = { reach.reach(it) == Reach.REACHABLE }, sockets = sockets)
-                fitness.measure(AliasMonitor.ALL_STREAMS, urls, reach::reach, onEvent = {}, sockets = sockets)
+                folding.measure(RunKind.SWEEP, urls)
+                fitness.measure(RunKind.SWEEP, urls)
                 fitness.flushPending()
             }
             val rows =

@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -86,19 +85,19 @@ class DeferralBackoffTest {
     )
 
     private suspend fun FitnessPass.run(
-        label: String,
+        kind: RunKind,
         urls: List<NormalizedRelayUrl> = listOf(busy),
-    ) = measure(label, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+    ) = measure(kind, urls)
 
     @Test
     fun `a rate-limited url is not dialled again by the fast lane within its backoff`() =
         runBlocking {
             val pass = fitness(newStore())
-            pass.run(AliasMonitor.FAST_LANE)
+            pass.run(RunKind.FAST_LANE)
             val first = dials.get()
             assertTrue(first > 0)
 
-            repeat(3) { pass.run(AliasMonitor.FAST_LANE) }
+            repeat(3) { pass.run(RunKind.FAST_LANE) }
 
             assertEquals(first, dials.get(), "every lane tick dialled a relay that had just answered 429")
         }
@@ -116,7 +115,7 @@ class DeferralBackoffTest {
                 )
             val pass = fitness(newStore(), said = { words[it] })
 
-            pass.run(AliasMonitor.FAST_LANE, words.keys.toList())
+            pass.run(RunKind.FAST_LANE, words.keys.toList())
 
             assertEquals(words.keys, pass.backingOff(words.keys))
         }
@@ -125,11 +124,11 @@ class DeferralBackoffTest {
     fun `the sweep dials it again once the backoff lapses`() =
         runBlocking {
             val pass = fitness(newStore(), sweepMs = 200L)
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
             val first = dials.get()
 
             delay(300)
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
 
             assertTrue(dials.get() > first, "a backoff of one sweep kept the url out of the sweep after it")
         }
@@ -138,11 +137,11 @@ class DeferralBackoffTest {
     fun `a relay's own Retry-After holds it out past the sweep's backoff`() =
         runBlocking {
             val pass = fitness(newStore(), sweepMs = 200L, said = { if (it == busy) "$tooMany; Retry-After: 3600" else null })
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
             val first = dials.get()
 
             delay(300)
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
 
             assertEquals(first, dials.get(), "the relay asked for an hour and was dialled again sooner")
         }
@@ -152,12 +151,12 @@ class DeferralBackoffTest {
         runBlocking {
             var limited = true
             val pass = fitness(newStore(), sweepMs = 200L, said = { if (limited) tooMany else null })
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
             assertEquals(setOf(busy), pass.backingOff(listOf(busy)))
 
             limited = false
             delay(300)
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
 
             assertTrue(pass.backingOff(listOf(busy)).isEmpty())
         }
@@ -169,11 +168,11 @@ class DeferralBackoffTest {
             RelayVerdictRecord(store, signer).publishFitness(busy, Verdict.PRIME.value, "answered 20 events", pageable = null, nip77 = null)
             val pass = fitness(store)
 
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
             assertEquals(Verdict.PRIME.value, gradeOf(store, busy), "one deferral is a moment, not a reason to withdraw")
 
             // Still backing off, which is still deferring.
-            pass.run(AliasMonitor.ALL_STREAMS)
+            pass.run(RunKind.SWEEP)
 
             assertNull(gradeOf(store, busy), "a relay refusing to be measured kept its prime")
         }
@@ -187,7 +186,7 @@ class DeferralBackoffTest {
             RelayVerdictRecord(store, signer).publishFitness(busy, Verdict.PRIME.value, "answered 20 events", pageable = null, nip77 = null, measuredAt = measuredAt)
             assertEquals(Verdict.PRIME.value, gradeOf(store, busy), "the fixture needs the old grade to stand")
 
-            fitness(store, sweepMs = sweepMs).run(AliasMonitor.ALL_STREAMS)
+            fitness(store, sweepMs = sweepMs).run(RunKind.SWEEP)
 
             assertNull(gradeOf(store, busy))
         }
@@ -200,7 +199,7 @@ class DeferralBackoffTest {
             val pass = fitness(store, sweepMs = 1L)
 
             repeat(DEFERRED_RUNS) {
-                pass.run(AliasMonitor.FAST_LANE)
+                pass.run(RunKind.FAST_LANE)
                 delay(5)
             }
 
@@ -214,29 +213,24 @@ class DeferralBackoffTest {
             store.insert(events.sign(nowSeconds(), 10002, arrayOf(arrayOf("r", busy.url, "write"), arrayOf("r", "wss://fine.example", "write")), ""))
             val pass = fitness(store)
             val world =
-                StreamWorld(
+                CandidateSet(
                     store = store,
                     sources = sources(),
                     probe = ReachabilityProbe(null),
                     monitorAuthors = listOf(signer.pubKey),
                     self = signer.pubKey,
                     tor = null,
-                    sockets = Sockets.NONE,
-                    onProbeEvent = {},
-                    recentlyGraded = { urls -> StreamWorld.gradedSince(RelayVerdictRecord(store, signer), urls, nowSeconds() - 3600) },
+                    recentlyGraded = { urls -> CandidateSet.gradedSince(RelayVerdictRecord(store, signer), urls, nowSeconds() - 3600) },
                     backingOff = pass::backingOff,
                 )
             val monitor =
                 AliasMonitor(
                     passes = emptyList(),
                     scope = CoroutineScope(Dispatchers.Unconfined),
-                    // The world's own pre-probe would resolve these names; the dial is the fixture's.
-                    source =
-                        object : AliasMonitor.CandidateSource by world {
-                            override suspend fun reach(url: NormalizedRelayUrl) = Reach.REACHABLE
-                        },
+                    // The pass's pre-probe is the fixture's, so the world's own never resolves these names.
+                    source = world,
                     fastLaneEveryMs = 1_000L,
-                    fastLanePasses = listOf(AliasMonitor.Pass { l, c, r, e, s -> pass.measure(l, c, r, e, s) }),
+                    fastLanePasses = listOf(pass),
                 )
 
             monitor.runFastLane(0)

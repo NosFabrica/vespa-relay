@@ -32,6 +32,8 @@ class StatusRollup(
     private val name: String,
     private val everySeconds: Long,
     private val publish: () -> Unit,
+    /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
+    private val logPrefix: String = "router",
 ) : AutoCloseable {
     private val timer =
         Executors.newSingleThreadScheduledExecutor { r ->
@@ -42,7 +44,7 @@ class StatusRollup(
         timer.scheduleAtFixedRate({
             // `scheduleAtFixedRate` cancels the schedule on the first exception.
             runCatching { publish() }
-                .onFailure { System.err.println("router: $name status rollup failed: ${it.message}") }
+                .onFailure { System.err.println("$logPrefix: $name status rollup failed: ${it.message}") }
         }, everySeconds, everySeconds, TimeUnit.SECONDS)
         return this
     }

@@ -1,12 +1,18 @@
 # Monitor engine decisions
 
-The history behind `monitor/.../MonitorEngine.kt`, `StreamWorld.kt`,
+The history behind `monitor/.../MonitorEngine.kt`, `CandidateSet.kt`,
 `RelayDocument.kt` and `MonitorStatus.kt`, and the small `:common` and
 `:web` files that serve every plane, moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
 
 ## Monitor
+
+**`CandidateSet`, not `StreamWorld`.** The name dates from when the monitor
+ran inside the sync and derived its urls from the streams' discovery. It has
+no streams now: the class is the set of urls the passes measure, read off
+monitor.conf's own sources and our records, and to the scheduler it is the
+`AliasMonitor.CandidateSource`.
 
 **The monitor is its own class with its own `Processors`.** It was 278 lines
 inside `SyncEngine`, and one class started two planes that ask different
@@ -110,7 +116,9 @@ host; a relay that answers that with a 429 or "too many" is deferred in memory (
 and never signed. What the shared process used to catch on its own now needs saying across the
 gap: the sync's boot refused a discovering deployment with no monitor declared, and with the
 monitor elsewhere it cannot tell, so a stream that takes its relays from 30166 records the store
-does not hold is named on every health line (`VerdictSupply`). The monitor's page carries its own
+does not hold is named on every health line (`VerdictSupply`), each check under its own short deadline
+and booked as `health.verdictSupply`, so a store that does not answer names nothing and never holds the
+health line up. The monitor's page carries its own
 `store` section, and both processes count a thread killed by a VirtualMachineError (`watchForFatals`).
 
 **A probe dial is not an upstream, so its events are always verified.** The sink
@@ -228,6 +236,19 @@ at again; through a long read outage the window grew without bound and the
 first tick after it asked for hours of relay lists the sweep had since read.
 `CandidateSource.listsReadFromSec` is when the last derivation that read every
 list began, and the lane asks from no earlier than that.
+
+**One scheduler coroutine runs every job, and the record refuses overlaps.**
+The sweep, the fast lane and the pending-write retry were three loops behind a
+`Mutex`, and five `RelayVerdictRecord` instances relied on it: the
+read-modify-write in `edit` was safe only because three call sites three
+layers away serialised its callers. `AliasMonitor` now `select`s over the three
+clocks on one coroutine, so no two jobs can overlap; a clock that comes due
+during another job runs once after it (the retry used to skip a busy tick, the
+lane to queue on the lock). `MonitorEngine` builds one record and one
+`DialGate` for every pass, and `edit` throws on a second edit of a url already
+under way, so a regression fails loudly instead of losing tags. The probe-seen
+event sink and the pinned set were the mirror's, from when the monitor ran in
+its process; they are gone.
 
 ## Stream world
 
@@ -426,3 +447,143 @@ relay lists silently skipped its minutes. `candidatesSince` now throws on a
 failed read and the window moves only past a tick that ran. The window is
 on `created_at`, which is all a filter's `since` can bound: a list that
 arrives backdated is the sweep's.
+
+**The pre-probe's cache evicts a tenth at a time.** `ReachabilityProbe` holds up
+to 50,000 host answers. Once full, every insert scanned the whole map for lapsed
+answers, and cleared it only when none had lapsed, so a cache whose answers lapsed
+one by one paid a full scan per insert. Now a full cache drops the lapsed answers
+and then the oldest until it is 90% full, so the scan runs once per 5,000 inserts.
+Which hosts are re-asked changes only at the margin, and only towards asking
+fresh: no answer is reused past `reuseMs` either way.
+
+**A sweep reads our own records off one walk.** Per sweep: 4 walks of our 30166
+corpus plus one `#d` read per verdict write → 1 walk. The four were
+`StreamWorld`'s `ownRecords`, the fold's `loadAll`, and the stability and fitness
+passes' `load(candidates + mates)`, each a `#d` read of every candidate 500 urls at
+a time; the per-write read was `currentRecord`, before every edit. Now
+`AliasMonitor.runPass` brackets the sweep (`RelayVerdictRecord.beginSweep` /
+`endSweep`), the first read walks every record we signed, newest per `d`, and
+every read and edit base inside the sweep comes off that walk. An edit that lands
+folds its signed record back in; one that did not (refused, failed, or cut by a
+deadline, so it may have landed anyway) marks its url unknown, and that url is
+read from the store again. Only this process signs our records, and every
+signature goes through the one `RelayVerdictRecord`, so the walk stays what the
+store holds. The fast lane and the pending-write retry run between sweeps and
+read the store as before: their reads are a few `#d` chunks, and a walk kept for
+hours between sweeps would have to stay true across every write path of those
+hours to save them. `SweepRecordsTest` runs one sweep's reads and three passes'
+writes both ways over the same seeded store and compares every read and every
+record written.
+
+**The derivation's three reads run at once.** `StreamWorld.candidates` read the
+dead set, the relay lists and our own records one after another; none needs
+another's answer, so they now run concurrently, and the sweep's walk of our
+records (the first read of the sweep) overlaps the two store scans. Their
+outcomes are taken in the old order: a failed dead-set read fails the derivation
+before `listsReadFromSec` moves, a failed walk of our records after it, which
+`CandidateSetDerivationTest` pins. The source row's position is now set before
+the dead-set read instead of after it.
+
+**Verdict writes stay one edit per url.** Batching a pass's edits into chunks
+sent with one `batchInsert` was considered after the sweep's walk removed each
+write's record read. It would change what the write limits count: the wedge limit
+is consecutive unanswered writes, and per chunk it becomes consecutive unanswered
+chunks, which the tests pinning a stopped batch (`PublishDeadlineTest`,
+`PendingWritesTest`, `VerdictCadenceTest`, all through `StoreWriter.insert`)
+would have to be rewritten to, and nothing measured shows the writes are what a
+sweep waits on. It waits for a measurement of the write stage.
+
+**An edit reads `#d` for a url the sweep's walk did not see.** The walk pages
+newest-first with `until` as its cursor, so a record of ours superseded between
+two pages (a cut edit's EVENT re-sent from the writer's outbox on reconnect)
+moves above the cursor while its old version, below it, is gone: the walk holds
+neither, and `currentRecord` answered "no record", so the next edit signed a
+fresh record without every tag the url carried. A miss in the walk is now read
+from the store like an unknown url. Only urls with no record pay the read, which
+is one more `monitor.publish` query per new url in `SweepRecordsTest`; a url the
+walk saw at an older version is not caught, but the only thing that can land
+over it is an edit this process reported as failed. `SweepWalkMissedRecordTest`
+lands the newer version between the walk's pages.
+
+**A name lookup's budget starts when a thread runs it.** `ReachabilityProbe.lookup`
+put `withTimeoutOrNull(lookupMs)` around the submission to its pool, and the
+pre-probe runs for every url of a pass at once, so a live host queued behind dead
+names came back `UNEXPLAINED` without ever being resolved, and fitness counted it
+as a blind deferral toward `refusesToPublish`. A lookup now takes one of `threads`
+permits before its clock starts and gives it back when the resolver returns, not
+when its caller gives up, so a thread still blocked in `getAllByName` keeps its
+slot and the pool's queue never holds more than its threads. Waiting for a permit
+is bounded by progress rather than by time: a waiter waits while lookups keep
+returning, and only after `LOOKUP_STARVED_MS` in which none returned does it give
+up as `UNEXPLAINED`, with one `name lookups STARVED` line per spell, so a resolver
+that hangs forever stalls the pre-probe for a minute rather than for good.
+`ReachabilityLookupQueueTest` holds both.
+
+**Only the scheduler's own cancellation ends it.** `AliasMonitor.guarded`,
+`runEach` and `derive` rethrew every `CancellationException`, and so did the
+boot's retirement guard and its `retired.await()`. One thrown into a live
+coroutine (an `await()` on a deferred someone else cancelled, a `withTimeout`
+below a pass) skipped the passes after it and ended the scheduler's loop, or the
+boot before the passes started, with nothing said, so nothing measured again.
+They now catch it, call `ensureActive()`, which rethrows when the scope really
+is closing, and otherwise log it as one failure, as `repeatEvery` does. The
+per-url catches inside the passes still rethrow: their deadlines work by
+cancellation. `SchedulerStrayCancellationTest` holds both cases, and
+`AliasMonitorTest`'s cancellation case now cancels the sweep's own job.
+
+**The sweep's walk belongs to the sweep.** The one-walk memo ran the walk in
+whichever reader installed it, so that reader's cancellation or edit deadline
+threw the walk away and each waiter started it again from page one, and a failed
+walk was redone by each waiter in turn. The walk now runs in a scope
+`beginSweep` creates and `endSweep` cancels, carrying the first reader's
+`StoreCalls` book; readers await it under their own deadlines, a failure fails
+every waiter once (a page past `readDeadlineMs` still as `ReadTimeout`) and clears
+the memo so the next read walks again, and the memo stays one CAS on an
+`AtomicReference`. A walk cancelled by its sweep ending reaches a live reader as
+an ordinary exception, never as a `CancellationException`.
+`SweepWalkSurvivesReaderCancelTest` holds both.
+
+**The lane's window moves only past a tick whose passes completed.** It moved
+past any tick whose read worked, but `runEach` guards each pass and a pass whose
+standing read failed returned 0, so a tick whose passes all failed still moved the
+window and its urls waited for the next sweep. `runEach` now reports whether every
+pass completed, and `readStanding` throws `StandingUnread` after saying its line
+instead of handing back null, so the scheduler counts that pass as failed without
+logging it twice. A url `candidatesSince` made known on the failed tick is handed
+again on the retry: `known` feeds the roster's stand-in election and filters
+nothing the lane hands over. A pass that keeps failing re-reads a window that
+never reaches behind the last sweep's read of the lists.
+
+**An edit that lands while the walk runs is read afresh.** An edit that settled
+while the sweep's walk was under way (after a failed walk, an edit falls back to
+its own `#d` read and lands beside the next walk) was dropped: `settled` saw no
+records yet and returned, and the walk, which may have read the url before the
+edit landed, then served its older record to the url's next edit, which erased
+the earlier edit's tags. A url settled before the walk's records are installed is
+now kept on the sweep and marked unknown when they are, so its next read goes to
+the store. The install sets the records before reading that set, and `settled`
+adds to it before reading the records, so one of the two always sees the other.
+`SweepEditDuringWalkTest` holds an edit's insert until a second walk has read
+its url.
+
+**A sweep's read of a url the walk did not see goes to the store too.** `load`
+read such a url as "no record", the miss the edit path already read through, so
+a record superseded between the walk's pages read back with no grade and no
+consistency verdict, and the passes re-measured it and re-stamped its grade. It
+is now read by `#d` like an unknown url, and the answer, a record or none, is
+kept for the rest of the sweep, so only urls with no record pay it, once.
+`SweepWalkMissedRecordTest` reads the url back mid-sweep.
+
+**The boot walk is bounded per page.** The retirement's walk of our records
+waited on each page forever, and the passes start only once it ends, so one page
+the store never answered left the monitor measuring nothing. It now pages under
+`READ_DEADLINE_MS`, as the sweep's walk does, and a page past it fails the
+retirement, which the engine logs before starting the passes.
+`RetirementWalkDeadlineTest` holds it.
+
+**One rebuild's verdict reads stop at the first failure.** `RelayVerdictRecord.Held`
+remembered nothing of a failed read, so with the store down each of a roster
+rebuild's calls (the prefetch, every stream's fold, the roster's own verdicts)
+waited out the read deadline again. A `Held` now keeps its first failure and
+fails every later read that needs the store with `StoreUnread` at once; the next
+rebuild's `Held` reads afresh.

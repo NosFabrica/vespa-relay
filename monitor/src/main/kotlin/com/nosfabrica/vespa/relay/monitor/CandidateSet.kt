@@ -25,7 +25,6 @@ import com.nosfabrica.vespa.relay.config.RelayExcludes
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayDiscovery
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -33,52 +32,46 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 /**
  * Every url the monitor measures, derived from the store when a pass runs rather than taken from
- * a cache. The corpus is the union of what [sources] name and what this router already holds
- * records about; [sources] is the monitor's own declaration, never a stream's.
+ * a cache. The corpus is the union of what [sources] name and what this monitor already holds
+ * records about; [sources] is the monitor's own declaration, never a stream's. Touched only on the
+ * monitor's scheduler, except [lastDerivation], which the status page reads.
  */
-internal class StreamWorld(
+internal class CandidateSet(
     private val store: IEventStore,
     /** The relay lists to scan, from `RouterConfig.monitorSources`. Null measures nothing. */
     private val sources: RelayDiscoveryConfig?,
     private val probe: ReachabilityProbe,
     /** Whose `dead` verdicts may hold a url out; never unscoped, because a hold-out forecloses. */
     private val monitorAuthors: List<String>,
-    /** This router's own signing identity; the scope of [ownRecords]. */
+    /** This monitor's own signing identity; the scope of [ownRecords]. */
     private val self: String?,
     private val tor: TorTransport?,
-    override val sockets: Sockets,
-    /**
-     * Where an event a probe dial happened to see goes. The mirror supplies it, because who wants
-     * an event is the mirror's question; this plane only hands over what it saw.
-     */
-    private val onProbeEvent: suspend (Event) -> Unit,
     /** Where this derivation reports. Null in a test asserting the numbers rather than the row. */
     override val progress: Processors.Handle? = null,
     /** Of these urls, the ones holding a fitness grade younger than a sweep; the fast lane skips them. */
     private val recentlyGraded: suspend (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
     /** Of these urls, the ones still backing off from a deferral; the fast lane skips them too. */
     private val backingOff: (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
+    /** Our own records stamped at or after a second; the monitor's record serves them off the sweep's walk. */
+    private val ownRecordsSince: suspend (Long) -> List<Event> = { since ->
+        if (self == null) emptyList() else RelayVerdictRecord.ownRecordsIn(store, self, since)
+    },
 ) : AliasMonitor.CandidateSource {
-    /** What the last derivation started from and dropped. */
+    /** What the last derivation started from and dropped; null until one has run. */
     @Volatile
-    var lastDerivation: Derivation = Derivation()
+    var lastDerivation: Derivation? = null
         private set
 
     /** The last sweep's candidate set and what the fast lane has handed over since; empty until a sweep derives. */
-    @Volatile
     var known: ServerIndex = ServerIndex.EMPTY
         private set
 
-    @Volatile
     override var listsReadFromSec: Long? = null
-        private set
-
-    /** Whether a derivation has run; a fresh [Derivation] and one that found nothing are the same zeros. */
-    @Volatile
-    var derived: Boolean = false
         private set
 
     /**
@@ -92,7 +85,7 @@ internal class StreamWorld(
         val excluded: Int = 0,
         /** Dropped by a current `dead` verdict of ours. */
         val heldOutDead: Int = 0,
-        /** Urls this router holds a record about that no relay list named this round; outside [sourced]. */
+        /** Urls this monitor holds a record about that no relay list named this round; outside [sourced]. */
         val recordedOnly: Int = 0,
         /** What the relay lists named the round before, or null on a process's first round. */
         val sourcedLastRound: Int? = null,
@@ -111,37 +104,42 @@ internal class StreamWorld(
         )
 
     /** Every url one of our own records is about, on the verdict TTL. */
-    private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
-        RelayDiscovery.recorded(
-            store,
-            authors = listOfNotNull(self),
-            maxAgeSeconds = RelayVerdictRecord.DEFAULT_TTL_SECONDS,
-            allowOnion = tor != null,
-        )
+    private suspend fun ownRecords(): Set<NormalizedRelayUrl> = RelayDiscovery.recordedIn(ownRecordsSince(nowSeconds() - RelayVerdictRecord.DEFAULT_TTL_SECONDS), allowOnion = tor != null)
 
     /**
      * The sweep's candidate set. Urls a signed record calls dead are held out here rather than
      * declined in [reach], where the fold would report them as declined by our own transport.
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
-        val dead = ownDead()
-        // One unit per configured source, timed from after the dead-set read.
+        // One unit per configured source.
         progress?.measuring(sources?.sources?.size ?: 0, Processors.UNIT_SOURCE)
         val all = LinkedHashSet<NormalizedRelayUrl>()
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        val readingFromSec = nowSeconds()
-        // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
-        val read =
-            derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
-                if (kept) all += url else excluded += url
+        var readingFromSec = 0L
+        // Three independent reads at once. A failed dead-set read fails the derivation before the lists'
+        // clock moves; a failed walk of our records, after it.
+        val (dead, read, recorded) =
+            coroutineScope {
+                val dead = async { attempt { ownDead() } }
+                val lists =
+                    async {
+                        readingFromSec = nowSeconds()
+                        // Only the sweep ticks the position; the fast lane runs the same `derive` and must not move it.
+                        derive("alias source", { it }, onSource = { progress?.attempted() }) { url, kept ->
+                            if (kept) all += url else excluded += url
+                        }
+                    }
+                val recorded = async { attempt { ownRecords() } }
+                Triple(dead.await(), lists.await(), recorded.await())
             }
+        val held = dead.getOrThrow()
         if (read) listsReadFromSec = readingFromSec
         // The two sets cannot overlap: one `exclude` covers the whole monitor now, so whether a
         // url is kept is a function of the url, however many sources found it.
-        val recorded = ownRecords()
-        val recordedOnly = recorded.filterNot { it in all || it in excluded }
+        val ours = recorded.getOrThrow()
+        val recordedOnly = ours.filterNot { it in all || it in excluded }
         val known = all + recordedOnly
-        val live = known.filterNot { it in dead }
+        val live = known.filterNot { it in held }
         lastDerivation =
             Derivation(
                 sourced = all.size + excluded.size,
@@ -151,26 +149,26 @@ internal class StreamWorld(
                 candidates = live.size,
                 sourcedLastRound = lastSourced,
             )
-        derived = true
         this.known = ServerIndex(live.toHashSet())
-        // A derivation that collapsed is a fault in the read, not a new baseline. Said once;
-        // nothing is retried.
+        // A read that failed or collapsed is a fault in the read, not a new baseline. A collapse is
+        // said each round it holds; nothing is retried.
         val previous = lastSourced
-        if (previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE) {
+        val shrunk = previous != null && previous >= SHRINK_FLOOR && all.size < previous * SHRINK_SHARE
+        if (shrunk) {
             System.err.println(
-                "router: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
+                "monitor: alias source DERIVED ${all.size} url(s) WHERE THE LAST ROUND DERIVED $previous — " +
                     "a drop of ${(100 - 100 * all.size / previous)}%. The relay lists in the store do not change that " +
                     "fast; suspect the read (a loading content node, a degraded search) before believing the network. " +
                     "The passes still walk ${live.size} url(s), because the corpus is our own records too.",
             )
         }
-        lastSourced = all.size
+        if (read && !shrunk) lastSourced = all.size
         System.err.println(
-            "router: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
+            "monitor: alias source derived ${live.size} url(s) across ${sources?.sources?.size ?: 0} declared source(s)" +
                 "; ${all.size} named by a relay list this round" +
                 (if (known.size > live.size) "; ${known.size - live.size} held out as known dead" else "") +
                 (
-                    lastDerivation.recordedOnly
+                    recordedOnly.size
                         .takeIf { it > 0 }
                         ?.let { "; $it more from our own records that nothing named this round" }
                         .orEmpty()
@@ -178,6 +176,16 @@ internal class StreamWorld(
         )
         return live
     }
+
+    /** [read]'s value or its failure, a cancellation excepted. */
+    private suspend fun <T> attempt(read: suspend () -> T): Result<T> =
+        try {
+            Result.success(read())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
 
     /** What the last round's relay lists named; null until a round has run. */
     private var lastSourced: Int? = null
@@ -206,11 +214,12 @@ internal class StreamWorld(
                         ticked++
                         onSource()
                     },
+                    logPrefix = "monitor",
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                System.err.println("router: $what could not derive the monitor's sources: ${e.message}")
+                System.err.println("monitor: $what could not derive the monitor's sources: ${e.message}")
                 null
             }
         repeat(discovery.sources.size - ticked) { onSource() }
@@ -250,10 +259,8 @@ internal class StreamWorld(
         return handed
     }
 
-    override suspend fun reach(url: NormalizedRelayUrl): Reach = probe.reach(url)
-
-    /** Handed straight over; whether anything wants it, and on whose word, is the mirror's call. */
-    override suspend fun onEvent(event: Event) = onProbeEvent(event)
+    /** Whether this process can reach that url at all, and whose side a refusal is on: transport, not policy. */
+    suspend fun reach(url: NormalizedRelayUrl): Reach = probe.reach(url)
 
     companion object {
         const val DEAD_TTL_SECONDS = RelayVerdictRecord.DEAD_TTL_SECONDS

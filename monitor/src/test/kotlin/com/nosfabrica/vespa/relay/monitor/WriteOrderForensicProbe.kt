@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
@@ -195,7 +194,7 @@ class WriteOrderForensicProbe {
         runBlocking {
             for (p in 1..3) {
                 writesThisPass.set(0)
-                pass.measure(AliasMonitor.ALL_STREAMS, urls, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                pass.measure(RunKind.SWEEP, urls)
                 var covered = 0
                 for (chunk in urls.chunked(500)) {
                     val found =

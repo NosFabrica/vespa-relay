@@ -87,16 +87,15 @@ class AliasProbe(
     suspend fun leaderPrint(
         url: NormalizedRelayUrl,
         anchor: Long,
-        onEvent: suspend (Event) -> Unit,
     ): Attempt {
         var silent = 0
         // A refused credential is not a refused filter, and one shape refusing our key leaves the others to ask.
         var authRefused = false
         for (shape in SHAPES) {
-            val window = walk(url, anchor, shape, onEvent)
+            val window = window(url, anchor, shape)
             if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape, window.drained), spoke = true)
-            // Silence after refusing us is filter.nostr.wine's connection gone quiet: each further
-            // shape would wait out the whole idle window.
+            // Silence after refusing us is the connection gone quiet: each further shape would wait
+            // out the whole idle window.
             if (window.ids == null && authRefused) return Attempt(null, spoke = true, authRefused = true)
             if (window.authRefused) authRefused = true
             // Silent on both general shapes is a url that is not there; one answer earns the rest,
@@ -136,19 +135,7 @@ class AliasProbe(
         anchor: Long? = null,
         /** The kinds to ask for, or null for a bare filter. Set by the group's leader, never per url. */
         kinds: List<Int>? = null,
-        onEvent: suspend (Event) -> Unit,
-    ): Set<String>? = window(url, anchor, kinds, onEvent).ids
-
-    /**
-     * The same walk as [fingerprint], keeping whether the relay refused our credentials and what
-     * the pages did with the filter.
-     */
-    suspend fun window(
-        url: NormalizedRelayUrl,
-        anchor: Long? = null,
-        kinds: List<Int>? = null,
-        onEvent: suspend (Event) -> Unit,
-    ): Window = walk(url, anchor, kinds, onEvent)
+    ): Set<String>? = window(url, anchor, kinds).ids
 
     /** What one url's window turned out to be, and whether the ladder may go on. */
     data class Window(
@@ -252,19 +239,20 @@ class AliasProbe(
         until: Long,
         /** The shape the rung that answered used, unchanged; null for the bare rung. */
         kinds: List<Int>?,
-        onEvent: suspend (Event) -> Unit,
     ): Compliance? {
         val events = fetch(url, COMPLIANCE_LIMIT, until, kinds).events ?: return null
-        for (event in events) onEvent(event)
         // No slack: this cursor is one of the relay's own timestamps minus one.
         return Compliance.of(events, COMPLIANCE_LIMIT, until, kinds, slack = 0)
     }
 
-    private suspend fun walk(
+    /**
+     * The same walk as [fingerprint], keeping whether the relay refused our credentials and what
+     * the pages did with the filter.
+     */
+    suspend fun window(
         url: NormalizedRelayUrl,
-        anchor: Long?,
-        kinds: List<Int>?,
-        onEvent: suspend (Event) -> Unit,
+        anchor: Long? = null,
+        kinds: List<Int>? = null,
     ): Window {
         // id -> created_at: only the timestamp says which ids are the newest when urls page at different sizes.
         val ids = HashMap<String, Long>()
@@ -330,11 +318,8 @@ class AliasProbe(
             compliance += Compliance.of(events, size, until, kinds, slack = if (pagesAsked == 0) WINDOW_SLACK_SECONDS else 0)
             pagesAsked++
             val before = ids.size
-            for (event in events) {
-                onEvent(event)
-                ids[event.id] = event.createdAt
-            }
-            // Ingested before the flag is checked: a page can carry events and a refusal at once.
+            for (event in events) ids[event.id] = event.createdAt
+            // Kept before the flag is checked: a page can carry events and a refusal at once.
             if (page.authRefused) return done(newest(ids), authRefused = true)
             // `until` is inclusive, so a page that added nothing steps strictly below its oldest stamp.
             val oldest = events.minOf { it.createdAt }

@@ -111,8 +111,13 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
                           happened to see
   AliasFolding.kt         which urls are one server wearing several addresses
   ConsistencyPass.kt      which cannot answer the same question twice
-  FitnessPass.kt          …and the grades for what survives, signed
-  StreamWorld.kt          the candidate set all three measure over — monitor.conf's
+  FitnessPass.kt          …and the grades for what survives, signed: the batch's
+                          orchestration, over FitnessDial (one url's dial),
+                          FitnessBatch (the slots and the batch guards),
+                          FitnessWrites (the writes and their replay),
+                          DeferralBackoff, FitnessReport (the log lines) and
+                          FitnessRetirement (the boot retirement)
+  CandidateSet.kt         the candidate set all three measure over — monitor.conf's
                           own declaration, never inherited from the streams
   AliasMonitor.kt         their clock, and the fast lane — which runs the
                           stability gate then fitness over urls named since its
@@ -389,7 +394,12 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           rather than merely answered once (#187)
     FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on
                           the 30166 record, earned by answering a settled-anchor
-                          probe — the tag [VisitPool]'s roster selects on
+                          probe — the tag [VisitPool]'s roster selects on.
+                          measure() alone; the dial is FitnessDial.kt, the
+                          batch guards FitnessBatch.kt, the writes
+                          FitnessWrites.kt, the backoff DeferralBackoff.kt,
+                          the log lines FitnessReport.kt, the boot retirement
+                          FitnessRetirement.kt
     ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
     Silence.kt            classifying what a quiet socket actually said
     RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
@@ -402,7 +412,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           dial can measure — and the connect that carries it,
                           which IS the `rtt-open` we publish. Pure `parse`,
                           because it is somebody else's json
-    StreamWorld.kt        the url universe the monitor measures: the relay
+    CandidateSet.kt       the url universe the monitor measures: the relay
                           lists monitor.conf names, and nothing else — no
                           stream contributes. Reports as the `aliasSource`
                           processor

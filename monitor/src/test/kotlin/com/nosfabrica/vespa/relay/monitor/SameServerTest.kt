@@ -22,10 +22,10 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -44,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -87,7 +88,14 @@ class SameServerTest {
     private fun folding(
         store: NostrSemanticsStore,
         servers: Servers,
-    ) = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(store, signer), probe = probe(servers))
+    ) = AliasFolding(record = RelayVerdictRecord(store, signer), probe = probe(servers))
+
+    /** What a roster reads off [store]'s verdicts, with no probe. */
+    private suspend fun readBack(
+        store: NostrSemanticsStore,
+        urls: List<NormalizedRelayUrl>,
+        world: ServerIndex = ServerIndex.EMPTY,
+    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer)::load, urls, world))
 
     private fun fitness(
         store: NostrSemanticsStore,
@@ -104,9 +112,9 @@ class SameServerTest {
     )
 
     private suspend fun FitnessPass.grade(
-        label: String,
+        kind: RunKind,
         candidates: List<NormalizedRelayUrl>,
-    ) = measure(label, candidates, reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+    ) = measure(kind, candidates)
 
     /** Our fitness label on [url]'s record, value and evidence, or null. */
     private suspend fun gradeOf(
@@ -145,7 +153,7 @@ class SameServerTest {
             val servers = Servers { corpus("coracle") }
             RelayVerdictRecord(store, signer).publish(coracleAlphaCharlie, coracleIndia, 500, 500)
 
-            fitness(store, servers).grade(AliasMonitor.FAST_LANE, listOf(coracleAlphaCharlie))
+            fitness(store, servers).grade(RunKind.FAST_LANE, listOf(coracleAlphaCharlie))
 
             val grade = gradeOf(store, coracleAlphaCharlie)
             assertEquals(Verdict.ALIAS.value, grade?.get(1))
@@ -168,9 +176,9 @@ class SameServerTest {
             val both = listOf(coracle, coracleAlphaCharlie)
 
             // The fast lane first, holding only the alias, then the sweep, both before any fold pass.
-            fitness(store, servers, world = { both }).grade(AliasMonitor.FAST_LANE, listOf(coracleAlphaCharlie))
+            fitness(store, servers, world = { both }).grade(RunKind.FAST_LANE, listOf(coracleAlphaCharlie))
             assertNotEquals(Verdict.PRIME.value, gradeOf(store, coracleAlphaCharlie)?.get(1))
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, both)
+            fitness(store, servers).grade(RunKind.SWEEP, both)
 
             assertEquals(setOf(coracle), primeAmong(store, both), "a url waiting on the fold that answers is never graded off that answer")
         }
@@ -183,7 +191,7 @@ class SameServerTest {
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(coracleAlphaCharlie, Verdict.PRIME.value, "answered 20 events at a settled anchor", pageable = null, nip77 = null)
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, listOf(coracle, coracleAlphaCharlie))
+            fitness(store, servers).grade(RunKind.SWEEP, listOf(coracle, coracleAlphaCharlie))
 
             assertNull(gradeOf(store, coracleAlphaCharlie), "withdrawn, not replaced: the fold has not said what it is")
             assertEquals(setOf(coracle), primeAmong(store, listOf(coracle, coracleAlphaCharlie)))
@@ -223,7 +231,7 @@ class SameServerTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).grade(AliasMonitor.ALL_STREAMS, all)
+            ).grade(RunKind.SWEEP, all)
 
             val grades = all.associateWith { gradeOf(store, it)?.get(1) }
             assertEquals(Verdict.PRIME.value, grades[root])
@@ -264,14 +272,9 @@ class SameServerTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).measure(
-                AliasMonitor.ALL_STREAMS,
-                listOf(root) + paths + listOf(otherPort, plain, answering),
                 // Port 443 of the host refuses the connect; port 7777 and anything else answer.
-                reach = { if (FitnessPass.socketOf(it) == "gone.example:443") Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
-                onEvent = {},
-                sockets = Sockets.NONE,
-            )
+                reach = { if (DialTarget.of(it) == DialTarget("gone.example", 443)) Reach.PROVED_UNREACHABLE else Reach.REACHABLE },
+            ).measure(RunKind.SWEEP, listOf(root) + paths + listOf(otherPort, plain, answering))
 
             assertEquals(Verdict.DEAD.value, gradeOf(store, root)?.get(1))
             for (path in paths) {
@@ -298,7 +301,8 @@ class SameServerTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).measure(AliasMonitor.ALL_STREAMS, roots + paths, reach = { Reach.PROVED_UNREACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                reach = { Reach.PROVED_UNREACHABLE },
+            ).measure(RunKind.SWEEP, roots + paths)
 
             assertTrue((roots + paths).all { gradeOf(store, it) == null }, "a withheld proof was signed onto a path")
         }
@@ -323,7 +327,7 @@ class SameServerTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).grade(AliasMonitor.ALL_STREAMS, listOf(root) + missing)
+            ).grade(RunKind.SWEEP, listOf(root) + missing)
 
             // The walled root cannot stand in, so one path does and the other waits behind it.
             val (held, standIn) = missing.partition { asked[it]?.get() == 1 }
@@ -351,7 +355,7 @@ class SameServerTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).grade(AliasMonitor.ALL_STREAMS, listOf(root, missing))
+            ).grade(RunKind.SWEEP, listOf(root, missing))
 
             assertNull(asked[missing], "a held path is asked only beside a `prime` stand-in")
             assertNull(gradeOf(store, missing))
@@ -374,15 +378,15 @@ class SameServerTest {
             val servers = Servers { corpus("relay.nostr.net") }
             val all = listOf(nostrNet) + nostrNetPaths
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, all)
+            fitness(store, servers).grade(RunKind.SWEEP, all)
             assertEquals(setOf(nostrNet), primeAmong(store, all), "undecided, the server stands in once")
 
-            folding(store, servers).measure("t", all, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, all)
             val held = RelayVerdictRecord(store, signer).load(all)
             assertEquals(nostrNetPaths.toSet(), held.aliases.keys)
             assertEquals(setOf(nostrNet), held.aliases.values.toSet())
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, all)
+            fitness(store, servers).grade(RunKind.SWEEP, all)
             assertEquals(setOf(nostrNet), primeAmong(store, all))
         }
 
@@ -413,11 +417,11 @@ class SameServerTest {
             val servers = havenServer()
             val all = listOf(haven, havenInbox, havenChat) + havenMade
 
-            folding(store, servers).measure("t", all, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, all)
             val held = RelayVerdictRecord(store, signer).load(all)
             assertEquals(havenMade.associateWith { haven }, held.aliases)
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, all)
+            fitness(store, servers).grade(RunKind.SWEEP, all)
             assertEquals(setOf(haven, havenInbox, havenChat), primeAmong(store, all))
         }
 
@@ -428,12 +432,12 @@ class SameServerTest {
             val paths = listOf("", "inbox", "favorites", "personal").map { url("wss://pyramid.fiatjaf.com/$it") }
             val servers = Servers { at -> corpus(at.url) }
 
-            folding(store, servers).measure("t", paths, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, paths)
             val held = RelayVerdictRecord(store, signer).load(paths)
             assertEquals(emptyMap(), held.aliases)
             assertEquals(paths.toSet(), held.distinct)
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, paths)
+            fitness(store, servers).grade(RunKind.SWEEP, paths)
             assertEquals(paths.toSet(), primeAmong(store, paths))
         }
 
@@ -445,7 +449,7 @@ class SameServerTest {
             val store = newStore()
             val servers = Servers { at -> corpus(RelayAliases.pathOf(at.url)) }
 
-            folding(store, servers).measure("t", languages, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, languages)
 
             val held = RelayVerdictRecord(store, signer).load(languages)
             assertEquals(emptyMap(), held.aliases)
@@ -467,7 +471,7 @@ class SameServerTest {
                     if (at in quietPaths) (0 until 7).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "${at.url}#$it") } else corpus(RelayAliases.pathOf(at.url))
                 }
 
-            folding(store, servers).measure("t", all, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, all)
 
             val held = RelayVerdictRecord(store, signer).load(all)
             assertEquals(busy.toSet(), held.distinct)
@@ -475,7 +479,7 @@ class SameServerTest {
 
             // Too thin for any fold, the quiet ones are graded once between them, never behind `/es`,
             // which is its own relay that a twin happens to fold onto.
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, all)
+            fitness(store, servers).grade(RunKind.SWEEP, all)
             val prime = primeAmong(store, all)
             assertEquals(busy.toSet(), prime - quietPaths.toSet())
             assertEquals(1, (prime intersect quietPaths.toSet()).size)
@@ -486,16 +490,16 @@ class SameServerTest {
         runBlocking {
             val store = newStore()
             val servers = Servers { at -> corpus(RelayAliases.pathOf(at.url)) }
-            folding(store, servers).measure("t", languages, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, languages)
             val arSlash = url("wss://lang.relays.land/ar/")
             val ar = url("wss://lang.relays.land/ar")
             assertNotEquals(ar, arSlash, "the normalizer keeps them apart, which is why this rule exists")
 
-            fitness(store, servers, world = { languages + arSlash }).grade(AliasMonitor.FAST_LANE, listOf(arSlash))
+            fitness(store, servers, world = { languages + arSlash }).grade(RunKind.FAST_LANE, listOf(arSlash))
             assertNull(gradeOf(store, arSlash))
             assertEquals(0, servers.askedOf(arSlash), "a waiting url is asked only beside a `prime` stand-in")
 
-            val roster = folding(store, servers).applyVerdicts(languages + arSlash)
+            val roster = readBack(store, languages + arSlash)
             assertEquals(mapOf(arSlash to ar), roster.waiting)
         }
 
@@ -507,10 +511,10 @@ class SameServerTest {
             // The root is named by the lists but held out of the monitor's set, as a dead url is.
             val graded = nostrNetPaths.take(3)
 
-            fitness(store, servers).grade(AliasMonitor.ALL_STREAMS, graded)
+            fitness(store, servers).grade(RunKind.SWEEP, graded)
             val standIn = primeAmong(store, graded).single()
 
-            val roster = folding(store, servers).applyVerdicts(listOf(nostrNet) + graded, world = ServerIndex(graded.toSet()))
+            val roster = readBack(store, listOf(nostrNet) + graded, world = ServerIndex(graded.toSet()))
             assertEquals((listOf(nostrNet) + graded - standIn).associateWith { standIn }, roster.waiting)
         }
 
@@ -519,7 +523,7 @@ class SameServerTest {
         val plain = url("ws://chain.example/")
         val secure = url("wss://chain.example/")
         val path = url("wss://chain.example/a")
-        val aliases = RelayAliases().also { it.markDistinct(plain) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(plain))
 
         val held = aliases.heldForFold(listOf(secure, path), listOf(plain))
 
@@ -532,7 +536,7 @@ class SameServerTest {
         // The inbox is proven its own relay, which says nothing about the outbox beside it.
         val inbox = url("wss://haven.example/inbox")
         val outbox = url("wss://haven.example/outbox")
-        val aliases = RelayAliases().also { it.markDistinct(inbox) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(inbox))
 
         assertEquals(emptyMap(), aliases.heldForFold(listOf(outbox), listOf(inbox)))
     }
@@ -547,7 +551,7 @@ class SameServerTest {
                 fitness = mapOf(root to RelayVerdictRecord.StandingGrade(Verdict.RESTRICTED.value, "answers only shaped queries")),
             )
 
-        assertEquals(mapOf(root to inbox, outbox to inbox), AliasFolding.heldAmong(held, listOf(root, inbox, outbox)))
+        assertEquals(mapOf(root to inbox, outbox to inbox), FoldReading.heldAmong(held, listOf(root, inbox, outbox)))
     }
 
     @Test
@@ -559,7 +563,7 @@ class SameServerTest {
             val undecided = url("wss://folded.example/b")
             RelayVerdictRecord(store, signer).publish(alias, canonical, 500, 500)
 
-            val roster = folding(store, Servers { corpus("folded") }).applyVerdicts(listOf(alias, undecided), ServerIndex(setOf(canonical, alias, undecided)))
+            val roster = readBack(store, listOf(alias, undecided), ServerIndex(setOf(canonical, alias, undecided)))
 
             assertEquals(mapOf(alias to canonical), roster.aliases)
             assertEquals(mapOf(undecided to canonical), roster.waiting)
@@ -575,7 +579,7 @@ class SameServerTest {
     fun `slashes trailing a query name the same endpoint`() {
         val decided = url("wss://prl.plus/?reject=3,6,7///")
         val longer = url("wss://prl.plus/?reject=3,6,7//////////")
-        val aliases = RelayAliases().also { it.markDistinct(decided) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(decided))
 
         assertEquals(mapOf(longer to decided), aliases.heldForFold(listOf(longer), listOf(decided)))
     }
@@ -592,9 +596,9 @@ class SameServerTest {
             RelayVerdictRecord(store, signer).publish(earlier, plain, 500, 500)
             val all = listOf(plain, secure, earlier, fresh)
 
-            folding(store, servers).measure("t", all, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, all)
 
-            val folds = folding(store, servers).applyVerdicts(all).aliases
+            val folds = readBack(store, all).aliases
             assertEquals(setOf(plain, earlier, fresh), folds.keys)
             assertEquals(setOf(secure), folds.values.toSet())
         }
@@ -606,9 +610,9 @@ class SameServerTest {
             val servers = havenServer()
             val processors = Processors()
             val all = listOf(haven, havenInbox, havenChat) + havenMade
-            folding(store, servers).measure("t", all, canDial = { true })
+            folding(store, servers).measure(RunKind.SWEEP, all)
 
-            fitness(store, servers, progress = processors.of("fitness")).grade(AliasMonitor.ALL_STREAMS, all)
+            fitness(store, servers, progress = processors.of("fitness")).grade(RunKind.SWEEP, all)
 
             val census = processors.snapshot().single().sharedHosts!!
             assertEquals(1, census.hosts)
@@ -648,7 +652,7 @@ class SameServerTest {
             val store = newStore()
             val processors = Processors()
 
-            fitness(store, Servers { corpus("coracle") }, progress = processors.of("fitness")).grade(AliasMonitor.FAST_LANE, listOf(coracle, coracleIndia))
+            fitness(store, Servers { corpus("coracle") }, progress = processors.of("fitness")).grade(RunKind.FAST_LANE, listOf(coracle, coracleIndia))
 
             assertNull(processors.snapshot().single().sharedHosts)
             assertTrue(

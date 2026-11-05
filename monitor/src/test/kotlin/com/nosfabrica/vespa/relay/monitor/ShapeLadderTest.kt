@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
-import com.nosfabrica.vespa.relay.peers.Sockets
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -90,7 +89,7 @@ class ShapeLadderTest {
                 client = EmptyNostrClient(),
                 progress = Processors().of("fitness"),
                 reconcile = { _, _ -> },
-            ).measure("t", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+            ).measure(RunKind.SWEEP, listOf(url))
             val label =
                 store
                     .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(signer.pubKey)))
@@ -151,7 +150,7 @@ class ShapeLadderTest {
                     client = EmptyNostrClient(),
                     progress = Processors().of("fitness"),
                     reconcile = { _, _ -> },
-                ).measure("t", listOf(url), reach = { Reach.REACHABLE }, onEvent = {}, sockets = Sockets.NONE)
+                ).measure(RunKind.SWEEP, listOf(url))
                 store
                     .query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND)))
                     .flatMap { it.tags.toList() }
@@ -243,7 +242,7 @@ class ShapeLadderTest {
                     }
                 }
 
-            val window = AliasProbe(fetch = fetch, target = 20, page = 20, fallbackPage = 10).window(url, 1_800_000_000L, null) {}
+            val window = AliasProbe(fetch = fetch, target = 20, page = 20, fallbackPage = 10).window(url, 1_800_000_000L, null)
 
             assertEquals(null, window.refusal)
             assertTrue(window.ids!!.isNotEmpty())
@@ -254,7 +253,7 @@ class ShapeLadderTest {
         runBlocking {
             val fetch = fetchFor { if (it == AliasProbe.PROFILE_KINDS) Answer.Serves else Answer.Refuses("blocked: profiles only") }
 
-            val lead = AliasProbe(fetch = fetch, target = 20, page = 20, fallbackPage = 10).leaderPrint(url, 1_800_000_000L) {}.leader
+            val lead = AliasProbe(fetch = fetch, target = 20, page = 20, fallbackPage = 10).leaderPrint(url, 1_800_000_000L).leader
 
             assertEquals(AliasProbe.PROFILE_KINDS, lead?.kinds)
             assertEquals(20, lead?.ids?.size)

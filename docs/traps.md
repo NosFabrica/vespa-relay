@@ -92,7 +92,7 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   retried first. The documented survival move is to cap `maxHits` in the
   deployed profile and set `VESPA_UNBOUNDED_HITS` to the same value.
   **Cap it below 10,000 and every discovery pass starts failing**: the engine
-  rejects the page, `StreamWorld.derive` catches it and prints "could not derive
+  rejects the page, `CandidateSet.derive` catches it and prints "could not derive
   <label>", and the roster is silently whatever the other sources named. The
   read itself is not the exposure — `scan` always sends an explicit limit and
   never the unbounded sentinel — the COUPLING is. Lower `SCAN_PAGE` with the

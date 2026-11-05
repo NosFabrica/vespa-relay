@@ -28,33 +28,43 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * A per-url pass's dials: [measure] once per url, under [gate] and inside it the url's own
- * [deadlineMs], so the wait for a permit is never charged to the relay. [cut] hears of each url
- * the deadline stopped; nothing about it is a fact about the relay.
+ * A per-url pass's dials: [before] outside [gate], bounded by itself, then unless it said no [measure] under
+ * the gate and inside it the url's own [deadlineMs], so a permit is held only by the dial and its wait is never
+ * charged to the relay. [cut] hears of each url the deadline stopped; nothing about it is a fact about the relay.
+ * Every callback for a url runs on that url's one coroutine with its index in [urls], so a slot per index has one
+ * writer, and the return joins them all.
  */
 internal suspend fun dialEach(
     urls: List<NormalizedRelayUrl>,
     gate: DialGate,
     deadlineMs: (NormalizedRelayUrl) -> Long,
     progress: Processors.Handle?,
-    cut: (NormalizedRelayUrl) -> Unit,
-    measure: suspend (NormalizedRelayUrl) -> Unit,
+    cut: (Int, NormalizedRelayUrl) -> Unit = { _, _ -> },
+    before: suspend (Int, NormalizedRelayUrl) -> Boolean = { _, _ -> true },
+    measure: suspend (Int, NormalizedRelayUrl) -> Unit,
 ) = coroutineScope {
-    for (url in urls) {
+    for ((i, url) in urls.withIndex()) {
         launch {
             // Counted in the launch, not from `invokeOnCompletion`: that handler can run after this
             // scope has resumed, and a late tick would land on the next phase's count.
             try {
+                val dials =
+                    try {
+                        before(i, url)
+                    } finally {
+                        progress?.released(url.url)
+                    }
+                if (!dials) return@launch
                 gate.withPermit(url) {
                     val ran =
                         withTimeoutOrNull(deadlineMs(url)) {
                             try {
-                                measure(url)
+                                measure(i, url)
                             } finally {
                                 progress?.released(url.url)
                             }
                         }
-                    if (ran == null) cut(url)
+                    if (ran == null) cut(i, url)
                 }
             } finally {
                 // The url is behind the pass however it ended, cancellation included.
