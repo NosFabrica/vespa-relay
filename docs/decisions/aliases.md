@@ -515,3 +515,12 @@ all four words and confirmed against the chain's first entry, so a chain is the
 windows carrying that id and the counts stay exact. The seed is drawn per index,
 so ids chosen to collide in one pass's table do not collide in the next.
 `FingerprintIndexCollisionTest` times 200 paths of colliding ids against random ones.
+
+**A fold pass applies its groups' deltas once.** `AliasFolding.measure` added
+each group's `Learned` to the view in turn, and every `RelayAliases.plus` copies
+`folded`, `distinct` and `canonicals`, so a pass cost groups times the whole
+recorded world in copies. `plus(Collection<Learned>)` now merges the deltas and
+builds the view once, with the rules one delta at a time keeps: a later fold of
+a url replaces an earlier one, every fold's target is a canonical, and a fold
+outranks a clearance whichever delta carried which. `RelayAliasesMergeTest`
+checks the two orders agree on random deltas.

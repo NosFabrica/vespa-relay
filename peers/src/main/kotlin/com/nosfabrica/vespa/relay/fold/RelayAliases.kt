@@ -83,14 +83,22 @@ class RelayAliases(
     }
 
     /** This view with [learned] applied: the one place a fold or a clearance lands. */
-    operator fun plus(learned: Learned): RelayAliases {
-        if (learned.folded.isEmpty() && learned.distinct.isEmpty()) return this
-        val folds = folded + learned.folded
-        return copy(
-            folded = folds,
-            distinct = (distinct + learned.distinct).filterTo(HashSet()) { it !in folds },
-            canonicals = canonicals + learned.folded.values,
-        )
+    operator fun plus(learned: Learned): RelayAliases = plus(listOf(learned))
+
+    /** This view with every one of [learned] applied in order, built once rather than once per delta. */
+    operator fun plus(learned: Collection<Learned>): RelayAliases {
+        if (learned.all { it.folded.isEmpty() && it.distinct.isEmpty() }) return this
+        val folds = LinkedHashMap(folded)
+        val clear = HashSet(distinct)
+        val ends = LinkedHashSet(canonicals)
+        for (delta in learned) {
+            folds.putAll(delta.folded)
+            clear.addAll(delta.distinct)
+            ends.addAll(delta.folded.values)
+        }
+        // A fold outranks a clearance, whichever delta carried which.
+        clear.removeAll(folds.keys)
+        return copy(folded = folds, distinct = clear, canonicals = ends)
     }
 
     private fun copy(

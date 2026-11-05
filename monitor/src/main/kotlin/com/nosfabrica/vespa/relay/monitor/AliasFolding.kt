@@ -129,10 +129,9 @@ class AliasFolding(
                 }
             }
         // The one writer of the pass's state, after the join: each group's delta holds only what the store took.
-        var after = view
+        val after = view + outcomes.map { it.learned }
         var probed = 0
         for (outcome in outcomes) {
-            after += outcome.learned
             probed += outcome.dials
             outcome.undecided?.let { undecided[outcome.host] = it }
             when (outcome.cooldown) {
