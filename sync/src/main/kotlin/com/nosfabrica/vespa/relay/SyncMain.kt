@@ -41,6 +41,7 @@ import com.nosfabrica.vespa.relay.pulse.pulseAdmins
 import com.nosfabrica.vespa.relay.pulse.pulsePublic
 import com.nosfabrica.vespa.relay.pulse.pulsePublicUrl
 import com.nosfabrica.vespa.relay.pulse.pulseSlowReadMs
+import com.nosfabrica.vespa.relay.status.AuthorCoverage
 import com.nosfabrica.vespa.relay.status.SyncProgress
 import com.nosfabrica.vespa.relay.status.SyncStatus
 import com.nosfabrica.vespa.relay.store.ReadOnlyStore
@@ -50,7 +51,6 @@ import com.nosfabrica.vespa.relay.sync.PressurePoller
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.SyncEngine
-import com.nosfabrica.vespa.relay.sync.SyncManifest
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.nosfabrica.vespa.relay.util.BootTask
 import com.nosfabrica.vespa.relay.util.StatusRollup
@@ -66,6 +66,7 @@ import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.bundledPage
+import com.nosfabrica.vespa.relay.web.pubkeyDocument
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.nosfabrica.vespa.relay.web.serveStatusSite
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
@@ -73,6 +74,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.system.exitProcess
 
 /** One past the relay's 7777, so the pair is guessable from either end. */
@@ -156,11 +158,16 @@ fun main() {
     // the engine exists to publish, they serve the previous run's documents from their state files,
     // or "not computed yet" without one.
     val statusSnapshot = if (statusPort > 0) StatsSnapshot(env["SYNC_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() }).also { it.loadFromFile() } else null
+    // Filled once the engine exists; until then the route answers that the mirror is starting.
+    val coverage = AtomicReference<AuthorCoverage?>(null)
     val pageBound =
         BootTask("status page") {
-            statusSnapshot?.let { serveStatusSite(port = statusPort, page = bundledPage(), snapshot = it, icon = icon) }.also {
-                BootClock.mark("sync: status page bound")
-            }
+            statusSnapshot
+                ?.let {
+                    serveStatusSite(port = statusPort, page = bundledPage(), snapshot = it, icon = icon, routes = { pubkeyDocument("/coverage/{pubkey}", AuthorCoverage.CACHE_SECONDS, coverage::get) })
+                }.also {
+                    BootClock.mark("sync: status page bound")
+                }
         }
     System.err.println("sync: writes go to the relay at ${dial.url}; the store is opened read-only")
 
@@ -205,16 +212,9 @@ fun main() {
     // From the parsed streams too: a stream may set its own `refetchThePastSeconds`.
     val bands = SyncBands.fromEnv(env, config.streams)
 
-    // Written once at boot: a `sync.conf` edit is a restart.
-    val manifest = SyncManifest.fromEnv(env)
-    // Only the unset case is announced; a failed write has already said so.
-    if (manifest.publishes) {
-        manifest.write(config.streams)
-    } else {
-        System.err.println(
-            "router: SYNC_MANIFEST_FILE unset — the relay cannot say which kinds this mirror holds, " +
-                "so a client comparing our count against an upstream's total will read a complete mirror as partial",
-        )
+    // The relay read this file to publish the mirror's kinds; the search page asks this process instead.
+    env["SYNC_MANIFEST_FILE"]?.takeIf { it.isNotBlank() }?.let {
+        System.err.println("router: SYNC_MANIFEST_FILE was removed and does nothing — the search page asks this process at /coverage/<pubkey>")
     }
 
     SyncProgress.refuseRemovedEnv(env)
@@ -261,6 +261,7 @@ fun main() {
             newestVersions = store.newestVersionsProbe(),
             writer = writer,
         )
+    coverage.set(AuthorCoverage(bands, engine::primeUnitsFor))
     // Not started yet: the pages get their first documents, and are bound, first, so a boot that
     // stalls in `start()` is exactly the state they exist to show.
     if (statusPort <= 0) {

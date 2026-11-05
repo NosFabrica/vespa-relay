@@ -88,34 +88,6 @@ class StatsRollupTest {
 
     // ---- the tiering itself -------------------------------------------------
 
-    /**
-     * An invariant over the pipelines rather than a list of today's queries, so a new
-     * query landing in the fast tier fails here.
-     */
-    @Test
-    fun `the counters tier asks nothing whose cost scales with the corpus`() {
-        runBlocking {
-            val queries = FakeQueries()
-            rollup(queries).compute(StatsTier.COUNTERS)
-
-            for ((pipeline, where, source) in queries.asked) {
-                assertFalse(pipeline.contains(StatsYql.TAG), "tag_index is a per-tag emission, not a counter: `$pipeline`")
-                assertFalse(pipeline.contains("each(all(group("), "a set per bucket is the shape that OOMs: `$pipeline`")
-                assertFalse(source == EngineReads.Source.REPUTATION, "the reputation store holds a document per scored pubkey: `$pipeline`")
-                // A count() materialises nothing but still walks every document it matches.
-                val windowed = where.since != null
-                val kinds = where.kinds.toSet()
-                assertTrue(windowed || kinds.isNotEmpty(), "a grouping over the whole store cannot run every minute: `$pipeline` where `$where`")
-                if (!windowed) {
-                    assertTrue(
-                        kinds.all { it in SELECTIVE_KINDS },
-                        "a `kind` filter bounds the group set, not the walk — $kinds is not a selective kind: `$pipeline` where `$where`",
-                    )
-                }
-            }
-        }
-    }
-
     @Test
     fun `the charts tier is where the corpus-wide groupings live`() {
         runBlocking {
@@ -142,24 +114,18 @@ class StatsRollupTest {
         }
     }
 
-    /** A member owned by neither tier never appears; one owned by both is written by two cadences. */
+    /**
+     * StatsSnapshot clears stale members by the declaration, so a section published outside it is one
+     * nobody clears. No `sync` member: what the mirror holds for a reader is the sync's to answer.
+     */
     @Test
-    fun `every section belongs to exactly one tier`() {
+    fun `the rollup publishes exactly the sections its tier declares, and nothing of the sync's`() {
         runBlocking {
-            val counters = rollup(FakeQueries()).compute(StatsTier.COUNTERS)
             val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
 
-            assertEquals(emptySet(), StatsTier.COUNTERS.sections intersect StatsTier.CHARTS.sections)
-            // `sync` is absent with no router files to read. StatsSnapshot clears stale members
-            // by the declaration, so a section published outside it is one nobody clears.
-            assertEquals(StatsTier.COUNTERS.sections - "sync", sectionsOf(counters))
             assertEquals(StatsTier.CHARTS.sections, sectionsOf(charts))
-            for (member in sectionsOf(counters) + sectionsOf(charts)) {
-                assertTrue(
-                    member in StatsTier.COUNTERS.sections || member in StatsTier.CHARTS.sections,
-                    "$member is published by a tier that does not declare it",
-                )
-            }
+            assertNull(charts["sync"])
+            assertEquals(listOf(StatsTier.CHARTS), StatsTier.entries, "a tier with nothing to compute is a clock with no work")
         }
     }
 
@@ -265,33 +231,10 @@ class StatsRollupTest {
         }
     }
 
-    @Test
-    fun `a serve-only relay publishes no sync section`() {
-        runBlocking {
-            val doc = rollup(FakeQueries()).compute(StatsTier.COUNTERS, everySeconds = 60)
-
-            assertNull(doc["sync"])
-            assertFalse(
-                doc["tiers"]!!
-                    .jsonObject["counters"]!!
-                    .jsonObject["sections"]!!
-                    .jsonArray
-                    .any { it.jsonPrimitive.content == "sync" },
-                "a listed section that is not in the document reads as one that failed",
-            )
-        }
-    }
-
     // ---- helpers ------------------------------------------------------------
 
     private companion object {
         const val NOW = 1_800_000_000L
-
-        /**
-         * The kinds a counters query may lean on as its only bound. A kind filter bounds the
-         * group set, not the walk, so only sparse kinds qualify.
-         */
-        val SELECTIVE_KINDS = setOf(10040)
 
         // Vespa 8.733, the captures StatsYqlTest asserts the readers against.
         const val TOTAL =

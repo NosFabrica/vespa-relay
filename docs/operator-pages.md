@@ -48,12 +48,12 @@ it against a network-wide dashboard, without scraping markup.
 
 Which is the thing to keep in mind reading it: every number describes **this
 relay's store**, not the Nostr network, so a total below a network-wide one is a
-mirror's coverage rather than a fault. And a mirror is a **filtered** subset,
-which is why the document also carries `sync.mirrors.kinds` — the kinds the
-router asks for. Any count taken against this relay has to carry them: measured
-against an author's own relay, unfiltered, this store once read as *35%
-mirrored* while missing nothing — the entire gap being kinds no stream here
-asks for.
+mirror's coverage rather than a fault. And a mirror is a **filtered** subset:
+measured against an author's own relay, unfiltered, this store once read as
+*35% mirrored* while missing nothing, the entire gap being kinds no stream here
+asks for. So no number here answers "how much of my history is mirrored"; the
+sync answers that per author, at `/coverage/<pubkey>` on its own port, and the
+search page asks it there.
 
 ## `/trust.html`
 

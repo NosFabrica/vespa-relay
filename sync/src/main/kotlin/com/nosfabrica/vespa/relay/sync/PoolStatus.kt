@@ -127,7 +127,15 @@ internal class PoolStatus(
     }
 
     /** Every (relay, stream) unit on the roster, for the status page's per-relay table, off one roster snapshot. */
-    fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
+    fun primeUnits(): List<RelayStatusReport.PrimeUnit> = units(author = null)
+
+    /**
+     * The units with an ask bound to [author], each owing only that author's asks: the rows that say how
+     * far this mirror has got with one person's events. Empty when no stream asks any relay for them.
+     */
+    fun primeUnitsFor(author: String): List<RelayStatusReport.PrimeUnit> = units(author)
+
+    private fun units(author: String?): List<RelayStatusReport.PrimeUnit> {
         val snapshot = roster()
         // One pass for the whole table; asked per row, it would scan the map once per row.
         val cannotReconcile = bands.cannotReconcileByUnit()
@@ -138,6 +146,13 @@ internal class PoolStatus(
         val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
+                // The same JSON the bands are keyed by, as the roster's own identity is built.
+                val askKeys =
+                    if (author == null) {
+                        unit.identity
+                    } else {
+                        unit.byAuthor[author]?.mapTo(HashSet()) { it.filter.toJson() } ?: continue
+                    }
                 val key = VisitKey(url, stream)
                 val abort = aborts.last(stream, url)
                 // A skipped ask aborts nothing, so after its first skip only the verdict still says why.
@@ -148,7 +163,7 @@ internal class PoolStatus(
                         stream = stream,
                         // The same strings the bands are keyed under, so the report joins on them.
                         coverageKeys = coverageKeys[stream] ?: listOf(stream),
-                        askKeys = unit.identity,
+                        askKeys = askKeys,
                         visiting = ongoing.containsKey(key),
                         live = tails.has(key),
                         speaksNegentropy = snapshot.speaksNegentropy[url],

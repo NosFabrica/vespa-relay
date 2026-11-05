@@ -38,7 +38,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.io.File
 import java.time.Instant
 import java.time.YearMonth
 
@@ -53,9 +52,6 @@ internal enum class StatsTier(
     /** The top-level members this tier owns; a member missing from a pass leaves the served document. */
     val sections: Set<String>,
 ) {
-    /** The router's manifest: what is cheap enough to run every minute, which no engine query is. */
-    COUNTERS("counters", setOf("sync")),
-
     /** Everything that asks the engine: even a bare `count()` walks every document it matches. */
     CHARTS("charts", setOf("corpus", "trust", "kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
 }
@@ -77,8 +73,6 @@ internal class StatsRollup(
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
-    /** The router's manifest on the shared volume; null in a serve-only deployment. */
-    private val syncManifestFile: File? = null,
 ) {
     /**
      * Compute one [tier]'s members. Never throws: a section that fails says so in the document.
@@ -91,11 +85,6 @@ internal class StatsRollup(
         val startedMs = System.currentTimeMillis()
         val sections = LinkedHashMap<String, JsonObject>()
         when (tier) {
-            StatsTier.COUNTERS -> {
-                // Absent, not empty, without a router: "0 relays" reads as a broken mirror.
-                syncSection()?.let { sections["sync"] = it }
-            }
-
             StatsTier.CHARTS -> {
                 // Kinds first: the per-kind series follows its histogram.
                 val kinds = kindsSection()
@@ -135,26 +124,6 @@ internal class StatsRollup(
             sections.forEach { (member, value) -> put(member, value) }
         }
     }
-
-    /**
-     * The kind set this relay mirrors, read off the shared volume: the one section that queries
-     * nothing. An unreadable file is a failed section, the same contract every queried section has.
-     */
-    private suspend fun syncSection(): JsonObject? {
-        if (syncManifestFile == null) return null
-        var data: JsonObject? = null
-        val section =
-            section { attempts ->
-                val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
-                data = mirrors?.let { buildJsonObject { put("mirrors", it) } }
-                data ?: buildJsonObject { }
-            }
-        // Nothing read and nothing failed means no router has ever written here.
-        return if (data == null && section["errors"] == null) null else section
-    }
-
-    /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
-    private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
     /** The kinds to draw a per-kind series for: the largest few from the histogram. Empty when it failed. */
     private fun topKindNumbers(kinds: JsonObject): List<Int> =
@@ -646,7 +615,7 @@ internal class StatsRollup(
 
     companion object {
         /** Bumped when a released field changes meaning or leaves, not when one is added. */
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
 
         const val DEFAULT_WINDOW_DAYS = 30
 

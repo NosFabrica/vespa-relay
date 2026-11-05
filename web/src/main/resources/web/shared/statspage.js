@@ -186,7 +186,7 @@ function settlePoll(doc) {
 
 /**
  * Which of `versions` this document was written against. The mirror's carries `sync` and never names
- * a relay; the relay's always does, and carries `sync` alone until its charts land. Unrecognised is the relay's.
+ * a relay; the relay's always does. Unrecognised is the relay's.
  */
 export const schemaFor = (doc, versions) =>
   doc.monitor ? versions.monitor : doc.sync && !doc.relay ? versions.sync : versions.relay;

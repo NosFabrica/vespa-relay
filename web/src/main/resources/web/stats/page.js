@@ -12,7 +12,7 @@ import { syncCard } from "../sync/cards.js";
 import { monitorCard, verdictsCard } from "../monitor/cards.js";
 
 /** The document schema this page reads; see SCHEMA_VERSION in StatsRollup. */
-const SCHEMA = 3;
+const SCHEMA = 4;
 
 /**
  * The relay's document, as against the mirror's (which names no relay) and the monitor's (which
@@ -89,8 +89,8 @@ const PANELS = [
   { name: "zaps", reads: ["zaps"], build: (doc) => (has(doc, "zaps") ? [zapsCard(doc.zaps)] : []) },
   { name: "relays", reads: ["relayDistribution"], build: (doc) => (has(doc, "relayDistribution") ? [relaysCard(doc.relayDistribution)] : []) },
   { name: "kinds", reads: ["kinds"], build: (doc) => (has(doc, "kinds") ? [kindsCard(doc.kinds)] : []) },
-  // The mirror's card is guarded on the coverage itself, not the section: the
-  // relay's document carries a `sync` section too, holding only the manifest.
+  // The mirror's card is guarded on the coverage itself, not the section, so a
+  // sync document that has covered nothing yet draws no empty card.
   // `relays` counts as coverage: an entirely refused roster has no bands.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync?.data?.progress || doc.sync?.data?.streams || doc.sync?.data?.relays ? [syncCard(doc.sync)] : []) },
   { name: "monitor", reads: ["monitor"], build: (doc) => (has(doc, "monitor") ? [monitorCard(doc.monitor)].filter(Boolean) : []) },
@@ -106,7 +106,7 @@ mountStatsPage({
   schema: { relay: SCHEMA, sync: 1, monitor: 1 },
   // The cadences named in the footer, in reading order; a tier not listed here
   // still gets a line.
-  tiers: [["counters", "Counters"], ["charts", "Charts"], ["status", "Status"]],
+  tiers: [["charts", "Charts"], ["status", "Status"]],
   pendingNote:
     "This is computed behind the server. On the relay the first pass over a large corpus takes a while (check the " +
     "log for `stats:` lines, and that STATS_INTERVAL_SECONDS is not 0); on the mirror and the monitor it is a fold " +

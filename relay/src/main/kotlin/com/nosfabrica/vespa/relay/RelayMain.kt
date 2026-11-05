@@ -62,6 +62,7 @@ import com.nosfabrica.vespa.relay.server.OpenRanking
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
+import com.nosfabrica.vespa.relay.server.config.REMOVED_MANIFEST_SETTINGS
 import com.nosfabrica.vespa.relay.server.config.RelayAddresses
 import com.nosfabrica.vespa.relay.server.config.RelayEndpoint
 import com.nosfabrica.vespa.relay.server.config.RelayFiles
@@ -91,6 +92,7 @@ import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFr
 import com.nosfabrica.vespa.relay.server.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.server.config.setUnder
 import com.nosfabrica.vespa.relay.server.config.statsIntervalsFromEnv
+import com.nosfabrica.vespa.relay.server.config.syncPublicUrlFromEnv
 import com.nosfabrica.vespa.relay.server.config.syncSettingsIgnored
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
@@ -111,6 +113,7 @@ import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.pageWithSyncUrl
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
@@ -210,6 +213,8 @@ private class Boot(
     val banStore: BanStore?,
     val files: RelayFiles,
     val stats: StatsIntervals,
+    /** Where readers' browsers ask the sync about their own posts; null names none, and the page skips the question. */
+    val syncPublicUrl: String?,
     val switches: MaintenanceSwitches,
     val orphanSweepDryRun: Boolean?,
     val trustVerifyRepair: Boolean?,
@@ -271,6 +276,12 @@ private fun readSettings(env: Map<String, String>): Boot {
     REMOVED_HTTP_RELAY_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
         System.err.println("relay: ${it.joinToString()} were removed and do nothing — HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
     }
+    REMOVED_MANIFEST_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
+        System.err.println(
+            "relay: ${it.joinToString()} were removed and do nothing — the search page asks the sync how far it has got " +
+                "with a reader's posts, at SYNC_PUBLIC_URL, and the relay reads nothing the sync writes",
+        )
+    }
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
         System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
@@ -314,6 +325,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         banStore = if (adminPubkeys.isNotEmpty()) openBanStore(files.banState) else null,
         files = files,
         stats = statsIntervalsFromEnv(env),
+        syncPublicUrl = syncPublicUrlFromEnv(env),
         switches = switches,
         orphanSweepDryRun = orphanSweepDryRun(env["SWEEP_ORPHAN_SCORES_ON_START"]),
         trustVerifyRepair = trustVerifyRepair(env["VERIFY_TRUST_ON_START"]),
@@ -407,22 +419,13 @@ private fun startStats(
 ): StatsSnapshot {
     // Seeded from the state file so a restart serves the last document until the first rollup.
     val snapshot = StatsSnapshot(boot.files.stats.path).also { it.loadFromFile() }
-    val (charts, counters) = boot.stats.chartsSeconds to boot.stats.countersSeconds
-    if (charts == 0L && counters == 0L) {
-        println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
+    val charts = boot.stats.chartsSeconds
+    if (charts == 0L) {
+        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json serves the state file, or 503 if there is none")
         return snapshot
     }
-    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
-    if (counters > 0) {
-        launchStatsRollup(scope, rollup, snapshot, StatsTier.COUNTERS, counters)
-    } else {
-        println("stats: STATS_COUNTERS_INTERVAL_SECONDS=0 — no counters; /stats.json will carry only the chart sections")
-    }
-    if (charts > 0) {
-        launchStatsRollup(scope, rollup, snapshot, StatsTier.CHARTS, charts)
-    } else {
-        println("stats: STATS_INTERVAL_SECONDS=0 — no charts; /stats.json will carry only the counter sections")
-    }
+    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url)
+    launchStatsRollup(scope, rollup, snapshot, StatsTier.CHARTS, charts)
     return snapshot
 }
 
@@ -577,7 +580,7 @@ private fun serve(
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.
         onInfoChanged = profile::rewritten,
         onionLocation = boot.addresses::onionLocation,
-        landingPage = resourceText("/index.html"),
+        landingPage = resourceText("/index.html")?.let { pageWithSyncUrl(it, boot.syncPublicUrl) },
         observerStatsPage = resourceText("/observer_stats.html"),
         statsPage = resourceText("/stats.html"),
         // Public on purpose (docs/decisions/relay-server.md); the pulse's gate is for what people searched for.

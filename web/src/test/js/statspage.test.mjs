@@ -7,17 +7,18 @@ import { schemaFor } from "../../main/resources/web/shared/statspage.js";
 const ok = (name) => console.log(`  ✓ ${name}`);
 
 /** What stats.html mounts with: the relay's document is versioned apart from the other two. */
-const versions = { relay: 3, sync: 1, monitor: 1 };
+const versions = { relay: 4, sync: 1, monitor: 1 };
 
 const source = (path) => readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
 
 {
-  // The relay's counters tier lands first, carrying the mirror's manifest as `sync` and no `corpus`.
-  const countersOnly = { schema: 3, relay: "wss://relay.example/", countedAs: "anonymous", sync: { status: "ok" } };
-  assert.equal(schemaFor(countersOnly, versions), versions.relay, "the relay's counters tier was read as a mirror document");
-  const both = { ...countersOnly, corpus: { status: "ok" } };
-  assert.equal(schemaFor(both, versions), versions.relay);
-  ok("the relay's document is the relay's before and after its charts tier lands");
+  // The relay's document names its relay, whether or not its charts have landed yet.
+  const bare = { schema: 4, relay: "wss://relay.example/", countedAs: "anonymous" };
+  assert.equal(schemaFor(bare, versions), versions.relay);
+  assert.equal(schemaFor({ ...bare, corpus: { status: "ok" } }, versions), versions.relay);
+  // A schema-3 file left on disk still carries the old `sync` section; it is still the relay's.
+  assert.equal(schemaFor({ schema: 3, relay: "wss://relay.example/", sync: { status: "ok" } }, versions), versions.relay);
+  ok("the relay's document is the relay's before and after its charts land");
 }
 
 {

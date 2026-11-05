@@ -188,6 +188,8 @@ internal class VisitPool(
     /** Every (relay, stream) unit on the roster, for the status page's per-relay table. */
     internal fun primeUnits(): List<RelayStatusReport.PrimeUnit> = status.primeUnits()
 
+    internal fun primeUnitsFor(author: String): List<RelayStatusReport.PrimeUnit> = status.primeUnitsFor(author)
+
     /** Every open tail subscription, quietest first. */
     internal fun livePool(): InFlight = status.livePool()
 

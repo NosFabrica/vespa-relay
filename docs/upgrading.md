@@ -4,6 +4,36 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The search page asks the sync about your posts (November 2026)
+
+The line under the search box that says whether the mirror has a reader's own
+posts now asks the sync process, which knows, instead of counting the posts on
+two relays. The relay stops reading the manifest file the sync left on the
+shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
+
+### Do before the first boot
+
+- **Set `SYNC_PUBLIC_URL` on the relay** to the address readers' browsers reach
+  the sync at, e.g. `https://sync.example.com`, and route `/coverage/` there
+  from your proxy (the sync serves it on `SYNC_STATUS_PORT`, 7778). Only that
+  path needs to be public. Unset, the line under the search box says nothing
+  about posts.
+- **Drop `SYNC_MANIFEST_FILE` and `STATS_COUNTERS_INTERVAL_SECONDS`** from your
+  `.env`. Both do nothing now, and the relay and the sync name them at boot if
+  they are set. The old `sync-manifest.json` on the volume can be deleted.
+
+### What changes in behaviour
+
+- **The posts line counts relays, not posts.** "3 of 4 relays read in full"
+  comes from the sync's own walk, so it no longer depends on a stranger's
+  `COUNT`. A reader no stream follows is told the mirror isn't following their
+  posts yet.
+- **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
+  read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
+- **The sync answers `GET /coverage/<pubkey>`** to any origin: every stream that
+  asks a relay for that author and how far each has got. It caches an author for
+  30 s and gives at most 20 fresh answers a second; past that it answers 429.
+
 ## Store refusals and the phrase band (November 2026)
 
 vespa-eventstore `b21f996c1849`. The schema moves, with no reindex: new fieldsets

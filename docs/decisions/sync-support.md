@@ -330,3 +330,22 @@ the refusals that stay final.
 
 **A learned width is one `compute`.** Read, compare, then put let two
 refusals learned at once leave the wider cap last.
+
+**The sync answers for one author; the relay reads none of its files.** The search
+page's line about a reader's own posts counted them here and on the reader's first
+write relay, scoped to the mirror's kinds, which the relay read off
+`sync-manifest.json` on the volume both containers mount. That was the last file
+one process read of another's, and the count was an estimate: a stranger's
+NIP-45 `COUNT` as the denominator, and nothing at all from a relay that caps or
+refuses it. The sync already holds the answer per (relay, stream) pair, the
+relay table's `complete` / `paging` / `notStarted` / `refused`, and
+`UnitAsks.byAuthor` narrows it to one author's asks with a map lookup per unit.
+So it serves `GET /coverage/<pubkey>` (`AuthorCoverage`), the page asks it from
+the reader's browser at the address the relay writes into it
+(`SYNC_PUBLIC_URL` → `<meta name="sync-url">`), and the manifest, `MirrorReport`,
+the relay's counters tier and `sync.mirrors` went (stats schema 4). The route is
+public because the asker is a browser: it carries the walk and the reconcile but
+not why a relay refused us, answers any origin, caches an author for 30 s, and
+gives at most 20 fresh answers a second across all authors, since each walks the
+band snapshot. The HTTP half lives in `:web` as `pubkeyDocument`, because Ktor
+stays out of the engine modules (`ModuleBoundariesTest`).
