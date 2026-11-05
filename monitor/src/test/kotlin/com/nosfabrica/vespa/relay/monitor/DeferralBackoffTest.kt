@@ -213,14 +213,14 @@ class DeferralBackoffTest {
             store.insert(events.sign(nowSeconds(), 10002, arrayOf(arrayOf("r", busy.url, "write"), arrayOf("r", "wss://fine.example", "write")), ""))
             val pass = fitness(store)
             val world =
-                StreamWorld(
+                CandidateSet(
                     store = store,
                     sources = sources(),
                     probe = ReachabilityProbe(null),
                     monitorAuthors = listOf(signer.pubKey),
                     self = signer.pubKey,
                     tor = null,
-                    recentlyGraded = { urls -> StreamWorld.gradedSince(RelayVerdictRecord(store, signer), urls, nowSeconds() - 3600) },
+                    recentlyGraded = { urls -> CandidateSet.gradedSince(RelayVerdictRecord(store, signer), urls, nowSeconds() - 3600) },
                     backingOff = pass::backingOff,
                 )
             val monitor =

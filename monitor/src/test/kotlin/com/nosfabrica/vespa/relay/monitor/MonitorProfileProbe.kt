@@ -96,7 +96,7 @@ class MonitorProfileProbe {
         ) = AliasProbe.over(peers.client, target, observe = { url, ms, page -> clock.page(pass, url, ms, page) }) { CONNECT_SEC * 1000L }
 
         val world =
-            StreamWorld(
+            CandidateSet(
                 store,
                 sources = null,
                 probe = reach,
@@ -204,7 +204,7 @@ class MonitorProfileProbe {
             }
             val sweepMs = System.currentTimeMillis() - startedMs
             val grades = runBlocking { gradesIn(store) }
-            val report = clock.report(sweepMs, concurrency, world.lastDerivation ?: StreamWorld.Derivation(), grades)
+            val report = clock.report(sweepMs, concurrency, world.lastDerivation ?: CandidateSet.Derivation(), grades)
             File(out, "summary.txt").writeText(report)
             File(out, "urls.tsv").writeText(clock.perUrl())
             File(out, "grades.tsv").writeText(grades.entries.sortedBy { it.key }.joinToString("") { "${it.key}\t${it.value}\n" })
@@ -381,7 +381,7 @@ class MonitorProfileProbe {
         fun report(
             sweepMs: Long,
             concurrency: Int,
-            derivation: StreamWorld.Derivation,
+            derivation: CandidateSet.Derivation,
             grades: Map<String, String>,
         ): String =
             buildString {

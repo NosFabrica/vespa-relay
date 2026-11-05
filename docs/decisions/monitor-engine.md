@@ -1,12 +1,18 @@
 # Monitor engine decisions
 
-The history behind `monitor/.../MonitorEngine.kt`, `StreamWorld.kt`,
+The history behind `monitor/.../MonitorEngine.kt`, `CandidateSet.kt`,
 `RelayDocument.kt` and `MonitorStatus.kt`, and the small `:common` and
 `:web` files that serve every plane, moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.
 
 ## Monitor
+
+**`CandidateSet`, not `StreamWorld`.** The name dates from when the monitor
+ran inside the sync and derived its urls from the streams' discovery. It has
+no streams now: the class is the set of urls the passes measure, read off
+monitor.conf's own sources and our records, and to the scheduler it is the
+`AliasMonitor.CandidateSource`.
 
 **The monitor is its own class with its own `Processors`.** It was 278 lines
 inside `SyncEngine`, and one class started two planes that ask different
@@ -473,7 +479,7 @@ another's answer, so they now run concurrently, and the sweep's walk of our
 records (the first read of the sweep) overlaps the two store scans. Their
 outcomes are taken in the old order: a failed dead-set read fails the derivation
 before `listsReadFromSec` moves, a failed walk of our records after it, which
-`StreamWorldDerivationTest` pins. The source row's position is now set before
+`CandidateSetDerivationTest` pins. The source row's position is now set before
 the dead-set read instead of after it.
 
 **Verdict writes stay one edit per url.** Batching a pass's edits into chunks

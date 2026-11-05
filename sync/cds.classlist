@@ -6848,9 +6848,9 @@ com/nosfabrica/vespa/relay/monitor/ReachabilityProbe$3
 com/nosfabrica/vespa/relay/monitor/MonitorEngine$world$2
 com/nosfabrica/vespa/relay/monitor/MonitorEngine$world$3
 com/nosfabrica/vespa/relay/monitor/AliasMonitor$CandidateSource
-com/nosfabrica/vespa/relay/monitor/StreamWorld
-com/nosfabrica/vespa/relay/monitor/StreamWorld$Companion
-com/nosfabrica/vespa/relay/monitor/StreamWorld$Derivation
+com/nosfabrica/vespa/relay/monitor/CandidateSet
+com/nosfabrica/vespa/relay/monitor/CandidateSet$Companion
+com/nosfabrica/vespa/relay/monitor/CandidateSet$Derivation
 com/nosfabrica/vespa/relay/monitor/ServerIndex$Companion
 @lambda-proxy com/nosfabrica/vespa/relay/monitor/ServerIndex invoke (Lcom/nosfabrica/vespa/relay/monitor/ServerIndex;)Lkotlin/jvm/functions/Function0; ()Ljava/lang/Object; REF_invokeStatic com/nosfabrica/vespa/relay/monitor/ServerIndex byServer_delegate$lambda$0 (Lcom/nosfabrica/vespa/relay/monitor/ServerIndex;)Ljava/util/Map; ()Ljava/util/Map;
 com/nosfabrica/vespa/relay/monitor/RelayDocument

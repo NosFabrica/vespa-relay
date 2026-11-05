@@ -92,7 +92,7 @@ class MonitorEngine(
     private val fitnessRow = processors.of(FITNESS_PROCESSOR)
 
     /** Of [urls], those carrying a fitness grade of ours taken within the last sweep period. */
-    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = StreamWorld.gradedSince(record, urls, nowSeconds() - sweepSeconds)
+    private suspend fun recentlyGraded(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = CandidateSet.gradedSince(record, urls, nowSeconds() - sweepSeconds)
 
     /** Of [urls], those fitness is still backing off from after a deferral. */
     private fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = fitness.backingOff(urls)
@@ -107,7 +107,7 @@ class MonitorEngine(
 
     /** What the passes measure. */
     private val world =
-        StreamWorld(
+        CandidateSet(
             store,
             sources,
             probe,

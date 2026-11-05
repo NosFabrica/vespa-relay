@@ -112,7 +112,7 @@ monitor/src/main/kotlin/com/nosfabrica/vespa/relay/monitor/
   AliasFolding.kt         which urls are one server wearing several addresses
   ConsistencyPass.kt      which cannot answer the same question twice
   FitnessPass.kt          …and the grades for what survives, signed
-  StreamWorld.kt          the candidate set all three measure over — monitor.conf's
+  CandidateSet.kt         the candidate set all three measure over — monitor.conf's
                           own declaration, never inherited from the streams
   AliasMonitor.kt         their clock, and the fast lane — which runs the
                           stability gate then fitness over urls named since its
@@ -402,7 +402,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           dial can measure — and the connect that carries it,
                           which IS the `rtt-open` we publish. Pure `parse`,
                           because it is somebody else's json
-    StreamWorld.kt        the url universe the monitor measures: the relay
+    CandidateSet.kt       the url universe the monitor measures: the relay
                           lists monitor.conf names, and nothing else — no
                           stream contributes. Reports as the `aliasSource`
                           processor

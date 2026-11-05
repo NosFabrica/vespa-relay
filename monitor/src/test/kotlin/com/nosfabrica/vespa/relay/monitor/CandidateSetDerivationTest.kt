@@ -42,7 +42,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The funnel's first branch: `sourced = excluded + heldOutDead + candidates`, counted above the exclusion. */
-class StreamWorldDerivationTest {
+class CandidateSetDerivationTest {
     /** Routable on purpose: `RelayDiscovery.normalize` drops loopback before the self check sees it. */
     private val self = RelayUrlNormalizer.normalize("wss://ours.example")
 
@@ -102,8 +102,8 @@ class StreamWorldDerivationTest {
         monitorAuthors: List<String> = emptyList(),
         self: String? = null,
         progress: Processors.Handle? = null,
-    ): StreamWorld =
-        StreamWorld(
+    ): CandidateSet =
+        CandidateSet(
             store = store,
             sources = sourcesWithExcludes(exclude),
             probe = ReachabilityProbe(null),
@@ -190,7 +190,7 @@ class StreamWorldDerivationTest {
             val store = storeWithPerNpubUrls()
             val processors = Processors()
             val world =
-                StreamWorld(
+                CandidateSet(
                     store = store,
                     sources = twoSources(),
                     probe = ReachabilityProbe(null),
@@ -224,14 +224,14 @@ class StreamWorldDerivationTest {
             record.publishFitness(RelayUrlNormalizer.normalize("wss://hub.example"), "prime", "answered", pageable = null, nip77 = null)
 
             fun lane(sweepSeconds: Long) =
-                StreamWorld(
+                CandidateSet(
                     store = store,
                     sources = sourcesWithExcludes(emptyList()),
                     probe = ReachabilityProbe(null),
                     monitorAuthors = listOf(monitor.pubKey),
                     self = monitor.pubKey,
                     tor = null,
-                    recentlyGraded = { urls -> StreamWorld.gradedSince(record, urls, nowSeconds() - sweepSeconds) },
+                    recentlyGraded = { urls -> CandidateSet.gradedSince(record, urls, nowSeconds() - sweepSeconds) },
                 )
 
             assertEquals(listOf("wss://newcomer.example/"), lane(sweepSeconds = 6 * 60 * 60).candidatesSince(0).map { it.url })
@@ -255,7 +255,7 @@ class StreamWorldDerivationTest {
     fun `a failed walk of our own records fails the derivation after the lists were read, as it always did`(): Unit =
         runBlocking {
             val world =
-                StreamWorld(
+                CandidateSet(
                     store = storeWithPerNpubUrls(),
                     sources = sourcesWithExcludes(emptyList()),
                     probe = ReachabilityProbe(null),

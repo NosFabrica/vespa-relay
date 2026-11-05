@@ -306,7 +306,7 @@ the trust anchor rotate with `RELAY_NSEC` (emptying every roster, silently,
 until the new identity finished a sweep) and it narrowed the one deployment
 that had mirrored a foreign monitor's verdicts on purpose. Admitting is safe
 unscoped because everything admitted is still dialled and measured; **the
-hold-out read is the asymmetric one and stays author-bound**. `StreamWorld`'s
+hold-out read is the asymmetric one and stays author-bound**. `CandidateSet`'s
 dead query — records carrying OUR `dead` grade, matched on the label's
 namespace and not just its value, since `l` also carries other monitors'
 country and ASN labels — is scoped to our signer plus the keys the config
@@ -393,7 +393,7 @@ relay to park one event and blame it.
 So `IngestPipeline.parkedOn` counts, per relay, the producers currently
 suspended in `submit` — in the pipeline and not at the pool's call sites,
 because the pool is not the only producer on a shared socket: `RetractionAudit`
-and the monitor's `StreamWorld` hand events to the same queue, and a wrapper
+and the monitor's `CandidateSet` hand events to the same queue, and a wrapper
 each caller had to remember was a stall the classification could not see. It
 counts only a send that actually suspends (the fast path is tried first), so a
 hook merely passing through at the instant a walk gives up is not read as a
@@ -750,7 +750,7 @@ still pins them; `processorFact` is where the choice lives:
 
 | processor | what it is | how far along it is |
 |---|---|---|
-| `aliasSource` | `StreamWorld.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
+| `aliasSource` | `CandidateSet.candidates` — walks the store for every url the relay lists name, drops what an operator excluded and what a signed `dead` record holds out, and hands the rest to the three passes | `attempted` of `toProbe` in `source`s (one configured relay-list block each), then `sourced`/`excluded`/`heldOutDead`/`candidates`/`recordedOnly` |
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected`, and `inBatch` of `workers` with `oldestBatchSec` — what tells a full queue apart from a stopped one |
@@ -849,7 +849,7 @@ streams.** `SyncEngine.hasMonitorSources` is the gate — it reads
 `discoveryStreams` OR `monitor { sources }` — and it used to read the first
 alone. A deployment that took the block's offer all the way (static `urls` on
 every stream, all candidates arriving through `monitor { sources }`) therefore
-never called `aliasMonitor.start()`: `StreamWorld` unioned the block's urls
+never called `aliasMonitor.start()`: `CandidateSet` unioned the block's urls
 correctly and nothing ever ran over them — no fold, no stability gate, no
 fitness, not one `prime` signed, and four rows reading `off` for the life of
 the process, which is also what those rows correctly say on the static config
@@ -1140,7 +1140,7 @@ instead of only counting it.
 two reasons with OPPOSITE retry policies, reported as one number: a
 `hostStruckOut` url is dialled again on the very next cycle (a strike is
 cycle-local, nothing persists), while a `knownDead` one waits out a signed NIP-66
-`dead` verdict's TTL — 24h, `StreamWorld.DEAD_TTL_SECONDS`
+`dead` verdict's TTL — 24h, `CandidateSet.DEAD_TTL_SECONDS`
 — or its host delivering something. `whyDead` returns which; do not collapse
 them again.
 
@@ -2422,7 +2422,7 @@ caption reading "every relay url this router knows of", and the two are not the
 same corpus: a url leaves the relay lists for reasons of its own (the author who
 listed it revised their 10002, a source was reconfigured, a stream was retired)
 and every measurement this router ever took of it is still in the store, still
-read by `AliasFolding.measure`. `StreamWorld.candidates` counts them —
+read by `AliasFolding.measure`. `CandidateSet.candidates` counts them —
 `RelayDiscovery.recorded`, our own authors, on the verdict TTL, minus whatever
 this round named — and the tree gets a branch for them beside `dropped` rather
 than inside it, because nothing was decided against them: nobody asked. On a
@@ -2808,7 +2808,7 @@ that — see the verdict section above for the shape and what it does not claim.
 being grouped. A duplicate is a property of a url next to another one, and the
 candidate set is not the whole neighbourhood: a url's siblings drop out of it for
 reasons that have nothing to do with the fold — held out as known dead by
-`StreamWorld`, gone from the relay list that named them, discovered by a stream
+`CandidateSet`, gone from the relay list that named them, discovered by a stream
 since reconfigured. Grouped from candidates alone the newcomer is a group of ONE,
 `unresolved` drops it for that, and it is dialled as its own relay for as long as
 it is discovered while a signed record naming the very url it folds onto sits in

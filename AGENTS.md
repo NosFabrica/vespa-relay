@@ -175,7 +175,7 @@ peers/…/relay/
 monitor/…/relay/
   MonitorMain.kt              entrypoint (MONITOR_*, monitor.conf); its own PeerClient and RelayWriter
 monitor/…/relay/monitor/
-  MonitorEngine, AliasMonitor, StreamWorld, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
+  MonitorEngine, AliasMonitor, CandidateSet, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe                                   which urls are one server: the probe, and the fold that measures it
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
   ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
@@ -271,7 +271,7 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   no config at all the process says so and exits 0. `unwatched` on the mirror's
   `/stats.json` counts the pairs the two files have drifted apart on.
   `AliasMonitor` runs three passes in order over
-  `StreamWorld`'s candidate set: the fold (`same-as`), the stability gate
+  the candidate set (`CandidateSet`): the fold (`same-as`), the stability gate
   (`self-consistent`), then `FitnessPass`, which grades what survives with a
   NIP-32 label `["l","prime","relay.fitness",…]` (or `dead`) beside `pageable`,
   `compliant` and `nip77`. A url the fold has not decided waits behind one

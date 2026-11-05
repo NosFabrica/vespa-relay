@@ -86,7 +86,7 @@ class StoredFoldTest {
         urls: List<NormalizedRelayUrl>,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         val world =
-            StreamWorld(
+            CandidateSet(
                 store = store,
                 sources = sources,
                 probe = ReachabilityProbe(null),

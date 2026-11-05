@@ -41,7 +41,7 @@ import kotlinx.coroutines.coroutineScope
  * records about; [sources] is the monitor's own declaration, never a stream's. Touched only on the
  * monitor's scheduler, except [lastDerivation], which the status page reads.
  */
-internal class StreamWorld(
+internal class CandidateSet(
     private val store: IEventStore,
     /** The relay lists to scan, from `RouterConfig.monitorSources`. Null measures nothing. */
     private val sources: RelayDiscoveryConfig?,
