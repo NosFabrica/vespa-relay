@@ -178,6 +178,7 @@ monitor/…/relay/monitor/
   MonitorEngine, AliasMonitor, CandidateSet, MonitorStatus   the plane, its clock and fast lane, the candidate set, its /stats.json
   AliasFolding, AliasProbe                                   which urls are one server: the probe, and the fold that measures it
   ConsistencyPass, RelayConsistency, FitnessPass, RelayCompliance   the stability gate, and the grade the roster selects on
+  FitnessDial, FitnessBatch, FitnessWrites, DeferralBackoff, FitnessReport, FitnessRetirement   the fitness pass's dial, guards, writes, backoff, log lines, boot retirement
   ReachabilityProbe, Silence, RelayDocument   what a quiet socket said (quartz's Unreachability: what may be published), NIP-11
 sync/…/relay/
   SyncMain.kt                 entrypoint; the root package holds this and nothing else
