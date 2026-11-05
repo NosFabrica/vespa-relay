@@ -56,13 +56,6 @@ object FoldReading {
      * store cannot answer, which is said once per read.
      */
     suspend fun readBack(
-        record: RelayVerdictRecord,
-        candidates: List<NormalizedRelayUrl>,
-        world: ServerIndex = ServerIndex.EMPTY,
-    ): Collapsed? = readBack(record::load, candidates, world)
-
-    /** [readBack] over verdicts read through [load]. */
-    suspend fun readBack(
         load: suspend (Collection<NormalizedRelayUrl>) -> RelayVerdictRecord.Verdicts,
         candidates: List<NormalizedRelayUrl>,
         world: ServerIndex = ServerIndex.EMPTY,

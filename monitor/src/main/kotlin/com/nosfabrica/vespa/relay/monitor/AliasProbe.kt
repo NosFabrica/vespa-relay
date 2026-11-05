@@ -92,7 +92,7 @@ class AliasProbe(
         // A refused credential is not a refused filter, and one shape refusing our key leaves the others to ask.
         var authRefused = false
         for (shape in SHAPES) {
-            val window = walk(url, anchor, shape)
+            val window = window(url, anchor, shape)
             if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape, window.drained), spoke = true)
             // Silence after refusing us is filter.nostr.wine's connection gone quiet: each further
             // shape would wait out the whole idle window.
@@ -136,16 +136,6 @@ class AliasProbe(
         /** The kinds to ask for, or null for a bare filter. Set by the group's leader, never per url. */
         kinds: List<Int>? = null,
     ): Set<String>? = window(url, anchor, kinds).ids
-
-    /**
-     * The same walk as [fingerprint], keeping whether the relay refused our credentials and what
-     * the pages did with the filter.
-     */
-    suspend fun window(
-        url: NormalizedRelayUrl,
-        anchor: Long? = null,
-        kinds: List<Int>? = null,
-    ): Window = walk(url, anchor, kinds)
 
     /** What one url's window turned out to be, and whether the ladder may go on. */
     data class Window(
@@ -255,10 +245,14 @@ class AliasProbe(
         return Compliance.of(events, COMPLIANCE_LIMIT, until, kinds, slack = 0)
     }
 
-    private suspend fun walk(
+    /**
+     * The same walk as [fingerprint], keeping whether the relay refused our credentials and what
+     * the pages did with the filter.
+     */
+    suspend fun window(
         url: NormalizedRelayUrl,
-        anchor: Long?,
-        kinds: List<Int>?,
+        anchor: Long? = null,
+        kinds: List<Int>? = null,
     ): Window {
         // id -> created_at: only the timestamp says which ids are the newest when urls page at different sizes.
         val ids = HashMap<String, Long>()

@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.fold
 
-import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /**
@@ -50,10 +49,8 @@ class RelayAliases(
     /** The url to dial in place of this one. */
     fun canonicalOf(url: NormalizedRelayUrl): NormalizedRelayUrl = folded[url] ?: url
 
+    /** How many folds this view holds. */
     fun size(): Int = folded.size
-
-    /** Every fold held. */
-    fun verdicts(): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folded
 
     /**
      * This fold's rules over exactly what [known] and [cleared] say about [urls], whatever this view
@@ -295,16 +292,6 @@ class RelayAliases(
         return Learned(folds, cleared, twins.keys, shared)
     }
 
-    /**
-     * Fold a group nothing could be read from onto its leader, on the shared hostname alone.
-     * The one fold that rests on no measurement. Every url must have answered; a silent url
-     * keeps its group out, or our own outage becomes a claim about their server.
-     */
-    fun foldUnreadable(
-        group: List<NormalizedRelayUrl>,
-        leader: NormalizedRelayUrl,
-    ): Learned = foldOnto(group, leader)
-
     /** Every url of [urls] not already folded, onto [survivor]; the caller holds the argument for it. */
     fun foldOnto(
         urls: Collection<NormalizedRelayUrl>,
@@ -469,20 +456,6 @@ class RelayAliases(
         const val DEFAULT_MIN_OVERLAP = 0.5
 
         const val DEFAULT_MIN_SELF_OVERLAP = 0.9
-
-        /** Apply an alias map to a discovered set. Each url's bindings move with it onto the survivor. */
-        fun foldOnto(
-            relays: List<DiscoveredRelay>,
-            aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
-        ): List<DiscoveredRelay> {
-            if (aliases.isEmpty()) return relays
-            val merged = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
-            for (relay in relays) {
-                val into = merged.getOrPut(aliases[relay.url] ?: relay.url) { HashMap() }
-                for ((dest, values) in relay.bindings) into.getOrPut(dest) { HashSet() }.addAll(values)
-            }
-            return merged.map { (url, narrow) -> DiscoveredRelay(url, narrow.mapValues { (_, v) -> v.toSet() }) }
-        }
 
         private const val MAX_CHAIN = 8
 

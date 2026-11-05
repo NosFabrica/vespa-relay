@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.fold.RelayAliases
-import com.nosfabrica.vespa.relay.peers.DiscoveredRelay
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
@@ -197,10 +196,9 @@ class RelayAliasesTest {
         // A url folded onto itself would be `measured` forever.
         aliases = aliases.over(listOf(nos, nosAlpha), mapOf(nosAlpha to nos, nos to nosAlpha), cleared = emptySet())
 
-        assertFalse(aliases.measured(nos) && aliases.canonicalOf(nos) == nos && nos in aliases.verdicts().keys)
-        assertTrue(nos !in aliases.verdicts().keys, "a url was folded onto itself: ${aliases.verdicts()}")
+        assertFalse(aliases.measured(nos), "a url was folded onto itself")
         // Neither edge: a loop is two passes contradicting each other.
-        assertTrue(aliases.verdicts().isEmpty(), "a loop was folded anyway: ${aliases.verdicts()}")
+        assertFalse(aliases.measured(nosAlpha), "a loop was folded anyway")
     }
 
     @Test
@@ -421,27 +419,6 @@ class RelayAliasesTest {
     }
 
     @Test
-    fun `folding moves what each url was paired with onto the survivor`() {
-        var aliases = RelayAliases()
-        val print = window(100)
-        aliases += aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to print, nosAlpha to print))
-
-        val folded =
-            RelayAliases.foldOnto(
-                listOf(
-                    DiscoveredRelay(nos, mapOf("authors" to setOf("a"))),
-                    DiscoveredRelay(nosAlpha, mapOf("authors" to setOf("b"))),
-                ),
-                aliases.verdicts(),
-            )
-
-        assertEquals(1, folded.size)
-        assertEquals(nos, folded.single().url)
-        // Dropping the url without its authors would stop asking for author b at all.
-        assertEquals(setOf("a", "b"), folded.single().bindings["authors"])
-    }
-
-    @Test
     fun `a verdict pointing at a folded url resolves to the end of the chain`() {
         var aliases = RelayAliases()
         // Both edges arrive in one store read, in either order.
@@ -490,15 +467,6 @@ class RelayAliasesTest {
         assertEquals("alpha", RelayAliases.pathOf("wss://nos.lol:443/alpha"))
         assertEquals("", RelayAliases.pathOf("wss://nos.lol/"))
         assertEquals("remove/tango", RelayAliases.pathOf("wss://nostr.oxtr.dev/remove/tango"))
-    }
-
-    @Test
-    fun `folding is a no-op until something has been learned`() {
-        val aliases = RelayAliases()
-        val relays = listOf(DiscoveredRelay(nos), DiscoveredRelay(nosAlpha))
-
-        assertEquals(relays, RelayAliases.foldOnto(relays, aliases.verdicts()))
-        assertFalse(aliases.size() > 0)
     }
 
     @Test

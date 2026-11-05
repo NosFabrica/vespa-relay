@@ -54,7 +54,7 @@ class RosterFoldTest {
         store = store,
         streams = RouterConfigLoader.parse(config.trimIndent()).streams,
         bands = SyncBands(null),
-        foldedAway = { urls -> FoldReading.readBack(RelayVerdictRecord(store, ours), urls, world)!!.let { it.aliases + it.standIns + it.waiting } },
+        foldedAway = { urls -> FoldReading.readBack(RelayVerdictRecord(store, ours)::load, urls, world)!!.let { it.aliases + it.standIns + it.waiting } },
     )
 
     private val graded =

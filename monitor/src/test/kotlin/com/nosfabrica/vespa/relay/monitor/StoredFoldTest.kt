@@ -95,7 +95,7 @@ class StoredFoldTest {
                 tor = null,
             )
         world.candidates()
-        return FoldReading.readBack(RelayVerdictRecord(store, ours), urls, world.known)!!.let { it.aliases + it.standIns + it.waiting }
+        return FoldReading.readBack(RelayVerdictRecord(store, ours)::load, urls, world.known)!!.let { it.aliases + it.standIns + it.waiting }
     }
 
     private fun storedFold(store: IEventStore) = StoredFold.over(store, listOf(ours.pubKey), allowOnion = false)

@@ -415,7 +415,7 @@ class AliasFolding(
         // Every url, not most: one our transport could not reach makes this "we do not know".
         if (wanted.size < 2 || !wanted.all { it in search.spoke }) return false
         val survivor = wanted.first()
-        val folds = group.view.foldUnreadable(wanted, survivor)
+        val folds = group.view.foldOnto(wanted, survivor)
         val landed = write(group, folds) { record.publishFold(it, survivor, FoldEvidence.unreadable(wanted.size)) != null }
         if (folds.folded.isNotEmpty()) group.cooldown = false
         if (landed.size < folds.folded.size) writesStopped(group)

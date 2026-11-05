@@ -403,36 +403,12 @@ object RelayDiscovery {
         return false
     }
 
-    /** The distinct relay urls one event advertises across every applicable select. */
-    fun urlsIn(
-        event: Event,
-        selects: List<RelaySelect>,
-    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, selects, it) }
-
-    private fun urlsIn(
-        event: Event,
-        selects: List<RelaySelect>,
-        into: MutableSet<NormalizedRelayUrl>,
-    ) {
-        for (select in selects) {
-            if (select.kind != null && select.kind != event.kind) continue
-            urlsIn(event, select, into)
-        }
-    }
-
-    /** The relay urls one event advertises for a single [select]. */
-    fun urlsIn(
+    /** The relay urls one event advertises for a single [select], by the rules [discover] reads lists with; for tests. */
+    internal fun urlsIn(
         event: Event,
         select: RelaySelect,
         allowOnion: Boolean = false,
-    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, select, it, allowOnion) }
-
-    private fun urlsIn(
-        event: Event,
-        select: RelaySelect,
-        into: MutableSet<NormalizedRelayUrl>,
-        allowOnion: Boolean = false,
-    ) = bindingsIn(event, select, allowOnion) { url, _ -> into.add(url) }
+    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { into -> bindingsIn(event, select, allowOnion) { url, _ -> into += url } }
 
     /**
      * Every (url, bound values) pair one event yields for one select. Each matching tag calls

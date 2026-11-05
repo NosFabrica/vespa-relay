@@ -95,7 +95,7 @@ class SameServerTest {
         store: NostrSemanticsStore,
         urls: List<NormalizedRelayUrl>,
         world: ServerIndex = ServerIndex.EMPTY,
-    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer), urls, world))
+    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer)::load, urls, world))
 
     private fun fitness(
         store: NostrSemanticsStore,

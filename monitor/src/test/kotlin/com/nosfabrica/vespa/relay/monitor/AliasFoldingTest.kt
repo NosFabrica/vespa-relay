@@ -234,7 +234,7 @@ class AliasFoldingTest {
         store: NostrSemanticsStore,
         urls: List<NormalizedRelayUrl>,
         world: ServerIndex = ServerIndex.EMPTY,
-    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer), urls, world))
+    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer)::load, urls, world))
 
     /** Every url serves the same events, so any two of them fold. */
     private fun upstreams(): Upstreams {
@@ -680,7 +680,7 @@ class AliasFoldingTest {
             assertEquals(listOf(canonical), applied(store, listOf(canonical, alias)).dial)
 
             assertNull(
-                FoldReading.readBack(RelayVerdictRecord(Unreadable(store), signer), listOf(canonical, alias)),
+                FoldReading.readBack(RelayVerdictRecord(Unreadable(store), signer)::load, listOf(canonical, alias)),
                 "a failed read unfolded the fan-out",
             )
         }

@@ -148,8 +148,7 @@ internal class ReachabilityProbe(
      * resolver failing from a name that does not exist. Only [REUSABLE] answers are reused, for [reuseMs].
      */
     suspend fun reach(url: NormalizedRelayUrl): Reach {
-        if (tor?.routes(url) == true) return if (withContext(Dispatchers.IO) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
-        if (!shouldPreProbe(url, tor)) return Reach.REACHABLE
+        if (tor?.routes(url) == true) return if (withContext(io) { tor.socksAnswers() }) Reach.REACHABLE else Reach.TRANSPORT_DOWN
         val target = DialTarget.of(url) ?: return Reach.REACHABLE
         lately[target]?.let { (answer, atMs) -> if (clock() - atMs < reuseMs) return answer }
         return probe(target).also { answer -> if (answer in REUSABLE) remember(target, answer) }
