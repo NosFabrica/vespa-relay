@@ -674,9 +674,18 @@ url both found was retired twice. `FitnessRetirement.retireStale` walks our reco
 once, asks each one the two questions the tag filters asked (an `l` value among
 our grades with our label on an older epoch; an `s` value among the old grade
 words), retires the union once, and counts the retirements that landed rather
-than the ones attempted. The edits read their records off the record's walk,
-which is taken only if anything is to be retired. A store that cannot be walked
-now skips both retirements together, where the second walk used to run anyway.
+than the ones attempted. A store that cannot be walked now skips both
+retirements together, where the second walk used to run anyway.
+
+**The boot retirement's edits read off its own scan.** They read their records
+off the sweep bracket's walk, which the first edit took inside its own
+`EDIT_DEADLINE_MS`: a corpus slower to walk than that cut the walker, each waiter
+restarted it with less time, and nothing was retired while the boot waited, the
+corpus walked twice besides. `retireStale`'s scan reads the same filter, so it now
+keeps what it read and opens the bracket over it (`beginSweep(walked)`, newest
+per `d`): one walk at boot, under the scan's own page clock, and no edit pays for
+a walk. A url the scan missed costs its edit a `#d` read, as in a sweep. The edit
+deadline is a constructor parameter, so `RetirementWalkDeadlineTest` runs in a second.
 
 **The second page and the NEG-OPEN stay in sequence.** Both go to the url on
 the same client socket. Run together, a relay that caps the subscriptions one

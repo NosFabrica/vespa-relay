@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Verdict
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -60,6 +61,8 @@ object FitnessRetirement {
         val legacy = LinkedHashSet<NormalizedRelayUrl>()
         val grades = Verdict.entries.mapTo(HashSet()) { it.value }
         val legacyWords = LEGACY_GRADES.toHashSet()
+        // Every record the scan reads, so the edits read theirs off it and no edit's deadline covers a walk.
+        val walked = ArrayList<Event>()
         RelayDiscovery.scan(
             store,
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(author)),
@@ -67,13 +70,14 @@ object FitnessRetirement {
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             logPrefix = "monitor",
         ) { event ->
+            walked += event
             val held = event as? RelayDiscoveryEvent ?: return@scan
             val url = held.relay() ?: return@scan
             // Our grades on `l` under older rules, and the old grades on `s`.
             if (carries(held, RelayVerdictRecord.LABEL_TAG, grades) && isStaleGrade(held)) stale += url
             if (carries(held, RelayVerdictRecord.LEGACY_STATUS_TAG, legacyWords)) legacy += url
         }
-        val retired = retire(record, (stale + legacy).toList(), progress)
+        val retired = retire(record, (stale + legacy).toList(), walked, progress)
         val result = Retired(stale.count { it in retired }, legacy.count { it in retired })
         if (stale.isNotEmpty()) {
             System.err.println(
@@ -105,18 +109,19 @@ object FitnessRetirement {
 
     /**
      * Withdraw a verdict from each of [urls], several at a time, and return the ones that landed.
-     * The edits read their records off one walk, taken only if there is anything to retire. No pass may run beside it.
+     * The edits read their records off [walked], [retireStale]'s own scan. No pass may run beside it.
      */
     private suspend fun retire(
         record: RelayVerdictRecord,
         urls: List<NormalizedRelayUrl>,
+        walked: Collection<Event>,
         progress: Processors.Handle?,
     ): Set<NormalizedRelayUrl> {
         if (urls.isEmpty()) return emptySet()
         progress?.measuring(urls.size, Processors.UNIT_VERDICT)
         val gate = Semaphore(RETIRE_CONCURRENCY)
         val landed = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-        record.beginSweep()
+        record.beginSweep(walked)
         try {
             coroutineScope {
                 for (url in urls) {

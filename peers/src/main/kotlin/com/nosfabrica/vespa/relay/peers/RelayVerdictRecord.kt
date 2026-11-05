@@ -62,6 +62,8 @@ class RelayVerdictRecord(
     private val readFrom: List<String> = listOfNotNull(signer?.pubKey),
     /** The wall clock on each store query [load] and [loadAll] make; past it the read throws [ReadTimeout]. */
     private val readDeadlineMs: Long = READ_DEADLINE_MS,
+    /** The wall clock on one whole [edit]. */
+    private val editDeadlineMs: Long = EDIT_DEADLINE_MS,
 ) {
     /** A verdict read the store did not answer within [deadlineMs]; an ordinary failure, so a caller skips as on any other. */
     class ReadTimeout(
@@ -291,6 +293,22 @@ class RelayVerdictRecord(
         if (signer != null) sweep = Sweep()
     }
 
+    /**
+     * [beginSweep] over a walk of our records the caller already took, so the sweep takes none of its own.
+     * A url [walked] lacks costs its edit one `#d` read, never its other tags.
+     */
+    fun beginSweep(walked: Collection<Event>) {
+        val self = signer?.pubKey ?: return
+        val byD = ConcurrentHashMap<String, Event>()
+        for (event in walked) if (event.pubKey == self) byD.takeNewest(event)
+        val own = OwnRecords(byD)
+        sweep =
+            Sweep().also {
+                it.records = own
+                it.walk.set(CompletableDeferred(own))
+            }
+    }
+
     fun endSweep() {
         sweep = null
     }
@@ -342,12 +360,14 @@ class RelayVerdictRecord(
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
             pageDeadlineMs = readDeadlineMs,
             logPrefix = MONITOR_LOG,
-        ) { event ->
-            val d = subjectOf(event) ?: return@scan
-            // The newest, as a `#d` read of one url takes it.
-            byD.merge(d, event) { held, next -> if (next.createdAt > held.createdAt) next else held }
-        }
+        ) { event -> byD.takeNewest(event) }
         return OwnRecords(byD)
+    }
+
+    /** Holds [event] under its `d` if it is the newest seen there, as a `#d` read of one url takes it. */
+    private fun ConcurrentHashMap<String, Event>.takeNewest(event: Event) {
+        val d = subjectOf(event) ?: return
+        merge(d, event) { held, next -> if (next.createdAt > held.createdAt) next else held }
     }
 
     /** What an edit of [url] did to the sweep's records: its signed record, or null when the store may not hold it. */
@@ -550,7 +570,7 @@ class RelayVerdictRecord(
     /**
      * Read this url's record, rewrite it through quartz's [RelayDiscoveryEvent.edit] (every tag this
      * writer does not [owns] kept, [add] appended, stamped strictly newer), sign and store it. Bounded
-     * whole by [EDIT_DEADLINE_MS]. A second edit of [url] while one is under way throws: both would
+     * whole by [editDeadlineMs]. A second edit of [url] while one is under way throws: both would
      * read the same record, and the later write would erase the earlier's tags.
      */
     private suspend fun edit(
@@ -582,7 +602,7 @@ class RelayVerdictRecord(
         add: List<Array<String>>,
         signer: NostrSigner,
     ): Event? =
-        withTimeoutOrNull(EDIT_DEADLINE_MS) {
+        withTimeoutOrNull(editDeadlineMs) {
             // A failed read aborts the edit; a fresh record would erase other writers' tags.
             val current =
                 try {
