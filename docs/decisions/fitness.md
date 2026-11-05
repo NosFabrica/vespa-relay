@@ -675,3 +675,12 @@ words), retires the union once, and counts the retirements that landed rather
 than the ones attempted. The edits read their records off the record's walk,
 which is taken only if anything is to be retired. A store that cannot be walked
 now skips both retirements together, where the second walk used to run anyway.
+
+**The second page and the NEG-OPEN stay in sequence.** Both go to the url on
+the same client socket. Run together, a relay that caps the subscriptions one
+connection may hold, or rate-limits them, can refuse one of the two because of
+the other. A refused second page is a CLOSED with no events, which `pageBelow`
+reads as a page that drained, so `pageable` would be published `true` on a walk
+that never happened; a refused NEG-OPEN is a `NegentropySyncException`, published
+as `nip77 = false`, a signed negative claim about a relay that does speak NIP-77.
+The order also decides which facts a per-url deadline cut leaves on the record.

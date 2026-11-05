@@ -475,3 +475,12 @@ outcomes are taken in the old order: a failed dead-set read fails the derivation
 before `listsReadFromSec` moves, a failed walk of our records after it, which
 `StreamWorldDerivationTest` pins. The source row's position is now set before
 the dead-set read instead of after it.
+
+**Verdict writes stay one edit per url.** Batching a pass's edits into chunks
+sent with one `batchInsert` was considered after the sweep's walk removed each
+write's record read. It would change what the write limits count: the wedge limit
+is consecutive unanswered writes, and per chunk it becomes consecutive unanswered
+chunks, which the tests pinning a stopped batch (`PublishDeadlineTest`,
+`PendingWritesTest`, `VerdictCadenceTest`, all through `StoreWriter.insert`)
+would have to be rewritten to, and nothing measured shows the writes are what a
+sweep waits on. It waits for a measurement of the write stage.
