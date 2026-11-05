@@ -50,6 +50,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.EmptyCoroutineContext
@@ -130,6 +131,14 @@ class RelayVerdictRecord(
             for (page in readByD(asked)) held.take(page, floor)
             return held.verdicts()
         }
+        return loadFromStore(candidates)
+    }
+
+    /** [load] by `#d` straight from the store, never off a sweep's walk: the narrow read to fall back on when that walk failed. */
+    suspend fun loadFromStore(candidates: Collection<NormalizedRelayUrl>): Verdicts {
+        if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
+        val floor = nowSeconds() - ttlSeconds
+        val held = Building()
         for (page in readByD(candidates.map { it.url })) held.take(page, floor)
         return held.verdicts()
     }
@@ -290,6 +299,9 @@ class RelayVerdictRecord(
         /** The walk's records once it has answered. */
         @Volatile
         var records: OwnRecords? = null
+
+        /** Walks that failed; at [SWEEP_WALKS] the sweep stops walking and its reads go to the store. */
+        val failed = AtomicInteger()
     }
 
     @Volatile
@@ -331,19 +343,21 @@ class RelayVerdictRecord(
     }
 
     /**
-     * The sweep's records, walked now if this is the first read; null outside a sweep. Every reader awaits
-     * the one walk under its own deadline; a failed walk fails its waiters and the next read walks again.
+     * The sweep's records, walked now if this is the first read; null outside a sweep, or once its walks
+     * have failed [SWEEP_WALKS] times. Every reader awaits the one walk under its own deadline; a failed
+     * walk fails its waiters, and the next read walks again.
      */
     private suspend fun sweepRecords(): OwnRecords? {
         val s = sweep ?: return null
         s.records?.let { return it }
+        if (s.failed.get() >= SWEEP_WALKS) return null
         val walk = s.walk.get() ?: startWalk(s)
         try {
             return walk.await()
         } catch (e: Exception) {
             // Our own cancellation ends the read and leaves the walk running; the walk's failure is not kept.
             currentCoroutineContext().ensureActive()
-            s.walk.compareAndSet(walk, null)
+            if (s.walk.compareAndSet(walk, null)) s.failed.incrementAndGet()
             if (e is CancellationException) throw IllegalStateException("the sweep's walk was cancelled", e)
             throw e
         }
@@ -701,7 +715,14 @@ class RelayVerdictRecord(
      */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
-        val own = sweepRecords()
+        // An edit never needs the walk: when it fails, the `#d` read below is what an edit read before sweeps.
+        val own =
+            try {
+                sweepRecords()
+            } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
+                null
+            }
         if (own != null && url.url !in own.unknown) own.byD[url.url]?.let { return it }
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url)))
         return storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
@@ -845,6 +866,9 @@ class RelayVerdictRecord(
         const val READ_DEADLINE_MS = 60_000L
 
         private const val RECORD_PAGE = 2_000
+
+        /** Walks one sweep tries before its reads go to the store: the first, and one retry. */
+        private const val SWEEP_WALKS = 2
 
         /** The prefix on the lines a whole-corpus walk prints: only the monitor walks, and only it edits. */
         private const val MONITOR_LOG = "monitor"

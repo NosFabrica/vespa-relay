@@ -109,6 +109,29 @@ class StandingReadTest {
         }
 
     @Test
+    fun `inside a sweep the fold's fallback reads its candidates by d rather than walking again`(): Unit =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+            val walks = AtomicInteger()
+            val failing =
+                object : IEventStore by store {
+                    override suspend fun <T : Event> query(filter: Filter): List<T> {
+                        if (filter.tags?.containsKey("d") != true) walks.incrementAndGet()
+                        return WalkFails(store).query(filter)
+                    }
+                }
+            val record = RelayVerdictRecord(failing, signer)
+            val fold = AliasFolding(record = record, probe = probe())
+            record.beginSweep()
+            try {
+                assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a walk that failed took the fallback or the fold's writes down with it")
+            } finally {
+                record.endSweep()
+            }
+            assertTrue(walks.get() <= 2, "the sweep walked ${walks.get()} times after its walk failed, where it retries once")
+        }
+
+    @Test
     fun `the stability gate skips a sweep whose standing read failed`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)

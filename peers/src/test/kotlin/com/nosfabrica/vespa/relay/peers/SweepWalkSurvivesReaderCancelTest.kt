@@ -111,4 +111,29 @@ class SweepWalkSurvivesReaderCancelTest {
                 record.endSweep()
             }
         }
+
+    @Test
+    fun `a sweep whose walk keeps failing retries it once, and its edits read by d meanwhile`(): Unit =
+        runBlocking {
+            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = relay)
+            RelayVerdictRecord(inner, signer).publishConsistency(url, true, 10, 10, 10, 1.0, 7)
+            val store = SlowWalks(inner, signer.pubKey, pageMs = 1_000)
+            val record = RelayVerdictRecord(store, signer, readDeadlineMs = 100)
+            record.beginSweep()
+            try {
+                val reads = (1..5).map { runCatching { record.load(listOf(url)) } }
+                assertTrue(reads.drop(2).all { url in it.getOrThrow().consistent }, "once the sweep stopped walking, its reads did not go to the store")
+                assertTrue(record.publishFold(url, url, "distinct") != null, "an edit failed with the walk")
+            } finally {
+                record.endSweep()
+            }
+            assertEquals(2, store.walks.get(), "a walk that kept failing was tried more than once more")
+            val tags =
+                inner
+                    .query<Event>(Filter(authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(url.url))))
+                    .single()
+                    .tags
+                    .map { it[0] }
+            assertTrue(RelayVerdictRecord.SELF_CONSISTENT_TAG in tags && RelayVerdictRecord.SAME_AS_TAG in tags, "the edit lost the record's other tags: $tags")
+        }
 }

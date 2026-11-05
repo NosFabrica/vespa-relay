@@ -524,3 +524,14 @@ builds the view once, with the rules one delta at a time keeps: a later fold of
 a url replaces an earlier one, every fold's target is a canonical, and a fold
 outranks a clearance whichever delta carried which. `RelayAliasesMergeTest`
 checks the two orders agree on random deltas.
+
+**Inside a sweep the fold's fallback reads by `#d`.** `readWorld` falls back to
+the candidates and their mates when `loadAll` fails, but inside a sweep both go
+through the sweep's walk, so the fallback walked the whole corpus again and one
+page past the read deadline failed the fold where the narrower read would have
+answered. The fallback now calls `RelayVerdictRecord.loadFromStore`, the `#d`
+read `load` makes outside a sweep. The same failure took the fold's writes down
+too, since every edit's `currentRecord` read off the walk, so an edit now reads
+its record by `#d` when the walk fails, and a sweep tries its walk twice at most
+before every read goes to the store as outside a sweep. `StandingReadTest` runs
+the fold inside a sweep whose walk the store refuses.

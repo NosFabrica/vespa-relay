@@ -713,6 +713,7 @@ class AliasFolding(
     /**
      * Every verdict we hold, or, when that paged walk fails, the verdicts over [candidates] and the other
      * urls on their servers: narrower, but still a read, so nothing is signed blind. Throws when both fail.
+     * The fallback reads the store by `#d`, since inside a sweep [RelayVerdictRecord.load] would walk again.
      */
     private suspend fun readWorld(
         label: String,
@@ -724,7 +725,7 @@ class AliasFolding(
             throw e
         } catch (e: Exception) {
             System.err.println("monitor: fold [$label] — the walk over every verdict failed (${whyUnread(e)}); reading the candidates' own instead")
-            record.load(candidates + world().matesOf(candidates))
+            record.loadFromStore(candidates + world().matesOf(candidates))
         }
 
     companion object {
