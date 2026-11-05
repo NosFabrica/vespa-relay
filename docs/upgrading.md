@@ -4,6 +4,22 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Store refusals and the phrase band (November 2026)
+
+vespa-eventstore `b21f996c1849`. The schema moves, with no reindex: new fieldsets
+and rank functions over fields the corpus already has, which the relay deploys at
+boot.
+
+### What changes in behaviour
+
+- **A content node that is down is an error, not an empty store.** A NIP-45
+  `COUNT` fails instead of answering 0, and the sync keeps the roster it had
+  instead of dropping to its declared relays until the next rebuild.
+- **A COUNT over several filters no longer holds every match.** The same answer,
+  without the heap a broad anonymous COUNT could exhaust.
+- **NIP-50 ranks the query as typed above its words scattered.** Results move on
+  multi-word searches.
+
 ## The monitor is its own process (November 2026)
 
 The monitor left the sync process. It is `vespa-monitor` in the same image and
