@@ -155,8 +155,8 @@ internal class FitnessBatch(
     /** Asked, and no answer of any kind. Never published. */
     val unmeasured: Map<NormalizedRelayUrl, String> = slots.resultsOf<DialResult.Unmeasured>().mapValues { it.value.why }
 
-    /** Given up on rather than measured. */
-    val abandoned: List<NormalizedRelayUrl> = slots.filter { it.result == DialResult.Abandoned }.map { it.url }
+    /** Given up on rather than measured; a dialled url whose coroutine ended with nothing filed, a stray cancellation, is one too. */
+    val abandoned: List<NormalizedRelayUrl> = slots.filter { it.result == DialResult.Abandoned || (it.result == null && !it.held) }.map { it.url }
 
     val readings: Map<NormalizedRelayUrl, RelayDocument.Reading> = slots.mapNotNull { s -> s.reading?.let { s.url to it } }.toMap()
 

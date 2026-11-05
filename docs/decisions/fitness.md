@@ -716,3 +716,13 @@ dispatched, and the wall clock over queue and call together is a looser
 `OUTER_FACTOR` of it, there only so a slot that never frees cannot hang the
 batch, which joins every document. `RelayDocumentTest` queues a document behind
 one that holds its slot for a whole clock.
+
+**A dialled url left with no result is abandoned.** Every path through the
+pre-probe and the ladder files a result, and the per-url deadline files
+`Abandoned`; only a stray `CancellationException` ending a url's coroutine
+leaves `DialSlot.result` null, and such a url fell in no `FitnessBatch` bucket,
+so the batch guard's blind count missed it and a batch broken on our side could
+publish the verdicts the rest earned. `FitnessBatch.abandoned` now counts a
+non-held slot with no result, as `ConsistencyPass` files a missing outcome
+`ABANDONED`; a held url still writes nothing either way and stays outside the
+count. `FitnessBatchUnfiledTest` holds both.
