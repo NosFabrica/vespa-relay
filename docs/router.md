@@ -703,7 +703,7 @@ Refused rather than resolved:
   never said what to measure. `sources = []` is how you say "measure nothing"
   — a declaration, so it boots, and the process still retires stale verdicts.
 - **A monitor setting on the sync process**: `MONITOR_CONFIG`,
-  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT`, `MONITOR_STATUS_FILE`, or a
+  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT`, or a
   `monitor { }` block in `sync.conf`. There they would configure nothing, so the
   sync stops and names where they moved. The monitor refuses `SYNC_CONFIG` and
   `SYNC_CONFIG_FILE` the same way.

@@ -498,8 +498,6 @@ services:
       SYNC_PULSE_CLIENT_DETAIL: ${SYNC_PULSE_CLIENT_DETAIL:-}
       SYNC_PULSE_SLOW_READ_MS: ${SYNC_PULSE_SLOW_READ_MS:-}
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
-      # Survives a restart, so a redeploy does not blank the page for a tick.
-      SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -614,7 +612,6 @@ services:
       # The monitor's page: which urls are one server, which cannot answer the
       # same question twice, which are graded prime. 0 serves no page.
       MONITOR_STATUS_PORT: 7779
-      MONITOR_STATUS_FILE: ${MONITOR_STATUS_FILE:-/var/lib/vespa-relay/monitor-status.json}
       MONITOR_STATUS_INTERVAL_SECONDS: ${MONITOR_STATUS_INTERVAL_SECONDS:-}
       MONITOR_WIRE_LOG: ${MONITOR_WIRE_LOG:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}

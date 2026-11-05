@@ -18,9 +18,11 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
   from your proxy (the sync serves it on `SYNC_STATUS_PORT`, 7778). Only that
   path needs to be public. Unset, the line under the search box says nothing
   about posts.
-- **Drop `SYNC_MANIFEST_FILE` and `STATS_COUNTERS_INTERVAL_SECONDS`** from your
-  `.env`. Both do nothing now, and the relay and the sync name them at boot if
-  they are set. The old `sync-manifest.json` on the volume can be deleted.
+- **Drop `SYNC_MANIFEST_FILE`, `STATS_COUNTERS_INTERVAL_SECONDS`,
+  `SYNC_STATUS_FILE` and `MONITOR_STATUS_FILE`** from your `.env`. They do
+  nothing now, and each process names the ones it sees at boot. The old
+  `sync-manifest.json`, `sync-status.json` and `monitor-status.json` on the
+  volume can be deleted.
 
 ### What changes in behaviour
 
@@ -28,6 +30,9 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
   comes from the sync's own walk, so it no longer depends on a stranger's
   `COUNT`. A reader no stream follows is told the mirror isn't following their
   posts yet.
+- **The sync's and the monitor's status pages start empty.** Their documents
+  live in memory now, so for one status interval (30 s) after a boot the page
+  says "not computed yet" instead of showing the previous run's.
 - **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
   read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
 - **The sync answers `GET /coverage/<pubkey>?relay=…`** to any origin: every
