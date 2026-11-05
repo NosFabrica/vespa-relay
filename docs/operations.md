@@ -194,11 +194,12 @@ its first event at ~3.5 s. What keeps it there, each step on a `boot:` line
   and binds its pages while the relay starts, and waits for the relay's key
   (asked four times a second) only before its writer dials the relay as that key.
 - *Each process maps a class-data archive* (AppCDS) built into the image from
-  the classes a real boot loads (`relay/cds.classlist`, `sync/cds.classlist`),
-  and set by the image's `VESPA_RELAY_OPTS` and `VESPA_SYNC_OPTS`: ~1.5 s sooner
-  to the relay's first answer, the first boot of a new image included. Re-record
-  the lists with `tools/record-cds-classlists.sh` after a dependency bump; a stale
-  list only loads more classes the slow way. The JVM drops the archive silently
+  the classes a real boot loads (`relay/cds.classlist`, `sync/cds.classlist`,
+  `monitor/cds.classlist`), and set by the image's `VESPA_RELAY_OPTS`,
+  `VESPA_SYNC_OPTS` and `VESPA_MONITOR_OPTS`: ~1.5 s sooner to the relay's first
+  answer, the first boot of a new image included. Re-record the lists with
+  `tools/record-cds-classlists.sh` after a dependency bump or a change to what a
+  boot does; a stale list only loads more classes the slow way. The JVM drops the archive silently
   when its flags no longer match the dump's — a heap over 32 GB or ZGC, which turn
   off compressed oops — and `boot: … main` then says `class-data sharing OFF`.
 - *Host names are cached for 5 s, failures for 1 s* (`cacheDnsBriefly`). The

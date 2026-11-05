@@ -220,7 +220,7 @@ relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pul
                               under it to read CPU, memory, churn, stalled clients and a JFR profile (docs/live-feeds.md);
                               nostr-sign.mjs is the BIP-340 signer the publishing tools share
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
-tools/                        record-cds-classlists.sh re-records relay/ and sync/cds.classlist, the classes the image archives
+tools/                        record-cds-classlists.sh re-records relay/, sync/ and monitor/cds.classlist, the classes the image archives
 ```
 
 `docs/configuration.md` documents every environment variable (`.env.example`
