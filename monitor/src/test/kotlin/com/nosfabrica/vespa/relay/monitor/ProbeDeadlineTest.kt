@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
@@ -360,6 +361,29 @@ class ProbeDeadlineTest {
                 gradeOf(store, wedged),
                 "a url the deadline cut must carry NO verdict: the clock is ours and the grade would be about the relay",
             )
+        }
+
+    @Test
+    fun `a verdict earned before the deadline cut is published, and the url cut before earning one is not`() =
+        runBlocking {
+            val store = newStore()
+            val pass =
+                FitnessPass(
+                    record = RelayVerdictRecord(store, signer),
+                    probe = probe(stalling()),
+                    client = EmptyNostrClient(),
+                    progress = Processors().of("fitness"),
+                    // The NEG-OPEN outlives the url's own deadline, so the clock cuts a url that already earned its grade.
+                    nip77DeadlineMs = deadlineMs() * 50,
+                    reconcile = { _, _ -> awaitCancellation() },
+                )
+
+            withTimeout(deadlineMs() * 20) {
+                pass.measure(RunKind.SWEEP, listOf(wedged, answering))
+            }
+
+            assertEquals(Verdict.PRIME.value, gradeOf(store, answering), "the grade was earned before our clock fired")
+            assertNull(gradeOf(store, wedged))
         }
 
     @Test

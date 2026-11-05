@@ -192,6 +192,19 @@ unplaced-reason sample and the decided tally are read after the join. A url
 with no slot is one the deadline cut; a slot written first wins over a late
 cut. `judge` counts the shared ids once and carries the score.
 
+**A fitness batch is one slot per dialled url, read after the joins.** The
+batch held six concurrent maps, six atomics and a key set, and kept "a url is
+in at most one of outcomes, deferred, unmeasured" with `containsKey` checks
+scattered through the dial. Each url's coroutine now writes one `Slot` (a
+sealed `Result` and its flags; the deadline's `cut` runs on that coroutine,
+and the NIP-11 child writes only `reading`), and once the dials and the
+documents have joined, the guards are functions from the earned map to what
+they withhold. The fields that outlive a batch are plain maps: every reader,
+the lane's `backingOff` included, runs on the one scheduler coroutine, except
+`pending`, whose size the status thread reads. Two log details moved: the
+abandoned urls named are the first 32 by name rather than the first 32 cut,
+and verdicts tied on count print in batch order rather than hash order.
+
 **The consistency pass has no per-pass budget, and it filters out folded
 urls.** The budget it once carried stopped a pass measuring its whole set. A
 folded url is never dialled, so measuring it is spent on a question nobody
