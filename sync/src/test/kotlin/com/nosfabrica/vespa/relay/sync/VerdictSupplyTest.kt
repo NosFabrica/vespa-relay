@@ -24,10 +24,15 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -62,5 +67,22 @@ class VerdictSupplyTest {
             RelayVerdictRecord(store, NostrSignerInternal(KeyPair()))
                 .publishFitness(RelayUrlNormalizer.normalize("wss://graded.example"), "prime", "answered", pageable = null, nip77 = null)
             assertEquals(emptyList(), supply.starved())
+        }
+
+    /** A store whose queries never answer. */
+    private class SilentStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    @Test
+    fun `a store that does not answer neither holds up the health line nor names a stream starved`(): Unit =
+        runBlocking {
+            val store = SilentStore(NostrSemanticsStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("ws://localhost:7777")))
+            val supply = VerdictSupply(store, streams, deadlineMs = 50)
+
+            val starved = withTimeout(5_000) { supply.starved() }
+            assertEquals(emptyList(), starved, "an unanswered check is not evidence that no verdict exists")
         }
 }

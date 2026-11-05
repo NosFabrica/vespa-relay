@@ -31,11 +31,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.EventTemplate
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /**
  * The boot retirement's edits read their records off the retirement's own scan, so walking our records
@@ -87,5 +90,23 @@ class RetirementWalkDeadlineTest {
             val retired = FitnessRetirement.retireStale(store, record, signer.pubKey)
             assertEquals(4, retired.staleEpochs, "the retirement's walk ran under its first edit's deadline, so no retirement landed")
             assertEquals(1, store.walkQueries.get(), "the boot walked our records more than once")
+        }
+
+    /** A store whose queries never answer. */
+    private class SilentStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = awaitCancellation()
+    }
+
+    @Test
+    fun `a boot walk the store never answers fails within its page deadline, so the passes still start`(): Unit =
+        runBlocking {
+            val store = SilentStore(NostrSemanticsStore(InMemoryEventIndex(), relay = relay))
+            val record = RelayVerdictRecord(store, signer)
+            // The engine starts the passes once this returns or throws; a walk that waits forever starts none.
+            withTimeout(5_000) {
+                assertFailsWith<RelayVerdictRecord.ReadTimeout> { FitnessRetirement.retireStale(store, record, signer.pubKey, pageDeadlineMs = 50) }
+            }
         }
 }

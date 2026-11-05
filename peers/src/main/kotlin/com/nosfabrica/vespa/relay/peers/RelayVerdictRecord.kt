@@ -128,7 +128,9 @@ class RelayVerdictRecord(
         if (own != null) {
             val (asked, kept) = own.split(candidates.mapTo(LinkedHashSet()) { it.url })
             held.take(kept, floor)
-            for (page in readByD(asked)) held.take(page, floor)
+            val pages = readByD(asked)
+            for (page in pages) held.take(page, floor)
+            learn(own, asked, pages)
             return held.verdicts()
         }
         return loadFromStore(candidates)
@@ -169,15 +171,27 @@ class RelayVerdictRecord(
         /** Subject -> the records a `#d` read of it returned, empty for none. */
         private val bySubject = HashMap<String, List<Event>>()
 
+        /** The first read that failed: the job's later reads fail with it at once rather than each waiting out a deadline. */
+        private var failed: Exception? = null
+
         /** [load]'s answer over [candidates], reading only the urls not read before. Throws like [load]. */
         suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
             if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
             val subjects = candidates.mapTo(LinkedHashSet()) { it.url }
             val missing = subjects.filter { it !in bySubject }
             if (missing.isNotEmpty()) {
+                failed?.let { throw StoreUnread(it) }
+                val pages =
+                    try {
+                        readByD(missing)
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        failed = e
+                        throw e
+                    }
                 val found = HashMap<String, MutableList<Event>>()
                 val wanted = missing.toHashSet()
-                for (page in readByD(missing)) {
+                for (page in pages) {
                     for (event in page) {
                         // Under every subject it answers for, as the `#d` filter matched it.
                         for (tag in event.tags) if (tag.size > 1 && tag[0] == "d" && tag[1] in wanted) found.getOrPut(tag[1]) { ArrayList() } += event
@@ -191,6 +205,11 @@ class RelayVerdictRecord(
             return held.verdicts()
         }
     }
+
+    /** A [Held] read refused because an earlier one of the same job failed, carrying that failure. */
+    class StoreUnread(
+        cause: Exception,
+    ) : Exception("an earlier read of this job failed: ${cause.message}", cause)
 
     /** A fresh [Held], for one job's reads. */
     fun held(): Held = Held()
@@ -274,7 +293,13 @@ class RelayVerdictRecord(
     ) {
         val unknown: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-        /** Of [subjects] (null for all), the ones to read afresh, and the records held for the rest. */
+        /** Urls a `#d` read since the walk found no record of ours for: absent from the walk, and from the store too. */
+        val absent: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /**
+         * Of [subjects] (null for all), the ones to read afresh, and the records held for the rest. A subject the
+         * walk did not see is read afresh too: a record superseded between the walk's pages is in neither.
+         */
         fun split(subjects: Collection<String>?): Pair<List<String>, List<Event>> {
             val asked = ArrayList<String>()
             val held = ArrayList<Event>()
@@ -282,10 +307,41 @@ class RelayVerdictRecord(
                 asked += unknown
                 for ((d, event) in byD) if (d !in unknown) held += event
             } else {
-                for (d in subjects) if (d in unknown) asked += d else byD[d]?.let(held::add)
+                for (d in subjects) {
+                    if (d in unknown) {
+                        asked += d
+                    } else {
+                        val event = byD[d]
+                        if (event != null) {
+                            held += event
+                        } else if (d !in absent) {
+                            asked += d
+                        }
+                    }
+                }
             }
             return asked to held
         }
+    }
+
+    /**
+     * Folds a `#d` read of [asked] into [own], so the sweep's later reads of them are served from it. A url an
+     * edit failed on stays unknown; one an edit landed on keeps the newer record, ours being stamped strictly newer.
+     */
+    private fun learn(
+        own: OwnRecords,
+        asked: List<String>,
+        pages: List<Collection<Event>>,
+    ) {
+        val found = HashSet<String>()
+        for (page in pages) {
+            for (event in page) {
+                val d = subjectOf(event) ?: continue
+                found += d
+                own.byD.takeNewest(event)
+            }
+        }
+        for (d in asked) if (d !in found) own.absent += d
     }
 
     /** One sweep's [OwnRecords], walked on first use. */
@@ -302,6 +358,9 @@ class RelayVerdictRecord(
 
         /** Walks that failed; at [SWEEP_WALKS] the sweep stops walking and its reads go to the store. */
         val failed = AtomicInteger()
+
+        /** Urls an edit settled before [records] was set: a walk under way may have read them before the edit landed. */
+        val settledEarly: MutableSet<String> = ConcurrentHashMap.newKeySet()
     }
 
     @Volatile
@@ -369,7 +428,7 @@ class RelayVerdictRecord(
         val calls = currentCoroutineContext()[StoreCalls] ?: EmptyCoroutineContext
         while (true) {
             s.walk.get()?.let { return it }
-            val mine = s.scope.async(calls, start = CoroutineStart.LAZY) { walkOwn().also { s.records = it } }
+            val mine = s.scope.async(calls, start = CoroutineStart.LAZY) { walkOwn().also { install(s, it) } }
             if (s.walk.compareAndSet(null, mine)) return mine.also { it.start() }
             mine.cancel()
         }
@@ -398,12 +457,27 @@ class RelayVerdictRecord(
         merge(d, event) { held, next -> if (next.createdAt > held.createdAt) next else held }
     }
 
+    /**
+     * Makes [own] the sweep's records, every url settled while it was walked read afresh. Set before the
+     * early urls are read, so an edit settling meanwhile is caught here or finds [Sweep.records] set.
+     */
+    private fun install(
+        s: Sweep,
+        own: OwnRecords,
+    ) {
+        s.records = own
+        own.unknown += s.settledEarly
+    }
+
     /** What an edit of [url] did to the sweep's records: its signed record, or null when the store may not hold it. */
     private fun settled(
         url: NormalizedRelayUrl,
         event: Event?,
     ) {
-        val own = sweep?.records ?: return
+        val s = sweep ?: return
+        // Before [records] is read, so a walk installing meanwhile still sees it: see [install].
+        if (s.records == null) s.settledEarly += url.url
+        val own = s.records ?: return
         if (event == null) {
             own.unknown += url.url
         } else {

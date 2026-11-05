@@ -697,4 +697,31 @@ class RelayVerdictRecordTest {
             assertNotNull(record.publish(alias, canonical, sampled = 500, shared = 498), "the url is free again once its edit ended")
             assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
         }
+
+    /** A store that refuses every query, counting them. */
+    private class RefusingStore(
+        inner: IEventStore,
+    ) : IEventStore by inner {
+        val queries = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            queries.incrementAndGet()
+            error("the store cannot answer")
+        }
+    }
+
+    @Test
+    fun `one job's reads stop asking a store once it failed, and fail at once`(): Unit =
+        runBlocking {
+            val store = RefusingStore(newStore())
+            val held = RelayVerdictRecord(store, signer).held()
+
+            assertTrue(runCatching { held.load(listOf(alias)) }.isFailure, "a refused read answered anyway")
+            val asked = store.queries.get()
+            val again = runCatching { held.load(listOf(canonical)) }.exceptionOrNull()
+            assertTrue(again is RelayVerdictRecord.StoreUnread, "the job's next read did not fail with the first failure: $again")
+            assertEquals(asked, store.queries.get(), "the job asked a store that already failed it again")
+            assertTrue(RelayVerdictRecord(store, signer).held().runCatching { load(listOf(canonical)) }.isFailure)
+            assertTrue(store.queries.get() > asked, "a fresh job did not read the store afresh")
+        }
 }

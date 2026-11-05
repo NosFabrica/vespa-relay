@@ -62,37 +62,42 @@ class SweepWalkMissedRecordTest {
         }
     }
 
+    /** The store and a record over it, the subject's record set to land again between the walk's pages, as an outbox re-send does. */
+    private suspend fun midWalk(): Pair<IEventStore, RelayVerdictRecord> {
+        val now = nowSeconds()
+        val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = relay)
+        val consistency = arrayOf(RelayVerdictRecord.SELF_CONSISTENT_TAG, "true", "stored sweeps ago", (now - 3_600).toString(), RelayVerdictRecord.CONSISTENCY_EPOCH)
+        // The subject's record, older than everything else, so the walk reaches it on its second page.
+        inner.insert(
+            signer.sign(EventTemplate<Event>(now - 10_000, RelayDiscoveryEvent.KIND, arrayOf(arrayOf("d", subject.url), consistency), "")),
+        )
+        // A first page's worth (RECORD_PAGE = 2,000) of newer records of ours.
+        for (i in 0 until 2_000) {
+            inner.insert(signer.sign(EventTemplate<Event>(now - 5_000 + i, RelayDiscoveryEvent.KIND, arrayOf(arrayOf("d", "wss://filler$i.example/")), "")))
+        }
+        // An earlier edit of the subject that was cut at its deadline, re-sent and landing now.
+        val late =
+            signer.sign(
+                EventTemplate<Event>(
+                    now - 100,
+                    RelayDiscoveryEvent.KIND,
+                    arrayOf(
+                        arrayOf("d", subject.url),
+                        consistency,
+                        arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "answered", (now - 100).toString(), RelayVerdictRecord.FITNESS_EPOCH),
+                        arrayOf("L", RelayVerdictRecord.FITNESS_NAMESPACE),
+                    ),
+                    "",
+                ),
+            )
+        val store = LandsBetweenPages(inner, signer.pubKey, late)
+        return inner to RelayVerdictRecord(store, signer)
+    }
+
     @Test
     fun `a record superseded mid-walk is not read as no record, so the next edit keeps its tags`(): Unit =
         runBlocking {
-            val now = nowSeconds()
-            val inner = NostrSemanticsStore(InMemoryEventIndex(), relay = relay)
-            val consistency = arrayOf(RelayVerdictRecord.SELF_CONSISTENT_TAG, "true", "stored sweeps ago", (now - 3_600).toString(), RelayVerdictRecord.CONSISTENCY_EPOCH)
-            // The subject's record, older than everything else, so the walk reaches it on its second page.
-            inner.insert(
-                signer.sign(EventTemplate<Event>(now - 10_000, RelayDiscoveryEvent.KIND, arrayOf(arrayOf("d", subject.url), consistency), "")),
-            )
-            // A first page's worth (RECORD_PAGE = 2,000) of newer records of ours.
-            for (i in 0 until 2_000) {
-                inner.insert(signer.sign(EventTemplate<Event>(now - 5_000 + i, RelayDiscoveryEvent.KIND, arrayOf(arrayOf("d", "wss://filler$i.example/")), "")))
-            }
-            // An earlier edit of the subject that was cut at its deadline, re-sent and landing now.
-            val late =
-                signer.sign(
-                    EventTemplate<Event>(
-                        now - 100,
-                        RelayDiscoveryEvent.KIND,
-                        arrayOf(
-                            arrayOf("d", subject.url),
-                            consistency,
-                            arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "answered", (now - 100).toString(), RelayVerdictRecord.FITNESS_EPOCH),
-                            arrayOf("L", RelayVerdictRecord.FITNESS_NAMESPACE),
-                        ),
-                        "",
-                    ),
-                )
-            val store = LandsBetweenPages(inner, signer.pubKey, late)
-            val record = RelayVerdictRecord(store, signer)
+            val (inner, record) = midWalk()
             record.beginSweep()
             try {
                 // The derivation's read takes the walk, as AliasMonitor.runPass's first read does.
@@ -109,5 +114,21 @@ class SweepWalkMissedRecordTest {
                     .map { it[0] }
             assertTrue(RelayVerdictRecord.SELF_CONSISTENT_TAG in tags, "the edit signed a fresh record over one the walk missed, dropping a verdict stored long ago: $tags")
             assertTrue("l" in tags, "the edit dropped the fitness grade that landed during the walk: $tags")
+        }
+
+    @Test
+    fun `a record superseded mid-walk still reads back its verdicts within the sweep`(): Unit =
+        runBlocking {
+            val (_, record) = midWalk()
+            record.beginSweep()
+            val held =
+                try {
+                    record.ownRecordsSince(0)
+                    record.load(listOf(subject))
+                } finally {
+                    record.endSweep()
+                }
+            assertTrue(subject in held.consistent, "the sweep read a url the walk missed as having no consistency verdict")
+            assertTrue(held.fitness[subject]?.value == "prime", "the sweep read a url the walk missed as ungraded: ${held.fitness}")
         }
 }

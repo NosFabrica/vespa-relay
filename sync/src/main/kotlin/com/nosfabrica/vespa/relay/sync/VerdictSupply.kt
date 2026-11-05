@@ -21,10 +21,13 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.config.SyncStream
+import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.progress.storeCall
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The streams whose relays come from kind-30166 verdicts, which only a running monitor writes.
@@ -34,6 +37,8 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 internal class VerdictSupply(
     private val store: IEventStore,
     streams: List<SyncStream>,
+    /** The wall clock on each check, short against the health line it runs on. */
+    private val deadlineMs: Long = DEFAULT_DEADLINE_MS,
 ) {
     /** Stream name to the verdict filters it rosters or gates on, each asked for one match. */
     private val asked: Map<String, List<Filter>> =
@@ -47,10 +52,13 @@ internal class VerdictSupply(
                 verdicts.takeIf { it.isNotEmpty() }?.let { stream.name to it }
             }.toMap()
 
-    /** One line per stream none of whose verdict filters matches a stored record; empty when each has some. */
+    /**
+     * One line per stream none of whose verdict filters matches a stored record; empty when each has some.
+     * A check the store does not answer in time names nothing: an unanswered store is the store-call row's to report.
+     */
     suspend fun starved(): List<String> =
         asked.mapNotNull { (stream, filters) ->
-            val held = filters.any { store.query<Event>(it).isNotEmpty() }
+            val held = filters.any { holds(it) ?: return@mapNotNull null }
             if (held) {
                 null
             } else {
@@ -59,4 +67,16 @@ internal class VerdictSupply(
                     "is a monitor signing them (the `monitor` service, MONITOR_CONFIG_LOCAL), or does verdictsFrom name its key?"
             }
         }
+
+    /** Does the store hold a match for [filter]; null when it did not answer within [deadlineMs]. */
+    private suspend fun holds(filter: Filter): Boolean? =
+        withTimeoutOrNull(deadlineMs) {
+            storeCall(StoreCalls.CALLER_VERDICT_SUPPLY, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
+                store.query<Event>(filter).isNotEmpty()
+            }
+        }
+
+    companion object {
+        const val DEFAULT_DEADLINE_MS = 10_000L
+    }
 }

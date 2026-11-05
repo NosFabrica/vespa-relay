@@ -116,7 +116,9 @@ host; a relay that answers that with a 429 or "too many" is deferred in memory (
 and never signed. What the shared process used to catch on its own now needs saying across the
 gap: the sync's boot refused a discovering deployment with no monitor declared, and with the
 monitor elsewhere it cannot tell, so a stream that takes its relays from 30166 records the store
-does not hold is named on every health line (`VerdictSupply`). The monitor's page carries its own
+does not hold is named on every health line (`VerdictSupply`), each check under its own short deadline
+and booked as `health.verdictSupply`, so a store that does not answer names nothing and never holds the
+health line up. The monitor's page carries its own
 `store` section, and both processes count a thread killed by a VirtualMachineError (`watchForFatals`).
 
 **A probe dial is not an upstream, so its events are always verified.** The sink
@@ -551,3 +553,37 @@ logging it twice. A url `candidatesSince` made known on the failed tick is hande
 again on the retry: `known` feeds the roster's stand-in election and filters
 nothing the lane hands over. A pass that keeps failing re-reads a window that
 never reaches behind the last sweep's read of the lists.
+
+**An edit that lands while the walk runs is read afresh.** An edit that settled
+while the sweep's walk was under way (after a failed walk, an edit falls back to
+its own `#d` read and lands beside the next walk) was dropped: `settled` saw no
+records yet and returned, and the walk, which may have read the url before the
+edit landed, then served its older record to the url's next edit, which erased
+the earlier edit's tags. A url settled before the walk's records are installed is
+now kept on the sweep and marked unknown when they are, so its next read goes to
+the store. The install sets the records before reading that set, and `settled`
+adds to it before reading the records, so one of the two always sees the other.
+`SweepEditDuringWalkTest` holds an edit's insert until a second walk has read
+its url.
+
+**A sweep's read of a url the walk did not see goes to the store too.** `load`
+read such a url as "no record", the miss the edit path already read through, so
+a record superseded between the walk's pages read back with no grade and no
+consistency verdict, and the passes re-measured it and re-stamped its grade. It
+is now read by `#d` like an unknown url, and the answer, a record or none, is
+kept for the rest of the sweep, so only urls with no record pay it, once.
+`SweepWalkMissedRecordTest` reads the url back mid-sweep.
+
+**The boot walk is bounded per page.** The retirement's walk of our records
+waited on each page forever, and the passes start only once it ends, so one page
+the store never answered left the monitor measuring nothing. It now pages under
+`READ_DEADLINE_MS`, as the sweep's walk does, and a page past it fails the
+retirement, which the engine logs before starting the passes.
+`RetirementWalkDeadlineTest` holds it.
+
+**One rebuild's verdict reads stop at the first failure.** `RelayVerdictRecord.Held`
+remembered nothing of a failed read, so with the store down each of a roster
+rebuild's calls (the prefetch, every stream's fold, the roster's own verdicts)
+waited out the read deadline again. A `Held` now keeps its first failure and
+fails every later read that needs the store with `StoreUnread` at once; the next
+rebuild's `Held` reads afresh.

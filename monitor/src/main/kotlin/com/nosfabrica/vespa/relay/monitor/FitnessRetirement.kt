@@ -56,6 +56,8 @@ object FitnessRetirement {
         record: RelayVerdictRecord,
         author: String,
         progress: Processors.Handle? = null,
+        /** The wall clock on each page of the walk; the passes wait on this one. */
+        pageDeadlineMs: Long = RelayVerdictRecord.READ_DEADLINE_MS,
     ): Retired {
         val stale = LinkedHashSet<NormalizedRelayUrl>()
         val legacy = LinkedHashSet<NormalizedRelayUrl>()
@@ -68,6 +70,7 @@ object FitnessRetirement {
             Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(author)),
             SCAN_PAGE,
             caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            pageDeadlineMs = pageDeadlineMs,
             logPrefix = "monitor",
         ) { event ->
             walked += event

@@ -46,7 +46,8 @@ Reach for it first.
   three different engine paths with three different remedies. `caller` is this
   router's own subsystem names (`ingest.dedup`, `ingest.versions`,
   `ingest.write`, `visit.negentropy`, `heal.resolve`, `audit.retraction`,
-  `push.upstream`, `monitor.verdicts`, `monitor.publish`, `source.relayLists`),
+  `push.upstream`, `monitor.verdicts`, `monitor.publish`, `source.relayLists`,
+  `health.verdictSupply`),
   each greppable straight back to the line that makes the call; `callers` rolls
   the same names up into issued/answered/failed/cancelled/outstanding, which is
   the only thing in this repository that can answer *whose requests are filling

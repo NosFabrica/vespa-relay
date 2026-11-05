@@ -430,6 +430,9 @@ class StoreCalls(
         /** The url round-up at the head of a sweep. */
         const val CALLER_SOURCE_RELAY_LISTS = "source.relayLists"
 
+        /** The health line's check that each verdict-sourced stream has a verdict to roster from. */
+        const val CALLER_VERDICT_SUPPLY = "health.verdictSupply"
+
         /** What was asked: the store method verbatim rather than a bucket, so it greps back to its line. */
         const val OP_EXISTING_IDS = "existingIds"
 
