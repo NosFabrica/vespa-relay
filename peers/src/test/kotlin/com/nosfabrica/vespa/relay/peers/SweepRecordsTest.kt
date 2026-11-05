@@ -34,8 +34,13 @@ import com.vitorpamplona.quartz.nip01Core.signers.EventTemplate
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -174,5 +179,61 @@ class SweepRecordsTest {
             }
             val tags = recordsOf(store).getValue(urls[0].url).map { it[0] }
             assertTrue(RelayVerdictRecord.SELF_CONSISTENT_TAG in tags && RelayVerdictRecord.SAME_AS_TAG in tags && "l" in tags, "an edit after a refused write lost what landed: $tags")
+        }
+
+    /** Our records' whole-corpus walk, counted, each page held long enough for readers to arrive together; [failFirst] refuses the first. */
+    private class CountedWalks(
+        private val inner: IEventStore,
+        private val self: String,
+        private var failFirst: Boolean = false,
+    ) : IEventStore by inner {
+        val walks = AtomicInteger()
+
+        override suspend fun <T : Event> query(filter: Filter): List<T> {
+            if (filter.authors == listOf(self) && filter.tags == null) {
+                walks.incrementAndGet()
+                delay(100)
+                if (failFirst) {
+                    failFirst = false
+                    throw IllegalStateException("the store cannot answer")
+                }
+            }
+            return inner.query(filter)
+        }
+    }
+
+    @Test
+    fun `readers arriving together at a sweep's start share one walk`(): Unit =
+        runBlocking {
+            val inner = newStore()
+            seed(inner, RelayVerdictRecord(inner, signer))
+            val store = CountedWalks(inner, signer.pubKey)
+            val record = RelayVerdictRecord(store, signer)
+            record.beginSweep()
+            try {
+                val reads = (1..16).map { async(Dispatchers.Default) { record.load(urls) } }.awaitAll()
+                assertEquals(1, store.walks.get(), "concurrent first readers each walked our records")
+                assertTrue(reads.all { it == reads.first() }, "readers of one walk saw different records")
+                assertTrue(urls[0] in reads.first().aliases, "the walk's records were not the ones seeded")
+            } finally {
+                record.endSweep()
+            }
+        }
+
+    @Test
+    fun `a walk that fails leaves the next read to walk again`(): Unit =
+        runBlocking {
+            val inner = newStore()
+            seed(inner, RelayVerdictRecord(inner, signer))
+            val store = CountedWalks(inner, signer.pubKey, failFirst = true)
+            val record = RelayVerdictRecord(store, signer)
+            record.beginSweep()
+            try {
+                assertTrue(runCatching { record.load(urls) }.isFailure, "a walk the store refused answered anyway")
+                assertTrue(urls[0] in record.load(urls).aliases, "the read after a failed walk did not walk again")
+                assertEquals(2, store.walks.get())
+            } finally {
+                record.endSweep()
+            }
         }
 }

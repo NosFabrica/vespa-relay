@@ -43,6 +43,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
@@ -154,6 +155,9 @@ internal class ReachabilityProbe(
         return probe(target).also { answer -> if (answer in REUSABLE) remember(target, answer) }
     }
 
+    /** Held by whichever caller is evicting; the rest insert without waiting for it. */
+    private val evicting = AtomicBoolean(false)
+
     /**
      * Past [maxRemembered] the lapsed answers go, then the oldest until a tenth of the room is free,
      * so the scan runs once per that many inserts: a forgotten host is only asked again.
@@ -162,8 +166,12 @@ internal class ReachabilityProbe(
         key: DialTarget,
         answer: Reach,
     ) {
-        if (lately.size >= maxRemembered) {
-            synchronized(lately) { if (lately.size >= maxRemembered) evict() }
+        if (lately.size >= maxRemembered && evicting.compareAndSet(false, true)) {
+            try {
+                if (lately.size >= maxRemembered) evict()
+            } finally {
+                evicting.set(false)
+            }
         }
         lately[key] = answer to clock()
     }
