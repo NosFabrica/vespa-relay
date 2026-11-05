@@ -695,3 +695,15 @@ reads as a page that drained, so `pageable` would be published `true` on a walk
 that never happened; a refused NEG-OPEN is a `NegentropySyncException`, published
 as `nip77 = false`, a signed negative claim about a relay that does speak NIP-77.
 The order also decides which facts a per-url deadline cut leaves on the record.
+
+**`rtt-open` is the document call's first connect, and a redirect stays on the
+url's host.** The NIP-11 client follows redirects, and one call's listener sees
+every connect it makes, so a 301 from `http://` to `https://` overwrote `openMs`
+with the TLS connect to `:443`, an address the `ws://` dial never opens.
+`ConnectTimer` now keeps the first completed connect, the one to the url's own
+address. Redirects are still followed for the document on the url's own host,
+since an `http`→`https` or trailing-slash 301 is that server answering for the
+address the websocket shares; a document served by another host is dropped, since
+its software and NIPs would describe another server under this url's signature,
+and the websocket dial does not follow a redirect there either.
+`ConnectTimerRedirectTest` and `RelayDocumentTest` hold both.

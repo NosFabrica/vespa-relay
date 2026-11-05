@@ -129,6 +129,36 @@ class RelayDocumentTest {
             }
         }
 
+    /** Answers one request with a redirect to [location]. */
+    private fun redirecting(location: String) = serve("HTTP/1.1 301 Moved Permanently\r\nLocation: $location\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    @Test
+    fun `a redirect on the url's own host is followed, and rtt-open is the url's own connect`(): Unit =
+        runBlocking {
+            val json = """{ "software": "strfry" }"""
+            serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { target ->
+                redirecting("http://127.0.0.1:${target.localPort}/").use { server ->
+                    val reading = RelayDocument({ OkHttpClient() }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}"))
+
+                    assertEquals("strfry", reading.doc?.software, "the same server's redirect lost its document")
+                    assertTrue(reading.openMs != null, "the url's own connect was not timed")
+                }
+            }
+        }
+
+    @Test
+    fun `a document another host serves is not this url's`(): Unit =
+        runBlocking {
+            val json = """{ "software": "someone-else" }"""
+            serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json").use { target ->
+                redirecting("http://localhost:${target.localPort}/").use { server ->
+                    val reading = RelayDocument({ OkHttpClient() }).read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}"))
+
+                    assertNull(reading.doc, "another host's document was read as this url's")
+                }
+            }
+        }
+
     @Test
     fun `a document still waiting for a slot ends on its own clock`() =
         runBlocking {

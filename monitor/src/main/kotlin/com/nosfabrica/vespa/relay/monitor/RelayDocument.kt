@@ -102,7 +102,10 @@ class RelayDocument(
         return Reading(doc = body?.let { parse(it) }, openMs = timer.openMs)
     }
 
-    /** The document's body, or null for a status that is not success. Cancelling the caller cancels the call. */
+    /**
+     * The document's body, or null for a status that is not success or a document another host served:
+     * a redirect is followed only on the url's own host. Cancelling the caller cancels the call.
+     */
     private suspend fun fetch(
         url: NormalizedRelayUrl,
         address: String,
@@ -123,6 +126,7 @@ class RelayDocument(
                 .get()
                 .build()
         val call = client.newCall(request)
+        val host = request.url.host
         return suspendCancellableCoroutine { waiting ->
             waiting.invokeOnCancellation { call.cancel() }
             call.enqueue(
@@ -138,7 +142,7 @@ class RelayDocument(
                     ) {
                         val body =
                             try {
-                                response.use { if (it.isSuccessful) it.peekBody(MAX_DOCUMENT_BYTES).string() else null }
+                                response.use { if (it.isSuccessful && it.request.url.host == host) it.peekBody(MAX_DOCUMENT_BYTES).string() else null }
                             } catch (e: IOException) {
                                 waiting.resumeWithException(e)
                                 return
@@ -151,8 +155,8 @@ class RelayDocument(
     }
 
     /**
-     * Brackets the TCP and TLS handshake alone, one instance per call. OkHttp races an address's
-     * attempts (`fastFallback`), so each start is kept by its address and the one that connected is timed.
+     * Brackets the TCP and TLS handshake alone, one instance per call. OkHttp races an address's attempts
+     * (`fastFallback`), so each start is kept by its address; only the first connect, to the url's own address, is timed.
      */
     internal class ConnectTimer(
         private val nanoTime: () -> Long = System::nanoTime,
@@ -176,7 +180,8 @@ class RelayDocument(
             proxy: Proxy,
             protocol: Protocol?,
         ) {
-            startedAt[inetSocketAddress]?.let { openMs = (nanoTime() - it) / 1_000_000 }
+            // A followed redirect connects again, to an address the websocket never dials.
+            if (openMs == null) startedAt[inetSocketAddress]?.let { openMs = (nanoTime() - it) / 1_000_000 }
         }
     }
 
