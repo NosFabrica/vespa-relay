@@ -343,7 +343,7 @@ internal class FitnessDial(
         var empty: Answered? = null
         val refusals = ArrayList<String>()
         var silent = 0
-        // A shape refused for our key: chorus.bonsai.com gates DMs this way and serves profiles openly.
+        // A relay may refuse one shape for our key and serve another openly.
         var authRefused = false
         for (rung in AliasProbe.SHAPES) {
             val window = probe.window(url, anchor, rung).also { slot.downloaded += it.compliance.seen }
@@ -355,8 +355,8 @@ internal class FitnessDial(
             val ids = window.ids
             if (ids == null) {
                 lastReason = window.reason ?: lastReason
-                // filter.nostr.wine answers nothing on that connection once it has refused us, and each
-                // further shape would wait out the whole idle window.
+                // A relay that refused our key may go quiet on the connection, and each further shape
+                // would wait out the whole idle window.
                 if (authRefused) break
                 silent++
                 // Two silent rungs in a row is a url that is not there.

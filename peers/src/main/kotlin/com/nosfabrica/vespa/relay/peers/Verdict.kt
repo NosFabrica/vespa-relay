@@ -23,7 +23,7 @@ package com.nosfabrica.vespa.relay.peers
 /**
  * The NIP-32 grade vocabulary of this deployment's kind-30166 records: the monitor writes
  * it, the mirror reads it back to build a roster. [PRIME] is the only admitting value; every
- * refusal names what the relay did, not what this router does with it.
+ * refusal names what the relay did, not what a reader does with it.
  */
 enum class Verdict(
     val value: String,
@@ -51,10 +51,10 @@ enum class Verdict(
      */
     NONCOMPLIANT("noncompliant"),
 
-    /** Requires NIP-42 and turned this router's key down. */
+    /** Requires NIP-42 and turned the monitor's key down. */
     AUTH_REFUSED("auth-refused"),
 
-    /** Answers only shaped queries this router cannot generally send. */
+    /** Answers only shaped queries the monitor cannot generally send. */
     RESTRICTED("restricted"),
 }
 

@@ -140,14 +140,9 @@ class RelayWriter(
     private val redialing = scope.launch { redial() }
 
     /**
-     * Dials the relay again every [redialMs] while it is down, whatever the client's back-off says.
-     * That back-off doubles to five minutes, and a host name that does not resolve goes there at
-     * once, as a lapsed domain would. On compose the relay's name stops resolving whenever its
-     * container is down, so a relay that came back after a few minutes was left unreached for up
-     * to five more: measured with the relay down 3.5 minutes, the last failed dial was an
-     * `UnknownHostException` and the next came 301 s later, more than a minute after the relay was
-     * listening, while every batch waited. A dial while it is down costs a name lookup or a
-     * refused connect; one already in flight is left to finish.
+     * Dials the relay again every [redialMs] while it is down, past the client's back-off, which a name
+     * that stops resolving (the relay's container down, on compose) sends straight to five minutes.
+     * A dial already in flight is left to finish.
      */
     private suspend fun redial() {
         while (true) {
@@ -275,14 +270,9 @@ class RelayWriter(
         const val IDLE_TIMEOUT_MS = 120_000L
 
         /**
-         * EVENTs one [batchInsert] keeps unanswered, which at the sync's default batch (1,000) is the
-         * whole batch at once. The window is per call, and each sync worker writes one batch per call,
-         * so Quartz's default 512 held two workers to about 1,000 in flight between them, and the
-         * relay's two mirror-lane workers wrote batches of about 290 (where a local write commits
-         * about 1,000); every batch pays the store's admission reads once. At 2,000 they average about
-         * 550, 95% of events in batches of 512 or more, and a 200k production backfill ran 11% faster
-         * (177 s to 157 s, two alternated runs each on a fresh Vespa) on 5% less CPU. The lane's queue
-         * holds 4,096, so the relay keeps reading the socket.
+         * EVENTs one [batchInsert] keeps unanswered: at the sync's default batch, the whole batch at once,
+         * so the relay's lane writes batches as large as a local write would. Kept under the lane's queue,
+         * so the relay keeps reading the socket.
          */
         const val IN_FLIGHT = 2_000
 

@@ -69,7 +69,7 @@ object FitnessRetirement {
         ) { event ->
             val held = event as? RelayDiscoveryEvent ?: return@scan
             val url = held.relay() ?: return@scan
-            // The two questions the tag index used to be asked, `#l` on our words and `#s` on the old ones.
+            // Our grades on `l` under older rules, and the old grades on `s`.
             if (carries(held, RelayVerdictRecord.LABEL_TAG, grades) && isStaleGrade(held)) stale += url
             if (carries(held, RelayVerdictRecord.LEGACY_STATUS_TAG, legacyWords)) legacy += url
         }

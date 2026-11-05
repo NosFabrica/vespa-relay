@@ -39,8 +39,8 @@ import java.util.concurrent.Executors
 
 /**
  * How this process talks to other relays: one websocket client, one socket budget, one Tor
- * transport, one NIP-42 answer, shared by both planes so [RelaySockets] has one pool to count.
- * The owner calls [connect] once everything is registered and [close] after the planes stop.
+ * transport, one NIP-42 answer, shared by everything the process dials so [RelaySockets] has one
+ * pool to count. The owner calls [connect] once everything is registered and [close] after its work stops.
  */
 class PeerClient(
     private val scope: CoroutineScope,
@@ -122,7 +122,7 @@ class PeerClient(
         }
     }
 
-    /** Stop dialling. Called after the planes' own scopes are cancelled. */
+    /** Stop dialling. Called after the owner's own scopes are cancelled. */
     override fun close() {
         runCatching { authenticator?.destroy() }
         runCatching { client.close() }

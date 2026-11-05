@@ -1,6 +1,6 @@
 # Alias fold decisions
 
-The history behind `monitor/.../RelayAliases.kt`, `AliasProbe.kt`,
+The history behind `peers/.../fold/RelayAliases.kt` and `monitor/.../AliasProbe.kt`,
 `AliasFolding.kt` and `AliasMonitor.kt`, moved out of the source so the code
 reads on its own. One paragraph per decision; `git log -L` on the function
 finds the commit.

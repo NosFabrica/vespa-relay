@@ -76,6 +76,9 @@ class MonitorEngine(
 
     private val sweepSeconds = settings.sweepSeconds
 
+    /** How often a pass's unwritten verdicts are replayed, for the scheduler and the lines that promise it. */
+    private val retryMs = AliasMonitor.DEFAULT_RETRY_MS
+
     /** Every pass dials through this one gate, so `dialConcurrency` bounds the plane rather than each pass. */
     private val gate = DialGate.over(settings.dialConcurrency, tor)
 
@@ -144,7 +147,7 @@ class MonitorEngine(
         )
 
     /**
-     * The grade the sync plane selects on plus the facts a visit reads back. Third in pass order:
+     * The grade the mirror's roster selects on plus the facts a visit reads back. Third in pass order:
      * it turns the fold's and the consistency pass's standing verdicts into refusals without re-dialling.
      */
     private val fitness =
@@ -160,6 +163,7 @@ class MonitorEngine(
             tlsCheck = probe::tls,
             world = { world.known },
             sweepMs = sweepSeconds * 1000L,
+            retryMs = retryMs,
             reach = world::reach,
             sockets = sockets,
         )
@@ -170,6 +174,7 @@ class MonitorEngine(
             scope,
             intervalMs = sweepSeconds * 1000L,
             source = world,
+            retryEveryMs = retryMs,
             // Stability then fitness, so a first `prime` waits on the stability answer; the fold
             // needs a host's whole group and rides the sweep.
             fastLaneEveryMs = settings.fastLaneSeconds?.times(1000L),

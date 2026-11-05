@@ -1,6 +1,8 @@
 # Fitness pass decisions
 
-The history behind `monitor/.../FitnessPass.kt`, `ConsistencyPass.kt`,
+The history behind `monitor/.../FitnessPass.kt` (with `FitnessDial.kt`,
+`FitnessBatch.kt`, `FitnessWrites.kt`, `DeferralBackoff.kt`, `FitnessReport.kt`
+and `FitnessRetirement.kt`), `ConsistencyPass.kt`,
 `RelayConsistency.kt`, `RelayCompliance.kt`, `ReachabilityProbe.kt`,
 `Silence.kt`, `HostStrikes.kt` and `Unreachability.kt`, moved out of the
 source so the code reads on its own. One paragraph per decision; `git log -L`
@@ -652,7 +654,7 @@ moves the role on, so the server's other grades are what say it is up.
 our own TLS handshake test a host and port, which every path on them shares, but
 only the stand-in was dialled, so a dead server's paths were graded one per
 sweep as each took the role: `haven.almostmachines.dev`'s 113 at four sweeps a
-day is four weeks. A held url on the stand-in's socket (`socketOf`, the scheme's
+day is four weeks. A held url on the stand-in's socket (`DialTarget`, the scheme's
 port where none is written, so `ws://` and `wss://` on one host stay apart) now
 takes that `dead` with its evidence, after the TLS and dark-network guards, so
 it inherits only proof that survived them. Production held 597 urls on 39
@@ -668,7 +670,7 @@ on its own; `RelayVerdictRecord.edit` is `RelayDiscoveryEvent.edit`.
 
 **The boot retirement is one walk.** `retireStaleEpochs` walked our graded
 records through `#l` and `retireLegacyGrades` our records through `#s`, and a
-url both found was retired twice. `FitnessPass.retireStale` walks our records
+url both found was retired twice. `FitnessRetirement.retireStale` walks our records
 once, asks each one the two questions the tag filters asked (an `l` value among
 our grades with our label on an older epoch; an `s` value among the old grade
 words), retires the union once, and counts the retirements that landed rather

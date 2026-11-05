@@ -203,7 +203,7 @@ object RelayDiscovery {
 
     /**
      * Every url [authors] hold a current record about, whatever it says. The monitor passes its own
-     * key alone, not [undialable]'s trust set; empty [authors] is a router with no signer.
+     * key alone, not [undialable]'s trust set; empty [authors] is a process with no signer.
      */
     suspend fun recorded(
         store: IEventStore,

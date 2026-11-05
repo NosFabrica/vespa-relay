@@ -85,7 +85,7 @@ class RelayVerdictRecord(
          */
         val measured: Set<NormalizedRelayUrl> = emptySet(),
         /**
-         * Urls a record of ours exists for AT ALL, whatever its tags now say. The corpus this
+         * Urls a record of ours exists for at all, whatever its tags now say. The corpus this
          * monitor covers, which is a question about the config; [measured] is a question about
          * freshness, and an epoch bump or a lapsed TTL empties that without narrowing this.
          */
@@ -473,13 +473,8 @@ class RelayVerdictRecord(
                 pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 nip77?.let { (yes, why) ->
                     add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH))
-                    // The same measured fact again, as a NIP-32 label, because NIP-01 indexes
-                    // single-letter tags ONLY: `nip77` above can never be a `#` filter, so a
-                    // stream could not select on it and would be left with the relay's own
-                    // NIP-11 claim — which is the thing the monitor exists to not believe.
-                    // Measured: 11 of the 37 relays advertising NIP-77 declined our NEG-OPEN.
-                    // Its own namespace, so `#l` on the grade and `#l` on this stay separable
-                    // and a stream ANDs them with `gatedBy`.
+                    // The same fact as a NIP-32 label: NIP-01 indexes single-letter tags only, so a stream
+                    // can select on this and never on `nip77`; its own namespace keeps it apart from the grade.
                     add(arrayOf(LABEL_TAG, if (yes) SPEAKS_NEGENTROPY else REFUSES_NEGENTROPY, NEGENTROPY_NAMESPACE, why, at, FITNESS_EPOCH))
                     add(arrayOf(LABEL_NAMESPACE_TAG, NEGENTROPY_NAMESPACE))
                 }
@@ -718,14 +713,13 @@ class RelayVerdictRecord(
         const val FITNESS_NAMESPACE = "relay.fitness"
 
         /**
-         * The NIP-32 namespace for what the monitor MEASURED about NIP-77, kept apart from the
-         * grade so a stream can filter on either. Both are `l` tags, and NIP-01 ORs the values
-         * inside one `#l` — so "prime AND speaks negentropy" is two sources, the grade on
-         * `relaySource` and this on `gatedBy`, which intersects them.
+         * The NIP-32 namespace for what the monitor measured about NIP-77, apart from the grade: NIP-01
+         * ORs the values inside one `#l`, so "prime and speaks negentropy" is the grade on `relaySource`
+         * and this on `gatedBy`, which intersects them.
          */
         const val NEGENTROPY_NAMESPACE = "relay.negentropy"
 
-        /** Answered a NEG-OPEN when the fitness pass asked. NEVER the relay's own NIP-11 claim. */
+        /** Answered a NEG-OPEN when the fitness pass asked; never the relay's own NIP-11 claim. */
         const val SPEAKS_NEGENTROPY = "negentropy"
 
         /** Declined it. A relay with no measurement carries neither, which is not a "no". */

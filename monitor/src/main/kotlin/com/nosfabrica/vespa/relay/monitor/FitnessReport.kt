@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.DEFERRED_SWEEPS
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.MAX_ABANDONED_NAMED
-import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.NIP77_DEADLINE_MS
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.PENDING_WRITES
 import com.nosfabrica.vespa.relay.monitor.FitnessPass.Companion.WAITING_ON_FOLD
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -34,6 +33,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 internal class FitnessReport(
     private val progress: Processors.Handle,
     private val writes: FitnessWrites,
+    /** The NEG-OPEN's wall clock, as the dial ran it. */
+    private val nip77DeadlineMs: Long,
+    /** How often the unwritten verdicts are replayed. */
+    private val retryMs: Long,
 ) {
     /** The batch's log lines and its row's counts. [written] is null, and [outcomes] empty, on the guard's refuse-to-publish path. */
     fun report(
@@ -116,7 +119,7 @@ internal class FitnessReport(
                 },
                 Line(batch.abandoned.size) { "gave up on $it url(s) at the per-url deadline, no verdict written: " + named(batch.abandoned) },
                 Line(batch.negOpenCut) {
-                    "$it NEG-OPEN(s) cut at the ${NIP77_DEADLINE_MS / 1000}s wall clock; " +
+                    "$it NEG-OPEN(s) cut at the ${nip77DeadlineMs / 1000}s wall clock; " +
                         "no nip77 fact published for them, which is our clock and NOT the relay declining"
                 },
                 Line(batch.secondPageCut) {
@@ -172,7 +175,7 @@ internal class FitnessReport(
                 Line(written.withdrawalsPending) {
                     "$it standing `prime` grade(s) NOT taken back yet: the store " +
                         "did not take the batch's writes" + (tally.stoppedBy?.let { why -> " ($why)" }.orEmpty()) +
-                        ". They wait with the unwritten grades and are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)}, not next sweep"
+                        ". They wait with the unwritten grades and are retried every ${fmtDuration(retryMs)}, not next sweep"
                 },
                 Line(written.skipped) {
                     "$it inherited verdict(s) left standing: the record already carries " +
@@ -180,7 +183,7 @@ internal class FitnessReport(
                 },
                 Line(unwritten) {
                     "$it earned verdict(s) NOT written: ${unwrittenParts(it, tally).joinToString(", ")}; " +
-                        "they are retried every ${fmtDuration(AliasMonitor.DEFAULT_RETRY_MS)} until the store takes them" +
+                        "they are retried every ${fmtDuration(retryMs)} until the store takes them" +
                         (writes.cursorOf(label)?.let { c -> ", and the next batch's writes START at $c so the same tail is not dropped twice" }.orEmpty())
                 },
             ),

@@ -291,8 +291,7 @@ internal fun looksDark(
 
 /**
  * Held urls on the socket a stand-in's pre-probe or handshake proof is about inherit it, since
- * both test the host and port, which every path on them shares. A dead server's paths were
- * otherwise graded one per sweep, each in its turn as the stand-in.
+ * both test the host and port, which every path on them shares.
  */
 internal fun inheritedSocketProof(
     heldBack: Map<NormalizedRelayUrl, NormalizedRelayUrl>,

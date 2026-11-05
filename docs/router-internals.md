@@ -100,7 +100,7 @@ things about it are load-bearing:
   clock firing one step later does not un-answer it, and a pass that threw those
   away would re-grade the corpus at a cadence set by how long each url's JOB ran
   — the slowest relays last and, past a point, never. So the `prime` path hands
-  its outcome over the moment the ladder settles it (`FitnessPass.dialVerdict`'s
+  its outcome over the moment the ladder settles it (`FitnessDial.dialVerdict`'s
   `settled`), one line before the NEG-OPEN, and `measure`'s cut-late branch
   publishes it and counts the url apart from the abandoned ones. Same rule the
   walk itself already follows a level down: keep what was proved, publish
@@ -192,7 +192,7 @@ passes for a stable url set. Every cut batch therefore dropped the SAME tail,
 and a healthy relay whose url happened to hash late could never be re-graded
 however often the sweep ran. So
 the loop walks the urls in URL order and starts at the earliest write the last
-batch's wedge left unstored (`FitnessPass.writeCursors`, in memory — a restart starts at
+batch's wedge left unstored (`FitnessWrites.writeCursors`, in memory — a restart starts at
 the top, which is the same guarantee from a different offset). What a wedge
 costs this pass is the next pass's head.
 
@@ -872,7 +872,7 @@ out every url fitness is backing off from after a deferral (a 429, a 5xx, a
 partial refusal, words `Silence` does not know), so a relay that asked us to
 come back later is not dialled again by the next tick; see `fitness.md`.
 
-**The rules epoch is retracted, not re-checked.** `FitnessPass.retireStale`
+**The rules epoch is retracted, not re-checked.** `FitnessRetirement.retireStale`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
 constant is a source edit and a source edit is a restart — and strips `s` /
 `pageable` / `nip77` from every record of ours written under older rules. Those

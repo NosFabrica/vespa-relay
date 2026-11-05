@@ -200,7 +200,15 @@ genuine duplicates as distinct, six at a time on `haven.calva.dev`), any url
 could hold the ruler, and a yardstick had to reproduce its own window before
 a negative claim. `FITNESS_EPOCH` went to 2 for the compliance check. A
 read-side epoch check meant no standard NIP-66 record could satisfy a gate,
-so `FitnessPass.retireStale` takes old verdicts back at boot instead.
+so `FitnessRetirement.retireStale` takes old verdicts back at boot instead.
+
+**The NIP-77 answer is written twice, the second time as a label.** NIP-01
+indexes single-letter tags only, so the `nip77` tag can never be a `#` filter:
+a stream selecting on it would be left with the relay's own NIP-11 claim, the
+thing the monitor exists to not believe, and 11 of the 37 relays advertising
+NIP-77 declined our NEG-OPEN when measured. `publishFitness` writes the same
+fact as an `l` under `relay.negentropy`, its own namespace so `#l` on the grade
+and `#l` on this stay separable and a stream intersects them with `gatedBy`.
 
 **The fitness grade is a NIP-32 label, not the `s` tag.** `s` is where every
 monitor in the wild publishes the relay's software (a repository url on 172
@@ -235,7 +243,7 @@ duplicates of each other but not of the leader are both recorded distinct.
 **`edit` is bounded by a two-minute deadline.** The store's HTTP client
 carries no read deadline, so a response that never came held a fitness pass,
 the sweep behind it and the fast lane behind that for ten hours on staging
-(issue 165). The floor is wider than `FitnessPass.PUBLISH_DEADLINE_MS` (one
+(issue 165). The floor is wider than `WriteLimits.PUBLISH_DEADLINE_MS` (one
 minute) so the instrumented clock always fires first, and wide enough that a
 write queued behind the mirror's bulk commits (~10s per 20k-event batch) is
 never lost to it.

@@ -79,6 +79,8 @@ class FitnessPass(
     },
     /** One sweep's period: how long a deferred url backs off, and the unit a deferring `prime` ages in. */
     private val sweepMs: Long = AliasMonitor.DEFAULT_INTERVAL_MS,
+    /** How often the scheduler replays [flushPending], which the log lines promise. */
+    private val retryMs: Long = AliasMonitor.DEFAULT_RETRY_MS,
     /** The pre-probe: whether this process can reach a url at all, and whose side a refusal is on. */
     private val reach: suspend (NormalizedRelayUrl) -> Reach = { Reach.REACHABLE },
     /** The socket refcount; without one every dial leaves a websocket behind. */
@@ -90,7 +92,7 @@ class FitnessPass(
 
     private val backoff = DeferralBackoff(sweepMs)
 
-    private val reports = FitnessReport(progress, writes)
+    private val reports = FitnessReport(progress, writes, nip77DeadlineMs, retryMs)
 
     /** Of [urls], those still backing off from a deferral; the fast lane leaves them out before any pass dials. */
     fun backingOff(urls: Collection<NormalizedRelayUrl>): Set<NormalizedRelayUrl> = backoff.backingOff(urls)

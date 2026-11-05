@@ -94,8 +94,8 @@ class AliasProbe(
         for (shape in SHAPES) {
             val window = window(url, anchor, shape)
             if (!window.ids.isNullOrEmpty()) return Attempt(Leader(window.ids, shape, window.drained), spoke = true)
-            // Silence after refusing us is filter.nostr.wine's connection gone quiet: each further
-            // shape would wait out the whole idle window.
+            // Silence after refusing us is the connection gone quiet: each further shape would wait
+            // out the whole idle window.
             if (window.ids == null && authRefused) return Attempt(null, spoke = true, authRefused = true)
             if (window.authRefused) authRefused = true
             // Silent on both general shapes is a url that is not there; one answer earns the rest,
