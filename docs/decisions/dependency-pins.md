@@ -563,7 +563,37 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-2e4f323c4aad = vespa-eventstore branch claude/compassionate-turing-3snl48 @ 2026-11-03 (over d75be63d9db0, below):
+b21f996c1849 = vespa-eventstore main @ 2026-11-05, the merge of PR #194 (over 2e4f323c4aad, below): an answer
+Vespa reports errors beside is refused, a multi-filter COUNT holds one page, and the phrase band.
+  A RESPONSE THAT REPORTS ERRORS IS REFUSED (466efb0, PR #194). With its content node down, Vespa answers a
+    grouping HTTP 200: no groups, totalCount 0, coverage full at 100% over nodes: 0, and one error,
+    "Backend communication error". Both read funnels took that as an empty corpus, so a NIP-45 COUNT read 0
+    for every kind and the sync's relay discovery read no `prime` verdicts: in an end-to-end run here
+    (Vespa's content node OOM-killed three times) the roster fell from 974 relays to the 5 declared ones and
+    closed the visits to the rest, until the next rebuild. searchRoot and queryRoot now refuse any response
+    carrying root.errors, as a PartialAnswer labelled `errors`; a rebuild then keeps the roster it had.
+  A MULTI-FILTER COUNT HOLDS ONE PAGE (abc51c3, PR #193). It deduplicated across filters by holding every
+    served id, about 110 bytes a match, so one anonymous COUNT over two kinds could exhaust the relay's heap.
+    Disjoint filters are now counted apart by the engine and summed; overlapping ones are walked a page at a
+    time. Still exact (STORE-C01).
+  THE PHRASE BAND (320ad81 .. 272a4db, PR #191). A NIP-50 query as typed outranks its words scattered: new
+    fieldsets and rank functions in event.sd, and EventYql sends the phrase (none on a half-typed last word,
+    and for 3-5 words the phrase with one adjacent pair joined). Graded against production over 54 cases in
+    the store's docs/search-evaluation.md: nDCG@10 +0.040 [+0.011, +0.074].
+  git merge-base --is-ancestor 2e4f323c4aad b21f996c1849   # verified
+
+DEPLOY: the schema moves (fieldsets and rank functions over existing fields, no new field), so the relay's
+  boot redeploys it (AUTO_DEPLOY) and nothing is reindexed.
+
+GATED: the store's build at b21f996 (engine 377, store 585, benchmark 22 unit tests, 0 failures); and its
+  integration gate against Vespa 8.763.13 in Docker at the same commit (36 classes, 54 tests, 0 failures, 1
+  skipped for want of a STAGING_CORPUS export; parity 155/155, Vespa and in-memory against SQLite). Here,
+  ./gradlew build archTest against the JitPack jar: 1,732 tests, 0 failures; the runtime graph holds one
+  quartz (2.13.0) and the store at b21f996c1849, no arrow.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 2e4f323c4aad = vespa-eventstore branch claude/compassionate-turing-3snl48 @ 2026-11-03 (over d75be63d9db0, below):
 the cause of the search.brainstorm.world score drift, the audit that repairs it, and quartz 2.13.0.
   A COLD PROVIDER PASS NO LONGER DELETES SCORE DOCUMENTS (1185e0e). The ledger drain re-derives the
     subjects a dying process left marked, after dropping the provider pass; on a cold engine the 10040
