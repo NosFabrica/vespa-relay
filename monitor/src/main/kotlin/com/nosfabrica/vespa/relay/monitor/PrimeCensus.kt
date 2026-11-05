@@ -27,6 +27,13 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
 /** Which servers carry more than one `prime` url, and what the fold holds about each of those urls. */
 internal object PrimeCensus {
+    /** One server's `prime` urls and their fold answers; [unproven] when more than one is not proved its own relay. */
+    private data class Server(
+        val host: String,
+        val folds: List<Processors.FoldOf>,
+        val unproven: Boolean,
+    )
+
     /** [prime] grouped by server, read against the fold's answers in [held]. */
     fun of(
         prime: Collection<NormalizedRelayUrl>,
@@ -49,17 +56,17 @@ internal object PrimeCensus {
                 val folds = urls.sortedBy { it.url }.map { Processors.FoldOf(it.url, foldOf(it)) }
                 // Proven are the urls the fold measured as their own relay; at most one of the rest is owed.
                 val unproven = folds.count { it.fold != Processors.FOLD_CANONICAL && it.fold != Processors.FOLD_DISTINCT } > 1
-                Triple(host, folds, unproven)
+                Server(host, folds, unproven)
             }
         val top =
             rows
-                .sortedWith(compareBy({ !it.third }, { -it.second.size }, { it.first }))
+                .sortedWith(compareBy({ !it.unproven }, { -it.folds.size }, { it.host }))
                 .take(Processors.MAX_SHARED_HOSTS)
                 .map { (host, folds, unproven) -> Processors.SharedHost(host, folds.size, unproven, folds.take(Processors.MAX_SHARED_HOST_URLS)) }
         return Processors.SharedHosts(
             hosts = shared.size,
             urls = shared.values.sumOf { it.size },
-            unproven = rows.count { it.third },
+            unproven = rows.count { it.unproven },
             top = top,
         )
     }

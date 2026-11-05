@@ -89,6 +89,16 @@ class SilenceTest {
     }
 
     @Test
+    fun `a 429 is a rate limit only where it stands alone`() {
+        assertEquals(Silence.RATE_LIMITED, Silence.of("cannot: the relay answered HTTP 429"))
+        assertEquals(Silence.RATE_LIMITED, Silence.of("closed: status 429."))
+        assertEquals(Silence.REFUSED, Silence.of("cannot:Failed to connect to relay429.example/1.2.3.4:443 (ConnectException)"))
+        assertEquals(Silence.REFUSED, Silence.of("cannot:Failed to connect to 429.example/1.2.3.4:443 (ConnectException)"))
+        assertEquals(Silence.REFUSED, Silence.of("cannot:Failed to connect to relay.example/1.2.3.4:4290 (ConnectException)"))
+        assertEquals(Silence.REFUSED, Silence.of("cannot:Failed to connect to relay.example/1.2.3.4:429 (ConnectException)"))
+    }
+
+    @Test
     fun `text this table does not recognise is counted, never forced`() {
         assertEquals(Silence.UNKNOWN, Silence.of("cannot: something nobody has seen yet"))
         assertEquals(Silence.UNKNOWN, Silence.of(""))

@@ -56,7 +56,7 @@ enum class Silence(
         /** In match order: first hit wins. */
         private val PATTERNS: List<Pair<Silence, List<String>>> =
             listOf(
-                RATE_LIMITED to listOf("429", "too many requests", "rate limit"),
+                RATE_LIMITED to listOf("too many requests", "rate limit"),
                 NAME to
                     listOf(
                         "unknownhost",
@@ -108,12 +108,16 @@ enum class Silence(
                     ?.toLongOrNull()
             }
 
+        /** A 429 standing alone, never a piece of a host, a port, a path or a longer number. */
+        private val BARE_429 = Regex("""(?<![\w.:/-])429(?!\w|[.-]\w)""")
+
         private val RETRY_AFTER = Regex("""retry-after\W{0,3}(\d{1,9})""", RegexOption.IGNORE_CASE)
 
         /** Null is [UNKNOWN], not a cause of its own. An HTTP status outranks the words beside it. */
         fun of(raw: String?): Silence {
             val text = raw?.lowercase() ?: return UNKNOWN
             upgradeStatus(raw)?.let { return if (it == 429) RATE_LIMITED else UPGRADE }
+            if (BARE_429.containsMatchIn(text)) return RATE_LIMITED
             return PATTERNS.firstOrNull { (_, needles) -> needles.any { it in text } }?.first ?: UNKNOWN
         }
     }
