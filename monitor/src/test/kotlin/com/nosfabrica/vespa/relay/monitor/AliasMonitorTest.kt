@@ -27,15 +27,18 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -211,13 +214,20 @@ class AliasMonitorTest {
         }
 
     @Test
-    fun `cancellation ends the pass rather than being logged`() =
+    fun `cancellation ends the pass rather than being logged`(): Unit =
         runBlocking {
-            val cancelling = Recording(throwOn = mapOf(RunKind.SWEEP to { CancellationException("scope closing") }))
+            // The scope running the sweep closes while the first pass runs.
+            val cancelling =
+                AliasMonitor.Pass { _, _ ->
+                    currentCoroutineContext().job.cancel(CancellationException("scope closing"))
+                    awaitCancellation()
+                }
             val after = Recording()
             val m = AliasMonitor(listOf(cancelling, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
 
-            assertFailsWith<CancellationException> { m.runPass() }
+            val sweep = launch { m.runPass() }
+            sweep.join()
+            assertTrue(sweep.isCancelled, "the sweep outlived its own cancellation")
             assertEquals(0, after.calls.get(), "the run continued past a cancellation")
         }
 

@@ -22,9 +22,10 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
@@ -186,16 +187,16 @@ class AliasMonitor(
 
     private fun untilMs(atMs: Long): Long = atMs - System.currentTimeMillis()
 
-    /** Runs [work], logging anything it throws but a cancellation; null when it threw. */
+    /** Runs [work], logging anything it throws; null when it threw. Only this coroutine's own cancellation propagates. */
     private suspend fun <T> guarded(
         what: String,
         work: suspend () -> T,
     ): T? =
         try {
             work()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
+            // A CancellationException while this coroutine is still active is someone else's, so one failure.
+            currentCoroutineContext().ensureActive()
             System.err.println("monitor: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             null
         }
@@ -237,9 +238,8 @@ class AliasMonitor(
         src.progress?.begin(Processors.COLLECTING)
         return try {
             src.candidates()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             System.err.println("monitor: alias source failed to derive: ${e.message}")
             emptyList()
         } finally {

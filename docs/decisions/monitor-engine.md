@@ -516,3 +516,15 @@ returning, and only after `LOOKUP_STARVED_MS` in which none returned does it giv
 up as `UNEXPLAINED`, with one `name lookups STARVED` line per spell, so a resolver
 that hangs forever stalls the pre-probe for a minute rather than for good.
 `ReachabilityLookupQueueTest` holds both.
+
+**Only the scheduler's own cancellation ends it.** `AliasMonitor.guarded`,
+`runEach` and `derive` rethrew every `CancellationException`, and so did the
+boot's retirement guard and its `retired.await()`. One thrown into a live
+coroutine (an `await()` on a deferred someone else cancelled, a `withTimeout`
+below a pass) skipped the passes after it and ended the scheduler's loop, or the
+boot before the passes started, with nothing said, so nothing measured again.
+They now catch it, call `ensureActive()`, which rethrows when the scope really
+is closing, and otherwise log it as one failure, as `repeatEvery` does. The
+per-url catches inside the passes still rethrow: their deadlines work by
+cancellation. `SchedulerStrayCancellationTest` holds both cases, and
+`AliasMonitorTest`'s cancellation case now cancels the sweep's own job.

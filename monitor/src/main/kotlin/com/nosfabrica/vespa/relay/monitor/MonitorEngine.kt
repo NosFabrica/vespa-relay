@@ -36,9 +36,10 @@ import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
@@ -226,7 +227,13 @@ class MonitorEngine(
         // The passes sign on what they read, so they start after the retraction.
         BootClock.mark("monitor: retiring its own stale verdicts before the passes")
         scope.launch {
-            retired.await()
+            try {
+                retired.await()
+            } catch (e: Exception) {
+                // The passes start after a retirement that failed, as after one that did nothing; only shutdown stops them.
+                currentCoroutineContext().ensureActive()
+                System.err.println("monitor: the boot retirement ended without finishing (${e.javaClass.simpleName}); starting the passes")
+            }
             aliasMonitor.start()
             BootClock.mark("monitor: passes started")
         }
@@ -247,17 +254,16 @@ class MonitorEngine(
         row?.phase(Processors.STARTING)
     }
 
-    /** One boot retraction, its failure logged and contained; a cancellation still ends the boot. */
+    /** One boot retraction, its failure logged and contained; only this coroutine's own cancellation ends the boot. */
     private suspend fun guarded(
         what: String,
         retire: suspend () -> Unit,
     ) {
         try {
             retire()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Exception) {
-            System.err.println("monitor: could not retire $what: ${e.message}")
+            currentCoroutineContext().ensureActive()
+            System.err.println("monitor: could not retire $what: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
