@@ -237,9 +237,7 @@ class MonitorEngine(
         // never on a row that is `off`, which this runs beside.
         val row = fitnessRow.takeIf { hasSources }
         row?.phase(Processors.RETIRING)
-        // Two guards: a throw in the first must not skip the second.
-        guarded("stale-epoch verdicts") { FitnessPass.retireStaleEpochs(store, record, signer.pubKey, row) }
-        guarded("legacy `s` grades") { FitnessPass.retireLegacyGrades(store, record, signer.pubKey, row) }
+        guarded("stale-epoch verdicts and legacy `s` grades") { FitnessPass.retireStale(store, record, signer.pubKey, row) }
         row?.clearMeasuring()
         row?.phase(Processors.STARTING)
     }

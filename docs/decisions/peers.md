@@ -200,7 +200,7 @@ genuine duplicates as distinct, six at a time on `haven.calva.dev`), any url
 could hold the ruler, and a yardstick had to reproduce its own window before
 a negative claim. `FITNESS_EPOCH` went to 2 for the compliance check. A
 read-side epoch check meant no standard NIP-66 record could satisfy a gate,
-so `FitnessPass.retireStaleEpochs` takes old verdicts back at boot instead.
+so `FitnessPass.retireStale` takes old verdicts back at boot instead.
 
 **The fitness grade is a NIP-32 label, not the `s` tag.** `s` is where every
 monitor in the wild publishes the relay's software (a repository url on 172

@@ -245,7 +245,7 @@ class RelayVerdictRecord(
 
     /**
      * Serve the reads of our own records from one paged walk, taken on the first read, until [endSweep].
-     * Only the monitor's scheduler calls it, around one sweep, so nothing else writes our records meanwhile.
+     * Called around one sweep, or the boot retirement before any sweep, so nothing else writes our records meanwhile.
      */
     fun beginSweep() {
         if (signer != null) sweep = Sweep()
@@ -785,7 +785,7 @@ class RelayVerdictRecord(
 
         const val LABEL_EPOCH_INDEX = 5
 
-        /** Where the grade used to live, now the software field; `FitnessPass.retireLegacyGrades` queries it. */
+        /** Where the grade used to live, now the software field; `FitnessPass.retireStale` looks for it. */
         const val LEGACY_STATUS_TAG = RelayFacts.SOFTWARE_TAG
 
         /** Measured: does the relay honour `until`, so a paged walk can terminate? */
@@ -797,7 +797,7 @@ class RelayVerdictRecord(
         /** Measured: did it answer a NEG-OPEN? */
         const val NIP77_TAG = "nip77"
 
-        /** The fitness verdict's rules version; `FitnessPass.retireStaleEpochs` takes back older ones at boot. */
+        /** The fitness verdict's rules version; `FitnessPass.retireStale` takes back older ones at boot. */
         const val FITNESS_EPOCH = "3"
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60

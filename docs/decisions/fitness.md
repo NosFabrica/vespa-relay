@@ -665,3 +665,13 @@ so an OkHttp dial wrapper around `Network is unreachable` stays quiet.
 `RelayFacts` writes through quartz's NIP-66 tag codecs and `RelayDocument`
 maps NIP-11 limits through `RequirementTag.fromNip11`, each key still read
 on its own; `RelayVerdictRecord.edit` is `RelayDiscoveryEvent.edit`.
+
+**The boot retirement is one walk.** `retireStaleEpochs` walked our graded
+records through `#l` and `retireLegacyGrades` our records through `#s`, and a
+url both found was retired twice. `FitnessPass.retireStale` walks our records
+once, asks each one the two questions the tag filters asked (an `l` value among
+our grades with our label on an older epoch; an `s` value among the old grade
+words), retires the union once, and counts the retirements that landed rather
+than the ones attempted. The edits read their records off the record's walk,
+which is taken only if anything is to be retired. A store that cannot be walked
+now skips both retirements together, where the second walk used to run anyway.

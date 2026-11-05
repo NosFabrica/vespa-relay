@@ -872,7 +872,7 @@ out every url fitness is backing off from after a deferral (a 429, a 5xx, a
 partial refusal, words `Silence` does not know), so a relay that asked us to
 come back later is not dialled again by the next tick; see `fitness.md`.
 
-**The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
+**The rules epoch is retracted, not re-checked.** `FitnessPass.retireStale`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
 constant is a source edit and a source edit is a restart — and strips `s` /
 `pageable` / `nip77` from every record of ours written under older rules. Those
