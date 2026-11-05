@@ -56,7 +56,10 @@ import kotlin.coroutines.resumeWithException
  */
 class RelayDocument(
     private val clientFor: (NormalizedRelayUrl) -> OkHttpClient,
+    /** The clock on one call, started when the call leaves the dispatcher's queue. */
     private val timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+    /** The wall clock over the queue and the call together, so a document never waiting for a slot still ends. */
+    private val outerSeconds: Long = timeoutSeconds * OUTER_FACTOR,
     /** Documents in flight at once: the passes' dials, each of which asks for one. */
     concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
@@ -91,8 +94,8 @@ class RelayDocument(
         val timer = ConnectTimer()
         val body =
             try {
-                // Over the queue as well as the call: OkHttp's own clock starts only once a call leaves it.
-                withTimeoutOrNull(timeoutSeconds * 1000) { fetch(url, address, timer) }
+                // The call's own clock starts once it leaves the queue; this one only keeps a slot that never frees from hanging the read.
+                withTimeoutOrNull(outerSeconds * 1000) { fetch(url, address, timer) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -189,6 +192,9 @@ class RelayDocument(
         const val NIP11_CONTENT_TYPE = "application/nostr+json"
 
         const val DEFAULT_TIMEOUT_SECONDS = 10L
+
+        /** The outer bound in calls' worth: a few calls ahead on one host's slots, never a queue that does not move. */
+        const val OUTER_FACTOR = 6L
 
         /** Documents asked of one host at once; a host serving many paths is still one server. */
         const val DOCUMENTS_PER_HOST = 4

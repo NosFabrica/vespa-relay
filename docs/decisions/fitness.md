@@ -590,9 +590,8 @@ live tails, whose dispatcher is sized for sockets across both planes, so a
 document could wait behind tails, or hold a slot a tail needed, and OkHttp's
 call timeout starts only once a call leaves the queue. Each fetch now runs on
 a dispatcher of its own sized to the passes' dials over both transports
-(one document per dial), four at a time per host, and its wall clock covers
-the wait for a slot as well as the call. Cancelling the caller still cancels
-the call.
+(one document per dial), four at a time per host. Cancelling the caller still
+cancels the call.
 
 **The pre-probe says when no address took a connect inside its whole window.**
 Every url `MonitorProfileProbe` saw hang a dial for its full idle window and
@@ -707,3 +706,13 @@ address the websocket shares; a document served by another host is dropped, sinc
 its software and NIPs would describe another server under this url's signature,
 and the websocket dial does not follow a redirect there either.
 `ConnectTimerRedirectTest` and `RelayDocumentTest` hold both.
+
+**A document's clock starts when its call leaves the queue.** The ten-second
+wall clock covered the wait for one of the dispatcher's slots, four per host, so
+documents queued behind slow ones on a many-path host expired without being
+asked, and the record lost the software, the NIPs and `rtt-open` (never a
+verdict). The clock is now OkHttp's `callTimeout`, which starts when the call is
+dispatched, and the wall clock over queue and call together is a looser
+`OUTER_FACTOR` of it, there only so a slot that never frees cannot hang the
+batch, which joins every document. `RelayDocumentTest` queues a document behind
+one that holds its slot for a whole clock.

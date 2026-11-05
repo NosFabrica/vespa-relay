@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.peers.Verdict
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -48,10 +49,11 @@ import kotlin.test.assertTrue
 
 /** A NIP-11 document is a stranger's JSON: every field optional, every type a suggestion. */
 class RelayDocumentTest {
-    /** A loopback server that reads one request and answers with [reply], or never answers when it is null. */
+    /** A loopback server that reads one request and answers with [reply] [afterMs] later, or never answers when it is null. */
     private fun serve(
         reply: String?,
         closed: CompletableFuture<Unit> = CompletableFuture(),
+        afterMs: Long = 0,
     ): ServerSocket {
         val server = ServerSocket(0)
         thread(isDaemon = true) {
@@ -59,6 +61,7 @@ class RelayDocumentTest {
                 val input = socket.getInputStream().bufferedReader()
                 while (input.readLine().orEmpty().isNotEmpty()) Unit
                 if (reply != null) {
+                    Thread.sleep(afterMs)
                     socket.getOutputStream().write(reply.toByteArray())
                     socket.getOutputStream().flush()
                 }
@@ -129,6 +132,27 @@ class RelayDocumentTest {
             }
         }
 
+    @Test
+    fun `a document queued behind a slow one still gets its whole clock`(): Unit =
+        runBlocking {
+            val json = """{ "software": "strfry" }"""
+            val silent = serve(reply = null)
+            try {
+                serve("HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\nConnection: close\r\n\r\n$json", afterMs = 500).use { answering ->
+                    // One slot, held for the silent relay's whole clock; the second relay answers well within a clock of its own.
+                    val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 1, outerSeconds = 10, concurrency = 1)
+                    val slow = async { document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${silent.localPort}")) }
+                    delay(100)
+                    val queued = document.read(RelayUrlNormalizer.normalize("ws://127.0.0.1:${answering.localPort}"))
+                    slow.await()
+
+                    assertEquals("strfry", queued.doc?.software, "the queue's wait was charged to the document's own clock")
+                }
+            } finally {
+                silent.close()
+            }
+        }
+
     /** Answers one request with a redirect to [location]. */
     private fun redirecting(location: String) = serve("HTTP/1.1 301 Moved Permanently\r\nLocation: $location\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 
@@ -160,12 +184,12 @@ class RelayDocumentTest {
         }
 
     @Test
-    fun `a document still waiting for a slot ends on its own clock`() =
+    fun `a document still waiting for a slot ends within the outer bound`() =
         runBlocking {
             val servers = (0 until 3).map { serve(reply = null) }
             try {
-                // One slot, three relays that never answer: each read's clock covers its wait for the slot.
-                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 2, concurrency = 1)
+                // One slot, three relays that never answer: the outer bound covers the wait for the slot.
+                val document = RelayDocument({ OkHttpClient() }, timeoutSeconds = 2, outerSeconds = 2, concurrency = 1)
                 val startedMs = System.currentTimeMillis()
                 val readings =
                     servers
