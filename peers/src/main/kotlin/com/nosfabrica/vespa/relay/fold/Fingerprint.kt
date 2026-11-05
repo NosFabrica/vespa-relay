@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.fold
 
+import kotlin.random.Random
+
 /**
  * One url's window as the set of event ids in it, each 64-hex id held as its four 64-bit words,
  * sorted, so two windows intersect in one merge with no allocation. Exact: an id that is not 64
@@ -67,11 +69,18 @@ class Fingerprint private constructor(
         return n
     }
 
-    /** How many of the ids are hex, the ones [firstWord] and [sameId] index. */
+    /** How many of the ids are hex, the ones [idHash] and [sameId] index. */
     internal fun hexCount(): Int = words.size / WORDS
 
-    /** The first word of hex id [index], what an index hashes on. */
-    internal fun firstWord(index: Int): Long = words[index * WORDS]
+    /** Hex id [index] hashed over all four words under [seed]; a relay picks its ids, so no part of one is trusted to spread. */
+    internal fun idHash(
+        index: Int,
+        seed: Long,
+    ): Long {
+        var h = seed
+        for (w in 0 until WORDS) h = mix(h xor words[index * WORDS + w])
+        return h
+    }
 
     /** Is hex id [index] of this window hex id [otherIndex] of [other]? */
     internal fun sameId(
@@ -128,6 +137,14 @@ class Fingerprint private constructor(
             return true
         }
 
+        /** MurmurHash3's 64-bit finalizer: a bijection whose every output bit depends on every input bit. */
+        private fun mix(key: Long): Long {
+            var k = key
+            k = (k xor (k ushr 33)) * -49064778989728563L
+            k = (k xor (k ushr 33)) * -4265267296055464877L
+            return k xor (k ushr 33)
+        }
+
         private fun compareAt(
             a: LongArray,
             i: Int,
@@ -154,7 +171,10 @@ internal class FingerprintIndex(
     private val bits = Integer.numberOfTrailingZeros(tableSize(capacity))
     private val mask = (1 shl bits) - 1
 
-    /** Slot -> the first word every entry in its chain shares. */
+    /** Per index, so a relay that sees one pass's slots cannot aim the next pass's ids at one. */
+    private val seed = Random.nextLong()
+
+    /** Slot -> the [Fingerprint.idHash] of the one id every entry in its chain holds. */
     private val keys = LongArray(1 shl bits)
 
     /** Slot -> its first entry, or -1 for an empty slot. */
@@ -176,7 +196,7 @@ internal class FingerprintIndex(
         check(entries + window.hexCount() <= capacity) { "index sized for $capacity ids" }
         windows += window
         for (i in 0 until window.hexCount()) {
-            val slot = slotOf(window.firstWord(i))
+            val slot = slotOf(window, i)
             val e = entries++
             owner[e] = index
             at[e] = i
@@ -197,14 +217,13 @@ internal class FingerprintIndex(
     ): Int {
         var n = 0
         for (i in 0 until window.hexCount()) {
-            val slot = find(window.firstWord(i))
+            val slot = find(window, i)
             if (slot < 0) continue
+            // A chain holds one id, so every entry on it is a window sharing this one.
             var e = chains[slot]
             while (e >= 0) {
                 val w = owner[e]
-                if (window.sameId(i, windows[w], at[e])) {
-                    if (counts[w]++ == 0) touched[n++] = w
-                }
+                if (counts[w]++ == 0) touched[n++] = w
                 e = next[e]
             }
         }
@@ -216,29 +235,45 @@ internal class FingerprintIndex(
         return n
     }
 
-    private fun hash(key: Long): Int = ((key * GOLDEN) ushr (Long.SIZE_BITS - bits)).toInt()
+    /** Does occupied [slot] hold hex id [index] of [window]? Compared whole, against the chain's first entry. */
+    private fun holds(
+        slot: Int,
+        key: Long,
+        window: Fingerprint,
+        index: Int,
+    ): Boolean {
+        if (keys[slot] != key) return false
+        val e = chains[slot]
+        return window.sameId(index, windows[owner[e]], at[e])
+    }
 
-    /** The slot holding [key], claimed if it is new. */
-    private fun slotOf(key: Long): Int {
-        var slot = hash(key)
-        while (chains[slot] >= 0 && keys[slot] != key) slot = (slot + 1) and mask
+    /** The slot holding hex id [index] of [window], claimed if it is new. */
+    private fun slotOf(
+        window: Fingerprint,
+        index: Int,
+    ): Int {
+        val key = window.idHash(index, seed)
+        var slot = (key ushr (Long.SIZE_BITS - bits)).toInt()
+        while (chains[slot] >= 0 && !holds(slot, key, window, index)) slot = (slot + 1) and mask
         keys[slot] = key
         return slot
     }
 
-    /** The slot holding [key], or -1. */
-    private fun find(key: Long): Int {
-        var slot = hash(key)
+    /** The slot holding hex id [index] of [window], or -1. */
+    private fun find(
+        window: Fingerprint,
+        index: Int,
+    ): Int {
+        val key = window.idHash(index, seed)
+        var slot = (key ushr (Long.SIZE_BITS - bits)).toInt()
         while (chains[slot] >= 0) {
-            if (keys[slot] == key) return slot
+            if (holds(slot, key, window, index)) return slot
             slot = (slot + 1) and mask
         }
         return -1
     }
 
     private companion object {
-        const val GOLDEN = -7046029254386353131L
-
         /** A power of two at least twice [capacity], so a probe stays short. */
         fun tableSize(capacity: Int): Int {
             var size = 2

@@ -504,3 +504,14 @@ but a collision adds a shared id the windows do not have, and a fold sits on a
 ratio threshold that one id can cross; the full words make every count exact, so
 no decision can move and there is no collision argument to make. The yardstick's
 second walk and `reproducible` use the same type.
+
+**The comparison index keys on the whole id, under a seed.** `FingerprintIndex`
+chained on an id's first 64-bit word, and `AliasProbe` takes the ids a relay
+serves as given, so a relay serving ids that share 16 hex digits put every head's
+ids in one chain and each lookup walked all of them: quadratic in the host's id
+count, inside `learn`, which never suspends, so no deadline could cut it and every
+pass waited behind it. A slot now holds exactly one id, found by a seeded mix of
+all four words and confirmed against the chain's first entry, so a chain is the
+windows carrying that id and the counts stay exact. The seed is drawn per index,
+so ids chosen to collide in one pass's table do not collide in the next.
+`FingerprintIndexCollisionTest` times 200 paths of colliding ids against random ones.
