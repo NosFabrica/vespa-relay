@@ -85,7 +85,7 @@ class RelayDocumentTest {
         }
 
     @Test
-    fun `a cancelled read lets go of its connection at once rather than at its own timeout`() =
+    fun `a cancelled read lets go of its connection at once rather than at its own timeout`(): Unit =
         runBlocking {
             val closed = CompletableFuture<Unit>()
             serve(reply = null, closed = closed).use { server ->
