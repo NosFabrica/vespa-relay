@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -83,7 +82,7 @@ class StandingReadTest {
     fun `the fold skips a sweep whose standing read failed`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
+            val fold = AliasFolding(record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
             assertEquals(0, fold.measure(RunKind.SWEEP, urls))
             assertNothingSigned(store, "fold")
@@ -103,7 +102,7 @@ class StandingReadTest {
     fun `the fold reads its candidates' own verdicts when the walk over every verdict fails`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-            val fold = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
+            val fold = AliasFolding(record = RelayVerdictRecord(WalkFails(store), signer), probe = probe())
 
             assertEquals(1, fold.measure(RunKind.SWEEP, urls), "a narrower read that answered skipped the whole fold")
         }
@@ -161,7 +160,7 @@ class StandingReadTest {
     @Test
     fun `a standing read the store never answers ends every pass, which publishes nothing and names the deadline`() {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-        val fold = AliasFolding(aliases = RelayAliases(), record = silentRecord(store), probe = probe())
+        val fold = AliasFolding(record = silentRecord(store), probe = probe())
         val stability = ConsistencyPass(consistency = RelayConsistency(), record = silentRecord(store), probe = probe())
         val fitness =
             FitnessPass(

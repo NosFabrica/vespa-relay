@@ -396,6 +396,23 @@ candidates plus every survivor the record names) and every lapsed cooldown.
 A fast-lane batch is a handful of urls, never the set, so it prunes nothing.
 The store stays the authority; a url that comes back is re-read from it.
 
+**The fold is an immutable view per pass, and a group returns what it
+learned.** `adoptWorld` replaced the whole world from the store at the top of
+every pass, so the maps carried across passes were vestigial: only the
+test-only fallback in `applyVerdicts` read them, and `retainOnly` and `forget`
+existed to bound them. `RelayAliases` is now a value built once per pass by
+`FoldReading.view(held, urls)`; `learn` and `foldOnto` return a `Learned` delta
+and leave the view alone, and `plus` is the one place a fold lands, where four
+copies of the same three-map update kept the invariants before. Each group
+returns its landed delta, undecided reason, cooldown and dial count, and the
+pass merges them after the join, so a write the store refused is never learned
+and a host that cannot reproduce itself discards its delta instead of
+re-resolving every chain in the store. A group is one host, so its own
+`Semaphore(DIALS_PER_HOST)` replaces the per-host map. `applyVerdicts` and the
+`aliases` parameter are gone: every reader goes through `FoldReading.readBack`,
+which says when the store could not answer. One log detail moved: a fast-lane
+fold's "N known" counts its own world's folds, not those the last sweep held.
+
 **A stopped writer stops the dialling too.** Once the pass's `VerdictWriter`
 stopped, every later fold write was refused, but each group still searched
 for a yardstick, fingerprinted its members and walked the reproducibility

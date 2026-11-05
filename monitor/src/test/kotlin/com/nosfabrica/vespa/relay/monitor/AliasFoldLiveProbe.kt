@@ -104,7 +104,6 @@ class AliasFoldLiveProbe {
                     }
                 val folding =
                     AliasFolding(
-                        aliases = aliases,
                         record = record,
                         probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS },
                         sockets = sockets,

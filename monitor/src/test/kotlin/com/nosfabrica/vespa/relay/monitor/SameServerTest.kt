@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
@@ -43,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -86,7 +88,14 @@ class SameServerTest {
     private fun folding(
         store: NostrSemanticsStore,
         servers: Servers,
-    ) = AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(store, signer), probe = probe(servers))
+    ) = AliasFolding(record = RelayVerdictRecord(store, signer), probe = probe(servers))
+
+    /** What a roster reads off [store]'s verdicts, with no probe. */
+    private suspend fun readBack(
+        store: NostrSemanticsStore,
+        urls: List<NormalizedRelayUrl>,
+        world: ServerIndex = ServerIndex.EMPTY,
+    ) = assertNotNull(FoldReading.readBack(RelayVerdictRecord(store, signer), urls, world))
 
     private fun fitness(
         store: NostrSemanticsStore,
@@ -490,7 +499,7 @@ class SameServerTest {
             assertNull(gradeOf(store, arSlash))
             assertEquals(0, servers.askedOf(arSlash), "a waiting url is asked only beside a `prime` stand-in")
 
-            val roster = folding(store, servers).applyVerdicts(languages + arSlash)
+            val roster = readBack(store, languages + arSlash)
             assertEquals(mapOf(arSlash to ar), roster.waiting)
         }
 
@@ -505,7 +514,7 @@ class SameServerTest {
             fitness(store, servers).grade(RunKind.SWEEP, graded)
             val standIn = primeAmong(store, graded).single()
 
-            val roster = folding(store, servers).applyVerdicts(listOf(nostrNet) + graded, world = ServerIndex(graded.toSet()))
+            val roster = readBack(store, listOf(nostrNet) + graded, world = ServerIndex(graded.toSet()))
             assertEquals((listOf(nostrNet) + graded - standIn).associateWith { standIn }, roster.waiting)
         }
 
@@ -514,7 +523,7 @@ class SameServerTest {
         val plain = url("ws://chain.example/")
         val secure = url("wss://chain.example/")
         val path = url("wss://chain.example/a")
-        val aliases = RelayAliases().also { it.markDistinct(plain) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(plain))
 
         val held = aliases.heldForFold(listOf(secure, path), listOf(plain))
 
@@ -527,7 +536,7 @@ class SameServerTest {
         // The inbox is proven its own relay, which says nothing about the outbox beside it.
         val inbox = url("wss://haven.example/inbox")
         val outbox = url("wss://haven.example/outbox")
-        val aliases = RelayAliases().also { it.markDistinct(inbox) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(inbox))
 
         assertEquals(emptyMap(), aliases.heldForFold(listOf(outbox), listOf(inbox)))
     }
@@ -542,7 +551,7 @@ class SameServerTest {
                 fitness = mapOf(root to RelayVerdictRecord.StandingGrade(Verdict.RESTRICTED.value, "answers only shaped queries")),
             )
 
-        assertEquals(mapOf(root to inbox, outbox to inbox), AliasFolding.heldAmong(held, listOf(root, inbox, outbox)))
+        assertEquals(mapOf(root to inbox, outbox to inbox), FoldReading.heldAmong(held, listOf(root, inbox, outbox)))
     }
 
     @Test
@@ -554,7 +563,7 @@ class SameServerTest {
             val undecided = url("wss://folded.example/b")
             RelayVerdictRecord(store, signer).publish(alias, canonical, 500, 500)
 
-            val roster = folding(store, Servers { corpus("folded") }).applyVerdicts(listOf(alias, undecided), ServerIndex(setOf(canonical, alias, undecided)))
+            val roster = readBack(store, listOf(alias, undecided), ServerIndex(setOf(canonical, alias, undecided)))
 
             assertEquals(mapOf(alias to canonical), roster.aliases)
             assertEquals(mapOf(undecided to canonical), roster.waiting)
@@ -570,7 +579,7 @@ class SameServerTest {
     fun `slashes trailing a query name the same endpoint`() {
         val decided = url("wss://prl.plus/?reject=3,6,7///")
         val longer = url("wss://prl.plus/?reject=3,6,7//////////")
-        val aliases = RelayAliases().also { it.markDistinct(decided) }
+        val aliases = RelayAliases() + RelayAliases.Learned(distinct = setOf(decided))
 
         assertEquals(mapOf(longer to decided), aliases.heldForFold(listOf(longer), listOf(decided)))
     }
@@ -589,7 +598,7 @@ class SameServerTest {
 
             folding(store, servers).measure(RunKind.SWEEP, all)
 
-            val folds = folding(store, servers).applyVerdicts(all).aliases
+            val folds = readBack(store, all).aliases
             assertEquals(setOf(plain, earlier, fresh), folds.keys)
             assertEquals(setOf(secure), folds.values.toSet())
         }

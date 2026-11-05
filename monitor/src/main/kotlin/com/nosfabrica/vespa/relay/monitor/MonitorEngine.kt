@@ -119,7 +119,6 @@ class MonitorEngine(
     /** The duplicate-url fold. One instance for the reader and the prober. */
     private val folding =
         AliasFolding(
-            aliases = RelayAliases(),
             record = record,
             // The idle budget is per url: a `.onion` on the clearnet budget times out mid-circuit.
             probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),

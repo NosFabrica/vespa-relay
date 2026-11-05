@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
@@ -124,7 +125,7 @@ class ConsistencyPass(
         val open = candidates.filter { it !in folded && verdictOf(it, held) == null }
         // A path the fold has not decided waits behind its server's stand-in, the rule fitness keeps:
         // otherwise every path of one server is paired-walked, over Tor a socket for minutes each.
-        val waiting = AliasFolding.heldAmong(held, open, mates)
+        val waiting = FoldReading.heldAmong(held, open, mates)
         val wanted = open.filter { it !in waiting }
         val waitingFindings = waiting.keys.associateWith { Finding(Unmeasured.WAITING) }
         if (wanted.isEmpty()) {

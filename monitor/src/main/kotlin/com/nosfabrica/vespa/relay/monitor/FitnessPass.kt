@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.monitor
 
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.fold.ServerIndex
 import com.nosfabrica.vespa.relay.peers.DialGate
@@ -62,7 +63,7 @@ class FitnessPass(
     private val client: INostrClient,
     /** The fold's standing verdicts over these candidates, off the batch's one read; never earned here. */
     private val foldedAway: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl> =
-        { held, urls -> AliasFolding.foldsAmong(held, urls) },
+        { held, urls -> FoldReading.foldsAmong(held, urls) },
     /** The consistency pass's standing refusals; same bargain. */
     private val inconsistent: (RelayVerdictRecord.Verdicts, List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> =
         { held, urls -> urls.filterTo(HashSet()) { it in held.inconsistent } },
@@ -420,7 +421,7 @@ class FitnessPass(
             val graded = candidates.filter { it !in free }
             // A url the fold has not decided waits behind its server's stand-in: grading it too would
             // put one server on the roster once per path.
-            val heldBack = AliasFolding.heldAmong(held, graded, mates)
+            val heldBack = FoldReading.heldAmong(held, graded, mates)
             val backingOff = backingOff(graded.filter { it !in heldBack })
             val toDial = graded.filter { it !in heldBack && it !in backingOff }
             // Only on a server some url of which answered HTTP last time: one down there is down at every path.

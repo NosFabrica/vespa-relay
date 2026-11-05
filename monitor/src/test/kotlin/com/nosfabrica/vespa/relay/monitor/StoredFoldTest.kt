@@ -23,7 +23,7 @@ package com.nosfabrica.vespa.relay.monitor
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.fold.RelayAliases
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.StoredFold
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -95,8 +95,7 @@ class StoredFoldTest {
                 tor = null,
             )
         world.candidates()
-        val folding = AliasFolding(RelayAliases(), RelayVerdictRecord(store, ours), AliasProbe(fetch = { _, _, _, _ -> error("the roster never dials") }))
-        return folding.applyVerdicts(urls, world.known).let { it.aliases + it.standIns + it.waiting }
+        return FoldReading.readBack(RelayVerdictRecord(store, ours), urls, world.known)!!.let { it.aliases + it.standIns + it.waiting }
     }
 
     private fun storedFold(store: IEventStore) = StoredFold.over(store, listOf(ours.pubKey), allowOnion = false)

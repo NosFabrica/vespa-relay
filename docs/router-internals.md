@@ -2422,7 +2422,7 @@ caption reading "every relay url this router knows of", and the two are not the
 same corpus: a url leaves the relay lists for reasons of its own (the author who
 listed it revised their 10002, a source was reconfigured, a stream was retired)
 and every measurement this router ever took of it is still in the store, still
-read by `AliasFolding.adoptWorld`. `StreamWorld.candidates` counts them —
+read by `AliasFolding.measure`. `StreamWorld.candidates` counts them —
 `RelayDiscovery.recorded`, our own authors, on the verdict TTL, minus whatever
 this round named — and the tree gets a branch for them beside `dropped` rather
 than inside it, because nothing was decided against them: nobody asked. On a
@@ -2804,7 +2804,7 @@ that — see the verdict section above for the shape and what it does not claim.
 
 **`measure` groups the WORLD, not its candidate set** —
 `RelayVerdictRecord.loadAll` reads every 30166 we still stand behind and
-`AliasFolding.adoptWorld` unions the urls those verdicts are about into the set
+`AliasFolding.measure` unions the urls those verdicts are about into the set
 being grouped. A duplicate is a property of a url next to another one, and the
 candidate set is not the whole neighbourhood: a url's siblings drop out of it for
 reasons that have nothing to do with the fold — held out as known dead by

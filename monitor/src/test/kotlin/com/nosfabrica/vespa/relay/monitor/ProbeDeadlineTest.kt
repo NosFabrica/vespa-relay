@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.Verdict
@@ -426,12 +427,11 @@ class ProbeDeadlineTest {
             // Both urls of the group hang, so it has no yardstick.
             val a = RelayUrlNormalizer.normalize("wss://wedged.example/one")
             val b = RelayUrlNormalizer.normalize("wss://wedged.example/two")
-            val aliases = RelayAliases()
+            val store = newStore()
             val hits = AtomicInteger()
             val fold =
                 AliasFolding(
-                    aliases = aliases,
-                    record = RelayVerdictRecord(newStore(), signer),
+                    record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
                             fetch = { _, _, _, _ ->
@@ -453,7 +453,7 @@ class ProbeDeadlineTest {
             assertEquals(0, learned, "a fold that never got a fingerprint must learn nothing")
             assertTrue(hits.get() > 0, "the pass has to have actually dialled, or this proves nothing")
             // Nothing written, so the group comes back next pass instead of carrying a fold signed off our timeout.
-            assertTrue(aliases.unresolved(listOf(a, b)).isNotEmpty())
+            assertTrue(FoldReading.view(RelayVerdictRecord(store, signer).load(listOf(a, b)), listOf(a, b)).unresolved(listOf(a, b)).isNotEmpty())
         }
 
     @Test

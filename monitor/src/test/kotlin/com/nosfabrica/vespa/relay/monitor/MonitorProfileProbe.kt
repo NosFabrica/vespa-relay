@@ -111,7 +111,6 @@ class MonitorProfileProbe {
         val gate = DialGate(concurrency)
         val folding =
             AliasFolding(
-                RelayAliases(),
                 RelayVerdictRecord(store, signer),
                 probe(MonitorEngine.FOLD_PROCESSOR, RelayAliases.DEFAULT_PROBE_TARGET),
                 gate,

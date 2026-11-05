@@ -132,7 +132,7 @@ class DialPermitTest {
             val both = Rendezvous(2)
             val hosts = listOf("one", "two").flatMap { listOf(RelayUrlNormalizer.normalize("wss://$it.example"), RelayUrlNormalizer.normalize("wss://$it.example/alpha")) }
             val fold =
-                AliasFolding(aliases = RelayAliases(), record = RelayVerdictRecord(newStore(), signer), probe = probe(), gate = DialGate(1), canDial = { url ->
+                AliasFolding(record = RelayVerdictRecord(newStore(), signer), probe = probe(), gate = DialGate(1), canDial = { url ->
                     both.meet(RelayAliases.hostOf(url.url))
                     true
                 })

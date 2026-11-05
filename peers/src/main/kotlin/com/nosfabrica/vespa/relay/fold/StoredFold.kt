@@ -40,11 +40,15 @@ class StoredFold(
     private val worldRefreshMs: Long = WORLD_REFRESH_MS,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    @Volatile private var world: ServerIndex = ServerIndex.EMPTY
+    /** One world read and when it was taken, swapped whole so no reader sees one without the other. */
+    private class World(
+        val index: ServerIndex,
+        val readAtMs: Long,
+    )
 
-    @Volatile private var worldReadAtMs: Long? = null
+    @Volatile private var world: World? = null
 
-    /** Each url's last answer, itself when nothing folds it, so a store that cannot answer leaves the roster as it was. */
+    /** Each folded url's last answer, so a store that cannot answer leaves the roster as it was. */
     private val last = ConcurrentHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
 
     /**
@@ -53,26 +57,28 @@ class StoredFold(
      * which socket to open.
      */
     suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
-        val collapsed = FoldReading.readBack(record, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.takeIf { it != url }?.let { url to it } }.toMap()
+        val collapsed = FoldReading.readBack(record, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.let { url to it } }.toMap()
         val folded = collapsed.aliases + collapsed.standIns + collapsed.waiting
-        for (url in urls) last[url] = folded[url] ?: url
+        for (url in urls) {
+            val onto = folded[url]
+            if (onto == null) last.remove(url) else last[url] = onto
+        }
         return folded
     }
 
     private suspend fun world(): ServerIndex {
-        val readAt = worldReadAtMs
+        val held = world
         val now = clock()
-        if (readAt != null && now - readAt < worldRefreshMs) return world
-        try {
-            world = ServerIndex(readWorld())
-            worldReadAtMs = now
+        if (held != null && now - held.readAtMs < worldRefreshMs) return held.index
+        return try {
+            ServerIndex(readWorld()).also { world = World(it, now) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // The last world stands; the next call reads again.
             System.err.println("router: could not read the fold's world from our records: ${e.message}")
+            held?.index ?: ServerIndex.EMPTY
         }
-        return world
     }
 
     companion object {

@@ -74,7 +74,6 @@ class MonitorReplayProbe {
         val gate = DialGate(CONCURRENCY)
         val folding =
             AliasFolding(
-                RelayAliases(),
                 record,
                 probe(RelayAliases.DEFAULT_PROBE_TARGET),
                 gate,

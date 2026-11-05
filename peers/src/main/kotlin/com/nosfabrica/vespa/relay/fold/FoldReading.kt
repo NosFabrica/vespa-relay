@@ -45,9 +45,15 @@ object FoldReading {
         val waiting: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
     )
 
+    /** The fold over [urls] exactly as [held] states it: the one way any reader builds a view. */
+    fun view(
+        held: RelayVerdictRecord.Verdicts,
+        urls: Collection<NormalizedRelayUrl>,
+    ): RelayAliases = RelayAliases().over(urls, held.aliases, held.distinct)
+
     /**
-     * Urls in, deduplicated urls out, read from the verdicts alone: what a fold's `applyVerdicts`
-     * answers, for a caller with no fold of its own. Null when the store cannot answer.
+     * Urls in, deduplicated urls out, read from the verdicts alone, with no probe. Null when the
+     * store cannot answer, which is said once per read.
      */
     suspend fun readBack(
         record: RelayVerdictRecord,
@@ -62,11 +68,10 @@ object FoldReading {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                System.err.println("router: could not read the fold's verdicts over ${candidates.size} url(s) (${e.javaClass.simpleName}); the caller keeps what it had")
                 return null
             }
-        // A map of its own: a narrower set replaced into a fold's aliases would drop the canonicals
-        // of aliases outside it mid-fold. Only [measure] replaces.
-        val known = RelayAliases().also { it.replace(candidates + mates, held.aliases, held.distinct) }
+        val known = view(held, candidates + mates)
         val collapsed = collapse(candidates, known, present = candidates.toHashSet() + mates)
         val electorate: (NormalizedRelayUrl) -> Boolean = { world.isEmpty() || it in world }
         return collapsed.copy(waiting = known.heldForFold(collapsed.dial, mates, eligibleIn(held, electorate)))
@@ -132,4 +137,26 @@ object FoldReading {
         { url ->
             electorate(url) && url !in held.inconsistent && held.fitness[url]?.value.let { it == null || it == Verdict.PRIME.value }
         }
+
+    /**
+     * Every candidate a fold in [held] names, onto the url it folds onto, whether or not that
+     * url is among them: a known alias is graded `alias` whatever else is in the batch.
+     */
+    fun foldsAmong(
+        held: RelayVerdictRecord.Verdicts,
+        candidates: List<NormalizedRelayUrl>,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val known = view(held, candidates)
+        return candidates.mapNotNull { url -> known.canonicalOf(url).takeIf { it != url }?.let { url to it } }.toMap()
+    }
+
+    /**
+     * Every candidate no fold in [held] decides that another url of its server, among
+     * [candidates] and [world], stands in for: fitness grades the stand-in alone until the fold decides.
+     */
+    fun heldAmong(
+        held: RelayVerdictRecord.Verdicts,
+        candidates: List<NormalizedRelayUrl>,
+        world: Collection<NormalizedRelayUrl> = emptyList(),
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> = view(held, (candidates + world).distinct()).heldForFold(candidates, world, eligibleIn(held) { true })
 }
