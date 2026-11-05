@@ -242,6 +242,34 @@ internal class FitnessDial(
         }
     }
 
+    /** One rung of the ladder that answered, and the shape it asked. */
+    private class Answered(
+        val window: AliasProbe.Window,
+        val shape: List<Int>?,
+    )
+
+    /** What the ask ladder heard, rung by rung. */
+    private class Ladder(
+        /** The first shape that served events. */
+        val served: Answered?,
+        /** The first shape answered with an empty EOSE. */
+        val empty: Answered?,
+        /** Every shape the relay heard and CLOSED, with its words: a refusal is not an empty answer. */
+        val refusals: List<String>,
+        val authRefused: Boolean,
+        /** The last transport word a silent rung left. */
+        val lastReason: String?,
+    ) {
+        /** The rung the grade reads. */
+        val chosen: Answered? get() = served ?: empty
+    }
+
+    /** Page two below where page one ended. */
+    private class SecondPage(
+        val floor: Long,
+        val window: AliasProbe.Compliance,
+    )
+
     /**
      * The dial itself: the ask ladder for "answers", the anchored events for "honours `until`",
      * one NEG-OPEN for "reconciles". Each rung's transport reason is kept so the verdict can say why.
@@ -253,11 +281,65 @@ internal class FitnessDial(
     ): FitnessOutcome? {
         // Handed over the moment the ladder has earned it, so the per-url deadline cannot cost it.
         val settled: (FitnessOutcome) -> Unit = { slot.result = DialResult.Graded(it) }
+        val ladder = walkLadder(url, anchor, slot)
+        gradeRefusals(ladder)?.let { return it }
+        val answered = ladder.chosen ?: return gradeSilence(url, ladder, slot)
+        val walked = answered.window.compliance
+        val readMs = answered.window.firstPageMs
+        unpageableOnPageOne(walked, readMs)?.let { return it }
+        val evidence = evidenceOf(answered)
+
+        // Handed over before any further dial, so the per-url deadline cannot leave the url with no
+        // verdict, and already graded on page one so a cut cannot publish a grade page one refutes.
+        settled(firstPageGrade(walked, evidence, readMs))
+
+        val second = secondPage(url, answered, slot)
+        if (second != null && second.window.seen > 0 && second.window.offWindow == second.window.seen) {
+            // The fault the mirror aborts on: the walk cannot advance.
+            return FitnessOutcome(
+                Verdict.UNPAGEABLE,
+                "honoured the anchor and then ignored the cursor: page two came back entirely above it",
+                pageable = false to "page one walked to ${second.floor}; page two asked below it and answered ${second.window.seen} events, all above it",
+                rttReadMs = readMs,
+                compliant = factOf(walked + second.window),
+            )
+        }
+        val pageable = second?.let(::pageableOf)
+
+        val checked = walked + (second?.window ?: AliasProbe.Compliance())
+        if (compliance.decide(checked) == RelayCompliance.Verdict.NONCOMPLIANT) {
+            return FitnessOutcome(
+                Verdict.NONCOMPLIANT,
+                NONCOMPLIANT_EVIDENCE,
+                pageable = pageable,
+                rttReadMs = readMs,
+                compliant = factOf(checked),
+            )
+        }
+        val compliantFact = factOf(checked)
+
+        // Re-handed with the facts earned so far, in case the NEG-OPEN outlives the url's clock.
+        settled(FitnessOutcome(Verdict.PRIME, evidence, pageable = pageable, compliant = compliantFact, rttReadMs = readMs))
+
+        return FitnessOutcome(
+            Verdict.PRIME,
+            evidence,
+            pageable = pageable,
+            nip77 = nip77Fact(url, anchor, answered.shape, slot),
+            compliant = compliantFact,
+            rttReadMs = readMs,
+        )
+    }
+
+    /** Every shape in [AliasProbe.SHAPES] in turn, until one serves events or the ladder says the url is not there. */
+    private suspend fun walkLadder(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        slot: DialSlot,
+    ): Ladder {
         var lastReason: String? = null
-        // The first shape that served events, else the first answered with an empty EOSE.
-        var served: Pair<AliasProbe.Window, List<Int>?>? = null
-        var empty: Pair<AliasProbe.Window, List<Int>?>? = null
-        // Every shape the relay heard and CLOSED, with its words: a refusal is not an empty answer.
+        var served: Answered? = null
+        var empty: Answered? = null
         val refusals = ArrayList<String>()
         var silent = 0
         // A shape refused for our key: chorus.bonsai.com gates DMs this way and serves profiles openly.
@@ -282,7 +364,7 @@ internal class FitnessDial(
                 continue
             }
             if (ids.isNotEmpty()) {
-                served = window to rung
+                served = Answered(window, rung)
                 break
             }
             // An indexer refuses a bare filter and serves kind 0; a group host serves 39000 alone.
@@ -290,73 +372,95 @@ internal class FitnessDial(
             if (refusal != null) {
                 refusals += refusal
             } else if (empty == null) {
-                empty = window to rung
+                empty = Answered(window, rung)
             }
         }
+        return Ladder(served, empty, refusals, authRefused, lastReason)
+    }
+
+    /** The grade refusals alone earn: our key refused with nothing served, or every shape heard and turned down. */
+    private fun gradeRefusals(ladder: Ladder): FitnessOutcome? {
         // Refused our key on a shape and served nothing anywhere: what it holds is behind the key.
-        if (served == null && authRefused) {
+        if (ladder.served == null && ladder.authRefused) {
             return FitnessOutcome(Verdict.AUTH_REFUSED, "asked for NIP-42 and rejected our key", authRequired = true)
         }
-        val chosen = served ?: empty
-
         // It heard every shape and turned each down: nothing we can generally send gets an answer. A
-        // shape that went silent instead leaves it unproven, and the silence path below decides.
-        if (chosen == null && refusals.size == AliasProbe.SHAPES.size) {
-            val words = refusals.first().take(REFUSAL_QUOTE)
-            return if (refusals.all { it.startsWith(AUTH_REQUIRED, ignoreCase = true) }) {
-                // After our AUTH: a members-only relay that does not count us as one.
-                FitnessOutcome(Verdict.AUTH_REFUSED, "refused every shape it was asked as auth-required: $words", authRequired = true)
-            } else {
-                FitnessOutcome(Verdict.RESTRICTED, "refused every shape it was asked (${AliasProbe.SHAPES.joinToString { AliasProbe.shapeOf(it) }}): $words")
-            }
+        // shape that went silent instead leaves it unproven, and the silence path decides.
+        if (ladder.chosen != null || ladder.refusals.size != AliasProbe.SHAPES.size) return null
+        val words = ladder.refusals.first().take(REFUSAL_QUOTE)
+        return if (ladder.refusals.all { it.startsWith(AUTH_REQUIRED, ignoreCase = true) }) {
+            // After our AUTH: a members-only relay that does not count us as one.
+            FitnessOutcome(Verdict.AUTH_REFUSED, "refused every shape it was asked as auth-required: $words", authRequired = true)
+        } else {
+            FitnessOutcome(Verdict.RESTRICTED, "refused every shape it was asked (${AliasProbe.SHAPES.joinToString { AliasProbe.shapeOf(it) }}): $words")
         }
-        val answered = chosen?.first
-        val shape = chosen?.second
-        val readMs = answered?.firstPageMs
-        if (answered == null) {
-            // A relay that CLOSED one shape spoke, so it is not silent, and the quiet shapes keep it unproven.
-            if (refusals.isNotEmpty()) {
-                slot.result = DialResult.Deferred(Deferral.PARTLY_REFUSED)
-                return null
-            }
-            val retryAfterMs = Silence.retryAfterSeconds(lastReason)?.let { it * 1000 }
-            return silenced(url, lastReason, unmeasured = { slot.result = DialResult.Unmeasured(it) }) { slot.result = DialResult.Deferred(it, retryAfterMs) }
+    }
+
+    /** The url answered no shape: a deferral where some shape was refused, else what the last transport word says. */
+    private suspend fun gradeSilence(
+        url: NormalizedRelayUrl,
+        ladder: Ladder,
+        slot: DialSlot,
+    ): FitnessOutcome? {
+        // A relay that CLOSED one shape spoke, so it is not silent, and the quiet shapes keep it unproven.
+        if (ladder.refusals.isNotEmpty()) {
+            slot.result = DialResult.Deferred(Deferral.PARTLY_REFUSED)
+            return null
         }
+        val retryAfterMs = Silence.retryAfterSeconds(ladder.lastReason)?.let { it * 1000 }
+        return silenced(url, ladder.lastReason, unmeasured = { slot.result = DialResult.Unmeasured(it) }) { slot.result = DialResult.Deferred(it, retryAfterMs) }
+    }
 
-        val walked = answered.compliance
-        val seen = walked.seen
-
-        // All-or-nothing: a relay that puts only some events above the cursor still advances it.
-        if (walked.offWindow > 0 && walked.offWindow == seen) {
-            return FitnessOutcome(
-                Verdict.UNPAGEABLE,
-                "every event answered above the `until` it was asked for",
-                pageable = false to "${walked.offWindow} of $seen events came back above the anchor — the cursor was ignored",
-                rttReadMs = readMs,
-                // Asked of the judge, not asserted: one event above the anchor is below the compliance floors.
-                compliant = factOf(walked),
-            )
-        }
-        val evidence =
-            if (seen == 0) {
-                "answered every shape it was asked empty, or refused it, at a settled anchor"
-            } else {
-                "answered $seen events at a settled anchor" + (shape?.let { ", through ${AliasProbe.shapeOf(it)}" }.orEmpty())
-            }
-
-        // Handed over before any further dial, so the per-url deadline cannot leave the url with no
-        // verdict, and already graded on page one so a cut cannot publish a grade page one refutes.
-        settled(
-            if (compliance.decide(walked) == RelayCompliance.Verdict.NONCOMPLIANT) {
-                FitnessOutcome(Verdict.NONCOMPLIANT, NONCOMPLIANT_EVIDENCE, rttReadMs = readMs, compliant = factOf(walked))
-            } else {
-                FitnessOutcome(Verdict.PRIME, evidence, rttReadMs = readMs, compliant = factOf(walked))
-            },
+    /** All-or-nothing: a relay that puts only some events above the cursor still advances it. */
+    private fun unpageableOnPageOne(
+        walked: AliasProbe.Compliance,
+        readMs: Long?,
+    ): FitnessOutcome? {
+        if (walked.offWindow == 0 || walked.offWindow != walked.seen) return null
+        return FitnessOutcome(
+            Verdict.UNPAGEABLE,
+            "every event answered above the `until` it was asked for",
+            pageable = false to "${walked.offWindow} of ${walked.seen} events came back above the anchor — the cursor was ignored",
+            rttReadMs = readMs,
+            // Asked of the judge, not asserted: one event above the anchor is below the compliance floors.
+            compliant = factOf(walked),
         )
+    }
 
-        // The second page, through the rung that answered and under its own clock; a cut claims nothing.
+    /** What a `prime` says the url answered. */
+    private fun evidenceOf(answered: Answered): String {
+        val seen = answered.window.compliance.seen
+        return if (seen == 0) {
+            "answered every shape it was asked empty, or refused it, at a settled anchor"
+        } else {
+            "answered $seen events at a settled anchor" + (answered.shape?.let { ", through ${AliasProbe.shapeOf(it)}" }.orEmpty())
+        }
+    }
+
+    /** The grade page one supports on its own. */
+    private fun firstPageGrade(
+        walked: AliasProbe.Compliance,
+        evidence: String,
+        readMs: Long?,
+    ): FitnessOutcome =
+        if (compliance.decide(walked) == RelayCompliance.Verdict.NONCOMPLIANT) {
+            FitnessOutcome(Verdict.NONCOMPLIANT, NONCOMPLIANT_EVIDENCE, rttReadMs = readMs, compliant = factOf(walked))
+        } else {
+            FitnessOutcome(Verdict.PRIME, evidence, rttReadMs = readMs, compliant = factOf(walked))
+        }
+
+    /**
+     * The second page, through the rung that answered and under its own clock; a cut claims nothing.
+     * Null when it was not asked, was cut, or never answered.
+     */
+    private suspend fun secondPage(
+        url: NormalizedRelayUrl,
+        answered: Answered,
+        slot: DialSlot,
+    ): SecondPage? {
+        val shape = answered.shape
         // A group host's metadata is its whole list of groups, whatever the cursor: there is no page two.
-        val floor = answered.oldestAt.takeIf { shape != RelayAliases.GROUP_METADATA_KINDS }
+        val floor = answered.window.oldestAt.takeIf { shape != RelayAliases.GROUP_METADATA_KINDS }
         val asked =
             if (floor == null) {
                 null
@@ -369,57 +473,32 @@ internal class FitnessDial(
         // Boxed for [Reconciled]'s reason: only the clock firing belongs in the count.
         if (floor != null && asked == null) slot.secondPageCut = true
         val second = asked?.window
-
         // An empty first page proves the relay answers, not that it can be walked; no claim is published.
         if (second == null) slot.pageUnproven = true
+        return second?.let { SecondPage(checkNotNull(floor), it) }
+    }
 
-        val pageable =
-            when {
-                second == null -> {
-                    null
-                }
-
-                // A drain is the strongest answer: a relay ignoring the cursor would have served
-                // its newest again.
-                second.seen == 0 -> {
-                    true to "page two below $floor drained — the walk terminates"
-                }
-
-                // The fault the mirror aborts on: the walk cannot advance.
-                second.offWindow == second.seen -> {
-                    return FitnessOutcome(
-                        Verdict.UNPAGEABLE,
-                        "honoured the anchor and then ignored the cursor: page two came back entirely above it",
-                        pageable = false to "page one walked to $floor; page two asked below it and answered ${second.seen} events, all above it",
-                        rttReadMs = readMs,
-                        compliant = factOf(walked + second),
-                    )
-                }
-
-                else -> {
-                    true to
-                        "walked two pages, cursor advanced past $floor " +
-                        "(${second.seen - second.offWindow} of ${second.seen} event(s) below it)"
-                }
-            }
-
-        val checked = walked + (second ?: AliasProbe.Compliance())
-        if (compliance.decide(checked) == RelayCompliance.Verdict.NONCOMPLIANT) {
-            return FitnessOutcome(
-                Verdict.NONCOMPLIANT,
-                NONCOMPLIANT_EVIDENCE,
-                pageable = pageable,
-                rttReadMs = readMs,
-                compliant = factOf(checked),
-            )
+    /** The `pageable` fact a second page that did not ignore the cursor earns. */
+    private fun pageableOf(second: SecondPage): Pair<Boolean, String> =
+        if (second.window.seen == 0) {
+            // A drain is the strongest answer: a relay ignoring the cursor would have served its newest again.
+            true to "page two below ${second.floor} drained — the walk terminates"
+        } else {
+            true to
+                "walked two pages, cursor advanced past ${second.floor} " +
+                "(${second.window.seen - second.window.offWindow} of ${second.window.seen} event(s) below it)"
         }
-        val compliantFact = factOf(checked)
 
-        // Re-handed with the facts earned so far, in case the NEG-OPEN outlives the url's clock.
-        settled(FitnessOutcome(Verdict.PRIME, evidence, pageable = pageable, compliant = compliantFact, rttReadMs = readMs))
-
-        // One NEG-OPEN against a sliver of the window: a normal return is NIP-77 spoken, the
-        // dedicated exception is it declined, and anything else writes nothing.
+    /**
+     * One NEG-OPEN against a sliver of the window: a normal return is NIP-77 spoken, the
+     * dedicated exception is it declined, and anything else writes nothing.
+     */
+    private suspend fun nip77Fact(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        shape: List<Int>?,
+        slot: DialSlot,
+    ): Pair<Boolean, String>? {
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
         progress.holding(url.url, STAGE_NIP77)
         val reconciled =
@@ -439,16 +518,7 @@ internal class FitnessDial(
                 )
             }
         if (reconciled == null) slot.negOpenCut = true
-        val nip77 = reconciled?.fact
-
-        return FitnessOutcome(
-            Verdict.PRIME,
-            evidence,
-            pageable = pageable,
-            nip77 = nip77,
-            compliant = compliantFact,
-            rttReadMs = readMs,
-        )
+        return reconciled?.fact
     }
 
     /**
