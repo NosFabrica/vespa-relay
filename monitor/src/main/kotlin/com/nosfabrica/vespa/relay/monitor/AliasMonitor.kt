@@ -172,8 +172,8 @@ class AliasMonitor(
                 Job.FAST_LANE -> {
                     // Taken before the read: a list created during it is in the next window, whether or not this one saw it.
                     val lookingAt = System.currentTimeMillis() / 1000
-                    // Advanced only past a tick that ran, so a failed one's window is looked at again.
-                    if (guarded("fast lane") { runFastLane(lastLookSec) } != null) lastLookSec = lookingAt
+                    // Advanced only past a tick whose read and every pass completed, so a failed one's window is looked at again.
+                    if (guarded("fast lane") { runFastLane(lastLookSec) } == true) lastLookSec = lookingAt
                     laneAt = laneEveryMs?.let { System.currentTimeMillis() + it }
                 }
 
@@ -187,7 +187,10 @@ class AliasMonitor(
 
     private fun untilMs(atMs: Long): Long = atMs - System.currentTimeMillis()
 
-    /** Runs [work], logging anything it throws; null when it threw. Only this coroutine's own cancellation propagates. */
+    /**
+     * Runs [work], logging anything it throws but a [StandingUnread], which its pass already said; null when it threw.
+     * Only this coroutine's own cancellation propagates.
+     */
     private suspend fun <T> guarded(
         what: String,
         work: suspend () -> T,
@@ -197,7 +200,7 @@ class AliasMonitor(
         } catch (e: Exception) {
             // A CancellationException while this coroutine is still active is someone else's, so one failure.
             currentCoroutineContext().ensureActive()
-            System.err.println("monitor: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            if (e !is StandingUnread) System.err.println("monitor: $what failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             null
         }
 
@@ -210,12 +213,12 @@ class AliasMonitor(
         return landed
     }
 
-    /** One lane tick: the urls named since [sinceSec], through every [fastLanePasses] entry in order. */
-    suspend fun runFastLane(sinceSec: Long): Int {
-        val src = source ?: return 0
+    /** One lane tick: the urls named since [sinceSec], through every [fastLanePasses] entry in order. True when every pass completed. */
+    suspend fun runFastLane(sinceSec: Long): Boolean {
+        val src = source ?: return true
         // Never behind the last sweep's read: what it saw is graded, and a read outage must not grow the window without bound.
         val fresh = src.candidatesSince(maxOf(sinceSec, src.listsReadFromSec ?: sinceSec))
-        if (fresh.isEmpty()) return 0
+        if (fresh.isEmpty()) return true
         System.err.println("monitor: fast lane — ${fresh.size} url(s) named since the last look")
         return runEach(fastLanePasses, RunKind.FAST_LANE, fresh)
     }
@@ -248,17 +251,17 @@ class AliasMonitor(
     }
 
     /**
-     * [pass]es over [urls] in order, each guarded so one failing does not cost the passes after it.
+     * [pass]es over [urls] in order, each guarded so one failing does not cost the passes after it; true when none failed.
      * Every row's clock is stamped, an empty sweep's included; only urls are measured.
      */
     private suspend fun runEach(
         passes: List<Pass>,
         kind: RunKind,
         urls: List<NormalizedRelayUrl>,
-    ): Int {
-        var learned = 0
+    ): Boolean {
+        var completed = true
         for (pass in passes) {
-            learned += guarded("${kind.label} pass") {
+            guarded("${kind.label} pass") {
                 pass.progress?.begin()
                 try {
                     // Empty, not "fewer than two": the per-url passes grade a lone url, and the fold refuses a world of one itself.
@@ -267,9 +270,9 @@ class AliasMonitor(
                     // A cancelled or thrown pass still stamps its clock.
                     pass.progress?.finish()
                 }
-            } ?: 0
+            } ?: run { completed = false }
         }
-        return learned
+        return completed
     }
 
     companion object {

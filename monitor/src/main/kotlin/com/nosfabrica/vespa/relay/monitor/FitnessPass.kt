@@ -123,7 +123,7 @@ class FitnessPass(
             // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
             val mates = world().matesOf(candidates)
             // After the passes before this one wrote; without the standing folds an alias would be graded as its own relay.
-            val held = readStanding("fitness", label) { record.load(candidates + mates) } ?: return 0
+            val held = readStanding("fitness", label) { record.load(candidates + mates) }
             val free = freeRefusals(held, candidates, foldedAway, inconsistent)
             val graded = candidates.filter { it !in free }
             // A url the fold has not decided waits behind its server's stand-in: grading it too would

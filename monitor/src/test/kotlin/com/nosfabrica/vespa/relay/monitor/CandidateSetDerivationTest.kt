@@ -240,6 +240,19 @@ class CandidateSetDerivationTest {
         }
 
     @Test
+    fun `a url the lane handed over is handed again when the tick is retried`(): Unit =
+        runBlocking {
+            // A tick whose passes failed is retried over the same window; being known by then must not hold the url back.
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(event(10002, arrayOf("r", "wss://newcomer.example", "write")))
+            val world = world(store, emptyList())
+
+            assertEquals(listOf("wss://newcomer.example/"), world.candidatesSince(0).map { it.url })
+            assertTrue(RelayUrlNormalizer.normalize("wss://newcomer.example") in world.known, "the lane's url was not made known")
+            assertEquals(listOf("wss://newcomer.example/"), world.candidatesSince(0).map { it.url }, "a known url was held out of the retry")
+        }
+
+    @Test
     fun `a sweep that read the lists says from when, so the lane need not look behind it`() =
         runBlocking {
             val world = world(storeWithPerNpubUrls(), exclude = emptyList())

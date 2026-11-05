@@ -118,7 +118,7 @@ class ConsistencyPass(
         val startedMs = System.currentTimeMillis()
         // The other urls on each candidate's server, read with it: a fast-lane batch holds only what is new.
         val mates = world().matesOf(candidates)
-        val held = readStanding("stability", label) { record.load(candidates + mates) } ?: return 0
+        val held = readStanding("stability", label) { record.load(candidates + mates) }
         // A folded url is never walked; the monitor hands every pass the raw pre-fold list.
         val folded = held.aliases.keys
 

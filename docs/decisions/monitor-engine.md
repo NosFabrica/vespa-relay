@@ -540,3 +540,14 @@ the memo so the next read walks again, and the memo stays one CAS on an
 `AtomicReference`. A walk cancelled by its sweep ending reaches a live reader as
 an ordinary exception, never as a `CancellationException`.
 `SweepWalkSurvivesReaderCancelTest` holds both.
+
+**The lane's window moves only past a tick whose passes completed.** It moved
+past any tick whose read worked, but `runEach` guards each pass and a pass whose
+standing read failed returned 0, so a tick whose passes all failed still moved the
+window and its urls waited for the next sweep. `runEach` now reports whether every
+pass completed, and `readStanding` throws `StandingUnread` after saying its line
+instead of handing back null, so the scheduler counts that pass as failed without
+logging it twice. A url `candidatesSince` made known on the failed tick is handed
+again on the retry: `known` feeds the roster's stand-in election and filters
+nothing the lane hands over. A pass that keeps failing re-reads a window that
+never reaches behind the last sweep's read of the lists.

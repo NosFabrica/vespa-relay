@@ -89,7 +89,7 @@ class AliasFolding(
         val startedMs = System.currentTimeMillis()
 
         // The store is authoritative on every pass, which is what gives its TTL its teeth.
-        val held = readStanding("fold", label) { readWorld(label, candidates) } ?: return 0
+        val held = readStanding("fold", label) { readWorld(label, candidates) }
         // The candidates, first so the caller's order holds, and every survivor a verdict names; never the urls that folded away.
         val world = (LinkedHashSet(candidates) + held.aliases.values + held.distinct).toList()
         // A sweep's world is everything the fold can be asked about; a fast-lane batch is a handful of urls.

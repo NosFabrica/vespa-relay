@@ -41,6 +41,7 @@ import java.io.PrintStream
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** A pass that cannot read the verdicts it would publish against dials nothing and signs nothing. */
@@ -84,7 +85,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val fold = AliasFolding(record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, fold.measure(RunKind.SWEEP, urls))
+            assertFailsWith<StandingUnread> { fold.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "fold")
         }
 
@@ -113,7 +114,7 @@ class StandingReadTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
             val pass = ConsistencyPass(consistency = RelayConsistency(), record = RelayVerdictRecord(Unreadable(store), signer), probe = probe())
 
-            assertEquals(0, pass.measure(RunKind.SWEEP, urls))
+            assertFailsWith<StandingUnread> { pass.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "stability")
         }
 
@@ -130,7 +131,7 @@ class StandingReadTest {
                     reconcile = { _, _ -> },
                 )
 
-            pass.measure(RunKind.SWEEP, urls)
+            assertFailsWith<StandingUnread> { pass.measure(RunKind.SWEEP, urls) }
             assertNothingSigned(store, "fitness")
         }
 
@@ -173,9 +174,9 @@ class StandingReadTest {
 
         val said =
             listOf(
-                "fold" to withinDeadline { assertEquals(0, fold.measure(RunKind.SWEEP, urls)) },
-                "stability" to withinDeadline { assertEquals(0, stability.measure(RunKind.SWEEP, urls)) },
-                "fitness" to withinDeadline { fitness.measure(RunKind.SWEEP, urls) },
+                "fold" to withinDeadline { assertFailsWith<StandingUnread> { fold.measure(RunKind.SWEEP, urls) } },
+                "stability" to withinDeadline { assertFailsWith<StandingUnread> { stability.measure(RunKind.SWEEP, urls) } },
+                "fitness" to withinDeadline { assertFailsWith<StandingUnread> { fitness.measure(RunKind.SWEEP, urls) } },
             )
         for ((pass, err) in said) {
             assertNothingSigned(store, pass)
