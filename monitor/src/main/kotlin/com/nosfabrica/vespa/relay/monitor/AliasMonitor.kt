@@ -59,7 +59,25 @@ class AliasMonitor(
     private val fastLanePasses: List<Pass> = emptyList(),
     /** How often a pass's writes the store did not take are replayed; null turns it off. */
     private val retryEveryMs: Long? = DEFAULT_RETRY_MS,
+    /** Brackets each sweep, so its reads of our own records come off one walk; the lane and the retry read the store. */
+    private val sweepRecords: SweepRecords = SweepRecords.NONE,
 ) {
+    /** Starts and ends what one sweep reads our own records from. */
+    interface SweepRecords {
+        fun begin()
+
+        fun end()
+
+        companion object {
+            val NONE =
+                object : SweepRecords {
+                    override fun begin() = Unit
+
+                    override fun end() = Unit
+                }
+        }
+    }
+
     /** One pass over one run's urls, returning how many verdicts it learned. */
     fun interface Pass {
         suspend fun measure(
@@ -203,10 +221,15 @@ class AliasMonitor(
 
     /** One sweep: derive the candidate set, then run every pass over it in order. True when there was any. */
     suspend fun runPass(): Boolean {
-        // Derived now, so no stream's discovery clock decides what this pass sees.
-        val urls = source?.let { derive(it) }.orEmpty()
-        runEach(passes, RunKind.SWEEP, urls)
-        return urls.isNotEmpty()
+        sweepRecords.begin()
+        try {
+            // Derived now, so no stream's discovery clock decides what this pass sees.
+            val urls = source?.let { derive(it) }.orEmpty()
+            runEach(passes, RunKind.SWEEP, urls)
+            return urls.isNotEmpty()
+        } finally {
+            sweepRecords.end()
+        }
     }
 
     /** The sweep's candidate set off [src], bracketed on its row; empty when the derivation failed. */

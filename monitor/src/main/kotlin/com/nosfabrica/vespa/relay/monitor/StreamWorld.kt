@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorTransport
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
@@ -54,6 +55,10 @@ internal class StreamWorld(
     private val recentlyGraded: suspend (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
     /** Of these urls, the ones still backing off from a deferral; the fast lane skips them too. */
     private val backingOff: (Collection<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl> = { emptySet() },
+    /** Our own records stamped at or after a second; the monitor's record serves them off the sweep's walk. */
+    private val ownRecordsSince: suspend (Long) -> List<Event> = { since ->
+        if (self == null) emptyList() else RelayVerdictRecord.ownRecordsIn(store, self, since)
+    },
 ) : AliasMonitor.CandidateSource {
     /** What the last derivation started from and dropped; null until one has run. */
     @Volatile
@@ -97,13 +102,7 @@ internal class StreamWorld(
         )
 
     /** Every url one of our own records is about, on the verdict TTL. */
-    private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
-        RelayDiscovery.recorded(
-            store,
-            authors = listOfNotNull(self),
-            maxAgeSeconds = RelayVerdictRecord.DEFAULT_TTL_SECONDS,
-            allowOnion = tor != null,
-        )
+    private suspend fun ownRecords(): Set<NormalizedRelayUrl> = RelayDiscovery.recordedIn(ownRecordsSince(nowSeconds() - RelayVerdictRecord.DEFAULT_TTL_SECONDS), allowOnion = tor != null)
 
     /**
      * The sweep's candidate set. Urls a signed record calls dead are held out here rather than

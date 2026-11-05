@@ -212,10 +212,16 @@ object RelayDiscovery {
     ): Set<NormalizedRelayUrl> {
         if (authors.isEmpty()) return emptySet()
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = authors, since = now - maxAgeSeconds)
-        val found = HashSet<NormalizedRelayUrl>()
-        scan(store, filter, SCAN_PAGE) { event -> urlOf(event, allowOnion)?.let(found::add) }
-        return found
+        val found = ArrayList<Event>()
+        scan(store, filter, SCAN_PAGE) { found += it }
+        return recordedIn(found, allowOnion)
     }
+
+    /** The urls these records are about, by [recorded]'s rule. */
+    fun recordedIn(
+        records: Iterable<Event>,
+        allowOnion: Boolean = false,
+    ): Set<NormalizedRelayUrl> = records.mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
 
     /**
      * Records whose current fitness label is [verdict], signed by these identities. The tag index
@@ -358,7 +364,7 @@ object RelayDiscovery {
         }
     }
 
-    private const val SCAN_PAGE = 10_000
+    internal const val SCAN_PAGE = 10_000
 
     /** A `created_at` holding more matches than one page may ask for; it is the only cursor the store pages on. */
     private fun reportTruncatedSecond(

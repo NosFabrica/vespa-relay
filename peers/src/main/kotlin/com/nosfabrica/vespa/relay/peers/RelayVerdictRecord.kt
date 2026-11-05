@@ -36,7 +36,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
@@ -109,24 +111,33 @@ class RelayVerdictRecord(
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
-        val permits = Semaphore(LOAD_CONCURRENCY)
-        // Taken in chunk order once all have answered, so the result does not depend on which came back first.
-        val pages =
-            coroutineScope {
-                candidates
-                    .map { it.url }
-                    .chunked(QUERY_CHUNK)
-                    .map { chunk ->
-                        async {
-                            permits.withPermit {
-                                newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk))))
-                            }
-                        }
-                    }.awaitAll()
-            }
         val held = Building()
-        for (page in pages) held.take(page, floor)
+        val own = ownSweep()
+        if (own != null) {
+            val (asked, kept) = own.split(candidates.mapTo(LinkedHashSet()) { it.url })
+            held.take(kept, floor)
+            for (page in readByD(asked)) held.take(page, floor)
+            return held.verdicts()
+        }
+        for (page in readByD(candidates.map { it.url })) held.take(page, floor)
         return held.verdicts()
+    }
+
+    /** The records of these `d` values, chunked, each chunk's newest per url, in chunk order once all have answered. */
+    private suspend fun readByD(subjects: Collection<String>): List<Collection<Event>> {
+        if (subjects.isEmpty()) return emptyList()
+        val permits = Semaphore(LOAD_CONCURRENCY)
+        return coroutineScope {
+            subjects
+                .chunked(QUERY_CHUNK)
+                .map { chunk ->
+                    async {
+                        permits.withPermit {
+                            newestPerUrl(readRecords(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = readFrom, tags = mapOf("d" to chunk))))
+                        }
+                    }
+                }.awaitAll()
+        }
     }
 
     /** One record per url: with several signers the newest speaks for it, so no url mixes two monitors' tags. */
@@ -134,7 +145,7 @@ class RelayVerdictRecord(
         if (readFrom.size < 2) return records
         val newest = HashMap<String, Event>(records.size)
         for (event in records) {
-            val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
+            val subject = subjectOf(event) ?: continue
             if (event.createdAt > (newest[subject]?.createdAt ?: Long.MIN_VALUE)) newest[subject] = event
         }
         return newest.values
@@ -160,6 +171,11 @@ class RelayVerdictRecord(
         if (readFrom.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
+        val own = ownSweep()
+        if (own != null) {
+            held.take(ownSince(own, floor), floor)
+            return held.verdicts()
+        }
         // Buffered only when several signers can name one url; one signer's records stream through.
         val several = if (readFrom.size > 1) ArrayList<Event>() else null
         RelayDiscovery.scan(
@@ -171,6 +187,113 @@ class RelayVerdictRecord(
         ) { event -> if (several != null) several += event else held.take(event, floor) }
         several?.let { held.take(newestPerUrl(it), floor) }
         return held.verdicts()
+    }
+
+    /**
+     * Every record of ours stamped at or after [since]: off the sweep's walk while one is under way,
+     * else one paged walk of the store. Throws when the store cannot answer.
+     */
+    suspend fun ownRecordsSince(since: Long): List<Event> {
+        val self = signer?.pubKey ?: return emptyList()
+        sweepRecords()?.let { return ownSince(it, since) }
+        return ownRecordsIn(store, self, since)
+    }
+
+    /** [own]'s records stamped at or after [since], those of urls an edit failed on read afresh. */
+    private suspend fun ownSince(
+        own: OwnRecords,
+        since: Long,
+    ): List<Event> {
+        val (asked, kept) = own.split(null)
+        return (kept + readByD(asked).flatten()).filter { it.createdAt >= since }
+    }
+
+    /**
+     * Our own records as one paged walk read them, with every edit since folded in: what a sweep reads
+     * in place of the store. A url whose edit failed is [unknown], since the store may or may not hold it.
+     */
+    private class OwnRecords(
+        /** Raw `d` value -> our newest record for it. */
+        val byD: ConcurrentHashMap<String, Event>,
+    ) {
+        val unknown: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Of [subjects] (null for all), the ones to read afresh, and the records held for the rest. */
+        fun split(subjects: Collection<String>?): Pair<List<String>, List<Event>> {
+            val asked = ArrayList<String>()
+            val held = ArrayList<Event>()
+            if (subjects == null) {
+                asked += unknown
+                for ((d, event) in byD) if (d !in unknown) held += event
+            } else {
+                for (d in subjects) if (d in unknown) asked += d else byD[d]?.let(held::add)
+            }
+            return asked to held
+        }
+    }
+
+    /** One sweep's [OwnRecords], walked on first use. */
+    private class Sweep {
+        val walk = Mutex()
+
+        @Volatile
+        var records: OwnRecords? = null
+    }
+
+    @Volatile
+    private var sweep: Sweep? = null
+
+    /**
+     * Serve the reads of our own records from one paged walk, taken on the first read, until [endSweep].
+     * Only the monitor's scheduler calls it, around one sweep, so nothing else writes our records meanwhile.
+     */
+    fun beginSweep() {
+        if (signer != null) sweep = Sweep()
+    }
+
+    fun endSweep() {
+        sweep = null
+    }
+
+    /** The sweep's records, walked now if this is the first read; null outside a sweep. Throws when the walk fails. */
+    private suspend fun sweepRecords(): OwnRecords? {
+        val s = sweep ?: return null
+        s.records?.let { return it }
+        return s.walk.withLock { s.records ?: walkOwn().also { s.records = it } }
+    }
+
+    /** [sweepRecords], for a reader whose signers are exactly our own. */
+    private suspend fun ownSweep(): OwnRecords? = if (readFrom == listOfNotNull(signer?.pubKey)) sweepRecords() else null
+
+    private suspend fun walkOwn(): OwnRecords {
+        val self = checkNotNull(signer).pubKey
+        val byD = ConcurrentHashMap<String, Event>()
+        RelayDiscovery.scan(
+            store,
+            Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self)),
+            RECORD_PAGE,
+            caller = StoreCalls.CALLER_MONITOR_VERDICTS,
+            pageDeadlineMs = readDeadlineMs,
+        ) { event ->
+            val d = subjectOf(event) ?: return@scan
+            // The newest, as a `#d` read of one url takes it.
+            byD.merge(d, event) { held, next -> if (next.createdAt > held.createdAt) next else held }
+        }
+        return OwnRecords(byD)
+    }
+
+    /** What an edit of [url] did to the sweep's records: its signed record, or null when the store may not hold it. */
+    private fun settled(
+        url: NormalizedRelayUrl,
+        event: Event?,
+    ) {
+        val own = sweep?.records ?: return
+        if (event == null) {
+            own.unknown += url.url
+        } else {
+            own.byD[url.url] = event
+            own.unknown -= url.url
+        }
     }
 
     /** The sets [Verdicts] carries while a walk fills them in. */
@@ -458,9 +581,13 @@ class RelayVerdictRecord(
         val signer = signer ?: return null
         // Said on stderr too: a pass's writer counts a throw as a declined write.
         check(editing.add(url)) { "two verdict edits of ${url.url} overlapped".also { System.err.println("monitor: BUG — $it") } }
+        var written: Event? = null
         try {
-            return editOnce(url, owns, add, signer)
+            written = editOnce(url, owns, add, signer)
+            return written
         } finally {
+            // In the finally, so a cut edit, which may have landed, is read afresh too.
+            settled(url, written)
             editing.remove(url)
         }
     }
@@ -557,13 +684,29 @@ class RelayVerdictRecord(
     /** This url's current record, null when nothing holds one, and a throw when the store cannot answer. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
+        val own = sweepRecords()
+        if (own != null && url.url !in own.unknown) return own.byD[url.url]
         val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url)))
         return storeCall(StoreCalls.CALLER_MONITOR_PUBLISH, StoreCalls.OP_QUERY, StoreCalls.summarise(filter)) {
             store.query<Event>(filter)
         }.maxByOrNull { it.createdAt }
     }
 
+    /** The url a record is about, as written. */
+    private fun subjectOf(event: Event): String? = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1)
+
     companion object {
+        /** Every record [self] signed that [store] holds stamped at or after [since], in one paged walk. */
+        suspend fun ownRecordsIn(
+            store: IEventStore,
+            self: String,
+            since: Long,
+        ): List<Event> {
+            val found = ArrayList<Event>()
+            RelayDiscovery.scan(store, Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = since), RelayDiscovery.SCAN_PAGE) { found += it }
+            return found
+        }
+
         /** The fitness pass's own tag: a NIP-32 label under [FITNESS_NAMESPACE]. */
         private fun isFitnessLabel(tag: Array<String>): Boolean = tag.size > LABEL_NAMESPACE_INDEX && tag[0] == LABEL_TAG && tag[LABEL_NAMESPACE_INDEX] == FITNESS_NAMESPACE
 

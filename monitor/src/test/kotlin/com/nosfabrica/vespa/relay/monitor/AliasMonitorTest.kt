@@ -106,6 +106,37 @@ class AliasMonitorTest {
         }
 
     @Test
+    fun `a sweep reads our records off one walk from derivation to its last pass, and the lane does not`(): Unit =
+        runBlocking {
+            var open = false
+            val seen = mutableListOf<Pair<RunKind, Boolean>>()
+            val pass = AliasMonitor.Pass { kind, _ -> 0.also { seen += kind to open } }
+            val world =
+                object : AliasMonitor.CandidateSource {
+                    override suspend fun candidates(): List<NormalizedRelayUrl> = listOf(a, b).also { seen += RunKind.SWEEP to open }
+
+                    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = listOf(c)
+                }
+            val records =
+                object : AliasMonitor.SweepRecords {
+                    override fun begin() {
+                        open = true
+                    }
+
+                    override fun end() {
+                        open = false
+                    }
+                }
+            val m = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined), source = world, fastLanePasses = listOf(pass), sweepRecords = records)
+
+            m.runPass()
+            m.runFastLane(0)
+
+            assertEquals(listOf(RunKind.SWEEP to true, RunKind.SWEEP to true, RunKind.FAST_LANE to false), seen)
+            assertTrue(!open, "the sweep's walk outlived it")
+        }
+
+    @Test
     fun `the derivation reports on a row of its own, bracketed like the passes it feeds`() =
         runBlocking {
             val processors = Processors()

@@ -114,6 +114,7 @@ class MonitorEngine(
             progress = sourceRow,
             recentlyGraded = ::recentlyGraded,
             backingOff = ::backingOff,
+            ownRecordsSince = record::ownRecordsSince,
         )
 
     /** The duplicate-url fold. One instance for the reader and the prober. */
@@ -173,6 +174,12 @@ class MonitorEngine(
             // needs a host's whole group and rides the sweep.
             fastLaneEveryMs = settings.fastLaneSeconds?.times(1000L),
             fastLanePasses = listOf(consistencyPass, fitness),
+            sweepRecords =
+                object : AliasMonitor.SweepRecords {
+                    override fun begin() = record.beginSweep()
+
+                    override fun end() = record.endSweep()
+                },
         )
 
     init {

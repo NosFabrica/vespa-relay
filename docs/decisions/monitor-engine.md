@@ -447,3 +447,22 @@ one by one paid a full scan per insert. Now a full cache drops the lapsed answer
 and then the oldest until it is 90% full, so the scan runs once per 5,000 inserts.
 Which hosts are re-asked changes only at the margin, and only towards asking
 fresh: no answer is reused past `reuseMs` either way.
+
+**A sweep reads our own records off one walk.** Per sweep: 4 walks of our 30166
+corpus plus one `#d` read per verdict write → 1 walk. The four were
+`StreamWorld`'s `ownRecords`, the fold's `loadAll`, and the stability and fitness
+passes' `load(candidates + mates)`, each a `#d` read of every candidate 500 urls at
+a time; the per-write read was `currentRecord`, before every edit. Now
+`AliasMonitor.runPass` brackets the sweep (`RelayVerdictRecord.beginSweep` /
+`endSweep`), the first read walks every record we signed, newest per `d`, and
+every read and edit base inside the sweep comes off that walk. An edit that lands
+folds its signed record back in; one that did not (refused, failed, or cut by a
+deadline, so it may have landed anyway) marks its url unknown, and that url is
+read from the store again. Only this process signs our records, and every
+signature goes through the one `RelayVerdictRecord`, so the walk stays what the
+store holds. The fast lane and the pending-write retry run between sweeps and
+read the store as before: their reads are a few `#d` chunks, and a walk kept for
+hours between sweeps would have to stay true across every write path of those
+hours to save them. `SweepRecordsTest` runs one sweep's reads and three passes'
+writes both ways over the same seeded store and compares every read and every
+record written.
