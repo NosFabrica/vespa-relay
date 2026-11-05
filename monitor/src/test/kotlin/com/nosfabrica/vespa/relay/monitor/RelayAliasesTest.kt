@@ -268,7 +268,7 @@ class RelayAliasesTest {
         // Ordered worst-first, so the leader is chosen by preference and not by position.
         val group = listOf(nosBeacon, nosAlpha, nos)
 
-        aliases += aliases.learn(group, aliases.toProbe(group).first(), group.associateWith { print })
+        aliases += aliases.learn(group, aliases.toProbe(group).first(), group.associateWith<NormalizedRelayUrl, Set<String>> { print })
 
         assertEquals(nos, aliases.canonicalOf(nosAlpha))
         assertEquals(nos, aliases.canonicalOf(nosBeacon))
@@ -340,7 +340,7 @@ class RelayAliasesTest {
         val plainAlpha = url("ws://relay.example/alpha")
         val group = listOf(host, secureAlpha, plainAlpha)
 
-        aliases += aliases.learn(group, host, group.associateWith { window(100) })
+        aliases += aliases.learn(group, host, group.associateWith<NormalizedRelayUrl, Set<String>> { window(100) })
 
         assertEquals(host, aliases.canonicalOf(secureAlpha))
         // `canonicalOf` is one hop, so a chain would survive the fold.

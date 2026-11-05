@@ -479,3 +479,18 @@ with a store of its own, jaunters' `/inbox`, stays undecided. It adds a rule and
 changes none, so `FOLD_EPOCH` stands. In the profiled sample it folded 81 urls on
 4 hosts, each re-checked live against two paths of our own making, and declined
 2 whose made-up path answered 403 and 404.
+
+**A host's paths are compared through one index over the cluster heads.** `learn`
+held each url that missed the leader up against every head found so far, and the
+pass then held every cleared url against every other to state its best shared
+count: two pairwise sweeps, quadratic in the paths on a host. Now each window is a
+`Fingerprint` (the ids as sorted 256-bit words, any id that is not 64 lowercase
+hex kept as written, so a count is exact), the heads go into a `FingerprintIndex`
+keyed by id, and one lookup per id of a new url counts what it shares with every
+head at once. The first head it matches, and every count the evidence names, come
+out of that one pass, so `learn` returns them (`Learned.shared`) and the fold pass
+no longer recounts. The rules are untouched and `FOLD_EPOCH` stands:
+`FoldComparisonTest` keeps the pairwise algorithm as a reference and checks that
+folds, clearances, twins and evidence match it on 400 generated groups. On 1,000
+distinct paths of 500 ids, the reference took about 27 s on the build machine and
+the index about 150 ms.

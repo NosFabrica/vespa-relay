@@ -202,6 +202,11 @@ class RelayAliases(
         val distinct: Set<NormalizedRelayUrl> = emptySet(),
         /** The subset of [folded] decided by [schemeTwins], whose evidence is the pair of urls and not a score. */
         val twins: Set<NormalizedRelayUrl> = emptySet(),
+        /**
+         * The ids each url's window has in common: a folded url's with the url it folded onto, a
+         * distinct url's best with any other distinct url or the leader.
+         */
+        val shared: Map<NormalizedRelayUrl, Int> = emptyMap(),
     )
 
     /**
@@ -212,7 +217,7 @@ class RelayAliases(
     fun learn(
         group: List<NormalizedRelayUrl>,
         leader: NormalizedRelayUrl,
-        prints: Map<NormalizedRelayUrl, Set<String>>,
+        prints: Map<NormalizedRelayUrl, Fingerprint>,
         /** The filter every print was taken through; null is the general filter. */
         kinds: List<Int>? = null,
     ): Learned {
@@ -221,44 +226,74 @@ class RelayAliases(
         val bar = foldBar(kinds)
         val folds = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = LinkedHashSet<NormalizedRelayUrl>()
+        val shared = HashMap<NormalizedRelayUrl, Int>()
         var compared = 0
         val twins = schemeTwins(group, leader, prints)
         val unmatched = ArrayList<NormalizedRelayUrl>()
+        val withLeader = HashMap<NormalizedRelayUrl, Int>()
         for (url in group) {
             if (url == leader || url in twins || url in folded) continue
             val print = prints[url] ?: continue
-            if (sameRelay(leaderPrint, print, bar)) {
+            val common = leaderPrint.shared(print)
+            if (sameRelay(leaderPrint.size, print.size, common, bar)) {
                 compared++
                 folds[url] = leader
+                shared[url] = common
             } else if (print.size >= minSample && leaderPrint.size >= minSample) {
                 compared++
                 unmatched += url
+                withLeader[url] = common
             }
         }
-        // Not matching the leader is not being distinct: the unmatched are compared
-        // to each other, against cluster heads so a host of many endpoints stays linear.
+        // Not matching the leader is not being distinct: the unmatched are compared to each other,
+        // each folding onto the first cluster head it matches, counted through one index over the heads.
         val heads = ArrayList<NormalizedRelayUrl>()
+        val index = FingerprintIndex(unmatched.sumOf { prints.getValue(it).hexCount() })
+        val counts = IntArray(unmatched.size)
+        val touched = IntArray(unmatched.size)
+        val zeroMatches = sameRelayOnNothing(bar)
         for (url in unmatched) {
             val print = prints.getValue(url)
-            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print, bar) }
-            if (head == null) {
+            val hits = index.count(print, counts, touched)
+            var head = -1
+            if (zeroMatches) {
+                head = heads.indices.firstOrNull { sameRelay(prints.getValue(heads[it]).size, print.size, counts[it], bar) } ?: -1
+            } else {
+                for (t in 0 until hits) {
+                    val h = touched[t]
+                    if ((head < 0 || h < head) && sameRelay(prints.getValue(heads[h]).size, print.size, counts[h], bar)) head = h
+                }
+            }
+            if (head < 0) {
+                var best = withLeader.getValue(url)
+                for (t in 0 until hits) {
+                    val h = touched[t]
+                    best = maxOf(best, counts[h])
+                    shared[heads[h]] = maxOf(shared.getValue(heads[h]), counts[h])
+                }
+                shared[url] = best
                 heads += url
                 cleared += url
+                index.add(print)
             } else {
-                folds[url] = head
+                folds[url] = heads[head]
+                shared[url] = counts[head]
             }
+            for (t in 0 until hits) counts[touched[t]] = 0
         }
         // Twins fold last, onto wherever the secure url itself ended up.
         for ((plain, secure) in twins) {
             val canonical = resolve(secure, folds)
             if (canonical == plain) continue
             folds[plain] = canonical
+            shared[plain] = prints[canonical]?.shared(prints.getValue(plain)) ?: 0
         }
         // The leader is cleared only if something was measured against it and nothing folded onto it.
         if (compared > 0 && leaderPrint.size >= minSample && leader !in canonicals && leader !in folds.values) {
             cleared += leader
+            shared[leader] = heads.maxOfOrNull { withLeader.getValue(it) } ?: 0
         }
-        return Learned(folds, cleared, twins.keys)
+        return Learned(folds, cleared, twins.keys, shared)
     }
 
     /**
@@ -291,7 +326,7 @@ class RelayAliases(
     private fun schemeTwins(
         group: List<NormalizedRelayUrl>,
         leader: NormalizedRelayUrl,
-        prints: Map<NormalizedRelayUrl, Set<String>>,
+        prints: Map<NormalizedRelayUrl, Fingerprint>,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
         if (group.none { !isSecure(it.url) }) return emptyMap()
         val secure = secureTwins(group)
@@ -312,9 +347,9 @@ class RelayAliases(
 
     /** Is everything in [print] already in [survivor]? An empty window has nothing to lose. */
     private fun alreadyServedBy(
-        print: Set<String>,
-        survivor: Set<String>,
-    ): Boolean = print.isEmpty() || print.count { it in survivor }.toDouble() / print.size >= minOverlap
+        print: Fingerprint,
+        survivor: Fingerprint,
+    ): Boolean = print.isEmpty() || print.shared(survivor).toDouble() / print.size >= minOverlap
 
     /** The unfolded `ws://` url in [group] naming the same endpoint as [secure], if any. */
     fun plainTwinIn(
@@ -336,18 +371,21 @@ class RelayAliases(
         return secure
     }
 
-    /** Do these two windows come from one relay? */
+    /** Do two windows of these sizes, with [shared] ids in common, come from one relay? */
     private fun sameRelay(
-        a: Set<String>,
-        b: Set<String>,
+        a: Int,
+        b: Int,
+        shared: Int,
         bar: Bar,
     ): Boolean {
-        val smaller = minOf(a.size, b.size)
+        val smaller = minOf(a, b)
         if (smaller < bar.window) return false
-        val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
         if (shared < bar.shared) return false
         return shared.toDouble() / smaller >= minOverlap
     }
+
+    /** Can [sameRelay] hold on no shared id at all? Only under rules that ask for no overlap. */
+    private fun sameRelayOnNothing(bar: Bar): Boolean = bar.shared <= 0 && minOverlap <= 0.0
 
     /**
      * The url the rest of a group is compared against. A url already folded onto wins,

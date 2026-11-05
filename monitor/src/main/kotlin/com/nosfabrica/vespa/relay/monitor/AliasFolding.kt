@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.config.MonitorConfig
+import com.nosfabrica.vespa.relay.fold.Fingerprint
 import com.nosfabrica.vespa.relay.fold.FoldReading
 import com.nosfabrica.vespa.relay.fold.FoldReading.collapse
 import com.nosfabrica.vespa.relay.fold.RelayAliases
@@ -481,9 +482,10 @@ class AliasFolding(
         lead: AliasProbe.Leader,
         anchor: Long,
     ) {
+        // Each window is held as a Fingerprint from the moment it lands, not as its ids.
         val prints =
-            mapOf(leader to lead.ids) +
-                askEach(group, members) { url -> probe.fingerprint(url, anchor, lead.kinds) }
+            mapOf(leader to Fingerprint.of(lead.ids)) +
+                askEach(group, members) { url -> probe.fingerprint(url, anchor, lead.kinds)?.let(Fingerprint::of) }
                     .mapNotNull { (url, attempt) -> attempt.answer?.let { url to it } }
         // Before anything is learned: a member the stopped writer kept us from asking is not a silent one.
         if (writesStopped(group)) return
@@ -491,19 +493,15 @@ class AliasFolding(
         if (result.distinct.isNotEmpty() && !yardstickHolds(group, leader, lead, anchor, result.distinct.size)) return
         val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
         for ((alias, canonical) in result.folded) {
-            val print = prints[alias].orEmpty()
-            // Against the url it folded onto, which is not always the leader.
-            val shared = prints[canonical].orEmpty().count { it in print }
-            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
+            val sampled = prints[alias]?.size ?: 0
+            verdicts[alias] = Fold(canonical, sampled, result.shared[alias] ?: 0, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
         }
         // A cleared url was held up against the leader and every other head; the count names real comparisons.
         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
         for (url in result.distinct) {
-            val print = prints[url].orEmpty()
             // A set: the leader is often among the distinct urls already.
             val others = (result.distinct + leader) - url
-            val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
-            cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
+            cleared[url] = Cleared(prints[url]?.size ?: 0, "${others.size} compared endpoint(s) on this host", result.shared[url] ?: 0)
         }
         // A leader that compared nothing ends with no verdict and takes the cooldown.
         if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
