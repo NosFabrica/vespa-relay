@@ -502,3 +502,17 @@ is one more `monitor.publish` query per new url in `SweepRecordsTest`; a url the
 walk saw at an older version is not caught, but the only thing that can land
 over it is an edit this process reported as failed. `SweepWalkMissedRecordTest`
 lands the newer version between the walk's pages.
+
+**A name lookup's budget starts when a thread runs it.** `ReachabilityProbe.lookup`
+put `withTimeoutOrNull(lookupMs)` around the submission to its pool, and the
+pre-probe runs for every url of a pass at once, so a live host queued behind dead
+names came back `UNEXPLAINED` without ever being resolved, and fitness counted it
+as a blind deferral toward `refusesToPublish`. A lookup now takes one of `threads`
+permits before its clock starts and gives it back when the resolver returns, not
+when its caller gives up, so a thread still blocked in `getAllByName` keeps its
+slot and the pool's queue never holds more than its threads. Waiting for a permit
+is bounded by progress rather than by time: a waiter waits while lookups keep
+returning, and only after `LOOKUP_STARVED_MS` in which none returned does it give
+up as `UNEXPLAINED`, with one `name lookups STARVED` line per spell, so a resolver
+that hangs forever stalls the pre-probe for a minute rather than for good.
+`ReachabilityLookupQueueTest` holds both.

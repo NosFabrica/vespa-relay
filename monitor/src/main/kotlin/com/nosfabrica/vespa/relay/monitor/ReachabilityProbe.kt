@@ -22,11 +22,13 @@ package com.nosfabrica.vespa.relay.monitor
 
 import com.nosfabrica.vespa.relay.fold.RelayAliases
 import com.nosfabrica.vespa.relay.peers.TorTransport
+import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.future.await
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.EOFException
@@ -38,12 +40,12 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.UnknownHostException
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
@@ -127,18 +129,31 @@ internal class ReachabilityProbe(
     private val tlsFactory: SSLSocketFactory = SSLContext.getDefault().socketFactory,
     /** How long a [REUSABLE] answer stands; no longer than a sweep, so each sweep's fold asks afresh. */
     private val reuseMs: Long = REUSE_MS,
-    /** The wall clock on one name lookup, which the resolver does not let us cancel. */
+    /** The wall clock on one name lookup from the moment a thread runs it; the resolver does not let us cancel it. */
     private val lookupMs: Long = LOOKUP_TIMEOUT_MS,
+    /** How long a lookup waits for a thread while no lookup returns; past it the pool is starved and the lookup gives up. */
+    private val starvedMs: Long = LOOKUP_STARVED_MS,
     /** Hosts held at once. */
     private val maxRemembered: Int = MAX_REMEMBERED,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
 
-    /** Where lookups block; a lookup past [lookupMs] is abandoned to its thread, and the pool bounds how many can be. */
+    /** Where lookups block; a lookup past [lookupMs] is abandoned to its thread, which keeps its [running] permit. */
     private val lookups =
         ThreadPoolExecutor(threads, threads, LOOKUP_THREAD_IDLE_SECONDS, TimeUnit.SECONDS, LinkedBlockingQueue()) { task ->
             Thread(task, "reachability-lookup").apply { isDaemon = true }
         }.apply { allowCoreThreadTimeOut(true) }
+
+    /** One permit per lookup thread, taken before a lookup's clock starts and returned when its resolver returns. */
+    private val running = Semaphore(threads)
+
+    /** Lookups whose resolver has returned, so a waiter can tell a slow pool from a stalled one. */
+    private val returned = AtomicLong()
+
+    /** Set while the pool is starved, so it is said once per spell. */
+    private val starved = AtomicBoolean(false)
+
+    private val threadCount = threads
 
     /** Host and port -> an answer no claim is signed on, and when it was had; every pass of a sweep asks the same hosts. */
     private val lately = ConcurrentHashMap<DialTarget, Pair<Reach, Long>>()
@@ -199,8 +214,44 @@ internal class ReachabilityProbe(
         }
     }
 
-    /** [host]'s addresses, or null when the resolver did not answer within [lookupMs]: our side, never proof. */
-    private suspend fun lookup(host: String): Array<InetAddress>? = withTimeoutOrNull(lookupMs) { CompletableFuture.supplyAsync({ resolve(host) }, lookups).await() }
+    /** [host]'s addresses, or null when the resolver did not answer within [lookupMs] of starting, or never got a thread: our side, never proof. */
+    private suspend fun lookup(host: String): Array<InetAddress>? {
+        if (!awaitThread()) return null
+        val answer = CompletableDeferred<Array<InetAddress>>()
+        try {
+            lookups.execute {
+                try {
+                    answer.complete(resolve(host))
+                } catch (e: Throwable) {
+                    answer.completeExceptionally(e)
+                } finally {
+                    returned.incrementAndGet()
+                    starved.set(false)
+                    running.release()
+                }
+            }
+        } catch (e: Throwable) {
+            running.release()
+            throw e
+        }
+        return withTimeoutOrNull(lookupMs) { answer.await() }
+    }
+
+    /** A [running] permit, waited for as long as lookups keep returning; false once none has returned for [starvedMs]. */
+    private suspend fun awaitThread(): Boolean {
+        while (true) {
+            val before = returned.get()
+            if (withTimeoutOrNull(starvedMs) { running.acquire() } != null) return true
+            if (returned.get() != before) continue
+            if (starved.compareAndSet(false, true)) {
+                System.err.println(
+                    "monitor: name lookups STARVED — all $threadCount lookup threads are blocked in the resolver and none returned " +
+                        "in ${fmtDuration(starvedMs)}; pre-probes read as unexplained until one does",
+                )
+            }
+            return false
+        }
+    }
 
     /**
      * A direct handshake to [url] under our default trust, on the pre-probe's route, to check a
@@ -304,6 +355,9 @@ internal class ReachabilityProbe(
 
         /** One name lookup, before [TOTAL_TIMEOUT_MS] starts. */
         internal const val LOOKUP_TIMEOUT_MS = 5_000L
+
+        /** Past any resolver's own retries, so only a resolver that never returns starves the pool. */
+        internal const val LOOKUP_STARVED_MS = 60_000L
 
         private const val LOOKUP_THREAD_IDLE_SECONDS = 30L
 
