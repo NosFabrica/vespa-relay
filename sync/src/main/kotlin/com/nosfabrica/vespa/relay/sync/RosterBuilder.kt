@@ -64,7 +64,32 @@ internal class RosterBuilder(
      * router that runs no monitor is not a router whose every relay is ungraded.
      */
     private val watching: Boolean = false,
+    /**
+     * One rebuild's reads of the verdicts, so every stream's fold and the roster's own verdicts come off
+     * one load. Null reads through [foldedAway] and [verdicts] call by call.
+     */
+    private val reads: (() -> VerdictReads)? = null,
 ) : RosterSource {
+    /** What one rebuild reads the verdicts through. */
+    interface VerdictReads {
+        /** Read [urls] in one go, ahead of the calls below; never throws, a failure is met again by them. */
+        suspend fun prefetch(urls: List<NormalizedRelayUrl>)
+
+        suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl>
+
+        suspend fun verdicts(urls: List<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts
+    }
+
+    /** This rebuild's reads: [reads]', or the per-call lambdas with nothing to prefetch. */
+    private fun newReads(): VerdictReads =
+        reads?.invoke() ?: object : VerdictReads {
+            override suspend fun prefetch(urls: List<NormalizedRelayUrl>) = Unit
+
+            override suspend fun foldedAway(urls: List<NormalizedRelayUrl>) = this@RosterBuilder.foldedAway(urls)
+
+            override suspend fun verdicts(urls: List<NormalizedRelayUrl>) = this@RosterBuilder.verdicts(urls)
+        }
+
     /** One unit of work against one relay: the stream asking and the exact filter. Bands, audits and tails key on it. */
     internal data class Ask(
         val stream: SyncStream,
@@ -145,6 +170,14 @@ internal class RosterBuilder(
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
     override suspend fun rebuild(): Roster {
+        val reads = newReads()
+        // Every url any stream's fold or this roster asks about, read once; the fold's survivors outside it are read as they come.
+        val named = LinkedHashSet<NormalizedRelayUrl>()
+        for (stream in streams) {
+            named += stream.urls
+            stream.discovery?.let { discovery -> cached(stream.name, "source", discovery.sources, discovery).mapTo(named) { it.url } }
+        }
+        reads.prefetch(named.toList())
         // Two halves, sealed into [UnitAsks] at the end: the identity dedups `want()` while it grows.
         val asksByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableList<Ask>>>()
         val wantsByUrl = HashMap<NormalizedRelayUrl, HashMap<String, MutableSet<String>>>()
@@ -164,7 +197,7 @@ internal class RosterBuilder(
                 for (filter in asksOf(stream.filter, DiscoveredRelay(url))) want(url, Ask(stream, filter))
             }
             val discovery = stream.discovery ?: continue
-            for (relay in permitted(stream, discovery)) {
+            for (relay in permitted(stream, discovery, reads)) {
                 for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))
             }
         }
@@ -180,7 +213,7 @@ internal class RosterBuilder(
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
         val standing =
             try {
-                verdicts(asksByUrl.keys.toList())
+                reads.verdicts(asksByUrl.keys.toList())
             } catch (e: CancellationException) {
                 // A rebuild cancelled at shutdown is not a store that could not answer.
                 throw e
@@ -208,8 +241,9 @@ internal class RosterBuilder(
     private suspend fun permitted(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
+        reads: VerdictReads,
     ): List<DiscoveredRelay> {
-        val found = discovered(stream, discovery)
+        val found = discovered(stream, discovery, reads)
         if (discovery.gatedBy.isEmpty()) return found
         // Cached on the same per-source clock the sources use.
         val vouched = cached(stream.name, "gate", discovery.gatedBy, discovery).mapTo(HashSet()) { it.url }
@@ -231,12 +265,13 @@ internal class RosterBuilder(
     private suspend fun discovered(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
+        reads: VerdictReads,
     ): List<DiscoveredRelay> {
         val perSource = cached(stream.name, "source", discovery.sources, discovery)
         // Over the whole discovered universe: `dropFolded` diffs against last time, and a missing url un-hides.
         val all = perSource
         // Never onto a url this stream forbids or this relay itself: the survivor may come from the monitor's set, not ours.
-        val folded = foldedAway(all.map { it.url }.distinct()).filterValues { it !in discovery.exclude && it != store.relay }
+        val folded = reads.foldedAway(all.map { it.url }.distinct()).filterValues { it !in discovery.exclude && it != store.relay }
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
         // Entry by entry, never merged: two sources naming one url are two sets of asks, and stay so.
         return all.map { relay -> folded[relay.url]?.let { DiscoveredRelay(it, relay.bindings) } ?: relay }

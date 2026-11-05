@@ -140,6 +140,41 @@ class RelayVerdictRecord(
         }
     }
 
+    /**
+     * [load] over one short job, each url's records read from the store once and held, so a later
+     * load over urls already read is built from what was held, as a store read of them would be.
+     * For one coroutine at a time.
+     */
+    inner class Held internal constructor() {
+        /** Subject -> the records a `#d` read of it returned, empty for none. */
+        private val bySubject = HashMap<String, List<Event>>()
+
+        /** [load]'s answer over [candidates], reading only the urls not read before. Throws like [load]. */
+        suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
+            if (readFrom.isEmpty() || candidates.isEmpty()) return Verdicts()
+            val subjects = candidates.mapTo(LinkedHashSet()) { it.url }
+            val missing = subjects.filter { it !in bySubject }
+            if (missing.isNotEmpty()) {
+                val found = HashMap<String, MutableList<Event>>()
+                val wanted = missing.toHashSet()
+                for (page in readByD(missing)) {
+                    for (event in page) {
+                        // Under every subject it answers for, as the `#d` filter matched it.
+                        for (tag in event.tags) if (tag.size > 1 && tag[0] == "d" && tag[1] in wanted) found.getOrPut(tag[1]) { ArrayList() } += event
+                    }
+                }
+                for (subject in missing) bySubject[subject] = found[subject].orEmpty()
+            }
+            val floor = nowSeconds() - ttlSeconds
+            val held = Building()
+            for (subject in subjects) bySubject[subject]?.let { held.take(it, floor) }
+            return held.verdicts()
+        }
+    }
+
+    /** A fresh [Held], for one job's reads. */
+    fun held(): Held = Held()
+
     /** One record per url: with several signers the newest speaks for it, so no url mixes two monitors' tags. */
     private fun newestPerUrl(records: List<Event>): Collection<Event> {
         if (readFrom.size < 2) return records

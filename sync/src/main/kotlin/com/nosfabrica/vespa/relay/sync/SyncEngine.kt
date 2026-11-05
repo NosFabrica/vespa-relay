@@ -32,7 +32,6 @@ import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
-import com.nosfabrica.vespa.relay.peers.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -64,6 +63,7 @@ import com.nosfabrica.vespa.relay.util.repeatEvery
 import com.nosfabrica.vespa.relay.util.shutdownStep
 import com.nosfabrica.vespa.relay.util.watchForFatals
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
@@ -187,9 +187,6 @@ class SyncEngine(
     /** Whose 30166 records the roster reads: `verdictsFrom`, or this router's own key when that is unset. */
     private val verdictSigners = config.verdictSigners(signer?.pubKey)
 
-    /** Those signers' verdicts, read back. Empty when nobody is followed. */
-    private val verdicts = RelayVerdictRecord(store, signer = null, readFrom = verdictSigners)
-
     /** Says, on the health clock, which verdict-sourced streams no stored verdict feeds. */
     private val verdictSupply = VerdictSupply(store, visitStreams)
 
@@ -214,10 +211,19 @@ class SyncEngine(
                     store = store,
                     streams = visitStreams,
                     bands = bands,
-                    foldedAway = fold::foldedAway,
                     keepBands = pinnedUrls,
                     tor = tor,
-                    verdicts = verdicts::load,
+                    // The fold and the NIP-77 pacing both come off those signers' records, read once a rebuild.
+                    reads = {
+                        val held = fold.reads()
+                        object : RosterBuilder.VerdictReads {
+                            override suspend fun prefetch(urls: List<NormalizedRelayUrl>) = held.prefetch(urls)
+
+                            override suspend fun foldedAway(urls: List<NormalizedRelayUrl>) = held.foldedAway(urls)
+
+                            override suspend fun verdicts(urls: List<NormalizedRelayUrl>) = held.verdicts(urls)
+                        }
+                    },
                     // Drift is counted against the signers followed; following nobody owes no verdict.
                     watching = verdictSigners.isNotEmpty(),
                 ),

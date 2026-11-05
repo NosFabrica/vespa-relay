@@ -56,14 +56,46 @@ class StoredFold(
      * url's relay. Stand-ins and urls waiting on the fold are included: this caller only decides
      * which socket to open.
      */
-    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
-        val collapsed = FoldReading.readBack(record, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.let { url to it } }.toMap()
+    suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = foldedAway(urls, record::load)
+
+    private suspend fun foldedAway(
+        urls: List<NormalizedRelayUrl>,
+        load: suspend (Collection<NormalizedRelayUrl>) -> RelayVerdictRecord.Verdicts,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val collapsed = FoldReading.readBack(load, urls, world()) ?: return urls.mapNotNull { url -> last[url]?.let { url to it } }.toMap()
         val folded = collapsed.aliases + collapsed.standIns + collapsed.waiting
         for (url in urls) {
             val onto = folded[url]
             if (onto == null) last.remove(url) else last[url] = onto
         }
         return folded
+    }
+
+    /** One roster rebuild's reads, every url's records read once for all of them. */
+    fun reads(): Reads = Reads(record.held())
+
+    /** [foldedAway] and [RelayVerdictRecord.load] over one [RelayVerdictRecord.Held]. For one coroutine. */
+    inner class Reads internal constructor(
+        private val held: RelayVerdictRecord.Held,
+    ) {
+        /**
+         * Read [urls] and the other urls on their servers in one go, ahead of the calls below. A store
+         * that fails here is met again, and reported, by whichever call needs the urls.
+         */
+        suspend fun prefetch(urls: List<NormalizedRelayUrl>) {
+            if (urls.isEmpty()) return
+            try {
+                held.load(urls + world().matesOf(urls))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                Unit
+            }
+        }
+
+        suspend fun foldedAway(urls: List<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> = foldedAway(urls, held::load)
+
+        suspend fun verdicts(urls: List<NormalizedRelayUrl>): RelayVerdictRecord.Verdicts = held.load(urls)
     }
 
     private suspend fun world(): ServerIndex {

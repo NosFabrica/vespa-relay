@@ -59,12 +59,19 @@ object FoldReading {
         record: RelayVerdictRecord,
         candidates: List<NormalizedRelayUrl>,
         world: ServerIndex = ServerIndex.EMPTY,
+    ): Collapsed? = readBack(record::load, candidates, world)
+
+    /** [readBack] over verdicts read through [load]. */
+    suspend fun readBack(
+        load: suspend (Collection<NormalizedRelayUrl>) -> RelayVerdictRecord.Verdicts,
+        candidates: List<NormalizedRelayUrl>,
+        world: ServerIndex = ServerIndex.EMPTY,
     ): Collapsed? {
         if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
         val mates = world.matesOf(candidates)
         val held =
             try {
-                record.load(candidates + mates)
+                load(candidates + mates)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
