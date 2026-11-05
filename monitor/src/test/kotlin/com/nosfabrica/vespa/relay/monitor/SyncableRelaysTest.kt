@@ -204,13 +204,13 @@ class SyncableRelaysTest {
                 "the read does not know an epoch exists — that is the point",
             )
 
-            assertEquals(1, FitnessPass.retireStale(store, record, signer.pubKey).staleEpochs)
+            assertEquals(1, FitnessRetirement.retireStale(store, record, signer.pubKey).staleEpochs)
             assertEquals(
                 listOf(good),
                 admitted(store, authors = listOf(signer.pubKey)),
                 "retracted at the source, the url reads as one nobody has measured",
             )
-            assertEquals(0, FitnessPass.retireStale(store, record, signer.pubKey).staleEpochs)
+            assertEquals(0, FitnessRetirement.retireStale(store, record, signer.pubKey).staleEpochs)
 
             // The tag index answers on the value alone, so a foreign namespace reaches the query.
             store.insert(
@@ -223,7 +223,7 @@ class SyncableRelaysTest {
                     ),
                 ),
             )
-            assertEquals(0, FitnessPass.retireStale(store, record, signer.pubKey).staleEpochs)
+            assertEquals(0, FitnessRetirement.retireStale(store, record, signer.pubKey).staleEpochs)
         }
 
     @Test
@@ -247,7 +247,7 @@ class SyncableRelaysTest {
                     ),
                 ),
             )
-            FitnessPass.retireStale(store, record, signer.pubKey)
+            FitnessRetirement.retireStale(store, record, signer.pubKey)
 
             val tags =
                 store
@@ -286,7 +286,7 @@ class SyncableRelaysTest {
                     ),
                 ),
             )
-            assertEquals(1, FitnessPass.retireStale(store, record, signer.pubKey).legacyGrades)
+            assertEquals(1, FitnessRetirement.retireStale(store, record, signer.pubKey).legacyGrades)
 
             val tags =
                 store
@@ -300,21 +300,21 @@ class SyncableRelaysTest {
                 admitted(store, authors = listOf(signer.pubKey)),
                 "and the url reads as unmeasured, which is what gets it re-graded",
             )
-            assertEquals(0, FitnessPass.retireStale(store, record, signer.pubKey).legacyGrades)
+            assertEquals(0, FitnessRetirement.retireStale(store, record, signer.pubKey).legacyGrades)
         }
 
     @Test
     fun `every word the old build could have signed is one the migration looks for`() =
         runBlocking {
             // `syncable` is the word that changed, so a query derived from today's `Verdict` cannot ask for it.
-            assertTrue("syncable" in FitnessPass.LEGACY_GRADES, "the previous admitting grade must stay findable")
+            assertTrue("syncable" in FitnessRetirement.LEGACY_GRADES, "the previous admitting grade must stay findable")
             for (verdict in Verdict.entries) {
-                assertTrue(verdict.value in FitnessPass.LEGACY_GRADES, "`${verdict.value}` is spelled the same today and must still be swept")
+                assertTrue(verdict.value in FitnessRetirement.LEGACY_GRADES, "`${verdict.value}` is spelled the same today and must still be swept")
             }
 
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            for ((i, word) in FitnessPass.LEGACY_GRADES.withIndex()) {
+            for ((i, word) in FitnessRetirement.LEGACY_GRADES.withIndex()) {
                 store.insert(
                     signer.sign(
                         EventTemplate(
@@ -327,8 +327,8 @@ class SyncableRelaysTest {
                 )
             }
             assertEquals(
-                FitnessPass.LEGACY_GRADES.size,
-                FitnessPass.retireStale(store, record, signer.pubKey).legacyGrades,
+                FitnessRetirement.LEGACY_GRADES.size,
+                FitnessRetirement.retireStale(store, record, signer.pubKey).legacyGrades,
                 "a grade left on `s` is published as the relay's software until it is retracted",
             )
         }
@@ -349,7 +349,7 @@ class SyncableRelaysTest {
                     ),
                 ),
             )
-            assertEquals(0, FitnessPass.retireStale(store, record, signer.pubKey).legacyGrades, "a repository url is not one of our grades")
+            assertEquals(0, FitnessRetirement.retireStale(store, record, signer.pubKey).legacyGrades, "a repository url is not one of our grades")
             val tags = store.query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey))).single().tags
             assertEquals(listOf("d", "s"), tags.map { it[0] }, "the software string is left exactly where it is")
         }
@@ -385,10 +385,10 @@ class SyncableRelaysTest {
             )
 
             refuse = true
-            assertEquals(FitnessPass.Retired(0, 0), FitnessPass.retireStale(store, record, signer.pubKey), "a refused retirement was counted")
+            assertEquals(FitnessRetirement.Retired(0, 0), FitnessRetirement.retireStale(store, record, signer.pubKey), "a refused retirement was counted")
             refuse = false
             inserts = 0
-            assertEquals(FitnessPass.Retired(1, 1), FitnessPass.retireStale(store, record, signer.pubKey))
+            assertEquals(FitnessRetirement.Retired(1, 1), FitnessRetirement.retireStale(store, record, signer.pubKey))
             assertEquals(1, inserts, "a url found by both questions was written twice")
             val tags = store.query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey))).single().tags
             assertEquals(listOf("d"), tags.map { it[0] })

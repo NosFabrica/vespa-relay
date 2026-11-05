@@ -237,7 +237,7 @@ class MonitorEngine(
         // never on a row that is `off`, which this runs beside.
         val row = fitnessRow.takeIf { hasSources }
         row?.phase(Processors.RETIRING)
-        guarded("stale-epoch verdicts and legacy `s` grades") { FitnessPass.retireStale(store, record, signer.pubKey, row) }
+        guarded("stale-epoch verdicts and legacy `s` grades") { FitnessRetirement.retireStale(store, record, signer.pubKey, row) }
         row?.clearMeasuring()
         row?.phase(Processors.STARTING)
     }

@@ -820,7 +820,7 @@ class RelayVerdictRecord(
 
         const val LABEL_EPOCH_INDEX = 5
 
-        /** Where the grade used to live, now the software field; `FitnessPass.retireStale` looks for it. */
+        /** Where the grade used to live, now the software field; `FitnessRetirement.retireStale` looks for it. */
         const val LEGACY_STATUS_TAG = RelayFacts.SOFTWARE_TAG
 
         /** Measured: does the relay honour `until`, so a paged walk can terminate? */
@@ -832,7 +832,7 @@ class RelayVerdictRecord(
         /** Measured: did it answer a NEG-OPEN? */
         const val NIP77_TAG = "nip77"
 
-        /** The fitness verdict's rules version; `FitnessPass.retireStale` takes back older ones at boot. */
+        /** The fitness verdict's rules version; `FitnessRetirement.retireStale` takes back older ones at boot. */
         const val FITNESS_EPOCH = "3"
 
         const val DEFAULT_TTL_SECONDS = 30L * 24 * 60 * 60
