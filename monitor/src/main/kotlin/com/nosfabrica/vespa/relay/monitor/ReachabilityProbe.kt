@@ -101,6 +101,8 @@ internal class ReachabilityProbe(
     private val reuseMs: Long = REUSE_MS,
     /** The wall clock on one name lookup, which the resolver does not let us cancel. */
     private val lookupMs: Long = LOOKUP_TIMEOUT_MS,
+    /** Hosts held at once. */
+    private val maxRemembered: Int = MAX_REMEMBERED,
 ) {
     private val io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(threads)
 
@@ -127,16 +129,26 @@ internal class ReachabilityProbe(
         return probe(target).also { answer -> if (answer in REUSABLE) remember(key, answer) }
     }
 
-    /** Past [MAX_REMEMBERED] the lapsed answers go, and all of them if none had: a forgotten host is only asked again. */
+    /**
+     * Past [maxRemembered] the lapsed answers go, then the oldest until a tenth of the room is free,
+     * so the scan runs once per that many inserts: a forgotten host is only asked again.
+     */
     private fun remember(
         key: String,
         answer: Reach,
     ) {
-        if (lately.size >= MAX_REMEMBERED) {
-            lately.entries.removeIf { clock() - it.value.second >= reuseMs }
-            if (lately.size >= MAX_REMEMBERED) lately.clear()
+        if (lately.size >= maxRemembered) {
+            synchronized(lately) { if (lately.size >= maxRemembered) evict() }
         }
         lately[key] = answer to clock()
+    }
+
+    private fun evict() {
+        val now = clock()
+        lately.entries.removeIf { now - it.value.second >= reuseMs }
+        val excess = lately.size - maxRemembered * KEPT_PERCENT / 100
+        if (excess <= 0) return
+        for ((key, held) in lately.entries.sortedBy { it.value.second }.take(excess)) lately.remove(key, held)
     }
 
     /** One lookup and connect, on the probe's own threads. */
@@ -265,8 +277,11 @@ internal class ReachabilityProbe(
         /** The longest a [REUSABLE] answer stands, whatever the sweep. */
         internal const val REUSE_MS = 60L * 60 * 1000
 
-        /** Hosts held at once; past it, the lapsed answers are dropped. */
+        /** Hosts held at once; past it, the lapsed answers are dropped, then the oldest. */
         private const val MAX_REMEMBERED = 50_000
+
+        /** How full an eviction leaves the cache. */
+        private const val KEPT_PERCENT = 90
 
         /** Per read while the direct handshake runs. */
         private const val TLS_READ_TIMEOUT_MS = 5_000

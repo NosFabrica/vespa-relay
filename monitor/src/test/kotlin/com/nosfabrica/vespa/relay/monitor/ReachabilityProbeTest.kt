@@ -70,6 +70,7 @@ class ReachabilityProbeTest {
         addresses: List<InetAddress>,
         failures: Map<InetAddress, IOException?>,
         clock: () -> Long = System::currentTimeMillis,
+        maxRemembered: Int = 50_000,
         onConnect: (InetSocketAddress, Int) -> Unit = { _, _ -> },
     ) = ReachabilityProbe(
         tor = null,
@@ -80,6 +81,7 @@ class ReachabilityProbeTest {
             Socket()
         },
         clock = clock,
+        maxRemembered = maxRemembered,
     )
 
     private fun reach(
@@ -151,6 +153,29 @@ class ReachabilityProbeTest {
         val refusing = probe(listOf(v4), mapOf(v4 to refused)) { _, _ -> connects++ }
         runBlocking { repeat(3) { assertEquals(Reach.PROVED_UNREACHABLE, refusing.reach(url)) } }
         assertEquals(3, connects, "`dead` is signed on proof, so proof is never reused")
+    }
+
+    @Test
+    fun `a full cache forgets its oldest hosts, a tenth at a time, and keeps the rest`() {
+        var now = 0L
+        val hosts = (0..10).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
+        var connects = 0
+        val counting = probe(listOf(v4), mapOf(v4 to null), clock = { now }, maxRemembered = 10) { _, _ -> connects++ }
+
+        runBlocking {
+            for (i in 0 until 10) {
+                now++
+                counting.reach(hosts[i])
+            }
+            // The eleventh fills it: the oldest one goes, the other nine are reused.
+            now++
+            counting.reach(hosts[10])
+            connects = 0
+            for (i in 1..10) counting.reach(hosts[i])
+            assertEquals(0, connects, "a host still in the cache was asked again")
+            counting.reach(hosts[0])
+            assertEquals(1, connects, "the oldest host was not the one forgotten")
+        }
     }
 
     @Test

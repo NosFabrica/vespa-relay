@@ -439,3 +439,11 @@ relay lists silently skipped its minutes. `candidatesSince` now throws on a
 failed read and the window moves only past a tick that ran. The window is
 on `created_at`, which is all a filter's `since` can bound: a list that
 arrives backdated is the sweep's.
+
+**The pre-probe's cache evicts a tenth at a time.** `ReachabilityProbe` holds up
+to 50,000 host answers. Once full, every insert scanned the whole map for lapsed
+answers, and cleared it only when none had lapsed, so a cache whose answers lapsed
+one by one paid a full scan per insert. Now a full cache drops the lapsed answers
+and then the oldest until it is 90% full, so the scan runs once per 5,000 inserts.
+Which hosts are re-asked changes only at the margin, and only towards asking
+fresh: no answer is reused past `reuseMs` either way.
