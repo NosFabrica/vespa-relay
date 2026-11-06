@@ -55,7 +55,38 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.13.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.13.0 (d99aae0), 44 commits over v2.9.0 through
+0102e83c81 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-06 (the
+quartz#95 merge, 0102e83c814c), 112 commits over v2.13.0 through 2.14.0, 2.14.1, 2.15.0, 2.15.1 and 2.16.0. The
+same commit as the store's pin on its claude/amazing-maxwell-5zralm branch (94604c04bbee), which audits it
+against the store. Back on JitPack for a commit past the last release; JitPack builds it, Android variant
+included (the artifact file answers 200, not the status API). What this relay reaches:
+
+  THE DIRECTION OF THE GROUP MAPPING FLIPS. The pin is JitPack's group now, so build-logic maps CENTRAL'S
+    com.vitorpamplona.quartz (quartz, quartz-jvm) onto it: the store at b21f996c1849 names Central's
+    2.13.0, and the graph reads `com.vitorpamplona.quartz:quartz:2.13.0 ->
+    com.github.vitorpamplona.quartz:quartz:0102e83c81`, one quartz jar per process. settings.gradle.kts
+    routes com.github.vitorpamplona.quartz to JitPack beside the store. A hash has no order (the note
+    above): the force decides, as before 2.4.0.
+  THE SERVING RELAY'S INGEST. IngestQueue verifies a batch in core-sized chunks that workers pull
+    from, not one coroutine per event (de16cd3, 525b48e), and takes the dispatcher its verify hook
+    runs on (a2d932a). NostrRelayServer passes none, so it stays Dispatchers.Default. Event.verify()
+    reuses per-thread buffers (c6fdd8e): the same answer, no allocation per event.
+  THE SYNC'S RELAY CLIENT. Every live subscription resumes after a reconnect, and the pool asks a
+    SubscriptionListener for its filters as it re-sends a REQ (filtersForSync, null by default:
+    RelayReads' tail overrides nothing, so it re-sends what it sent). No per-message allocation on an
+    EVENT (fc5b6ed); a listener's failure no longer reaches a socket that does not catch it (ffa93b4).
+    NegentropyLocalIndex gains withRelayCount (windows split on the relay's COUNT too), opt-in and not
+    used here. New and not called: fetchEvents / fetch, subscribeEvents / subscribeEventBatches and
+    their ResumePolicy, CachingEventDecoder's forged-copy scrutiny.
+  THE PARSE TABLE, two shapes, neither searchable: kind 30078 with drss.io's listening-progress tags is a
+    DrssListenProgressAppDataEvent (2.13.0 already), and kind 7321 is a GitReviewEvent, named in
+    KindNames. The store stores both as before; no reindex.
+  Not reached: the rest of NIP-34, NIP-30's renderer, NIP-44 / gift-wrap buffers, the native hash.
+  RUNTIME CLASSPATH (:relay, :sync): quartz moves and kmp-negentropy v1.2.0 -> v1.2.1; the POM's other
+    dependency versions are 2.13.0's.
+  ./gradlew build: 1730 tests, 0 failed, 2 skipped.
+
+Prev 2.13.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.13.0 (d99aae0), 44 commits over v2.9.0 through
 2.10.0, 2.10.1, 2.11.0, 2.12.0 and 2.12.1. The same release as the store's pin (2e4f323c4aad), which audits it
 against the store. What this relay reaches:
 
