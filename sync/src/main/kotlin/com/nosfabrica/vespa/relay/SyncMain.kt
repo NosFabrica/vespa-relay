@@ -157,7 +157,7 @@ fun main() {
     // The pages bind beside the boot too, so a boot that stalls anywhere past here is on them. Until
     // the engine first publishes they answer "not computed yet": the document lives in memory only,
     // rebuilt from what this process holds within one status interval.
-    val statusSnapshot = if (statusPort > 0) StatsSnapshot(null) else null
+    val statusSnapshot = if (statusPort > 0) StatsSnapshot() else null
     env["SYNC_STATUS_FILE"]?.takeIf { it.isNotBlank() }?.let {
         System.err.println("router: SYNC_STATUS_FILE was removed and does nothing — the status page is rebuilt within one interval of boot")
     }

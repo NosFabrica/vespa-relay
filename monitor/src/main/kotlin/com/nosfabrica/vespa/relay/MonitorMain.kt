@@ -105,7 +105,7 @@ fun main() {
             BootClock.mark("monitor: the relay's key checked")
         }
     // In memory only: the document is rebuilt from what this process holds within one status interval of boot.
-    val snapshot = if (boot.statusPort > 0) StatsSnapshot(null) else null
+    val snapshot = if (boot.statusPort > 0) StatsSnapshot() else null
     val pageBound = startStatusPage(boot, snapshot)
     System.err.println("monitor: verdicts go to the relay at ${boot.dial.url}; the store is opened read-only")
 

@@ -19,10 +19,10 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
   path needs to be public. Unset, the line under the search box says nothing
   about posts.
 - **Drop `SYNC_MANIFEST_FILE`, `STATS_COUNTERS_INTERVAL_SECONDS`,
-  `SYNC_STATUS_FILE` and `MONITOR_STATUS_FILE`** from your `.env`. They do
-  nothing now, and each process names the ones it sees at boot. The old
-  `sync-manifest.json`, `sync-status.json` and `monitor-status.json` on the
-  volume can be deleted.
+  `STATS_FILE`, `SYNC_STATUS_FILE` and `MONITOR_STATUS_FILE`** from your
+  `.env`. They do nothing now, and each process names the ones it sees at
+  boot. The old `sync-manifest.json`, `stats.json`, `sync-status.json` and
+  `monitor-status.json` on the volume can be deleted.
 
 ### What changes in behaviour
 
@@ -33,6 +33,11 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
 - **The sync's and the monitor's status pages start empty.** Their documents
   live in memory now, so for one status interval (30 s) after a boot the page
   says "not computed yet" instead of showing the previous run's.
+- **So does the relay's `/stats.html`, for longer.** `/stats.json` is held in
+  memory only, so after a restart it answers 503 and the page shows its waiting
+  card until the first rollup lands, which takes minutes on a large corpus. With
+  `STATS_INTERVAL_SECONDS=0` it now always answers 503, where it used to serve
+  the last file.
 - **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
   read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
 - **The sync answers `GET /coverage/<pubkey>?relay=…`** to any origin: every

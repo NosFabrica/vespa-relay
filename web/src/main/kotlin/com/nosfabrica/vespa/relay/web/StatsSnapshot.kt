@@ -26,22 +26,14 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * What a service's `GET /stats.json` serves: the last computed document, held in memory with its
- * ETag and written through to a file so a restart answers with the previous one. Served from
- * memory, never from the file; the write is atomic so a half-written file is never read back.
+ * ETag. Nothing is kept on disk, so a restarted service answers 503 until its first rollup.
  */
-class StatsSnapshot(
-    /** Where the document is persisted; null/blank keeps it purely in memory. */
-    private val path: String? = null,
-) {
+class StatsSnapshot {
     /** Bytes and ETag swapped as one reference, so a request never pairs new bytes with the old tag. */
     private val current = AtomicReference<Served?>(null)
 
@@ -49,7 +41,7 @@ class StatsSnapshot(
     fun served(): Served? = current.get()
 
     /**
-     * Merges [members] into the served document and persists the result: members in [members]
+     * Merges [members] into the served document: members in [members]
      * replace, members in [owns] but not in [members] are removed, everything else stays as the
      * other tier left it. With no [owns] the whole document is replaced.
      */
@@ -62,7 +54,6 @@ class StatsSnapshot(
         val doc = merged(members, owns, tier)
         val bytes = JSON.encodeToString(JsonObject.serializer(), doc).toByteArray(Charsets.UTF_8)
         current.set(Served(doc, bytes, etagOf(bytes)))
-        save(bytes)
     }
 
     /**
@@ -102,8 +93,6 @@ class StatsSnapshot(
         atSeconds: Long = System.currentTimeMillis() / 1000,
         /** Which cadence failed, or null for the whole document; [publish] clears only its own notice. */
         tier: String? = null,
-        /** False on the seed path, where a boot must not rewrite the bytes it just read. */
-        persist: Boolean = true,
     ) {
         val existing = current.get() ?: return
         runCatching {
@@ -127,49 +116,9 @@ class StatsSnapshot(
                 }
             val bytes = JSON.encodeToString(JsonObject.serializer(), marked).toByteArray(Charsets.UTF_8)
             current.set(Served(marked, bytes, etagOf(bytes)))
-            if (persist) save(bytes)
         }.onFailure {
             // The served document stays as it was; losing the notice is the smaller harm.
             System.err.println("stats: could not mark the served document stale (${it.message})")
-        }
-    }
-
-    /**
-     * Seeds from [path] if it holds a parseable document, marked stale until the first rollup. A
-     * missing or corrupt file is not an error; the page's own "not computed yet" state is right.
-     */
-    fun loadFromFile() {
-        val file = File(path ?: return)
-        if (path.isBlank() || !file.exists()) return
-        runCatching {
-            val bytes = file.readBytes()
-            // Parsed, as the only check on a hand-edited or truncated file, and kept for the next
-            // publish to merge onto.
-            val doc = Json.parseToJsonElement(bytes.decodeToString()).jsonObject
-            current.set(Served(doc, bytes, etagOf(bytes)))
-            markStale(
-                "served from $path after a restart; no rollup has completed in this process yet",
-                persist = false,
-            )
-        }.onFailure { e ->
-            System.err.println("stats: could not read $path (${e.message}) — serving nothing until the first rollup")
-        }
-    }
-
-    @Synchronized
-    private fun save(bytes: ByteArray) {
-        val target = File(path?.takeIf { it.isNotBlank() } ?: return)
-        target.absoluteFile.parentFile?.mkdirs()
-        val tmp = File(target.path + ".tmp")
-        runCatching {
-            tmp.writeBytes(bytes)
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        }.recoverCatching {
-            // Some filesystems do not support ATOMIC_MOVE.
-            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }.onFailure { e ->
-            // Not fatal: the in-memory document is already serving.
-            System.err.println("stats: could not persist to $path: ${e.message}")
         }
     }
 

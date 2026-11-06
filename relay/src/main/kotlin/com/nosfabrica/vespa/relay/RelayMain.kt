@@ -63,6 +63,7 @@ import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
 import com.nosfabrica.vespa.relay.server.config.REMOVED_MANIFEST_SETTINGS
+import com.nosfabrica.vespa.relay.server.config.REMOVED_STATS_FILE
 import com.nosfabrica.vespa.relay.server.config.RelayAddresses
 import com.nosfabrica.vespa.relay.server.config.RelayEndpoint
 import com.nosfabrica.vespa.relay.server.config.RelayFiles
@@ -282,6 +283,12 @@ private fun readSettings(env: Map<String, String>): Boot {
                 "with a reader's posts, at SYNC_PUBLIC_URL, and the relay reads nothing the sync writes",
         )
     }
+    if (!env[REMOVED_STATS_FILE].isNullOrBlank()) {
+        System.err.println(
+            "relay: $REMOVED_STATS_FILE was removed and does nothing — /stats.json is held in memory, so a restart " +
+                "answers 503 until its first rollup; the file it names can be deleted",
+        )
+    }
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
         System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
@@ -417,11 +424,10 @@ private fun startStats(
     store: VespaEventStore,
     scope: CoroutineScope,
 ): StatsSnapshot {
-    // Seeded from the state file so a restart serves the last document until the first rollup.
-    val snapshot = StatsSnapshot(boot.files.stats.path).also { it.loadFromFile() }
+    val snapshot = StatsSnapshot()
     val charts = boot.stats.chartsSeconds
     if (charts == 0L) {
-        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json serves the state file, or 503 if there is none")
+        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json answers 503")
         return snapshot
     }
     val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url)

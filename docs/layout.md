@@ -971,10 +971,8 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     StatsRollup.kt   the document, section by section, each failing on its own
                      — and `StatsTier`, the two schedules it is computed on
   (:web) StatsSnapshot.kt
-                     what GET /stats.json serves — held in memory with an
-                     ETag, written through to STATS_FILE so a deploy does not
-                     blank the page for the minutes a first rollup takes, and
-                     the MERGE point for the two tiers. In :web because every
+                     what GET /stats.json serves — held in memory only, with
+                     an ETag, and the MERGE point for the tiers. In :web because every
                      service publishes a document this way, not just the relay
 ```
 

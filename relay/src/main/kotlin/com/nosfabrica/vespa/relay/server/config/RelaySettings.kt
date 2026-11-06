@@ -112,7 +112,6 @@ private const val MAX_INTERVAL_SECONDS = 7 * 24 * 3_600L
 
 /** The state files the relay keeps, each an env path or where `docker-compose.yml` mounts it. */
 class RelayFiles(
-    val stats: File,
     val ftsCursor: File,
     /** Null for in-memory ban lists. */
     val banState: String?,
@@ -120,7 +119,6 @@ class RelayFiles(
 
 fun relayFilesFromEnv(env: Map<String, String>): RelayFiles =
     RelayFiles(
-        stats = File(env.text("STATS_FILE") ?: "/var/lib/vespa-relay/stats.json"),
         ftsCursor = File(env.text("FTS_CURSOR_FILE") ?: "/var/lib/vespa-relay/fts-cursor.txt"),
         banState = env.text("RELAY_STATE_FILE"),
     )
@@ -172,6 +170,9 @@ fun syncSettingsIgnored(env: Map<String, String>): List<String> =
  * read it: gone, since the search page asks the sync itself (`SYNC_PUBLIC_URL`). Set, the boot names them.
  */
 val REMOVED_MANIFEST_SETTINGS = listOf("SYNC_MANIFEST_FILE", "STATS_COUNTERS_INTERVAL_SECONDS")
+
+/** The stats document's copy on disk, gone: `/stats.json` is held in memory only. Set, the boot names it. */
+const val REMOVED_STATS_FILE = "STATS_FILE"
 
 /** Set, non-blank names under [prefix], for the "these do nothing" notes. */
 fun Map<String, String>.setUnder(prefix: String): List<String> = keys.filter { it.startsWith(prefix) && text(it) != null }.sorted()

@@ -26,8 +26,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
-import java.io.File
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -74,57 +72,6 @@ class StatsSnapshotTest {
 
         snap.publish(doc(1))
         assertEquals(first.etag, assertNotNull(snap.served()).etag, "same content, same validator")
-    }
-
-    @Test
-    fun `a published document survives a restart`() {
-        val file = Files.createTempDirectory("stats").resolve("stats.json").toFile()
-        StatsSnapshot(file.path).publish(doc(7))
-
-        // A fresh holder over the same path is the restart.
-        val reopened = StatsSnapshot(file.path).also { it.loadFromFile() }
-        val served = assertNotNull(reopened.served(), "the file is why a deploy does not blank the page")
-        assertEquals(
-            7,
-            Json
-                .parseToJsonElement(served.bytes.decodeToString())
-                .jsonObject["corpus"]!!
-                .jsonObject["events"]!!
-                .jsonPrimitive.content
-                .toInt(),
-        )
-        file.parentFile.deleteRecursively()
-    }
-
-    @Test
-    fun `a corrupt or missing state file leaves the snapshot empty rather than failing`() {
-        val dir = Files.createTempDirectory("stats").toFile()
-
-        // Missing is normal on a first boot.
-        val absent = StatsSnapshot(File(dir, "nope.json").path).also { it.loadFromFile() }
-        assertNull(absent.served())
-
-        // Truncated: an empty page and a loud line, not half a document.
-        val bad = File(dir, "bad.json").also { it.writeText("""{"schema":1,"corpus":{"eve""") }
-        val corrupt = StatsSnapshot(bad.path).also { it.loadFromFile() }
-        assertNull(corrupt.served())
-
-        // The next rollup overwrites it.
-        corrupt.publish(doc(3))
-        assertNotNull(corrupt.served())
-        assertTrue(bad.readText().contains("\"events\":3"))
-        dir.deleteRecursively()
-    }
-
-    @Test
-    fun `an unwritable path still serves from memory`() {
-        // A directory where the file should be fails every write.
-        val dir = Files.createTempDirectory("stats").toFile()
-        val blocked = File(dir, "stats.json").also { it.mkdirs() }
-        val snap = StatsSnapshot(blocked.path)
-        snap.publish(doc(5))
-        assertNotNull(snap.served(), "the in-memory document is unaffected by a failed write")
-        dir.deleteRecursively()
     }
 
     /** One tier's pass: the members it computed, stamped as that tier's. */

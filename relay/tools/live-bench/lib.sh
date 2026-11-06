@@ -56,7 +56,7 @@ relay_start() {
     return 1
   fi
   env RELAY_URL=ws://localhost:7777 RELAY_PORT=7777 VESPA_URL="$VESPA_URL" VESPA_CONFIG_URL="$VESPA_CONFIG_URL" \
-    RELAY_STATE_FILE="$BENCH_OUT/state/relay-state.json" STATS_FILE="$BENCH_OUT/state/stats.json" \
+    RELAY_STATE_FILE="$BENCH_OUT/state/relay-state.json" \
     JAVA_TOOL_OPTIONS="-Xms2g -Xmx4g" "$@" \
     nohup "$RELAY_HOME/bin/vespa-relay" > "$BENCH_OUT/relay.log" 2>&1 &
   for _ in $(seq 1 150); do

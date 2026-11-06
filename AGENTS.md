@@ -206,7 +206,7 @@ relay/…/relay/
                               RelayProfile, StatsYql / StatsVespa /
                               StatsRollup (STATS_INTERVAL_SECONDS)
 web/…/relay/web/
-  StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
+  StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document
   PubkeyDocument, PageSyncUrl  a per-pubkey JSON route any origin may read; the search page's <meta name="sync-url">
   resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, signin.js,
                               owngroups.js, urlstate.js, searchfield.js, paging.js, feed.js, entity.js, related.js,

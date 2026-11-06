@@ -245,14 +245,11 @@ services:
       FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
       # How often the corpus statistics behind GET /stats.json are recomputed.
       # The grouping queries compete with client reads, so 0 (off) is a
-      # legitimate choice on a busy box — the endpoint then serves the last
-      # document it wrote. The pass runs behind the server; a first one over
-      # this corpus is minutes, and no restart waits on it.
+      # legitimate choice on a busy box — the endpoint then answers 503. The
+      # document is held in memory only: the pass runs behind the server, a
+      # first one over this corpus is minutes, no restart waits on it, and the
+      # page shows its waiting card until it lands.
       STATS_INTERVAL_SECONDS: ${STATS_INTERVAL_SECONDS:-}
-      # …and where that document lands. In the mounted volume for the same
-      # reason as the cursor above: a deploy would otherwise blank the page for
-      # as long as the first rollup takes, and the file is readable on the host.
-      STATS_FILE: ${STATS_FILE:-/var/lib/vespa-relay/stats.json}
       # WHERE A READER'S BROWSER REACHES THE SYNC, written into the search page
       # as <meta name="sync-url">. The page asks the sync how far it has got
       # with the reader's own posts, at <this>/coverage/<pubkey>, so it must be

@@ -81,9 +81,9 @@ class RelaySettingsTest {
     @Test
     fun `state files default to the compose mounts`() {
         val d = relayFilesFromEnv(emptyMap())
-        assertEquals(File("/var/lib/vespa-relay/stats.json"), d.stats)
+        assertEquals(File("/var/lib/vespa-relay/fts-cursor.txt"), d.ftsCursor)
         assertNull(d.banState)
-        assertEquals(File("/var/lib/vespa-relay/stats.json"), relayFilesFromEnv(mapOf("STATS_FILE" to "")).stats)
+        assertEquals(File("/var/lib/vespa-relay/fts-cursor.txt"), relayFilesFromEnv(mapOf("FTS_CURSOR_FILE" to "")).ftsCursor)
         assertNull(relayFilesFromEnv(mapOf("RELAY_STATE_FILE" to "")).banState)
     }
 

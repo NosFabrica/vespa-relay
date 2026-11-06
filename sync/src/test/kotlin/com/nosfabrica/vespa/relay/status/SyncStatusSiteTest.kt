@@ -56,7 +56,7 @@ class SyncStatusSiteTest {
     @Test
     fun `the page is served, and every module it imports resolves`() =
         testApplication {
-            val snapshot = StatsSnapshot(null)
+            val snapshot = StatsSnapshot()
             val cached = CachedPage(page())
             application {
                 installPageDefaults()
@@ -83,7 +83,7 @@ class SyncStatusSiteTest {
     @Test
     fun `nothing computed yet is a 503, never a document of zeroes`() =
         testApplication {
-            val snapshot = StatsSnapshot(null)
+            val snapshot = StatsSnapshot()
             application { routing { statsDocument(snapshot) } }
 
             assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/stats.json").status)
