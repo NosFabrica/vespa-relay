@@ -594,7 +594,30 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-b21f996c1849 = vespa-eventstore main @ 2026-11-05, the merge of PR #194 (over 2e4f323c4aad, below): an answer
+0c39dd5ba955 = vespa-eventstore main @ 2026-11-06, the merge of PR #195 (over b21f996c1849, below): every
+dependency to its latest release, and quartz from JitPack at the relay's own pin.
+  QUARTZ IS JITPACK'S, AT 0102e83c81 (94604c0). The store's POM names
+    com.github.vitorpamplona.quartz:quartz-jvm:0102e83c81, the commit and group this relay pins, so the
+    build-logic substitution maps nothing and the force agrees: one quartz, no arrow on it.
+  THE STORE'S OWN DEPENDENCIES (43445b2). Kotlin 2.4.21, kotlinx-serialization 1.12.0, okhttp 5.5.1,
+    vespa-feed-client 8.781.11, Lucene 9.12.3 (held on 9.x: Lucene 10 hides the light stemmers),
+    Testcontainers 2.0.5 and Gradle 9.8.2 on its side. Here the graph's arrows are the transitive ones the
+    quartz pin already brought (kotlin-stdlib -> 2.4.21, kotlinx-serialization -> 1.12.0, okhttp
+    5.4.0 -> 5.5.1); nothing the relay declares moves.
+  No main source and no file under engine/app moves in the range: the same reads, writes and search.
+  git merge-base --is-ancestor b21f996c1849 0c39dd5ba955   # verified
+
+DEPLOY: nothing. The schema and services.xml have no diff, so the boot's AUTO_DEPLOY finds the package
+  unchanged and nothing is reindexed.
+
+GATED: the store's integration gate at 0c39dd5ba955 is RUNNING (Docker, Vespa 8.781.11); this line is
+  replaced with its counts when it finishes. Here,
+  ./gradlew build archTest against the JitPack jar: 1,743 tests, 0 failures, 2 skipped; the runtime graph
+  holds one quartz (0102e83c81) and the store at 0c39dd5ba955, no arrow on either.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev b21f996c1849 = vespa-eventstore main @ 2026-11-05, the merge of PR #194 (over 2e4f323c4aad, below): an answer
 Vespa reports errors beside is refused, a multi-filter COUNT holds one page, and the phrase band.
   A RESPONSE THAT REPORTS ERRORS IS REFUSED (466efb0, PR #194). With its content node down, Vespa answers a
     grouping HTTP 200: no groups, totalCount 0, coverage full at 100% over nodes: 0, and one error,
