@@ -198,9 +198,11 @@ class IngestAttributionTest {
             val scope = CoroutineScope(SupervisorJob())
             val pipeline = IngestPipeline(base(), config(), null, null, scope, null, null, sink)
             try {
-                pipeline.start()
+                // Both queued before a worker runs, so they share one batch: started first, a worker
+                // can take `older` alone, store it, and leave nothing superseded inside the batch.
                 pipeline.submit(older, skipVerify = true, IngestOrigin.Local)
                 pipeline.submit(newer, skipVerify = true, IngestOrigin.Local)
+                pipeline.start()
                 var spins = 0
                 while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
                 // Synchronized on the list, because the pipeline is still writing to it.
