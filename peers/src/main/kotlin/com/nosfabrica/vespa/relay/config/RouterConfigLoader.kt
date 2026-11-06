@@ -143,7 +143,7 @@ object RouterConfigLoader {
     }
 
     /** The monitor's variables, which configure its own process and never this one. */
-    val MONITOR_ENV = listOf("MONITOR_CONFIG", "MONITOR_CONFIG_FILE", "MONITOR_STATUS_PORT", "MONITOR_STATUS_FILE")
+    val MONITOR_ENV = listOf("MONITOR_CONFIG", "MONITOR_CONFIG_FILE", "MONITOR_STATUS_PORT")
 
     /** A monitor variable on the sync process: the monitor is its own process, so it would configure nothing. */
     fun refuseMonitorEnv(env: Map<String, String>) {

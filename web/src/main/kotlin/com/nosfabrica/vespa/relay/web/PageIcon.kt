@@ -47,7 +47,7 @@ fun pageWithIcon(
 private val ICON_LINK = Regex("""([ \t]*)<link rel="icon"[^>]*>(\r?\n?)""")
 
 /** The four characters that can leave an HTML attribute's quotes, or start an entity. */
-private fun escapeAttribute(value: String) =
+internal fun escapeAttribute(value: String) =
     value
         .replace("&", "&amp;")
         .replace("\"", "&quot;")

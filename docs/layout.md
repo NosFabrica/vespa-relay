@@ -364,11 +364,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     BisectingInsert.kt    the batch-bisecting write
     UpstreamPush.kt       dir = up: quartz's NegentropyStoreSync, up only, over one
                           gated snapshot per pass and a per-url budget
-    SyncManifest.kt       what this router is CONFIGURED to mirror — the running
-                          streams and their kinds — written once at boot so the
-                          relay can publish it. The kind list exists in
-                          sync.conf and nowhere else, and a count taken
-                          against this relay is wrong without it
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
     RouterTuning.kt       the constants the mirror is paced by
     heal/                 pushing back what an upstream is missing
@@ -800,22 +795,18 @@ relay/src/main/resources/
                         same two middle links and carries the first unmet one
                         to every client on the protocol as a NOTICE, rather
                         than only to this page.
-                        Its quietest number is the one that needed a whole
-                        mechanism: "your own posts, N% mirrored" compares OUR
-                        count for you against your write relay's, and ours is
-                        narrowed by sync.conf while theirs is not — 35% on a
-                        mirror missing nothing. shared/mirrors.js reads the
-                        kinds this relay actually asks for off `sync.mirrors` on
-                        GET /stats.json and puts them on BOTH counts (and both
-                        newest-event reads: a reaction we never mirror is not
-                        this relay being behind). Where that document does not
-                        say — no rollup yet, no mirror, unreadable — `scopedTo`
-                        THROWS rather than passing an unscoped filter through,
-                        and the panel asks neither side and says nothing about
-                        posts. The percentage says "about": both sides carry the
-                        same kinds, but the denominator is a stranger's NIP-45
-                        COUNT, and on one author kind 1 alone came back as
-                        126,426 against 89,485 for every kind at once.
+                        Its quietest line is about your own posts, and the sync
+                        answers it: shared/coverage.js asks the sync process at
+                        <meta name="sync-url">/coverage/<pubkey>, naming your
+                        write relays (the relay writes the meta from
+                        SYNC_PUBLIC_URL), and the line says
+                        how many of the relays the mirror follows you on it has
+                        read to the start. It used to count your posts here
+                        against your write relay's NIP-45 COUNT, scoped to the
+                        mirror's kinds off /stats.json — 35% on a mirror missing
+                        nothing before the scope, and a stranger's COUNT as the
+                        denominator after it. No meta, no answer, or one it
+                        cannot read: the line says nothing about posts.
   web/favicon.{svg,ico}
                         the tab icon: index.html's own brand mark, in white on
                         an accent tile, kept BY HAND in both formats. Not the
@@ -970,11 +961,6 @@ jobs, and talks to Vespa directly rather than through the store:
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/
-    MirrorReport.kt  the kind set this relay mirrors, from SYNC_MANIFEST_FILE
-                     — the LAST of the router's files this side reads. What the
-                     mirror has walked and what it is doing moved to the sync
-                     service's own status site; see `SyncStatus` for why a file
-                     could not answer "is it running" and an HTTP request can
     StatsYql.kt      the grouping pipelines and the readers for what comes
                      back — pure, so both halves are tested against captured
                      engine output rather than against an assumed shape
@@ -985,18 +971,17 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     StatsRollup.kt   the document, section by section, each failing on its own
                      — and `StatsTier`, the two schedules it is computed on
   (:web) StatsSnapshot.kt
-                     what GET /stats.json serves — held in memory with an
-                     ETag, written through to STATS_FILE so a deploy does not
-                     blank the page for the minutes a first rollup takes, and
-                     the MERGE point for the two tiers. In :web because every
+                     what GET /stats.json serves — held in memory only, with
+                     an ETag, and the MERGE point for the tiers. In :web because every
                      service publishes a document this way, not just the relay
 ```
 
-**The document is computed in two passes, and the split is by measured cost.**
-`STATS_COUNTERS_INTERVAL_SECONDS` (60s) runs `sync`; `STATS_INTERVAL_SECONDS`
-(900s, the setting that always meant this) runs `corpus`, `trust`, `kinds`,
-`authors`, `activity`, `kindActivity`, `zaps` and `relayDistribution`. The line
-between them is whether cost scales with the corpus. A `count()` does not
+**The document is one pass, and it is paced by measured cost.**
+`STATS_INTERVAL_SECONDS` (900s) runs `corpus`, `trust`, `kinds`, `authors`,
+`activity`, `kindActivity`, `zaps` and `relayDistribution`. It was two: a
+60-second counters pass carried `sync`, the router's manifest, until the search
+page started asking the sync itself (schema 4), and nothing cheap was left for
+it. Every section left scales with the corpus. A `count()` does not
 materialise its match set but still walks it, so the event total over `true` is
 a walk over the store and the trust chain is a walk over every stored kind-30382
 score (tens of millions on the live deployment).
@@ -1018,8 +1003,6 @@ distinct pubkeys out of `corpus` into its own `authors` section, and why
 `corpus.newestEvent` is gone (schema 3): at the charts cadence it was hours old
 by design, so the page asks the relay for its newest event over the websocket
 instead. Per-kind `lastSeen` stays, read against the section's `generatedAt`.
-A counters pass that produced no section does not publish a first document, or a
-fresh serve-only relay would swap the page's waiting card for a blank page.
 
 Every section publishes `queryMs` per query and every pass publishes
 `tiers.<name>.{generatedAt,tookMs,everySeconds}`. That is deliberate and

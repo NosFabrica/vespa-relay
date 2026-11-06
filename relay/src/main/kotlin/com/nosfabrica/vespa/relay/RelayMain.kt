@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
-import com.nosfabrica.vespa.relay.maintenance.StatsTier
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
@@ -62,6 +61,8 @@ import com.nosfabrica.vespa.relay.server.OpenRanking
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
+import com.nosfabrica.vespa.relay.server.config.REMOVED_MANIFEST_SETTINGS
+import com.nosfabrica.vespa.relay.server.config.REMOVED_STATS_FILE
 import com.nosfabrica.vespa.relay.server.config.RelayAddresses
 import com.nosfabrica.vespa.relay.server.config.RelayEndpoint
 import com.nosfabrica.vespa.relay.server.config.RelayFiles
@@ -91,6 +92,7 @@ import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFr
 import com.nosfabrica.vespa.relay.server.config.searchExpansionFromEnv
 import com.nosfabrica.vespa.relay.server.config.setUnder
 import com.nosfabrica.vespa.relay.server.config.statsIntervalsFromEnv
+import com.nosfabrica.vespa.relay.server.config.syncPublicUrlFromEnv
 import com.nosfabrica.vespa.relay.server.config.syncSettingsIgnored
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
@@ -105,12 +107,14 @@ import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
+import com.nosfabrica.vespa.relay.util.removedSettingsNote
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
 import com.nosfabrica.vespa.relay.web.Nip98AdminGate
 import com.nosfabrica.vespa.relay.web.PulseGuard
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
+import com.nosfabrica.vespa.relay.web.pageWithSyncUrl
 import com.nosfabrica.vespa.relay.web.servePulseSite
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
@@ -210,6 +214,8 @@ private class Boot(
     val banStore: BanStore?,
     val files: RelayFiles,
     val stats: StatsIntervals,
+    /** Where readers' browsers ask the sync about their own posts; null names none, and the page skips the question. */
+    val syncPublicUrl: String?,
     val switches: MaintenanceSwitches,
     val orphanSweepDryRun: Boolean?,
     val trustVerifyRepair: Boolean?,
@@ -268,9 +274,21 @@ private fun readSettings(env: Map<String, String>): Boot {
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
     }
-    REMOVED_HTTP_RELAY_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
-        System.err.println("relay: ${it.joinToString()} were removed and do nothing — HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
-    }
+    env
+        .removedSettingsNote("relay", REMOVED_HTTP_RELAY_SETTINGS, "HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
+        ?.let(System.err::println)
+    env
+        .removedSettingsNote(
+            "relay",
+            REMOVED_MANIFEST_SETTINGS,
+            "the search page asks the sync how far it has got with a reader's posts, at SYNC_PUBLIC_URL, and the relay reads nothing the sync writes",
+        )?.let(System.err::println)
+    env
+        .removedSettingsNote(
+            "relay",
+            listOf(REMOVED_STATS_FILE),
+            "/stats.json is held in memory, so a restart answers 503 until its first rollup; the file it names can be deleted",
+        )?.let(System.err::println)
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
         System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
@@ -314,6 +332,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         banStore = if (adminPubkeys.isNotEmpty()) openBanStore(files.banState) else null,
         files = files,
         stats = statsIntervalsFromEnv(env),
+        syncPublicUrl = syncPublicUrlFromEnv(env),
         switches = switches,
         orphanSweepDryRun = orphanSweepDryRun(env["SWEEP_ORPHAN_SCORES_ON_START"]),
         trustVerifyRepair = trustVerifyRepair(env["VERIFY_TRUST_ON_START"]),
@@ -399,30 +418,20 @@ private fun startMaintenance(
     }
 }
 
-/** The `/stats.json` rollups, counters first so a fresh relay has totals within seconds of boot. */
+/** The `/stats.json` rollup, or a snapshot that says it is off. */
 private fun startStats(
     boot: Boot,
     store: VespaEventStore,
     scope: CoroutineScope,
 ): StatsSnapshot {
-    // Seeded from the state file so a restart serves the last document until the first rollup.
-    val snapshot = StatsSnapshot(boot.files.stats.path).also { it.loadFromFile() }
-    val (charts, counters) = boot.stats.chartsSeconds to boot.stats.countersSeconds
-    if (charts == 0L && counters == 0L) {
-        println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
-        return snapshot
+    val charts = boot.stats.chartsSeconds
+    if (charts == 0L) {
+        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json answers 503 and says so")
+        return StatsSnapshot(offBecause = "This relay's operator has turned the corpus statistics off (STATS_INTERVAL_SECONDS=0).")
     }
-    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url, syncManifestFile = boot.files.syncManifest)
-    if (counters > 0) {
-        launchStatsRollup(scope, rollup, snapshot, StatsTier.COUNTERS, counters)
-    } else {
-        println("stats: STATS_COUNTERS_INTERVAL_SECONDS=0 — no counters; /stats.json will carry only the chart sections")
-    }
-    if (charts > 0) {
-        launchStatsRollup(scope, rollup, snapshot, StatsTier.CHARTS, charts)
-    } else {
-        println("stats: STATS_INTERVAL_SECONDS=0 — no charts; /stats.json will carry only the counter sections")
-    }
+    val snapshot = StatsSnapshot()
+    val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url)
+    launchStatsRollup(scope, rollup, snapshot, charts)
     return snapshot
 }
 
@@ -577,7 +586,7 @@ private fun serve(
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.
         onInfoChanged = profile::rewritten,
         onionLocation = boot.addresses::onionLocation,
-        landingPage = resourceText("/index.html"),
+        landingPage = resourceText("/index.html")?.let { pageWithSyncUrl(it, boot.syncPublicUrl) },
         observerStatsPage = resourceText("/observer_stats.html"),
         statsPage = resourceText("/stats.html"),
         // Public on purpose (docs/decisions/relay-server.md); the pulse's gate is for what people searched for.

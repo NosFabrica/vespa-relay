@@ -595,26 +595,12 @@ used to be read by the relay off the `/var/lib/vespa-relay` mount both
 containers share; `SyncStatus` has the account of what that boundary cost. The
 router is still the only writer either way, and the files stay on the volume
 because they are what a restart reloads.
-A third file rides the same mount for a different job, and is the ONE the relay
-still reads: `SYNC_MANIFEST_FILE` is
-CONFIG, not state — the streams this router runs and the kinds they ask for,
-written once at boot (`SyncManifest`) and published as `sync.mirrors` by
-`MirrorReport`. It exists because the mirror is a *filtered* subset and nothing
-outside this process can know which kinds: a client counting our events for an
-author against that author's own relay's total measured 31,118 of 89,485 and
-drew *35% mirroring* on a mirror missing nothing, the whole gap being kinds
-3/4/5/6/7/1059 that no stream asks for. Scope both sides to `mirrors.kinds` and
-the number means something — `web/shared/mirrors.js` is the one consumer, and
-the rule it holds is that an unreadable manifest suppresses the question rather
-than falling back to the unscoped count. **It reads `sync.data.mirrors`**: every
-section of `/stats.json` is wrapped in `StatsRollup.section`'s status envelope
-and the payload is `data`. Read one level too high — which it was, on ship — the
-member is undefined against every real document, the scope answers null, and the
-panel silently stops asking. That failure is CLOSED, which is why nothing looked
-wrong: no bad number is published, the right one simply never is. Its fixture had
-the same wrong shape, so the tests agreed with it; a fixture that is not the
-shape of the thing it stands in for tests the fixture. Do not fold it into the band file:
-bands are rewritten every 30 seconds and this changes only on a restart.
+The relay reads none of the router's files. The last one it did,
+`SYNC_MANIFEST_FILE`, listed the kinds the streams pull down, so the search page
+could scope a count of a reader's posts here against the count on their own
+relay; the page now asks the router directly, at `/coverage/<pubkey>` on this
+port (`AuthorCoverage`), which answers from the roster and the bands what the
+count could only estimate.
 
 **THE ROUTER'S OWN PAGE says what it is DOING.** `SyncProgress` republishes, on
 every progress tick, each stream's phase and the disposition of every url its

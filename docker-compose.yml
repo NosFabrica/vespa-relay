@@ -243,40 +243,20 @@ services:
       # resumable by design and holding it only in memory cost 12.2M events
       # when one page failed.
       FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
-      # How often the corpus statistics behind GET /stats.json are recomputed,
-      # on the two schedules the document is computed on: the cheap counters
-      # (totals, freshness, trust health, the router's heartbeat) and the
-      # corpus-wide groupings behind the charts. The grouping queries compete
-      # with client reads, so 0 (off) on either is a legitimate choice on a busy
-      # box — the endpoint then carries only the other half. Both run behind the
-      # server; a first charts pass over this corpus is minutes, no restart waits
-      # on it, and the counters fill the page within seconds meanwhile.
-      STATS_COUNTERS_INTERVAL_SECONDS: ${STATS_COUNTERS_INTERVAL_SECONDS:-}
+      # How often the corpus statistics behind GET /stats.json are recomputed.
+      # The grouping queries compete with client reads, so 0 (off) is a
+      # legitimate choice on a busy box — the endpoint then answers 503. The
+      # document is held in memory only: the pass runs behind the server, a
+      # first one over this corpus is minutes, no restart waits on it, and the
+      # page shows its waiting card until it lands.
       STATS_INTERVAL_SECONDS: ${STATS_INTERVAL_SECONDS:-}
-      # …and where that document lands. In the mounted volume for the same
-      # reason as the cursor above: a deploy would otherwise blank the page for
-      # as long as the first rollup takes, and the file is readable on the host.
-      STATS_FILE: ${STATS_FILE:-/var/lib/vespa-relay/stats.json}
-      # The router's three files, which the stats rollup READS off the shared
-      # volume — the two state files draw the Sync coverage card, the manifest
-      # is what /stats.json publishes as `sync.mirrors`. The router stays the
-      # only writer.
-      #
-      # Passed through with the SAME expressions the sync service uses, and that
-      # is the point: the relay compiles in these exact paths as its defaults,
-      # so a .env that moves one used to move the WRITER only — the relay went
-      # on reading where the router no longer wrote, and the card and the kind
-      # set silently emptied. Same failure the ban-list pass-throughs above were
-      # added for, and .env.example ships live values for all three — so it was
-      # one uncommented edit away in the shipped configuration.
-      # THE ONLY ROUTER FILE THIS SIDE STILL READS. What the mirror has walked
-      # (SYNC_STATE_FILE, SYNC_SWEEP_STATE_FILE) and what it is doing
-      # (SYNC_PROGRESS_FILE) were read here to draw two cards on /stats.html;
-      # the sync service serves those itself now, at http://sync:7778/. The
-      # manifest stays because it is a fact about THIS relay that clients read
-      # — it bounds a mirror-scoped count — and the relay must answer it while
-      # the router is down.
-      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
+      # WHERE A READER'S BROWSER REACHES THE SYNC, written into the search page
+      # as <meta name="sync-url">. The page asks the sync how far it has got
+      # with the reader's own posts, at <this>/coverage/<pubkey>, so it must be
+      # reachable from the internet (TLS, through your proxy) — only that path
+      # needs to be. Unset, the page skips the question. The relay reads
+      # nothing the sync writes; this address is all it knows of it.
+      SYNC_PUBLIC_URL: ${SYNC_PUBLIC_URL:-}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
@@ -493,17 +473,12 @@ services:
       SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
       SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
       SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
-      # WHAT this router mirrors — the streams it is running and their kinds —
-      # written once at boot for the relay to serve on /stats.json. The kind
-      # list only exists in sync.conf, which no other process reads, so
-      # without this a client comparing our count for an author against their
-      # own relay's total is comparing a filtered mirror to an unfiltered one
-      # and reads a complete mirror as 35% done. Same path on both services.
-      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
       # THIS SERVICE'S OWN STATUS PAGE: what each stream is doing, what the
       # background passes are measuring, and how far the walk has reached, at
-      # http://localhost:${SYNC_STATUS_PORT:-7778}/. It used to be a file
-      # (SYNC_PROGRESS_FILE) the relay read off this volume and re-narrated —
+      # http://localhost:${SYNC_STATUS_PORT:-7778}/. The same port serves
+      # /coverage/<pubkey>, which the relay's search page asks from readers'
+      # browsers (SYNC_PUBLIC_URL on the relay): expose that path, not the page.
+      # It used to be a file (SYNC_PROGRESS_FILE) the relay read off this volume and re-narrated —
       # which could not say whether this process was still alive, so the
       # document carried a heartbeat and the relay aged it. A request answers
       # that. Set the port to 0 to serve no page; SYNC_PROGRESS_FILE is now
@@ -520,8 +495,6 @@ services:
       SYNC_PULSE_CLIENT_DETAIL: ${SYNC_PULSE_CLIENT_DETAIL:-}
       SYNC_PULSE_SLOW_READ_MS: ${SYNC_PULSE_SLOW_READ_MS:-}
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
-      # Survives a restart, so a redeploy does not blank the page for a tick.
-      SYNC_STATUS_FILE: ${SYNC_STATUS_FILE:-/var/lib/vespa-relay/sync-status.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -636,7 +609,6 @@ services:
       # The monitor's page: which urls are one server, which cannot answer the
       # same question twice, which are graded prime. 0 serves no page.
       MONITOR_STATUS_PORT: 7779
-      MONITOR_STATUS_FILE: ${MONITOR_STATUS_FILE:-/var/lib/vespa-relay/monitor-status.json}
       MONITOR_STATUS_INTERVAL_SECONDS: ${MONITOR_STATUS_INTERVAL_SECONDS:-}
       MONITOR_WIRE_LOG: ${MONITOR_WIRE_LOG:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}

@@ -71,22 +71,19 @@ class RelaySettingsTest {
     @Test
     fun `a stats interval is whole seconds, zero is off, and anything else stops the boot`() {
         val d = statsIntervalsFromEnv(emptyMap())
-        assertEquals(900L to 60L, d.chartsSeconds to d.countersSeconds)
+        assertEquals(900L, d.chartsSeconds)
         assertEquals(0L, statsIntervalsFromEnv(mapOf("STATS_INTERVAL_SECONDS" to "0")).chartsSeconds)
         for (bad in listOf("-5", "0s", "off", "15m")) {
             assertFailsWith<IllegalStateException>(bad) { statsIntervalsFromEnv(mapOf("STATS_INTERVAL_SECONDS" to bad)) }
-            assertFailsWith<IllegalStateException>(bad) { statsIntervalsFromEnv(mapOf("STATS_COUNTERS_INTERVAL_SECONDS" to bad)) }
         }
     }
 
     @Test
-    fun `state files default to the compose mounts, and an empty manifest path turns the card off`() {
+    fun `state files default to the compose mounts`() {
         val d = relayFilesFromEnv(emptyMap())
-        assertEquals(File("/var/lib/vespa-relay/stats.json"), d.stats)
-        assertEquals(File("/var/lib/vespa-relay/sync-manifest.json"), d.syncManifest)
+        assertEquals(File("/var/lib/vespa-relay/fts-cursor.txt"), d.ftsCursor)
         assertNull(d.banState)
-        assertNull(relayFilesFromEnv(mapOf("SYNC_MANIFEST_FILE" to "")).syncManifest)
-        assertEquals(File("/var/lib/vespa-relay/stats.json"), relayFilesFromEnv(mapOf("STATS_FILE" to "")).stats)
+        assertEquals(File("/var/lib/vespa-relay/fts-cursor.txt"), relayFilesFromEnv(mapOf("FTS_CURSOR_FILE" to "")).ftsCursor)
         assertNull(relayFilesFromEnv(mapOf("RELAY_STATE_FILE" to "")).banState)
     }
 
@@ -96,8 +93,24 @@ class RelaySettingsTest {
             assertContains(assertFailsWith<IllegalStateException> { refuseSyncConfig(mapOf(key to "/etc/sync.conf")) }.message.orEmpty(), key)
         }
         refuseSyncConfig(mapOf("SYNC_CONFIG" to " "))
-        val ignored = syncSettingsIgnored(mapOf("SYNC_STREAMS" to "a", "PARSE_AUDIT_FILE" to "/x", "SYNC_MANIFEST_FILE" to "/m", "SYNC_TOR_ALL" to "", "RELAY_URL" to "x"))
+        val ignored =
+            syncSettingsIgnored(
+                mapOf("SYNC_STREAMS" to "a", "PARSE_AUDIT_FILE" to "/x", "SYNC_PUBLIC_URL" to "https://s", "SYNC_MANIFEST_FILE" to "/m", "SYNC_TOR_ALL" to "", "RELAY_URL" to "x"),
+            )
+        // SYNC_PUBLIC_URL is the relay's own; SYNC_MANIFEST_FILE is named as removed, not as the sync's.
         assertEquals(listOf("PARSE_AUDIT_FILE", "SYNC_STREAMS"), ignored)
+    }
+
+    /** The search page asks the sync at this address from every reader's browser, so it is checked at boot. */
+    @Test
+    fun `the sync's public address is an http(s) url, or unset`() {
+        assertNull(syncPublicUrlFromEnv(emptyMap()))
+        assertNull(syncPublicUrlFromEnv(mapOf("SYNC_PUBLIC_URL" to " ")))
+        assertEquals("https://sync.example.com", syncPublicUrlFromEnv(mapOf("SYNC_PUBLIC_URL" to "https://sync.example.com/")))
+        assertEquals("http://localhost:7778", syncPublicUrlFromEnv(mapOf("SYNC_PUBLIC_URL" to "http://localhost:7778")))
+        for (bad in listOf("sync.example.com", "wss://sync.example.com", "https://", "javascript:alert(1)", "https://s.example.com/?x=1")) {
+            assertFailsWith<IllegalStateException>(bad) { syncPublicUrlFromEnv(mapOf("SYNC_PUBLIC_URL" to bad)) }
+        }
     }
 
     @Test

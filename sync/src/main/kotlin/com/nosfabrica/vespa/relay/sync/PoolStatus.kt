@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.status.RelayStatusReport
 import com.nosfabrica.vespa.relay.status.StreamPhases
 import com.nosfabrica.vespa.relay.sync.VisitPool.VisitKey
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.atomic.AtomicLong
 
 /** What a row is doing: the pool word the page groups by, and the sentence it prints. */
@@ -129,41 +130,109 @@ internal class PoolStatus(
     /** Every (relay, stream) unit on the roster, for the status page's per-relay table, off one roster snapshot. */
     fun primeUnits(): List<RelayStatusReport.PrimeUnit> {
         val snapshot = roster()
-        // One pass for the whole table; asked per row, it would scan the map once per row.
+        val lookups = UnitLookups()
+        val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
+        for ((url, byStream) in snapshot.asks) {
+            for ((stream, unit) in byStream) out += unitOf(snapshot, lookups, url, stream, unit.identity)
+        }
+        return out
+    }
+
+    /**
+     * The rows that say how far this mirror has got with one person's events of [kinds]: each unit owes
+     * the asks bound to [author], and on [relays] (the author's own write relays) also the asks bound to
+     * nobody, which read everyone's events there, the author's included. An ask counts only when it
+     * mirrors one of [kinds], or names no kinds; empty [kinds] counts every ask. Empty when nothing reads
+     * them. Costs the author's own units and [relays]', never the whole roster.
+     */
+    fun primeUnitsFor(
+        author: String,
+        relays: Set<NormalizedRelayUrl> = emptySet(),
+        kinds: Set<Int> = emptySet(),
+    ): List<RelayStatusReport.PrimeUnit> {
+        val snapshot = roster()
+        val owed = LinkedHashMap<VisitKey, MutableSet<String>>()
+
+        fun owe(
+            url: NormalizedRelayUrl,
+            stream: String,
+            asks: List<RosterBuilder.Ask>,
+        ) {
+            for (ask in asks) {
+                if (mirrorsAny(ask, kinds)) owed.getOrPut(VisitKey(url, stream)) { HashSet() } += ask.filter.toJson()
+            }
+        }
+        for (key in authorIndex(snapshot)[author].orEmpty()) {
+            snapshot.asks[key.url]?.get(key.stream)?.let { owe(key.url, key.stream, it.byAuthor[author].orEmpty()) }
+        }
+        for (url in relays) snapshot.asks[url]?.forEach { (stream, unit) -> owe(url, stream, unit.unbound) }
+        if (owed.isEmpty()) return emptyList()
+        val lookups = UnitLookups()
+        return owed.map { (key, askKeys) -> unitOf(snapshot, lookups, key.url, key.stream, askKeys) }
+    }
+
+    /** What the report reads about every unit, each built in one pass: asked per row, it would scan its map once per row. */
+    private inner class UnitLookups {
         val cannotReconcile = bands.cannotReconcileByUnit()
         val unreadable = bands.unreadableByUnit()
         val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
+
         // A banded stream's audit files its reconcile under the bare name, which no band key is.
         val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
-        val out = ArrayList<RelayStatusReport.PrimeUnit>(snapshot.asks.size)
+    }
+
+    private fun unitOf(
+        snapshot: RosterBuilder.Roster,
+        lookups: UnitLookups,
+        url: NormalizedRelayUrl,
+        stream: String,
+        /** The same JSON the bands are keyed by, as the roster's own identity is built. */
+        askKeys: Set<String>,
+    ): RelayStatusReport.PrimeUnit {
+        val key = VisitKey(url, stream)
+        val abort = aborts.last(stream, url)
+        // A skipped ask aborts nothing, so after its first skip only the verdict still says why.
+        val refused = if (abort == null) lookups.unreadable[stream to url.url] else null
+        return RelayStatusReport.PrimeUnit(
+            relay = url.url,
+            stream = stream,
+            // The same strings the bands are keyed under, so the report joins on them.
+            coverageKeys = lookups.coverageKeys[stream] ?: listOf(stream),
+            askKeys = askKeys,
+            visiting = ongoing.containsKey(key),
+            live = tails.has(key),
+            speaksNegentropy = snapshot.speaksNegentropy[url],
+            // Any band of this unit that negentropy cannot walk; the per-band split
+            // is on the stream's schedule rows, which is where a band is the subject.
+            negentropyRefusedWhy = lookups.cannotReconcile[stream to url.url],
+            watched = snapshot.watches(url, stream),
+            kindCap = widths.capFor(url),
+            abortReason = abort?.reason?.says ?: refused?.reason,
+            abortSaid = abort?.said ?: refused?.said,
+            abortAtSec = abort?.atSec ?: refused?.at ?: 0,
+            auditKey = lookups.auditKeys[stream],
+        )
+    }
+
+    /** One roster generation's units by the authors they bind, built on that generation's first coverage ask. */
+    private class AuthorIndex(
+        val roster: RosterBuilder.Roster,
+        val units: Map<String, List<VisitKey>>,
+    )
+
+    @Volatile
+    private var authorIndex: AuthorIndex? = null
+
+    private fun authorIndex(snapshot: RosterBuilder.Roster): Map<String, List<VisitKey>> {
+        authorIndex?.takeIf { it.roster === snapshot }?.let { return it.units }
+        val out = HashMap<String, MutableList<VisitKey>>()
         for ((url, byStream) in snapshot.asks) {
             for ((stream, unit) in byStream) {
-                val key = VisitKey(url, stream)
-                val abort = aborts.last(stream, url)
-                // A skipped ask aborts nothing, so after its first skip only the verdict still says why.
-                val refused = if (abort == null) unreadable[stream to url.url] else null
-                out +=
-                    RelayStatusReport.PrimeUnit(
-                        relay = url.url,
-                        stream = stream,
-                        // The same strings the bands are keyed under, so the report joins on them.
-                        coverageKeys = coverageKeys[stream] ?: listOf(stream),
-                        askKeys = unit.identity,
-                        visiting = ongoing.containsKey(key),
-                        live = tails.has(key),
-                        speaksNegentropy = snapshot.speaksNegentropy[url],
-                        // Any band of this unit that negentropy cannot walk; the per-band split
-                        // is on the stream's schedule rows, which is where a band is the subject.
-                        negentropyRefusedWhy = cannotReconcile[stream to url.url],
-                        watched = snapshot.watches(url, stream),
-                        kindCap = widths.capFor(url),
-                        abortReason = abort?.reason?.says ?: refused?.reason,
-                        abortSaid = abort?.said ?: refused?.said,
-                        abortAtSec = abort?.atSec ?: refused?.at ?: 0,
-                        auditKey = auditKeys[stream],
-                    )
+                for (author in unit.byAuthor.keys) out.getOrPut(author) { ArrayList(2) } += VisitKey(url, stream)
             }
         }
+        // Two asks racing on a new generation build it twice; the second write is the same index.
+        authorIndex = AuthorIndex(snapshot, out)
         return out
     }
 
@@ -297,4 +366,14 @@ internal class PoolStatus(
                 .thenByDescending { it.heldForSec }
                 .thenBy { it.relay }
     }
+}
+
+/** Whether [ask] mirrors any of [kinds]: an ask naming no kinds mirrors them all, and empty [kinds] asks for any. */
+internal fun mirrorsAny(
+    ask: RosterBuilder.Ask,
+    kinds: Set<Int>,
+): Boolean {
+    if (kinds.isEmpty()) return true
+    val asked = ask.filter.kinds
+    return asked.isNullOrEmpty() || asked.any { it in kinds }
 }

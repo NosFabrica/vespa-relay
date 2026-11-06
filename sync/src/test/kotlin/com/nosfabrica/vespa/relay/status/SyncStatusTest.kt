@@ -38,7 +38,7 @@ import kotlin.test.assertTrue
 class SyncStatusTest {
     private fun status(
         progress: SyncProgress = SyncProgress(),
-        snapshot: StatsSnapshot = StatsSnapshot(null),
+        snapshot: StatsSnapshot = StatsSnapshot(),
     ) = Triple(
         SyncStatus(SyncBands(null), SweepState(null), progress, snapshot, everySeconds = 30),
         progress,

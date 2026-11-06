@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -38,31 +39,12 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.io.File
 import java.time.Instant
 import java.time.YearMonth
 
 /**
- * Which cadence a section is computed on, split by cost: cheap is bounded by something other than
- * the corpus, expensive walks the corpus or a populous kind. The tier is the section, not the
- * query, because a section carries one `generatedAt`; the tiers are not serialised.
- */
-internal enum class StatsTier(
-    /** What this tier is called in the document, under `tiers`. */
-    val member: String,
-    /** The top-level members this tier owns; a member missing from a pass leaves the served document. */
-    val sections: Set<String>,
-) {
-    /** The router's manifest: what is cheap enough to run every minute, which no engine query is. */
-    COUNTERS("counters", setOf("sync")),
-
-    /** Everything that asks the engine: even a bare `count()` walks every document it matches. */
-    CHARTS("charts", setOf("corpus", "trust", "kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
-}
-
-/**
  * The corpus statistics document at `GET /stats.json` and the job that recomputes it. [compute]
- * returns one tier's members and `StatsSnapshot` merges them; every section carries its own status.
+ * returns the whole document, which `StatsSnapshot` serves; every section carries its own status.
  * Every number describes this relay's store, not the network, and the queries go to the engine with no lens.
  */
 internal class StatsRollup(
@@ -77,43 +59,29 @@ internal class StatsRollup(
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
-    /** The router's manifest on the shared volume; null in a serve-only deployment. */
-    private val syncManifestFile: File? = null,
 ) {
     /**
-     * Compute one [tier]'s members. Never throws: a section that fails says so in the document.
+     * Compute the document. Never throws: a section that fails says so in the document.
      * [everySeconds] is published.
      */
-    suspend fun compute(
-        tier: StatsTier,
-        everySeconds: Long = 0,
-    ): JsonObject {
+    suspend fun compute(everySeconds: Long = 0): JsonObject {
         val startedMs = System.currentTimeMillis()
         val sections = LinkedHashMap<String, JsonObject>()
-        when (tier) {
-            StatsTier.COUNTERS -> {
-                // Absent, not empty, without a router: "0 relays" reads as a broken mirror.
-                syncSection()?.let { sections["sync"] = it }
-            }
-
-            StatsTier.CHARTS -> {
-                // Kinds first: the per-kind series follows its histogram.
-                val kinds = kindsSection()
-                sections["corpus"] = corpusSection()
-                sections["trust"] = trustSection()
-                sections["kinds"] = kinds
-                sections["authors"] = authorsSection()
-                sections["activity"] = activitySection()
-                sections["kindActivity"] = kindActivitySection(topKindNumbers(kinds))
-                sections["zaps"] = zapsSection()
-                sections["relayDistribution"] = relaysSection()
-            }
-        }
+        // Kinds first: the per-kind series follows its histogram.
+        val kinds = kindsSection()
+        sections["corpus"] = corpusSection()
+        sections["trust"] = trustSection()
+        sections["kinds"] = kinds
+        sections["authors"] = authorsSection()
+        sections["activity"] = activitySection()
+        sections["kindActivity"] = kindActivitySection(topKindNumbers(kinds))
+        sections["zaps"] = zapsSection()
+        sections["relayDistribution"] = relaysSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("title", "Relay stats")
             put("relay", relayUrl)
-            // When either tier last touched the document; the honest timestamps are per section.
+            // When the pass started; the honest timestamps are per section.
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put(
                 "scope",
@@ -124,37 +92,16 @@ internal class StatsRollup(
             put("counted", "Counted anonymously against the whole store.")
             put("timezone", "UTC")
             putJsonObject("tiers") {
-                putJsonObject(tier.member) {
+                putJsonObject(TIER) {
                     put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
                     put("tookMs", System.currentTimeMillis() - startedMs)
                     if (everySeconds > 0) put("everySeconds", everySeconds)
-                    // What this pass produced, not what the tier owns.
                     putJsonArray("sections") { sections.keys.forEach { add(it) } }
                 }
             }
             sections.forEach { (member, value) -> put(member, value) }
         }
     }
-
-    /**
-     * The kind set this relay mirrors, read off the shared volume: the one section that queries
-     * nothing. An unreadable file is a failed section, the same contract every queried section has.
-     */
-    private suspend fun syncSection(): JsonObject? {
-        if (syncManifestFile == null) return null
-        var data: JsonObject? = null
-        val section =
-            section { attempts ->
-                val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
-                data = mirrors?.let { buildJsonObject { put("mirrors", it) } }
-                data ?: buildJsonObject { }
-            }
-        // Nothing read and nothing failed means no router has ever written here.
-        return if (data == null && section["errors"] == null) null else section
-    }
-
-    /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
-    private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
     /** The kinds to draw a per-kind series for: the largest few from the histogram. Empty when it failed. */
     private fun topKindNumbers(kinds: JsonObject): List<Int> =
@@ -646,7 +593,13 @@ internal class StatsRollup(
 
     companion object {
         /** Bumped when a released field changes meaning or leaves, not when one is added. */
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
+
+        /** The pass's name under `tiers`, which the page's footer reads its timing from. */
+        const val TIER = "charts"
+
+        /** The sections every pass computes. */
+        val SECTIONS = setOf("corpus", "trust", "kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")
 
         const val DEFAULT_WINDOW_DAYS = 30
 
@@ -677,42 +630,37 @@ internal class StatsRollup(
 }
 
 /**
- * Recompute one [tier] of the stats document into [snapshot], one call per tier. [everySeconds] is
- * the gap between passes, not a period, so a slow pass delays the next rather than overlapping it.
+ * Recompute the stats document into [snapshot]. [everySeconds] is the gap between passes, not a
+ * period, so a slow pass delays the next rather than overlapping it.
  */
 internal fun launchStatsRollup(
     scope: CoroutineScope,
     rollup: StatsRollup,
     snapshot: StatsSnapshot,
-    tier: StatsTier,
     everySeconds: Long,
 ) {
     scope.launch {
         while (true) {
             val startedMs = System.currentTimeMillis()
-            runCatching { rollup.compute(tier, everySeconds) }
-                .onSuccess { members ->
-                    // A first document of headers alone would replace the page's "waiting" card with a blank one.
-                    if (tier.sections.any { it in members } || snapshot.served() != null) {
-                        snapshot.publish(members, owns = tier.sections, tier = tier.member)
-                    }
+            runCatching { rollup.compute(everySeconds) }
+                .onSuccess { doc ->
+                    snapshot.publish(doc)
                     val secs = (System.currentTimeMillis() - startedMs) / 1000
                     // The count only; each section's error text is in the document.
-                    val failed = members.entries.count { (_, v) -> (v as? JsonObject)?.statusOf() in setOf("failed", "partial") }
+                    val failed = doc.entries.count { (_, v) -> (v as? JsonObject)?.statusOf() in setOf("failed", "partial") }
                     println(
-                        "stats: ${tier.member} rolled up in ${secs}s" +
+                        "stats: rolled up in ${secs}s" +
                             (if (failed > 0) " — $failed section(s) incomplete, see /stats.json" else ""),
                     )
                 }.onFailure { e ->
                     if (e is CancellationException) throw e
                     // compute() catches per query, so this is the assembly itself breaking.
-                    System.err.println("stats: ${tier.member} rollup failed (${e.message}) — serving the previous document")
-                    // Marked by tier: one cadence can fail for hours while the other keeps publishing.
-                    snapshot.markStale("the last ${tier.member} rollup failed: ${publicReason(e)}", tier = tier.member)
+                    System.err.println("stats: rollup failed (${e.message}) — serving the previous document")
+                    snapshot.markStale("the last rollup failed: ${publicReason(e)}")
                 }
             delay(everySeconds * 1000)
         }
     }
 }
 
-private fun JsonObject.statusOf(): String? = (this["status"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+private fun JsonObject.statusOf(): String? = (this["status"] as? JsonPrimitive)?.content

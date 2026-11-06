@@ -6,7 +6,7 @@
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { esc, fmt } from "./shared/format.js";
-import { readMirrorScope, scopedTo } from "./shared/mirrors.js";
+import { readCoverage } from "./shared/coverage.js";
 import { assess, counted, worthShowing, TIMED_OUT } from "./shared/readiness.js";
 import { normalizeRelay, relayAddress, whyNotDialable } from "./shared/relayurl.js";
 import { seedProviders } from "./shared/providers.js";
@@ -77,13 +77,12 @@ async function run(me, gen) {
 
   // Only once ranking is complete does the posts stage matter.
   if (assess(facts).state !== "ready") return;
-  // Without the mirror's kind list the two post counts are not the same question, so no scope
+  // The sync answers for its own walk; a relay that names no sync, or one that does not answer,
   // means no posts stage at all.
-  const scope = await readMirrorScope();
-  // Sign-out across the await above must stop the asks, not only the paint.
+  const coverage = await readCoverage(me, { relays: facts.relayList.writeRelays });
+  // Sign-out across the await above must stop the paint.
   if (gen !== generation) return;
-  if (scope) facts.posts = await postCounts(anon, me, facts.relayList.writeRelays, scope);
-  if (gen !== generation) return;
+  if (coverage) facts.posts = coverage;
   const after = assess(facts);
   render(after, me);
   if (after.state === "ready") rememberReady(me);
@@ -158,31 +157,6 @@ async function probe(anon) {
  * scoped to the mirrored kinds, sent to both sides. The newest-event reads stand in where a
  * relay answers no COUNT.
  */
-async function postCounts(anon, me, writeRelays, scope) {
-  const filter = scopedTo({ authors: [me] }, scope);
-  const newest = { ...filter, limit: 1 };
-  const url = writeRelays[0];
-  const [here, newestHere, answer] = await Promise.all([
-    anon.count(filter).catch(() => TIMED_OUT),
-    anon.req(newest).catch(() => []),
-    url
-      ? askRemote(url, async (c) => {
-          const [there, latest] = await Promise.all([c.count(filter), c.req(newest)]);
-          return { there, newest: latest[0]?.created_at ?? null };
-        })
-      : Promise.resolve(null),
-  ]);
-  return {
-    here,
-    there: answer?.there ?? null,
-    relay: url || null,
-    // What both sides were asked for, so the words can say so; null where the mirror asks for everything.
-    kinds: filter.kinds || null,
-    newestHere: newestHere[0]?.created_at ?? null,
-    newestThere: answer?.newest ?? null,
-  };
-}
-
 /** One question to somebody else's relay, on a socket opened and closed for it. */
 async function askRemote(url, ask) {
   let conn = null;
@@ -353,31 +327,36 @@ function words(v) {
           };
 
     case "posts-behind": {
-      const p = v.counts || {};
-      if (pct != null) {
-        return {
-          state: "mirroring",
-          // "About": the denominator is the other relay's NIP-45 COUNT.
-          headline: `Ranking is ready. Your own posts are still arriving — about ${pct}%`,
-          meter:
-            `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
-            `<p class="rdy-figures"><span><b>${fmt(p.here)}</b> here</span>` +
-            `<span>of <b>${fmt(p.there)}</b> on ${esc(relayAddress(p.relay))}</span></p></div>`,
-          body:
-            "This doesn’t change how results are ranked — it only means searching for something you " +
-            "wrote may not find it yet.",
-          hint: scopeNote(p),
-        };
-      }
+      const p = v.progress || { done: 0, total: 0, relays: [] };
+      const pending = p.relays.filter((r) => !r.done);
       return {
         state: "mirroring",
-        headline: `Ranking is ready. We have your posts up to ${day(p.newestHere)}.`,
+        headline: `Ranking is ready. Your own posts are still arriving — ${fmt(p.done)} of ${many(p.total, "relay")} read in full`,
+        meter:
+          `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
+          `<p class="rdy-figures"><span><b>${fmt(p.done)}</b> read to the start</span>` +
+          `<span>of <b>${fmt(p.total)}</b> this mirror follows you on</span></p></div>`,
         body:
-          `${esc(relayAddress(p.relay))} doesn’t answer counts, so there’s no percentage to show — but it holds ` +
-          `posts of yours newer than anything here, the most recent from <b>${day(p.newestThere)}</b>.`,
-        hint: scopeNote(p),
+          "This doesn’t change how results are ranked — it only means searching for something you " +
+          "wrote may not find it yet.",
+        hint:
+          (pending.length
+            ? `Still going: ${pending.slice(0, 3).map((r) => `${esc(relayAddress(r.relay))} (${esc(STATUS_WORDS[r.status] || r.status)})`).join(", ")}` +
+              (pending.length > 3 ? ` and ${many(pending.length - 3, "more")}` : "") + ". "
+            : "") + unreadNote(v.unread),
       };
     }
+
+    case "posts-not-followed":
+      return {
+        state: "mirroring",
+        headline: "Ranking is ready. This relay isn’t mirroring your own posts yet.",
+        body:
+          "It copies posts from the write relays in your relay list once its monitor has checked them " +
+          "and found them working. None of yours is on that list yet, so searching for something you " +
+          "wrote may not find it.",
+        hint: unreadNote(v.unread),
+      };
 
     default:
       return { state: "checking", headline: "Checking whether search is ready for you…" };
@@ -386,17 +365,19 @@ function words(v) {
 
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
 
-/** What both sides of the posts figure were asked for; empty where the mirror asks for every kind. */
-const scopeNote = (p) =>
-  p.kinds
-    ? `Both sides of that comparison cover the ${fmt(p.kinds.length)} kinds this relay mirrors, so it weighs ` +
-      `like against like — anything you post outside them is on neither side of it.`
+/** The reader's relays nothing here reads, named; empty when there are none. */
+const unreadNote = (unread) =>
+  unread && unread.length
+    ? `Not read here: ${unread.slice(0, 3).map((u) => esc(relayAddress(u))).join(", ")}` +
+      (unread.length > 3 ? ` and ${many(unread.length - 3, "more")}` : "") + "."
     : "";
 
-const day = (secs) =>
-  Number.isFinite(secs)
-    ? new Date(secs * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" })
-    : "an unknown date";
+/** The sync's word for a relay it has not finished, as a reader would say it. */
+const STATUS_WORDS = {
+  refused: "refused us",
+  notStarted: "not started",
+  paging: "reading back",
+};
 
 /** The chain, with the break visible: solid above it, dashed below. */
 function chainHtml(chain) {
@@ -427,9 +408,9 @@ function chainHtml(chain) {
             : l.status === "partial" ? "ranked by what has arrived so far" : "returns results";
           break;
         case "posts":
-          sub = counted(d.there)
-            ? `${fmt(d.here)} here · ${esc(relayAddress(d.relay))} has ${fmt(d.there)} — doesn’t affect ranking`
-            : "doesn’t affect ranking";
+          sub = d.followed === false
+            ? "not mirrored here yet — doesn’t affect ranking"
+            : `${fmt(d.done)} of ${many(d.total, "relay")} read in full — doesn’t affect ranking`;
           break;
       }
       const verdict =

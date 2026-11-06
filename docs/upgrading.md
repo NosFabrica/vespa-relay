@@ -4,6 +4,48 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The search page asks the sync about your posts (November 2026)
+
+The line under the search box that says whether the mirror has a reader's own
+posts now asks the sync process, which knows, instead of counting the posts on
+two relays. The relay stops reading the manifest file the sync left on the
+shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
+
+### Do before the first boot
+
+- **Set `SYNC_PUBLIC_URL` on the relay** to the address readers' browsers reach
+  the sync at, e.g. `https://sync.example.com`, and route `/coverage/` there
+  from your proxy (the sync serves it on `SYNC_STATUS_PORT`, 7778). Only that
+  path needs to be public. Unset, the line under the search box says nothing
+  about posts.
+- **Drop `SYNC_MANIFEST_FILE`, `STATS_COUNTERS_INTERVAL_SECONDS`,
+  `STATS_FILE`, `SYNC_STATUS_FILE` and `MONITOR_STATUS_FILE`** from your
+  `.env`. They do nothing now, and each process names the ones it sees at
+  boot. The old `sync-manifest.json`, `stats.json`, `sync-status.json` and
+  `monitor-status.json` on the volume can be deleted.
+
+### What changes in behaviour
+
+- **The posts line counts relays, not posts.** "3 of 4 relays read in full"
+  comes from the sync's own walk, so it no longer depends on a stranger's
+  `COUNT`. A reader no stream follows is told the mirror isn't following their
+  posts yet.
+- **The sync's and the monitor's status pages start empty.** Their documents
+  live in memory now, so for one status interval (30 s) after a boot the page
+  says "not computed yet" instead of showing the previous run's.
+- **So does the relay's `/stats.html`, for longer.** `/stats.json` is held in
+  memory only, so after a restart it answers 503 and the page shows its waiting
+  card until the first rollup lands, which takes minutes on a large corpus. With
+  `STATS_INTERVAL_SECONDS=0` it now always answers 503 with `"off": true`,
+  where it used to serve the last file, and the page says the statistics are
+  turned off.
+- **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
+  read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
+- **The sync answers `GET /coverage/<pubkey>?kind=…&relay=…`** to any origin:
+  every stream that mirrors those kinds (kind 1 when none is named) of that
+  author on the relays named, or is bound to them anywhere, and how far each
+  has got, and the named relays nothing reads. It caches an answer for 30 s.
+
 ## Store refusals and the phrase band (November 2026)
 
 vespa-eventstore `b21f996c1849`. The schema moves, with no reindex: new fieldsets

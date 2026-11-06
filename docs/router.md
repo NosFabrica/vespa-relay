@@ -703,7 +703,7 @@ Refused rather than resolved:
   never said what to measure. `sources = []` is how you say "measure nothing"
   — a declaration, so it boots, and the process still retires stale verdicts.
 - **A monitor setting on the sync process**: `MONITOR_CONFIG`,
-  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT`, `MONITOR_STATUS_FILE`, or a
+  `MONITOR_CONFIG_FILE`, `MONITOR_STATUS_PORT`, or a
   `monitor { }` block in `sync.conf`. There they would configure nothing, so the
   sync stops and names where they moved. The monitor refuses `SYNC_CONFIG` and
   `SYNC_CONFIG_FILE` the same way.
@@ -985,43 +985,55 @@ router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:4
 router: ingested 214880 accepted, 402113 rejected [duplicate: already have this event x401980]; 14 relay(s) connected, 12 pinned + dynamic
 ```
 
-## Publishing what this router mirrors
+## Answering for one author
 
-The kind list in `filter` exists here and nowhere else, and that is a problem for
-anything counting events on the relay this router feeds. "How much of my history
-is here yet" gets answered by counting our events for an author against the
-author's own relay's total for them, and that is a *filtered* mirror over an
-*unfiltered* one: measured at **31,118 here of 89,485 there — 35%** — on a mirror
-that was missing nothing it had ever been asked to hold. The entire gap was kinds
-3, 4, 5, 6, 7 and 1059, which no stream here asks for, and two of which
-(encrypted DMs, gift wraps) it must never hold.
+"How much of my history is here yet" used to be answered by counting an author's
+events here against their own relay's total, scoped to the kinds the mirror pulls
+down, which the relay read off a manifest file this router left on the shared
+volume. The count was an estimate twice over: a filtered mirror against an
+unfiltered relay (measured at **31,118 here of 89,485 there — 35%** on a mirror
+missing nothing, the whole gap being kinds no stream asks for), and a relay that
+caps or refuses `COUNT` answers nothing at all.
 
-Set `SYNC_MANIFEST_FILE` and the router writes what it is running, once at boot:
+The router knows the answer outright, so it serves it: `GET /coverage/<pubkey>`
+on its status port lists every (relay, stream) pair that reads that author's
+events of the kinds asked about and how far it has got, in the relay table's
+words. A pair reads them when its ask mirrors one of those kinds (or names no
+kinds) and is bound to that author, or is bound to nobody on a relay the author
+writes to. The kinds are `?kind=` (at most 20), kind 1 when none is named, so a
+stream that mirrors only profiles (`profileViaOutbox`, `indexers`) says nothing
+about someone's posts. The second case is the common one (`contentViaOutbox`
+asks every `prime` relay for every author), and only the author's relay list
+says where they write, so the asker names those relays,
+`?relay=wss://…&relay=…` (at most 20):
 
 ```json
 {
-  "writtenAt": 1770000000,
-  "streams": [
-    {"name": "content",    "dir": "down", "kinds": [0, 1, 3, 6, 7, 16, 20, …]},
-    {"name": "assertions", "dir": "down", "kinds": [30382]},
-    {"name": "monitor",    "dir": "up",   "kinds": [30166]}
-  ]
+  "pubkey": "…",
+  "generatedAt": 1770000000,
+  "followed": true,
+  "relays": [
+    {"relay": "wss://relay.damus.io/", "stream": "contentViaOutbox", "syncStatus": "complete"},
+    {"relay": "wss://nos.lol/", "stream": "contentViaOutbox", "syncStatus": "paging"}
+  ],
+  "unread": ["wss://relay.example/"]
 }
 ```
 
-The relay reads it off the shared volume and publishes the union of the `down`
-kinds as `sync.mirrors.kinds` on `/stats.json`. A client scopes its remote
-`COUNT` to that list, and the percentage becomes one that can reach 100%.
-
-Once at boot is the whole lifecycle: a `sync.conf` edit is a `restart sync`, so
-there is no other moment this can change, and `writtenAt` is how a reader tells a
-live declaration from one left behind by a router that was switched off. What is
-written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
-stream that is not running mirrors nothing.
+`unread` is the named relays nothing here reads: not rated working by the
+monitor, a stream's `exclude`, or read only for other kinds. `followed: false`
+means nothing here reads this author's events of those kinds at all. The
+relay's search page asks this from the reader's browser and says under the
+search box whether the mirror has their posts yet, so the path is public: it
+answers any origin, carries only the three members the page reads (none of the
+operator's detail: why a relay refused us, kind caps, how far behind), and
+caches each answer for 30 s. It has no rate limit of its own: an answer walks
+only the author's own pairs and the relays named, never the whole roster. The relay finds it through `SYNC_PUBLIC_URL`, the one thing
+it knows of this process.
 
 ## The router's own status page
 
-The manifest says what the mirror *would* hold. Nothing said whether it was
+Nothing used to say whether the mirror was
 working — that lived only in the log lines `StreamPhases` prints, i.e. in
 whatever a container's stderr had not yet rotated away. Three questions had no
 answer at all: is the router alive, did the last cycle finish or abort, and what

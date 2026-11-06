@@ -186,10 +186,11 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
-                              SyncManifest (SYNC_MANIFEST_FILE), PersistedJsonState (the three files' durable write),
+                              PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
-                              SyncCoverageReport, RelayStatusReport, GaugeSeries
+                              SyncCoverageReport, RelayStatusReport, GaugeSeries, AuthorCoverage (/coverage/<pubkey>,
+                              what the search page asks about a reader's own posts)
 relay/…/relay/
   RelayMain.kt                entrypoint: readSettings parses everything before the network, then named boot steps;
                               refuses to boot if SYNC_CONFIG* is set
@@ -202,11 +203,11 @@ relay/…/relay/
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),
                               OrphanScoreSweep (SWEEP_ORPHAN_SCORES_ON_START), TrustVerify (VERIFY_TRUST_ON_START),
-                              RelayProfile, MirrorReport, StatsYql / StatsVespa /
-                              StatsRollup (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS; StatsRollupTest's
-                              SELECTIVE_KINDS is the guard on which kinds the counters tier may ask)
+                              RelayProfile, StatsYql / StatsVespa /
+                              StatsRollup (STATS_INTERVAL_SECONDS)
 web/…/relay/web/
-  StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document (STATS_FILE)
+  StatusSite, CachedPages, WebAssets, PageIcon, StatsSnapshot   the page routes, cache, /web assets, icon, document
+  PubkeyDocument, PageSyncUrl  a per-pubkey JSON route any origin may read; the search page's <meta name="sync-url">
   resources/index.html        the search UI; its styles are web/app.css, its behaviour resources/web/ (app.js, signin.js,
                               owngroups.js, urlstate.js, searchfield.js, paging.js, feed.js, entity.js, related.js,
                               readiness.js, cards/, shared/ — shared/asks.js and shared/lens.js first)

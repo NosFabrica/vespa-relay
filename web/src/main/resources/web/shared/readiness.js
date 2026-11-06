@@ -5,6 +5,7 @@
 
 // Re-exported because this is where the difference between the two gets decided.
 export { REFUSED, TIMED_OUT } from "./relay.js";
+import { progressOf } from "./coverage.js";
 
 /** A real count. The no-answer sentinels are objects and therefore truthy. */
 export const counted = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -24,7 +25,8 @@ const shortOfEnough = (pct) => pct != null && Math.round(pct * 100) < SCORES_ENO
 /**
  * The whole verdict from `facts`, which carries only answers: `relayList {writeRelays}`,
  * `scoreListSeen`, `rankService {service, relay}`, `scores {here, there}`, `probe {authed, anon}`
- * and `posts {here, there, ...}`. Anything not yet asked is null, which is why `checking` is a state.
+ * and `posts`, the sync's own `{followed, relays}` (shared/coverage.js). Anything not yet asked is
+ * null, which is why `checking` is a state.
  */
 export function assess(facts) {
   const f = facts || {};
@@ -93,20 +95,20 @@ export function assess(facts) {
   }
 
   // Your own posts: downstream and not in the chain, since ranking is complete without them.
-  // Absent is a supported answer.
+  // Absent is a supported answer: no sync named, or none that answered.
   const posts = f.posts;
   if (posts == null) return { state: "ready", tone: "ok", percent: null, chain };
-  const postPct = fraction(posts.here, posts.there);
-  const behindByCount = postPct != null && postPct < 1;
-  const behindByDate =
-    postPct == null &&
-    Number.isFinite(posts.newestHere) && Number.isFinite(posts.newestThere) &&
-    posts.newestThere > posts.newestHere;
-  if (behindByCount || behindByDate) {
-    chain.push({ key: "posts", status: "aside", detail: { ...posts, percent: postPct } });
-    return { state: "posts-behind", tone: "working", percent: postPct, chain, counts: posts };
+  if (!posts.followed) {
+    // Nothing reads this reader's relays, so nothing of theirs is arriving: worth saying, not a break.
+    chain.push({ key: "posts", status: "aside", detail: { followed: false } });
+    return { state: "posts-not-followed", tone: "working", percent: null, chain, unread: posts.unread || [] };
   }
-  chain.push({ key: "posts", status: "aside", detail: { ...posts, percent: postPct } });
+  const progress = progressOf(posts);
+  const postPct = progress.total ? progress.done / progress.total : null;
+  chain.push({ key: "posts", status: "aside", detail: { ...progress, percent: postPct } });
+  if (progress.done < progress.total) {
+    return { state: "posts-behind", tone: "working", percent: postPct, chain, progress, unread: posts.unread || [] };
+  }
   return { state: "ready", tone: "ok", percent: null, chain };
 }
 

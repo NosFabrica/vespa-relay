@@ -493,6 +493,13 @@ class SyncEngine(
     /** The pool's current roster, as the status page's per-relay table needs it. */
     fun primeUnits(): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnits()
 
+    /** [primeUnits] restricted to what reads [author]'s events; see [PoolStatus.primeUnitsFor]. */
+    fun primeUnitsFor(
+        author: String,
+        relays: Set<NormalizedRelayUrl>,
+        kinds: Set<Int>,
+    ): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnitsFor(author, relays, kinds)
+
     companion object {
         // Published names in the progress document; a rename breaks readers charting them.
         const val VISITS_PROCESSOR = "visits"

@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.util.strictLong
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
+import java.net.URI
 
 /**
  * Where this relay answers: [ws] its NIP-42 identity, [http] the one origin a NIP-98 `u` must name
@@ -80,41 +81,45 @@ fun nip11FromEnv(
         termsOfService = env.text("RELAY_TERMS_OF_SERVICE"),
     )
 
-/** The two rollup cadences, in seconds; 0 turns that tier off. */
+/** The rollup's cadence, in seconds; 0 turns it off. */
 class StatsIntervals(
     val chartsSeconds: Long,
-    val countersSeconds: Long,
 )
 
-/** `STATS_INTERVAL_SECONDS` and `STATS_COUNTERS_INTERVAL_SECONDS`: `0s` or `off` stops the boot rather than running the default. */
+/** `STATS_INTERVAL_SECONDS`: `0s` or `off` stops the boot rather than running the default. */
 fun statsIntervalsFromEnv(env: Map<String, String>): StatsIntervals =
     StatsIntervals(
         chartsSeconds = env.strictLong("STATS_INTERVAL_SECONDS", 0..MAX_INTERVAL_SECONDS) ?: 900L,
-        countersSeconds = env.strictLong("STATS_COUNTERS_INTERVAL_SECONDS", 0..MAX_INTERVAL_SECONDS) ?: 60L,
     )
+
+/**
+ * `SYNC_PUBLIC_URL`: where a reader's browser reaches the sync process, written into the search page
+ * so it can ask the sync how far it has got with the reader's own posts. Null when unset; anything
+ * but an http(s) url stops the boot, since the page would ask it from every reader's browser.
+ */
+fun syncPublicUrlFromEnv(env: Map<String, String>): String? {
+    val raw = env.text("SYNC_PUBLIC_URL") ?: return null
+    val uri = runCatching { URI(raw) }.getOrNull()
+    check(uri != null && (uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrEmpty() && uri.query == null && uri.fragment == null) {
+        "SYNC_PUBLIC_URL=$raw is not an http(s) url with a host and no query; it is the address a reader's browser asks the sync at, " +
+            "e.g. https://sync.example.com"
+    }
+    return raw.trimEnd('/')
+}
 
 /** A week: a rollup slower than that is one nobody is reading, and the cap keeps seconds-to-millis whole. */
 private const val MAX_INTERVAL_SECONDS = 7 * 24 * 3_600L
 
 /** The state files the relay keeps, each an env path or where `docker-compose.yml` mounts it. */
 class RelayFiles(
-    val stats: File,
     val ftsCursor: File,
-    /** Null when `SYNC_MANIFEST_FILE` is set empty: the mirror card is off. */
-    val syncManifest: File?,
     /** Null for in-memory ban lists. */
     val banState: String?,
 )
 
 fun relayFilesFromEnv(env: Map<String, String>): RelayFiles =
     RelayFiles(
-        stats = File(env.text("STATS_FILE") ?: "/var/lib/vespa-relay/stats.json"),
         ftsCursor = File(env.text("FTS_CURSOR_FILE") ?: "/var/lib/vespa-relay/fts-cursor.txt"),
-        syncManifest =
-            when (val raw = env["SYNC_MANIFEST_FILE"]) {
-                null -> File("/var/lib/vespa-relay/sync-manifest.json")
-                else -> raw.trim().takeIf { it.isNotEmpty() }?.let(::File)
-            },
         banState = env.text("RELAY_STATE_FILE"),
     )
 
@@ -149,15 +154,25 @@ fun refuseSyncConfig(env: Map<String, String>) {
     )
 }
 
-/** The sync process's settings set on this one, which do nothing here; the manifest it does read. */
+/** The sync process's settings set on this one, which do nothing here; the sync's public address it does read. */
 fun syncSettingsIgnored(env: Map<String, String>): List<String> =
     env.keys
         .filter { key ->
             // SERVING_PRESSURE_THRESHOLD_MS is read here too, since the mirror lane yields on it.
             (key.startsWith("SYNC_") || key.startsWith("PARSE_AUDIT_")) &&
-                key != "SYNC_MANIFEST_FILE" &&
+                key != "SYNC_PUBLIC_URL" &&
+                key !in REMOVED_MANIFEST_SETTINGS &&
                 env.text(key) != null
         }.sorted()
+
+/**
+ * The settings of the manifest the relay used to read off the sync's volume, and the rollup pass that
+ * read it: gone, since the search page asks the sync itself (`SYNC_PUBLIC_URL`). Set, the boot names them.
+ */
+val REMOVED_MANIFEST_SETTINGS = listOf("SYNC_MANIFEST_FILE", "STATS_COUNTERS_INTERVAL_SECONDS")
+
+/** The stats document's copy on disk, gone: `/stats.json` is held in memory only. Set, the boot names it. */
+const val REMOVED_STATS_FILE = "STATS_FILE"
 
 /** Set, non-blank names under [prefix], for the "these do nothing" notes. */
 fun Map<String, String>.setUnder(prefix: String): List<String> = keys.filter { it.startsWith(prefix) && text(it) != null }.sorted()

@@ -56,4 +56,15 @@ class StrictEnvTest {
         assertTrue("F='ture'" in assertFailsWith<IllegalStateException> { env.strictFlag("F") }.message.orEmpty())
         assertTrue("C='ful'" in assertFailsWith<IllegalStateException> { env.strictChoice("C", setOf("sent", "full")) }.message.orEmpty())
     }
+
+    @Test
+    fun `a removed setting still set is named, and blank counts as unset`() {
+        val names = listOf("OLD_A", "OLD_B")
+        assertNull(mapOf("OLD_A" to " ").removedSettingsNote("relay", names, "why"))
+        assertEquals("relay: OLD_A was removed and does nothing — why", mapOf("OLD_A" to "x").removedSettingsNote("relay", names, "why"))
+        assertEquals(
+            "sync: OLD_A, OLD_B were removed and do nothing — why",
+            mapOf("OLD_A" to "x", "OLD_B" to "y").removedSettingsNote("sync", names, "why"),
+        )
+    }
 }

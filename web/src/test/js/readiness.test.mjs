@@ -16,8 +16,11 @@ const healthy = () => ({
   rankService: { service: "abc", relay: "wss://nip85.nosfabrica.com" },
   scores: { here: 145968, there: 145968 },
   probe: { authed: 1, anon: 1 },
-  posts: { here: 1880, there: 1880, relay: "wss://relay.damus.io" },
+  posts: { followed: true, relays: [{ relay: "wss://relay.damus.io/", syncStatus: "complete" }] },
 });
+
+/** The sync's answer, one row per (relay, status). */
+const posts = (...rows) => ({ followed: true, relays: rows.map(([relay, syncStatus]) => ({ relay, syncStatus })) });
 
 const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 
@@ -163,54 +166,42 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
-  const v = assess({ ...healthy(), posts: { here: 1204, there: 1880, relay: "wss://relay.damus.io" } });
+  const v = assess({ ...healthy(), posts: posts(["wss://relay.damus.io/", "complete"], ["wss://nos.lol/", "paging"]) });
   assert.equal(v.state, "posts-behind");
   assert.equal(v.tone, "working", "ranking is fine; this is not a blocked state");
-  assert.equal(Math.round(v.percent * 100), 64);
+  assert.equal(v.percent, 0.5, "one relay of two read to the start");
   assert.equal(statusOf(v, "posts"), "aside");
-  ok("posts behind is a working state, reported beside the chain");
+  assert.deepEqual(v.progress.relays.filter((r) => !r.done).map((r) => r.relay), ["wss://nos.lol/"]);
+  ok("posts behind is a working state, reported beside the chain, counted in relays the sync has finished");
 }
 
-// assess() cannot tell whether its two numbers were taken over the same kinds, so the source is asserted.
+{
+  assert.equal(assess({ ...healthy(), posts: posts(["wss://relay.damus.io/", "complete"], ["wss://nos.lol/", "complete"]) }).state, "ready");
+  assert.equal(assess({ ...healthy(), posts: null }).state, "ready", "no sync to ask is not a verdict");
+  const v = assess({ ...healthy(), posts: { followed: false, relays: [], unread: ["wss://nos.lol/"] } });
+  assert.equal(v.state, "posts-not-followed");
+  assert.deepEqual(v.unread, ["wss://nos.lol/"], "the relays nothing here reads ride with the verdict, for the words");
+  assert.equal(v.tone, "working");
+  assert.equal(statusOf(v, "posts"), "aside");
+  ok("every relay finished is ready; a reader nobody follows is said, not counted");
+}
+
+// assess() cannot tell where `posts` came from, so the source is asserted: the sync, once, behind the guard.
 {
   const src = readFileSync(
     new URL("../../main/resources/web/readiness.js", import.meta.url), "utf8"
   );
-  const fn = src.slice(src.indexOf("async function postCounts"), src.indexOf("async function askRemote"));
-  assert.ok(fn.includes("scopedTo"), "postCounts has moved — this assertion no longer reads it");
-
-  assert.match(fn, /const filter = scopedTo\(\{ authors: \[me\] \}, scope\)/);
-  assert.equal((fn.match(/count\(filter\)/g) || []).length, 2, "both counts must be the one filter");
-  assert.equal((fn.match(/req\(newest\)/g) || []).length, 2, "…and both newest reads too");
-  assert.equal(
-    (fn.match(/authors: \[me\]/g) || []).length, 1,
-    "a second author filter spelled out by hand is a second question",
-  );
-
+  assert.ok(!src.includes("postCounts"), "the page counts posts on two relays again");
+  assert.ok(!src.includes("mirrors.js"), "the page reads the relay's mirror scope again");
   const run = src.slice(src.indexOf("async function run("), src.indexOf("// ---- the asks"));
-  assert.match(run, /const scope = await readMirrorScope\(\);/);
-  assert.match(run, /if \(scope\) facts\.posts = await postCounts\(/);
-
-  // Every await in a pass is a window somebody can sign out across.
-  const afterScope = run.slice(run.indexOf("const scope = await readMirrorScope();"));
+  assert.match(run, /const coverage = await readCoverage\(me, \{ relays: facts\.relayList\.writeRelays \}\);/);
+  const after = run.slice(run.indexOf("const coverage = await readCoverage("));
   assert.match(
-    afterScope.slice(0, afterScope.indexOf("postCounts(")),
+    after.slice(0, after.indexOf("facts.posts = coverage")),
     /if \(gen !== generation\) return;/,
-    "the scope fetch is a window with no generation guard behind it",
+    "the sync's answer is a window with no generation guard behind it",
   );
-  ok("the posts count is scoped to the mirrored kinds on both sides, or not taken");
-}
-
-{
-  const v = assess({
-    ...healthy(),
-    posts: { here: REFUSED, there: REFUSED, relay: "wss://relay.damus.io", newestHere: 1000, newestThere: 2000 },
-  });
-  assert.equal(v.state, "posts-behind");
-  assert.equal(v.percent, null, "no count, so no bar — the dates carry it instead");
-  assert.equal(assess({ ...healthy(), posts: { here: REFUSED, there: REFUSED, newestHere: 2000, newestThere: 1000 } }).state, "ready");
-  assert.equal(assess({ ...healthy(), posts: { here: REFUSED, there: REFUSED, newestHere: null, newestThere: null } }).state, "ready");
-  ok("with no counts, the newest event on each side decides — or nothing does");
+  ok("the posts stage asks the sync for this reader, behind the sign-out guard");
 }
 
 {

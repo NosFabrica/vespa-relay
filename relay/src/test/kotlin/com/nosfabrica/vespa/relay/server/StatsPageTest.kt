@@ -30,7 +30,10 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -54,6 +57,18 @@ class StatsPageTest {
 
             snapshot.publish(doc)
             assertEquals(HttpStatusCode.OK, client.get("/stats.json").status)
+        }
+
+    @Test
+    fun `statistics turned off say so, rather than asking the reader to wait`() =
+        testApplication {
+            application { routing { corpusStats(null, StatsSnapshot(offBecause = "turned off here")) } }
+
+            val res = client.get("/stats.json")
+            assertEquals(HttpStatusCode.ServiceUnavailable, res.status)
+            val body = Json.parseToJsonElement(res.bodyAsText()).jsonObject
+            assertEquals("true", body["off"]?.jsonPrimitive?.content, "the page tells off from not yet: $body")
+            assertEquals("turned off here", body["error"]?.jsonPrimitive?.content)
         }
 
     @Test

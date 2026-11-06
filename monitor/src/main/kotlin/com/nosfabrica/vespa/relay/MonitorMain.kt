@@ -46,6 +46,7 @@ import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
+import com.nosfabrica.vespa.relay.util.removedSettingsNote
 import com.nosfabrica.vespa.relay.util.repeatEvery
 import com.nosfabrica.vespa.relay.util.shutdownStep
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -104,7 +105,8 @@ fun main() {
             refuseAnotherRelayKey(boot.dial, boot.identity.pubKey, process = "monitor") { exitProcess(1) }
             BootClock.mark("monitor: the relay's key checked")
         }
-    val snapshot = if (boot.statusPort > 0) StatsSnapshot(boot.statusFile).also { it.loadFromFile() } else null
+    // In memory only: the document is rebuilt from what this process holds within one status interval of boot.
+    val snapshot = if (boot.statusPort > 0) StatsSnapshot() else null
     val pageBound = startStatusPage(boot, snapshot)
     System.err.println("monitor: verdicts go to the relay at ${boot.dial.url}; the store is opened read-only")
 
@@ -177,7 +179,6 @@ private class MonitorSettings(
     val dial: NormalizedRelayUrl,
     val statusPort: Int,
     val statusEverySeconds: Long,
-    val statusFile: String?,
     val wireLogMode: String,
     val icon: String?,
     val storeMetricsLogSeconds: Int,
@@ -204,6 +205,7 @@ private fun readSettings(env: Map<String, String>): MonitorSettings {
                     "only when it signs in as that key; it also answers the NIP-42 challenges of the relays measured.",
             )
     System.err.println("monitor identity: ${identity.pubKey.take(12)}… (NIP-66 verdicts, NIP-42 auth, the relay's writer)")
+    env.removedSettingsNote("monitor", listOf("MONITOR_STATUS_FILE"), "the status page is rebuilt within one interval of boot")?.let(System.err::println)
     return MonitorSettings(
         vespaUrl = vespaUrl,
         relayUrl = relayUrl,
@@ -215,7 +217,6 @@ private fun readSettings(env: Map<String, String>): MonitorSettings {
         dial = relayDialFromEnv(env, relayUrl, MONITOR_INGEST_URL_ENV),
         statusPort = env.strictInt("MONITOR_STATUS_PORT", 0..65_535) ?: DEFAULT_STATUS_PORT,
         statusEverySeconds = env.strictLong("MONITOR_STATUS_INTERVAL_SECONDS", 1L..Long.MAX_VALUE) ?: DEFAULT_STATUS_INTERVAL_SECONDS,
-        statusFile = env["MONITOR_STATUS_FILE"]?.trim()?.takeIf { it.isNotEmpty() },
         wireLogMode = env.strictChoice("MONITOR_WIRE_LOG", setOf("sent", "full")) ?: "",
         icon = env["RELAY_ICON"]?.trim()?.takeIf { it.isNotEmpty() },
         storeMetricsLogSeconds = env.strictInt("STORE_METRICS_LOG_SECONDS") ?: 300,
