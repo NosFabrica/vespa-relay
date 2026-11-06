@@ -121,7 +121,13 @@ class AuthorCoverageTest {
             val scope = CoroutineScope(SupervisorJob())
             val pool =
                 try {
-                    PoolFixture(scope, streams, PoolFixture.holding(emptyList()), bands).pool().also { it.start() }
+                    PoolFixture(scope, streams, PoolFixture.holding(emptyList()), bands).pool().also { pool ->
+                        pool.start()
+                        // The roster is built on the pool's own coroutine: ask only once every stream is on it.
+                        withTimeout(10_000) {
+                            while (pool.primeUnits().size < streams.size) delay(20)
+                        }
+                    }
                 } finally {
                     scope.cancel()
                 }
