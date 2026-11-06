@@ -12,13 +12,14 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // JitPack serves the store and nothing else, so a coordinate missing upstream cannot be
-        // substituted from it; the group is spelled both ways because JitPack caches per spelling.
-        // Quartz left it at 2.4.0 for Maven Central (build-logic maps JitPack's quartz group there).
+        // JitPack serves the store and quartz and nothing else, so a coordinate missing upstream
+        // cannot be substituted from it; the store's group is spelled both ways because JitPack
+        // caches per spelling. Quartz is a JitPack commit (build-logic maps Central's group onto it).
         exclusiveContent {
             forRepository { maven { url = uri("https://jitpack.io") } }
             filter {
                 includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
+                includeGroup("com.github.vitorpamplona.quartz")
             }
         }
     }

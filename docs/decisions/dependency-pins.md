@@ -55,7 +55,38 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.13.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.13.0 (d99aae0), 44 commits over v2.9.0 through
+0102e83c81 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-06 (the
+quartz#95 merge, 0102e83c814c), 112 commits over v2.13.0 through 2.14.0, 2.14.1, 2.15.0, 2.15.1 and 2.16.0. The
+same commit as the store's pin on its claude/amazing-maxwell-5zralm branch (94604c04bbee), which audits it
+against the store. Back on JitPack for a commit past the last release; JitPack builds it, Android variant
+included (the artifact file answers 200, not the status API). What this relay reaches:
+
+  THE DIRECTION OF THE GROUP MAPPING FLIPS. The pin is JitPack's group now, so build-logic maps CENTRAL'S
+    com.vitorpamplona.quartz (quartz, quartz-jvm) onto it: the store at b21f996c1849 names Central's
+    2.13.0, and the graph reads `com.vitorpamplona.quartz:quartz:2.13.0 ->
+    com.github.vitorpamplona.quartz:quartz:0102e83c81`, one quartz jar per process. settings.gradle.kts
+    routes com.github.vitorpamplona.quartz to JitPack beside the store. A hash has no order (the note
+    above): the force decides, as before 2.4.0.
+  THE SERVING RELAY'S INGEST. IngestQueue verifies a batch in core-sized chunks that workers pull
+    from, not one coroutine per event (de16cd3, 525b48e), and takes the dispatcher its verify hook
+    runs on (a2d932a). NostrRelayServer passes none, so it stays Dispatchers.Default. Event.verify()
+    reuses per-thread buffers (c6fdd8e): the same answer, no allocation per event.
+  THE SYNC'S RELAY CLIENT. Every live subscription resumes after a reconnect, and the pool asks a
+    SubscriptionListener for its filters as it re-sends a REQ (filtersForSync, null by default:
+    RelayReads' tail overrides nothing, so it re-sends what it sent). No per-message allocation on an
+    EVENT (fc5b6ed); a listener's failure no longer reaches a socket that does not catch it (ffa93b4).
+    NegentropyLocalIndex gains withRelayCount (windows split on the relay's COUNT too), opt-in and not
+    used here. New and not called: fetchEvents / fetch, subscribeEvents / subscribeEventBatches and
+    their ResumePolicy, CachingEventDecoder's forged-copy scrutiny.
+  THE PARSE TABLE, two shapes, neither searchable: kind 30078 with drss.io's listening-progress tags is a
+    DrssListenProgressAppDataEvent (2.13.0 already), and kind 7321 is a GitReviewEvent, named in
+    KindNames. The store stores both as before; no reindex.
+  Not reached: the rest of NIP-34, NIP-30's renderer, NIP-44 / gift-wrap buffers, the native hash.
+  RUNTIME CLASSPATH (:relay, :sync): quartz moves and kmp-negentropy v1.2.0 -> v1.2.1; the POM's other
+    dependency versions are 2.13.0's.
+  ./gradlew build: 1730 tests, 0 failed, 2 skipped.
+
+Prev 2.13.0 = com.vitorpamplona.quartz:quartz from Maven Central, tag v2.13.0 (d99aae0), 44 commits over v2.9.0 through
 2.10.0, 2.10.1, 2.11.0, 2.12.0 and 2.12.1. The same release as the store's pin (2e4f323c4aad), which audits it
 against the store. What this relay reaches:
 
@@ -563,7 +594,30 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-b21f996c1849 = vespa-eventstore main @ 2026-11-05, the merge of PR #194 (over 2e4f323c4aad, below): an answer
+0c39dd5ba955 = vespa-eventstore main @ 2026-11-06, the merge of PR #195 (over b21f996c1849, below): every
+dependency to its latest release, and quartz from JitPack at the relay's own pin.
+  QUARTZ IS JITPACK'S, AT 0102e83c81 (94604c0). The store's POM names
+    com.github.vitorpamplona.quartz:quartz-jvm:0102e83c81, the commit and group this relay pins, so the
+    build-logic substitution maps nothing and the force agrees: one quartz, no arrow on it.
+  THE STORE'S OWN DEPENDENCIES (43445b2). Kotlin 2.4.21, kotlinx-serialization 1.12.0, okhttp 5.5.1,
+    vespa-feed-client 8.781.11, Lucene 9.12.3 (held on 9.x: Lucene 10 hides the light stemmers),
+    Testcontainers 2.0.5 and Gradle 9.8.2 on its side. Here the graph's arrows are the transitive ones the
+    quartz pin already brought (kotlin-stdlib -> 2.4.21, kotlinx-serialization -> 1.12.0, okhttp
+    5.4.0 -> 5.5.1); nothing the relay declares moves.
+  No main source and no file under engine/app moves in the range: the same reads, writes and search.
+  git merge-base --is-ancestor b21f996c1849 0c39dd5ba955   # verified
+
+DEPLOY: nothing. The schema and services.xml have no diff, so the boot's AUTO_DEPLOY finds the package
+  unchanged and nothing is reindexed.
+
+GATED: the store's integration gate at 0c39dd5ba955 is RUNNING (Docker, Vespa 8.781.11); this line is
+  replaced with its counts when it finishes. Here,
+  ./gradlew build archTest against the JitPack jar: 1,743 tests, 0 failures, 2 skipped; the runtime graph
+  holds one quartz (0102e83c81) and the store at 0c39dd5ba955, no arrow on either.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev b21f996c1849 = vespa-eventstore main @ 2026-11-05, the merge of PR #194 (over 2e4f323c4aad, below): an answer
 Vespa reports errors beside is refused, a multi-filter COUNT holds one page, and the phrase band.
   A RESPONSE THAT REPORTS ERRORS IS REFUSED (466efb0, PR #194). With its content node down, Vespa answers a
     grouping HTTP 200: no groups, totalCount 0, coverage full at 100% over nodes: 0, and one error,
