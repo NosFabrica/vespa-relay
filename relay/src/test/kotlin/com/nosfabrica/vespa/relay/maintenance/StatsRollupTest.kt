@@ -35,7 +35,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Which queries each cadence of [StatsTier] asks. Against [StatsQueries] that
+ * Which queries the rollup asks. Against [StatsQueries] that
  * is an assertion over a recorded list, and the fake is loose about the answers.
  */
 class StatsRollupTest {
@@ -92,7 +92,7 @@ class StatsRollupTest {
     fun `the charts tier is where the corpus-wide groupings live`() {
         runBlocking {
             val queries = FakeQueries()
-            rollup(queries).compute(StatsTier.CHARTS)
+            rollup(queries).compute()
             val asked = queries.asked
 
             assertTrue(
@@ -121,11 +121,10 @@ class StatsRollupTest {
     @Test
     fun `the rollup publishes exactly the sections its tier declares, and nothing of the sync's`() {
         runBlocking {
-            val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
+            val charts = rollup(FakeQueries()).compute()
 
-            assertEquals(StatsTier.CHARTS.sections, sectionsOf(charts))
+            assertEquals(StatsRollup.SECTIONS, sectionsOf(charts))
             assertNull(charts["sync"])
-            assertEquals(listOf(StatsTier.CHARTS), StatsTier.entries, "a tier with nothing to compute is a clock with no work")
         }
     }
 
@@ -133,7 +132,7 @@ class StatsRollupTest {
     @Test
     fun `a pass states its own cadence`() {
         runBlocking {
-            val doc = rollup(FakeQueries()).compute(StatsTier.CHARTS, everySeconds = 900)
+            val doc = rollup(FakeQueries()).compute(everySeconds = 900)
             val tier = assertNotNull(doc["tiers"]).jsonObject["charts"]!!.jsonObject
 
             assertEquals(900, tier["everySeconds"]!!.jsonPrimitive.content.toInt())
@@ -150,7 +149,7 @@ class StatsRollupTest {
     @Test
     fun `the corpus and trust totals keep the members the page reads`() {
         runBlocking {
-            val charts = rollup(FakeQueries()).compute(StatsTier.CHARTS)
+            val charts = rollup(FakeQueries()).compute()
             val corpus = charts["corpus"]!!.jsonObject["data"]!!.jsonObject
 
             // No `newestEvent`: a pass hours old cannot say how fresh the store is; the page asks the relay.
@@ -175,7 +174,7 @@ class StatsRollupTest {
     fun `a kind's last event is bounded at the present`() {
         runBlocking {
             val queries = FakeQueries()
-            val doc = rollup(queries).compute(StatsTier.CHARTS)
+            val doc = rollup(queries).compute()
             val spans = queries.asked.filter { it.pipeline == StatsYql.spanBy("kind") }
 
             assertEquals(listOf(StatsYql.upTo(NOW)), spans.map { it.where }, "one span query, and it stops at now")
@@ -206,7 +205,7 @@ class StatsRollupTest {
     fun `a failed query publishes no exception text`() {
         runBlocking {
             val queries = FakeQueries(failing = setOf(StatsYql.TOTAL))
-            val corpus = rollup(queries).compute(StatsTier.CHARTS)["corpus"]!!.jsonObject
+            val corpus = rollup(queries).compute()["corpus"]!!.jsonObject
             val errors = corpus["errors"]!!.jsonObject.values.map { it.jsonPrimitive.content }
             assertTrue(errors.isNotEmpty())
             errors.forEach {
@@ -221,7 +220,7 @@ class StatsRollupTest {
     fun `every query is timed, including the ones that fail`() {
         runBlocking {
             val queries = FakeQueries(failing = setOf(StatsYql.TOTAL))
-            val corpus = rollup(queries).compute(StatsTier.CHARTS)["corpus"]!!.jsonObject
+            val corpus = rollup(queries).compute()["corpus"]!!.jsonObject
 
             assertEquals("failed", corpus["status"]!!.jsonPrimitive.content, "both of the section's own queries were refused")
             assertTrue(corpus["errors"]!!.jsonObject.keys.containsAll(setOf("events", "futureDated")), "both counts use that pipeline")

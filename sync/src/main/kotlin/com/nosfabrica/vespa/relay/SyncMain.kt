@@ -57,6 +57,7 @@ import com.nosfabrica.vespa.relay.util.StatusRollup
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
+import com.nosfabrica.vespa.relay.util.removedSettingsNote
 import com.nosfabrica.vespa.relay.util.shutdownStep
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -158,9 +159,7 @@ fun main() {
     // the engine first publishes they answer "not computed yet": the document lives in memory only,
     // rebuilt from what this process holds within one status interval.
     val statusSnapshot = if (statusPort > 0) StatsSnapshot() else null
-    env["SYNC_STATUS_FILE"]?.takeIf { it.isNotBlank() }?.let {
-        System.err.println("router: SYNC_STATUS_FILE was removed and does nothing — the status page is rebuilt within one interval of boot")
-    }
+    env.removedSettingsNote("sync", listOf("SYNC_STATUS_FILE"), "the status page is rebuilt within one interval of boot")?.let(System.err::println)
     // Filled once the engine exists; until then the route answers that the mirror is starting.
     val coverage = AtomicReference<AuthorCoverage?>(null)
     val pageBound =
@@ -216,9 +215,7 @@ fun main() {
     val bands = SyncBands.fromEnv(env, config.streams)
 
     // The relay read this file to publish the mirror's kinds; the search page asks this process instead.
-    env["SYNC_MANIFEST_FILE"]?.takeIf { it.isNotBlank() }?.let {
-        System.err.println("router: SYNC_MANIFEST_FILE was removed and does nothing — the search page asks this process at /coverage/<pubkey>")
-    }
+    env.removedSettingsNote("sync", listOf("SYNC_MANIFEST_FILE"), "the search page asks this process at /coverage/<pubkey>")?.let(System.err::println)
 
     SyncProgress.refuseRemovedEnv(env)
     val progress = SyncProgress()

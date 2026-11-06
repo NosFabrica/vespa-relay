@@ -33,26 +33,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 /**
- * How far this mirror has got with one author's events: every stream that asks a relay for them, and
- * each such pair's walk and reconcile, as the status page's relay table words them. The page under the
- * search box asks it (at `/coverage/{pubkey}`, see `pubkeyDocument`), so it is public, and it carries
- * only what the author's own relay list and this mirror's config already make public. Answers are
- * cached briefly and fresh ones are rate-limited across all authors: each walks the band snapshot.
+ * How far this mirror has got with one author's events of some kinds (kind 1 unless asked): every
+ * stream that asks a relay for them, and each such pair's walk, as the status page's relay table words
+ * them. The page under the search box asks it (at `/coverage/{pubkey}`, see `pubkeyDocument`), so it is
+ * public, and it carries only what the author's own relay list and this mirror's config already make
+ * public. An answer costs the author's own units and the relays named, so it needs no rate limit of its
+ * own; answers are still cached briefly, since the page asks again on every visit.
  */
 class AuthorCoverage internal constructor(
     private val bands: () -> JsonObject?,
-    /** The units reading an author's events: bound to them, or bound to nobody on the given relays. */
-    private val units: (String, Set<NormalizedRelayUrl>) -> List<RelayStatusReport.PrimeUnit>,
+    /** The units reading an author's events of the given kinds: bound to them, or bound to nobody on the given relays. */
+    private val units: (String, Set<NormalizedRelayUrl>, Set<Int>) -> List<RelayStatusReport.PrimeUnit>,
     private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
     private val cacheSeconds: Long = CACHE_SECONDS,
-    private val gate: RateGate = RateGate(PER_SECOND, BURST),
 ) : PubkeyDocuments {
     internal constructor(
         bands: SyncBands,
-        units: (String, Set<NormalizedRelayUrl>) -> List<RelayStatusReport.PrimeUnit>,
+        units: (String, Set<NormalizedRelayUrl>, Set<Int>) -> List<RelayStatusReport.PrimeUnit>,
     ) : this({ bands.snapshot() }, units)
 
     private class Cached(
@@ -63,14 +62,15 @@ class AuthorCoverage internal constructor(
     private val cache = ConcurrentHashMap<String, Cached>()
 
     /**
-     * [pubkey]'s document, or null when over the rate with nothing fresh cached. `relay` in [query] names
-     * the author's own write relays, at most [MAX_RELAYS]: a stream bound to nobody reads everyone's events
-     * on a relay, so it reads theirs wherever they write, and only they can say where that is.
+     * [pubkey]'s document. `relay` in [query] names the author's own write relays, at most [MAX_RELAYS]:
+     * a stream bound to nobody reads everyone's events on a relay, so it reads theirs wherever they write,
+     * and only they can say where that is. `kind` names the kinds asked about, at most [MAX_KINDS],
+     * [DEFAULT_KINDS] when none is: a stream mirroring only profiles says nothing about someone's posts.
      */
     override fun answer(
         pubkey: String,
         query: Map<String, List<String>>,
-    ): JsonObject? {
+    ): JsonObject {
         val relays =
             query["relay"]
                 .orEmpty()
@@ -80,11 +80,20 @@ class AuthorCoverage internal constructor(
                 .take(MAX_RELAYS)
                 .sortedBy { it.url }
                 .toList()
-        val key = pubkey + relays.joinToString("") { " " + it.url }
+        val kinds =
+            query["kind"]
+                .orEmpty()
+                .asSequence()
+                .mapNotNull { it.trim().toIntOrNull()?.takeIf { k -> k in 0..MAX_KIND } }
+                .distinct()
+                .take(MAX_KINDS)
+                .sorted()
+                .toList()
+                .ifEmpty { DEFAULT_KINDS }
+        val key = pubkey + kinds.joinToString(",", " ") + relays.joinToString("") { " " + it.url }
         val now = clock()
         cache[key]?.takeIf { now - it.atSec < cacheSeconds }?.let { return it.doc }
-        if (!gate.take()) return null
-        val doc = document(pubkey, relays, now)
+        val doc = document(pubkey, relays, kinds.toSet(), now)
         // Bounded by dropping the lot: the entries are seconds old, so a refill costs little.
         if (cache.size >= MAX_CACHED) cache.clear()
         cache[key] = Cached(now, doc)
@@ -94,16 +103,17 @@ class AuthorCoverage internal constructor(
     private fun document(
         pubkey: String,
         relays: List<NormalizedRelayUrl>,
+        kinds: Set<Int>,
         now: Long,
     ): JsonObject {
-        val units = units(pubkey, relays.toSet())
+        val units = units(pubkey, relays.toSet(), kinds)
         val report = if (units.isEmpty()) null else RelayStatusReport.build(bands(), units, now)
         val rows = (report?.get("rows") as? JsonArray).orEmpty().map { it.jsonObject }
         val read = rows.mapTo(HashSet()) { (it["relay"] as? JsonPrimitive)?.content }
         return buildJsonObject {
             put("pubkey", pubkey)
             put("generatedAt", now)
-            // False is "nothing here reads this author's events", not "nothing found".
+            // False is "nothing here reads this author's events of these kinds", not "nothing found".
             put("followed", rows.isNotEmpty())
             putJsonArray("relays") {
                 for (row in rows) add(publicRow(row))
@@ -115,46 +125,27 @@ class AuthorCoverage internal constructor(
         }
     }
 
-    /** One relay-table row, without what is the operator's: abort text, kind caps, monitor drift. */
+    /** One relay-table row, with only what the page draws: never abort text, kind caps or monitor drift. */
     private fun publicRow(row: JsonObject): JsonObject = JsonObject(row.filterKeys { it in PUBLIC_MEMBERS })
 
-    /** A token bucket over the whole route: [perSecond] answers a second, [burst] at once. */
-    class RateGate(
-        private val perSecond: Int,
-        private val burst: Int,
-        private val nowMs: () -> Long = System::currentTimeMillis,
-    ) {
-        /** When the answers given so far are paid for, in milliseconds; one more costs a second over [perSecond]. */
-        private val paidUntil = AtomicLong(Long.MIN_VALUE / 2)
-
-        fun take(): Boolean {
-            val costMs = 1000L / perSecond
-            while (true) {
-                val now = nowMs()
-                val seen = paidUntil.get()
-                // Never further back than a full bucket's worth: idle time does not bank past [burst].
-                val from = maxOf(seen, now - burst * costMs)
-                if (from + costMs > now) return false
-                if (paidUntil.compareAndSet(seen, from + costMs)) return true
-            }
-        }
-    }
-
     companion object {
-        /** How long one author's answer is served again; the status page itself refreshes on a similar clock. */
+        /** How long one answer is served again; the status page itself refreshes on a similar clock. */
         const val CACHE_SECONDS = 30L
-
-        const val PER_SECOND = 20
-
-        const val BURST = 40
 
         const val MAX_CACHED = 4_096
 
         /** Relays one request may name; a relay list longer than this is not one a person writes to. */
         const val MAX_RELAYS = 20
 
-        /** The row members a reader may see: the walk and the reconcile, never why a relay refused us. */
-        private val PUBLIC_MEMBERS =
-            setOf("relay", "stream", "syncStatus", "behind", "behindSec", "coveredFrom", "coveredTo", "verifiedAgoSec", "tailed")
+        /** Kinds one request may name. */
+        const val MAX_KINDS = 20
+
+        private const val MAX_KIND = 65_535
+
+        /** A reader's posts: what the search page asks about. */
+        val DEFAULT_KINDS = listOf(1)
+
+        /** The row members the page reads: which relay, which stream, and how far its walk got. */
+        private val PUBLIC_MEMBERS = setOf("relay", "stream", "syncStatus")
     }
 }

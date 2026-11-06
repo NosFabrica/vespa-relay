@@ -997,11 +997,14 @@ caps or refuses `COUNT` answers nothing at all.
 
 The router knows the answer outright, so it serves it: `GET /coverage/<pubkey>`
 on its status port lists every (relay, stream) pair that reads that author's
-events and how far it has got, in the relay table's words. A pair reads them
-when its ask is bound to that author, or when it is bound to nobody and the
-relay is one the author writes to. The second case is the common one
-(`contentViaOutbox` asks every `prime` relay for every author), and only the
-author's relay list says where they write, so the asker names those relays,
+events of the kinds asked about and how far it has got, in the relay table's
+words. A pair reads them when its ask mirrors one of those kinds (or names no
+kinds) and is bound to that author, or is bound to nobody on a relay the author
+writes to. The kinds are `?kind=` (at most 20), kind 1 when none is named, so a
+stream that mirrors only profiles (`profileViaOutbox`, `indexers`) says nothing
+about someone's posts. The second case is the common one (`contentViaOutbox`
+asks every `prime` relay for every author), and only the author's relay list
+says where they write, so the asker names those relays,
 `?relay=wss://…&relay=…` (at most 20):
 
 ```json
@@ -1010,23 +1013,22 @@ author's relay list says where they write, so the asker names those relays,
   "generatedAt": 1770000000,
   "followed": true,
   "relays": [
-    {"relay": "wss://relay.damus.io/", "stream": "contentViaOutbox", "syncStatus": "complete",
-     "behind": "today", "coveredFrom": 1690000000, "coveredTo": 1769990000, "verifiedAgoSec": 5400},
-    {"relay": "wss://nos.lol/", "stream": "contentViaOutbox", "syncStatus": "paging",
-     "behind": "thisWeek", "coveredFrom": 1760000000, "coveredTo": 1769500000}
+    {"relay": "wss://relay.damus.io/", "stream": "contentViaOutbox", "syncStatus": "complete"},
+    {"relay": "wss://nos.lol/", "stream": "contentViaOutbox", "syncStatus": "paging"}
   ],
   "unread": ["wss://relay.example/"]
 }
 ```
 
 `unread` is the named relays nothing here reads: not rated working by the
-monitor, or a stream's `exclude`. `followed: false` means nothing here reads
-this author's events at all. The relay's
-search page asks this from the reader's browser and says under the search box
-whether the mirror has their posts yet, so the path is public: it answers any
-origin, carries none of the operator's detail (why a relay refused us, kind
-caps), caches each author for 30 s, and serves at most 20 fresh answers a second
-across all authors. The relay finds it through `SYNC_PUBLIC_URL`, the one thing
+monitor, a stream's `exclude`, or read only for other kinds. `followed: false`
+means nothing here reads this author's events of those kinds at all. The
+relay's search page asks this from the reader's browser and says under the
+search box whether the mirror has their posts yet, so the path is public: it
+answers any origin, carries only the three members the page reads (none of the
+operator's detail: why a relay refused us, kind caps, how far behind), and
+caches each answer for 30 s. It has no rate limit of its own: an answer walks
+only the author's own pairs and the relays named, never the whole roster. The relay finds it through `SYNC_PUBLIC_URL`, the one thing
 it knows of this process.
 
 ## The router's own status page

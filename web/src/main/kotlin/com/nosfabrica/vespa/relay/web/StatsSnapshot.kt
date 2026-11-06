@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.web
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -33,53 +32,24 @@ import java.util.concurrent.atomic.AtomicReference
  * What a service's `GET /stats.json` serves: the last computed document, held in memory with its
  * ETag. Nothing is kept on disk, so a restarted service answers 503 until its first rollup.
  */
-class StatsSnapshot {
+class StatsSnapshot(
+    /**
+     * Why this service will never publish, when it computes no statistics by choice (a rollup turned
+     * off); the route says so instead of "not computed yet". Null for a service that will publish.
+     */
+    val offBecause: String? = null,
+) {
     /** Bytes and ETag swapped as one reference, so a request never pairs new bytes with the old tag. */
     private val current = AtomicReference<Served?>(null)
 
     /** The current document's bytes and ETag, or null before the first rollup. */
     fun served(): Served? = current.get()
 
-    /**
-     * Merges [members] into the served document: members in [members]
-     * replace, members in [owns] but not in [members] are removed, everything else stays as the
-     * other tier left it. With no [owns] the whole document is replaced.
-     */
+    /** Replaces the served document with [doc], clearing any `stale` notice. */
     @Synchronized
-    fun publish(
-        members: JsonObject,
-        owns: Set<String> = emptySet(),
-        tier: String? = null,
-    ) {
-        val doc = merged(members, owns, tier)
+    fun publish(doc: JsonObject) {
         val bytes = JSON.encodeToString(JsonObject.serializer(), doc).toByteArray(Charsets.UTF_8)
         current.set(Served(doc, bytes, etagOf(bytes)))
-    }
-
-    /**
-     * [members] folded onto the served document. `tiers` is a union, and a `stale` notice survives
-     * another tier's success: a writer clears only its own notice and an unattributed one.
-     */
-    private fun merged(
-        members: JsonObject,
-        owns: Set<String>,
-        tier: String?,
-    ): JsonObject {
-        val base = current.get()?.doc
-        if (base == null || owns.isEmpty()) return members
-        // Another schema's document is replaced, not merged onto: its dropped members are owned by nobody.
-        if (base["schema"] != members["schema"]) return members
-        val out = LinkedHashMap<String, JsonElement>(base)
-        owns.forEach { out.remove(it) }
-        out.remove("stale")
-        members.forEach { (member, value) -> out[member] = value }
-        val wasTiers = base["tiers"] as? JsonObject
-        val nowTiers = members["tiers"] as? JsonObject
-        if (wasTiers != null && nowTiers != null) out["tiers"] = JsonObject(wasTiers + nowTiers)
-        val stale = base["stale"] as? JsonObject
-        val staleTier = (stale?.get("tier") as? JsonPrimitive)?.contentOrNull
-        if (stale != null && staleTier != null && staleTier != tier) out["stale"] = stale
-        return JsonObject(out)
     }
 
     /**
@@ -91,8 +61,6 @@ class StatsSnapshot {
     fun markStale(
         reason: String,
         atSeconds: Long = System.currentTimeMillis() / 1000,
-        /** Which cadence failed, or null for the whole document; [publish] clears only its own notice. */
-        tier: String? = null,
     ) {
         val existing = current.get() ?: return
         runCatching {
@@ -106,11 +74,7 @@ class StatsSnapshot {
                         buildJsonObject {
                             put("reason", reason)
                             put("since", atSeconds)
-                            tier?.let { put("tier", it) }
-                            // The failing tier's own timestamp: the healthy tier touched the
-                            // document seconds ago.
-                            (tierGeneratedAt(doc, tier) ?: (doc["generatedAt"] as? JsonPrimitive)?.contentOrNull)
-                                ?.let { put("generatedAt", it) }
+                            (doc["generatedAt"] as? JsonPrimitive)?.contentOrNull?.let { put("generatedAt", it) }
                         },
                     )
                 }
@@ -123,8 +87,8 @@ class StatsSnapshot {
     }
 
     /**
-     * One published document: the exact bytes served, the ETag over them, and the parsed form the
-     * next publish merges onto. The ETag is over [bytes]; re-encoding [doc] could mint different bytes.
+     * One published document: the exact bytes served, the ETag over them, and the parsed form. The
+     * ETag is over [bytes]; re-encoding [doc] could mint different bytes.
      */
     class Served(
         val doc: JsonObject,
@@ -133,15 +97,6 @@ class StatsSnapshot {
     )
 
     private companion object {
-        /** When the tier named [tier] last computed anything, per the document's own `tiers` member. */
-        fun tierGeneratedAt(
-            doc: JsonObject,
-            tier: String?,
-        ): String? =
-            ((doc["tiers"] as? JsonObject)?.get(tier ?: return null) as? JsonObject)
-                ?.get("generatedAt")
-                ?.let { (it as? JsonPrimitive)?.contentOrNull }
-
         /** Not pretty-printed: the document is machine-read first, and polled. */
         val JSON = Json
     }

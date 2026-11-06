@@ -29,19 +29,19 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import kotlinx.serialization.json.JsonObject
 
-/** A service's answer about one pubkey, or null when it is over its rate and has nothing fresh to give. */
+/** A service's answer about one pubkey. */
 fun interface PubkeyDocuments {
     /** [query] is the request's query string, each name to its values in order; the service reads what it understands. */
     fun answer(
         pubkey: String,
         query: Map<String, List<String>>,
-    ): JsonObject?
+    ): JsonObject
 }
 
 /**
  * `GET {path}` with a `{pubkey}` segment: [source]'s document about that pubkey. 400 for anything but
- * 64 hex, 503 while [source] is null (the service is still starting), 429 with `Retry-After` when it is
- * over its rate. A served answer may be cached for [maxAgeSeconds]. Readable from any origin through the
+ * 64 hex, 503 while [source] is null (the service is still starting). A served answer may be cached for
+ * [maxAgeSeconds]. Readable from any origin through the
  * site's own CORS ([installPageDefaults]); setting the header here too sent it twice, which a browser refuses.
  */
 fun Route.pubkeyDocument(
@@ -63,11 +63,6 @@ fun Route.pubkeyDocument(
         }
         val query = call.request.queryParameters.let { params -> params.names().associateWith { params.getAll(it).orEmpty() } }
         val doc = documents.answer(pubkey, query)
-        if (doc == null) {
-            call.response.header(HttpHeaders.RetryAfter, "1")
-            call.respondText("""{"error":"too many requests; ask again in a second"}""", ContentType.Application.Json, HttpStatusCode.TooManyRequests)
-            return@get
-        }
         call.response.header(HttpHeaders.CacheControl, "public, max-age=$maxAgeSeconds")
         call.respondText(doc.toString(), ContentType.Application.Json)
     }

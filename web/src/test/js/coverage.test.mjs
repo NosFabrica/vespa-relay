@@ -23,7 +23,7 @@ const doc = (relays, followed = relays.length > 0) => ({ pubkey: me, generatedAt
   const c = coverageOf(doc([{ relay: "wss://a.example/", stream: "content", syncStatus: "complete", coveredTo: 1754899000, tailed: true }]));
   assert.deepEqual(c, {
     followed: true,
-    relays: [{ relay: "wss://a.example/", stream: "content", syncStatus: "complete", coveredTo: 1754899000, verifiedAgoSec: null, tailed: true }],
+    relays: [{ relay: "wss://a.example/", syncStatus: "complete" }],
     unread: [],
   });
   assert.deepEqual(
@@ -42,7 +42,7 @@ const doc = (relays, followed = relays.length > 0) => ({ pubkey: me, generatedAt
     coverageOf(
       doc([
         { relay: "wss://a.example/", stream: "content", syncStatus: "paging" },
-        { relay: "wss://a.example/", stream: "profiles", syncStatus: "complete" },
+        { relay: "wss://a.example/", stream: "notes", syncStatus: "complete" },
         { relay: "wss://b.example/", stream: "content", syncStatus: "complete" },
         { relay: "wss://c.example/", stream: "content", syncStatus: "refused" },
       ]),
@@ -66,11 +66,11 @@ const doc = (relays, followed = relays.length > 0) => ({ pubkey: me, generatedAt
   };
   const c = await readCoverage(me, { base: "https://sync.example.com", fetcher });
   assert.equal(c.followed, true);
-  assert.deepEqual(asked, [`https://sync.example.com/coverage/${me}`]);
+  assert.deepEqual(asked, [`https://sync.example.com/coverage/${me}?kind=1`], "asked about posts, kind 1");
   await readCoverage(me, { base: "https://sync.example.com", fetcher, relays: ["wss://a.example/", "wss://b.example/x?y"] });
   assert.equal(
     asked.pop(),
-    `https://sync.example.com/coverage/${me}?relay=wss%3A%2F%2Fa.example%2F&relay=wss%3A%2F%2Fb.example%2Fx%3Fy`,
+    `https://sync.example.com/coverage/${me}?kind=1&relay=wss%3A%2F%2Fa.example%2F&relay=wss%3A%2F%2Fb.example%2Fx%3Fy`,
     "the reader's write relays ride along, each escaped",
   );
   const many = Array.from({ length: 30 }, (_, i) => `wss://r${i}.example/`);

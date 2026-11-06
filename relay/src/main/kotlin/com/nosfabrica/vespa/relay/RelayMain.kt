@@ -33,7 +33,6 @@ import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
-import com.nosfabrica.vespa.relay.maintenance.StatsTier
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
@@ -108,6 +107,7 @@ import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
+import com.nosfabrica.vespa.relay.util.removedSettingsNote
 import com.nosfabrica.vespa.relay.util.strictFlag
 import com.nosfabrica.vespa.relay.util.strictInt
 import com.nosfabrica.vespa.relay.util.strictLong
@@ -274,21 +274,21 @@ private fun readSettings(env: Map<String, String>): Boot {
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
     }
-    REMOVED_HTTP_RELAY_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
-        System.err.println("relay: ${it.joinToString()} were removed and do nothing — HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
-    }
-    REMOVED_MANIFEST_SETTINGS.filter { !env[it].isNullOrBlank() }.takeIf { it.isNotEmpty() }?.let {
-        System.err.println(
-            "relay: ${it.joinToString()} were removed and do nothing — the search page asks the sync how far it has got " +
-                "with a reader's posts, at SYNC_PUBLIC_URL, and the relay reads nothing the sync writes",
-        )
-    }
-    if (!env[REMOVED_STATS_FILE].isNullOrBlank()) {
-        System.err.println(
-            "relay: $REMOVED_STATS_FILE was removed and does nothing — /stats.json is held in memory, so a restart " +
-                "answers 503 until its first rollup; the file it names can be deleted",
-        )
-    }
+    env
+        .removedSettingsNote("relay", REMOVED_HTTP_RELAY_SETTINGS, "HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
+        ?.let(System.err::println)
+    env
+        .removedSettingsNote(
+            "relay",
+            REMOVED_MANIFEST_SETTINGS,
+            "the search page asks the sync how far it has got with a reader's posts, at SYNC_PUBLIC_URL, and the relay reads nothing the sync writes",
+        )?.let(System.err::println)
+    env
+        .removedSettingsNote(
+            "relay",
+            listOf(REMOVED_STATS_FILE),
+            "/stats.json is held in memory, so a restart answers 503 until its first rollup; the file it names can be deleted",
+        )?.let(System.err::println)
     val searchExpansion = searchExpansionFromEnv(env)
     if (!searchExpansion.enabled) {
         System.err.println("relay: SEARCH_EXPAND_REFERENCES=false — a search answers with its own hits only")
@@ -418,20 +418,20 @@ private fun startMaintenance(
     }
 }
 
-/** The `/stats.json` rollups, counters first so a fresh relay has totals within seconds of boot. */
+/** The `/stats.json` rollup, or a snapshot that says it is off. */
 private fun startStats(
     boot: Boot,
     store: VespaEventStore,
     scope: CoroutineScope,
 ): StatsSnapshot {
-    val snapshot = StatsSnapshot()
     val charts = boot.stats.chartsSeconds
     if (charts == 0L) {
-        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json answers 503")
-        return snapshot
+        println("stats: STATS_INTERVAL_SECONDS=0 — no rollup; /stats.json answers 503 and says so")
+        return StatsSnapshot(offBecause = "This relay's operator has turned the corpus statistics off (STATS_INTERVAL_SECONDS=0).")
     }
+    val snapshot = StatsSnapshot()
     val rollup = StatsRollup(StatsVespa(store.engine), relayUrl = boot.endpoint.ws.url)
-    launchStatsRollup(scope, rollup, snapshot, StatsTier.CHARTS, charts)
+    launchStatsRollup(scope, rollup, snapshot, charts)
     return snapshot
 }
 

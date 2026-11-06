@@ -135,15 +135,17 @@ async function load() {
     // Not `cache: "no-store"`: the default mode revalidates, so the route's 304 can fire.
     const res = await fetch(docUrl);
     if (res.status === 503) {
+      // Off says nothing is coming, which a waiting card would not.
+      const why = await res.json().catch(() => null);
+      const off = why && why.off === true;
       // Not zeros: "nothing computed yet" and "this relay holds nothing" are different facts.
-      scopeEl.textContent = "No statistics computed yet.";
+      scopeEl.textContent = off ? "Statistics are turned off here." : "No statistics computed yet.";
       // The body no longer shows any document, so the next one must rebuild it.
       renderedAt = null;
       bodyEl.replaceChildren();
       const c = el("div", "card pending");
-      c.appendChild(el("h2", null, "Waiting for the first rollup"));
-      c.appendChild(el("p", "why",
-        pendingNote));
+      c.appendChild(el("h2", null, off ? "Statistics are turned off" : "Waiting for the first rollup"));
+      c.appendChild(el("p", "why", off ? String(why.error || "") : pendingNote));
       bodyEl.appendChild(c);
       return;
     }

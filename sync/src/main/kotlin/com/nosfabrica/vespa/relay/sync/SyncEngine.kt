@@ -497,7 +497,8 @@ class SyncEngine(
     fun primeUnitsFor(
         author: String,
         relays: Set<NormalizedRelayUrl>,
-    ): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnitsFor(author, relays)
+        kinds: Set<Int>,
+    ): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnitsFor(author, relays, kinds)
 
     companion object {
         // Published names in the progress document; a rename breaks readers charting them.

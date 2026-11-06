@@ -191,7 +191,8 @@ internal class VisitPool(
     internal fun primeUnitsFor(
         author: String,
         relays: Set<NormalizedRelayUrl>,
-    ): List<RelayStatusReport.PrimeUnit> = status.primeUnitsFor(author, relays)
+        kinds: Set<Int>,
+    ): List<RelayStatusReport.PrimeUnit> = status.primeUnitsFor(author, relays, kinds)
 
     /** Every open tail subscription, quietest first. */
     internal fun livePool(): InFlight = status.livePool()

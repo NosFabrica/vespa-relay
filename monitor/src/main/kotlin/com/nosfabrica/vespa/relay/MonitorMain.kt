@@ -46,6 +46,7 @@ import com.nosfabrica.vespa.relay.util.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.util.cacheDnsBriefly
 import com.nosfabrica.vespa.relay.util.exitOnBootFailure
 import com.nosfabrica.vespa.relay.util.loadTimeZoneRules
+import com.nosfabrica.vespa.relay.util.removedSettingsNote
 import com.nosfabrica.vespa.relay.util.repeatEvery
 import com.nosfabrica.vespa.relay.util.shutdownStep
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -204,9 +205,7 @@ private fun readSettings(env: Map<String, String>): MonitorSettings {
                     "only when it signs in as that key; it also answers the NIP-42 challenges of the relays measured.",
             )
     System.err.println("monitor identity: ${identity.pubKey.take(12)}… (NIP-66 verdicts, NIP-42 auth, the relay's writer)")
-    env["MONITOR_STATUS_FILE"]?.takeIf { it.isNotBlank() }?.let {
-        System.err.println("monitor: MONITOR_STATUS_FILE was removed and does nothing — the status page is rebuilt within one interval of boot")
-    }
+    env.removedSettingsNote("monitor", listOf("MONITOR_STATUS_FILE"), "the status page is rebuilt within one interval of boot")?.let(System.err::println)
     return MonitorSettings(
         vespaUrl = vespaUrl,
         relayUrl = relayUrl,

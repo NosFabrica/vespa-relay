@@ -108,6 +108,43 @@ class AuthorCoverageTest {
         }
 
     @Test
+    fun `only the streams that mirror the asked kinds speak for an author's posts`(): Unit =
+        runBlocking {
+            val streams =
+                listOf(
+                    // Profiles and relay lists of everyone on this relay: not the reader's posts.
+                    PoolFixture.stream("profiles", url, Filter(kinds = listOf(0, 10002))),
+                    PoolFixture.stream("notes", url, Filter(kinds = listOf(1, 6))),
+                    PoolFixture.stream("aliceProfile", url, Filter(kinds = listOf(0), authors = listOf(alice))),
+                )
+            val bands = SyncBands(null)
+            val scope = CoroutineScope(SupervisorJob())
+            val pool =
+                try {
+                    PoolFixture(scope, streams, PoolFixture.holding(emptyList()), bands).pool().also { it.start() }
+                } finally {
+                    scope.cancel()
+                }
+            val coverage = AuthorCoverage(bands, pool::primeUnitsFor)
+            val onTheirRelay = mapOf("relay" to listOf(url.url))
+
+            val posts = coverage.answer(alice, onTheirRelay)!!
+            assertEquals(listOf("notes"), rows(posts).map { it["stream"]!!.jsonPrimitive.content }, "kind 1 by default: $posts")
+
+            val profiles = coverage.answer(alice, onTheirRelay + ("kind" to listOf("0")))!!
+            assertEquals(
+                setOf("profiles", "aliceProfile"),
+                rows(profiles).map { it["stream"]!!.jsonPrimitive.content }.toSet(),
+                "the kinds asked for pick the streams: $profiles",
+            )
+
+            // A stream reading only profiles does not make an author's posts followed.
+            val unbound = coverage.answer(carol, emptyMap())!!
+            assertFalse(unbound["followed"]!!.jsonPrimitive.boolean)
+            assertFalse(coverage.answer(alice, emptyMap())!!["followed"]!!.jsonPrimitive.boolean, "bound only by a profile stream: $posts")
+        }
+
+    @Test
     fun `a row says how far the walk got, never why a relay refused us`() {
         val unit =
             RelayStatusReport.PrimeUnit(
@@ -123,40 +160,34 @@ class AuthorCoverageTest {
                 abortSaid = "blocked: internal policy note",
                 abortAtSec = now() - 60,
             )
-        val coverage = AuthorCoverage(bands = { null }, units = { _, _ -> listOf(unit) })
+        val coverage = AuthorCoverage(bands = { null }, units = { _, _, _ -> listOf(unit) })
 
         val row = rows(coverage.answer(alice, emptyMap())!!).single()
         assertEquals(RelayStatusReport.REFUSED, row["syncStatus"]!!.jsonPrimitive.content)
-        for (member in listOf("relaySaid", "refusedFor", "refusedAgoSec", "kindCap", "unwatched", "fault", "asks")) {
+        for (member in listOf("relaySaid", "refusedFor", "refusedAgoSec", "kindCap", "unwatched", "fault", "asks", "behindSec", "coveredTo")) {
             assertNull(row[member], "the public row carries $member: $row")
         }
     }
 
     @Test
-    fun `past its rate a fresh answer is refused, and a cached author is still answered`() {
+    fun `an answer is served again from the cache until it expires, per kind set`() {
         var now = 1_000L
+        var asked = 0
         val coverage =
             AuthorCoverage(
                 bands = { null },
-                units = { _, _ -> emptyList() },
+                units = { _, _, kinds ->
+                    asked++
+                    assertEquals(setOf(1), kinds, "kind 1 unless the request names others")
+                    emptyList()
+                },
                 clock = { now },
-                gate = AuthorCoverage.RateGate(perSecond = 1, burst = 1, nowMs = { 1_000_000L }),
             )
-        assertEquals(alice, coverage.answer(alice, emptyMap())!!["pubkey"]!!.jsonPrimitive.content)
-        assertNull(coverage.answer(bob, emptyMap()), "a second fresh answer in the same instant is over the rate")
-        assertEquals(alice, coverage.answer(alice, emptyMap())!!["pubkey"]!!.jsonPrimitive.content, "a fresh answer is served from the cache")
+        coverage.answer(alice, emptyMap())
+        coverage.answer(alice, mapOf("kind" to listOf("1", "x")))
+        assertEquals(1, asked, "the same author and kinds is the cached answer")
         now += AuthorCoverage.CACHE_SECONDS
-        assertNull(coverage.answer(alice, emptyMap()), "an expired answer is a fresh one, and pays the rate")
-    }
-
-    @Test
-    fun `the gate refills at its rate and never banks past its burst`() {
-        var now = 0L
-        val gate = AuthorCoverage.RateGate(perSecond = 10, burst = 3, nowMs = { now })
-        assertEquals(3, (1..10).count { gate.take() }, "a full bucket is the burst")
-        now += 100
-        assertEquals(1, (1..10).count { gate.take() }, "one token per tenth of a second")
-        now += 60_000
-        assertEquals(3, (1..10).count { gate.take() }, "a minute idle still buys only the burst")
+        coverage.answer(alice, emptyMap())
+        assertEquals(2, asked, "an expired answer is computed again")
     }
 }

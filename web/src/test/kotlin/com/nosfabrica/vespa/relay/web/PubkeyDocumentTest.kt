@@ -74,17 +74,6 @@ class PubkeyDocumentTest {
         }
 
     @Test
-    fun `a source over its rate is a 429 that says when to come back`() =
-        testApplication {
-            application { routing { pubkeyDocument("/coverage/{pubkey}", 30, { PubkeyDocuments { _, _ -> null } }) } }
-
-            val res = client.get("/coverage/$key")
-            assertEquals(HttpStatusCode.TooManyRequests, res.status)
-            assertEquals("1", res.headers[HttpHeaders.RetryAfter])
-            assertNull(res.headers[HttpHeaders.CacheControl], "a refusal is not an answer to keep")
-        }
-
-    @Test
     fun `a pubkey is 64 hex, in either case`() {
         assertEquals(key, pubkeyOf(key.uppercase()))
         for (bad in listOf(null, "", "a1".repeat(31), "g".repeat(64), "${key}0", "npub1abc")) assertNull(pubkeyOf(bad), "$bad")

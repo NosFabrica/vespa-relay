@@ -1,5 +1,5 @@
 // How far the mirror has got with one reader's own posts, asked of the sync process itself: it
-// keeps, per relay it reads that reader from, whether the walk has reached its floor. The sync's
+// keeps, per relay it reads that reader's posts from, whether the walk has reached its floor. The sync's
 // address comes from the relay, which writes it into the page as <meta name="sync-url">; no meta
 // means no sync to ask, and the posts stage is skipped rather than guessed.
 
@@ -14,14 +14,7 @@ export function syncUrl(doc = globalThis.document) {
 function row(r) {
   if (!r || typeof r !== "object") return null;
   if (typeof r.relay !== "string" || !r.relay || typeof r.syncStatus !== "string") return null;
-  return {
-    relay: r.relay,
-    stream: typeof r.stream === "string" ? r.stream : null,
-    syncStatus: r.syncStatus,
-    coveredTo: Number.isFinite(r.coveredTo) ? r.coveredTo : null,
-    verifiedAgoSec: Number.isFinite(r.verifiedAgoSec) ? r.verifiedAgoSec : null,
-    tailed: r.tailed === true,
-  };
+  return { relay: r.relay, syncStatus: r.syncStatus };
 }
 
 /**
@@ -67,16 +60,22 @@ const rank = (status) => {
 /** How many of the reader's relays are named; the sync reads no more than this many. */
 const MAX_RELAYS = 20;
 
+/** What "your posts" means here: text notes. A stream that mirrors only profiles says nothing about them. */
+const POST_KINDS = [1];
+
 /**
- * The coverage for [pubkey] off the sync, null for every way the read can fail. [relays] are the
+ * The coverage of [pubkey]'s posts off the sync, null for every way the read can fail. [relays] are the
  * reader's write relays: a stream that reads everyone on a relay reads them there, and only the
  * reader's own list says where. [fetcher] is injectable for tests.
  */
 export async function readCoverage(pubkey, { relays = [], base = syncUrl(), fetcher = (url, init) => globalThis.fetch(url, init) } = {}) {
   if (!base || !/^[0-9a-f]{64}$/.test(pubkey || "")) return null;
-  const query = relays.slice(0, MAX_RELAYS).map((r) => `relay=${encodeURIComponent(r)}`).join("&");
+  const query = [
+    ...POST_KINDS.map((k) => `kind=${k}`),
+    ...relays.slice(0, MAX_RELAYS).map((r) => `relay=${encodeURIComponent(r)}`),
+  ].join("&");
   try {
-    const res = await fetcher(`${base}/coverage/${pubkey}${query ? `?${query}` : ""}`, { headers: { accept: "application/json" } });
+    const res = await fetcher(`${base}/coverage/${pubkey}?${query}`, { headers: { accept: "application/json" } });
     if (!res || !res.ok) return null;
     return coverageOf(await res.json());
   } catch (e) {

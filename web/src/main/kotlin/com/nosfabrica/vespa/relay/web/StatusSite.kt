@@ -41,6 +41,8 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * The policy every public page is served under: no inline, eval'd or foreign script, and no
@@ -103,11 +105,13 @@ fun Route.statsDocument(
         val doc = snapshot.served()
         if (doc == null) {
             // 503, not an empty document: a 200 of zeros looks like a service holding nothing.
-            call.respondText(
-                """{"error":"no statistics computed yet"}""",
-                ContentType.Application.Json,
-                HttpStatusCode.ServiceUnavailable,
-            )
+            val body =
+                buildJsonObject {
+                    put("error", snapshot.offBecause ?: "no statistics computed yet")
+                    // Off is not "wait": the page says nothing is coming.
+                    if (snapshot.offBecause != null) put("off", true)
+                }
+            call.respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.ServiceUnavailable)
         } else {
             call.respondDocument(doc.bytes, doc.etag)
         }

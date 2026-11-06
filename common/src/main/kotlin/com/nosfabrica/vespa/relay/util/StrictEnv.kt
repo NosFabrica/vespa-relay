@@ -78,3 +78,19 @@ private fun bounds(
         max == ceiling -> " of at least $min"
         else -> " in $min..$max"
     }
+
+/**
+ * What a boot prints when any of [names] is still set, though each was removed and does nothing:
+ * `process: A, B were removed and do nothing — why`. Null when none is set. A removed setting whose
+ * absence would change what is stored is refused instead, where it is read.
+ */
+fun Map<String, String>.removedSettingsNote(
+    process: String,
+    names: Collection<String>,
+    why: String,
+): String? {
+    val set = names.filter { setting(it) != null }
+    if (set.isEmpty()) return null
+    val verb = if (set.size == 1) "was removed and does" else "were removed and do"
+    return "$process: ${set.joinToString()} $verb nothing — $why"
+}

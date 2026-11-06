@@ -36,14 +36,15 @@ shared volume, and `/stats.json` goes to schema 4 without its `sync` section.
 - **So does the relay's `/stats.html`, for longer.** `/stats.json` is held in
   memory only, so after a restart it answers 503 and the page shows its waiting
   card until the first rollup lands, which takes minutes on a large corpus. With
-  `STATS_INTERVAL_SECONDS=0` it now always answers 503, where it used to serve
-  the last file.
+  `STATS_INTERVAL_SECONDS=0` it now always answers 503 with `"off": true`,
+  where it used to serve the last file, and the page says the statistics are
+  turned off.
 - **`/stats.json` has no `sync` member and one tier, `charts`.** A client that
   read `sync.mirrors.kinds` should ask the sync's `/coverage/<pubkey>` instead.
-- **The sync answers `GET /coverage/<pubkey>?relay=…`** to any origin: every
-  stream that reads that author on the relays named (or is bound to them
-  anywhere) and how far each has got, and the named relays nothing reads. It caches an author for
-  30 s and gives at most 20 fresh answers a second; past that it answers 429.
+- **The sync answers `GET /coverage/<pubkey>?kind=…&relay=…`** to any origin:
+  every stream that mirrors those kinds (kind 1 when none is named) of that
+  author on the relays named, or is bound to them anywhere, and how far each
+  has got, and the named relays nothing reads. It caches an answer for 30 s.
 
 ## Store refusals and the phrase band (November 2026)
 
