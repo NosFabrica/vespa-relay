@@ -36,4 +36,10 @@ tasks.withType<Test>().configureEach {
     useJUnitPlatform()
     // The benches need a few GB of heap; unit tests must not. Opt in with -PtestHeap=6g.
     providers.gradleProperty("testHeap").orNull?.let { maxHeapSize = it }
+    // A failure prints its assertion message and stack, not just the exception's class and the
+    // line Kotlin maps a lambda to: CI keeps no test report, so the console is all a flake leaves.
+    testLogging {
+        events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }
