@@ -352,6 +352,7 @@ internal class PoolStatus(
             Processors.Count("retractionRuns", counters.retractionsRun.get()),
             Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
             Processors.Count("liveEvicted", tails.evictions.get()),
+            Processors.Count("liveSilenced", tails.silenced.get()),
             Processors.Count("poolReceived", counters.poolReceived.get()),
             Processors.Count("narrowedRelays", widths.narrowed.toLong()),
             // A gauge, like `narrowedRelays`: a verdict lapses, so a count since boot would only grow.

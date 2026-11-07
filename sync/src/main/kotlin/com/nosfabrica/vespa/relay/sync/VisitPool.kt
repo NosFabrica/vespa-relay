@@ -212,11 +212,15 @@ internal class VisitPool(
             repeatEvery(PHASE_FLUSH_MS, "phase flush") { if (phasesDirty.getAndSet(false)) status.flushPhases() }
         }
         scope.launch { repeatEvery(TAIL_ADVANCE_MS, "tail advance") { advanceTails() } }
+        scope.launch { repeatEvery(TAIL_SILENCE_CHECK_MS, "tail silence") { closeSilentTails() } }
         repeat(workers) { launchWorker() }
     }
 
     /** One pass of the loop that moves each tail's stored `since` up to its deliveries. */
     internal suspend fun advanceTails() = tails.advance()
+
+    /** One pass of the loop that closes tails silent for [TAIL_SILENCE_CLOSE_MS]; [nowMs] is the test's clock. */
+    internal fun closeSilentTails(nowMs: Long = System.currentTimeMillis()) = tails.closeSilent(nowMs)
 
     /** Workers currently drawing units, and how many were replaced after dying. */
     internal fun workerHealth(): WorkerHealth = WorkerHealth(queue.workersAlive, workers, workersRespawned.get())
@@ -378,7 +382,7 @@ internal class VisitPool(
         counters.visitsRun.incrementAndGet()
         // A prompt requeue can reach here past an earlier turn-away; this visit's own wait applies.
         turnedAway.remove(key)
-        val mayEvict = !tails.takeEvicted(key)
+        val mayEvict = !tails.takeRequeued(key)
         val ongoingVisit = OngoingVisit(System.currentTimeMillis())
         ongoing[key] = ongoingVisit
         sockets.claim(url)
@@ -1206,5 +1210,11 @@ internal class VisitPool(
 
         /** How often a tail's stored `since` follows its deliveries; at most this much more is re-asked on a reconnect. */
         const val TAIL_ADVANCE_MS = 60_000L
+
+        /** A tail with no event for this long is closed and its unit revisited, whether or not the socket is up. */
+        const val TAIL_SILENCE_CLOSE_MS = 15L * 60 * 1000
+
+        /** How often the open tails are checked against [TAIL_SILENCE_CLOSE_MS]. */
+        const val TAIL_SILENCE_CHECK_MS = 60_000L
     }
 }

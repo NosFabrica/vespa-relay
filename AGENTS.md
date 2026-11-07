@@ -256,7 +256,8 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
 - **The visit pool.** `VisitPool` walks declared and discovered relays the same
   way: a rotating queue of (relay, stream) units worked by a fixed set of
   workers. A visit pages forward from the band's edge, audits the past by
-  negentropy when due, drains queued heals, then leaves a live tail. One
+  negentropy when due, drains queued heals, then leaves a live tail, closed and
+  revisited after `TAIL_SILENCE_CLOSE_MS` (15 minutes) without an event. One
   unclean ask ends the visit, except a walk our full ingest queue silenced,
   which waits for it and resumes; `VisitAborts` partitions why, `RelayComplaints`
   keeps the relay's sentence, `FilterWidths` narrows an ask refused for width,

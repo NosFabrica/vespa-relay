@@ -278,3 +278,17 @@ a tail whose socket died quietly would hide its own gap from the reconnect
 that should fill it. This is Amethyst's EOSE-manager pattern with an overlap a
 mirror needs and an app does not. Quartz does not do it itself because only
 the owner knows whether a `since` is a live edge or a deliberate history.
+
+**A tail silent for fifteen minutes is closed.** A tail's only exits were an
+eviction, a roster drop or the socket breaking, and pings keep a socket up
+whether or not the relay still serves the subscription on it. So a relay that
+stopped sending without disconnecting held a live permit and read as `tailed`
+for hours, while the gap it hid waited for a revisit sized for a working feed
+(`REVISIT_TAILED_MS`). Once a minute (`TAIL_SILENCE_CHECK_MS`)
+`TailBook.closeSilent` closes every tail with no event in
+`TAIL_SILENCE_CLOSE_MS` and requeues its unit the way an eviction does: the
+visit pages over the silence and opens a fresh subscription, and, like an
+evicted unit's, takes only a spare permit. A tail our own full ingest queue
+has parked is skipped, since that silence is ours. A merely quiet relay pays
+one extra visit every fifteen minutes; `liveSilenced` counts the closes.
+`TailSilenceTest` pins both sides.
