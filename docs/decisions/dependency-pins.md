@@ -614,8 +614,10 @@ DEPLOY: the application package changes, schemas and services.xml do not: compon
   carries the new handler. The boot's AUTO_DEPLOY finds the package changed and deploys it; nothing is
   reindexed. Until it serves, cell updates take the feed client, so either order of rollout is safe.
 
-GATED: the store's integration gate at 4470ea789669 is RUNNING (its CI, run 42402710542, on the PR head
-  a0eaff7 over an unchanged main); this line is replaced with its counts when it finishes. Here,
+GATED: the store's integration gate PASSED on 4470ea789669's tree: its CI run 42402710542, job
+  `integration`, `:benchmark:test -Pintegration` against vespaengine/vespa:latest, BUILD SUCCESSFUL in
+  31m 20s (PR #197's merge ref, a0eaff7 over an unchanged main, which is the tree 4470ea789669 merged).
+  Gradle prints no counts on success; the job's duration is the proof it did not skip. Here,
   ./gradlew build archTest against the JitPack jar: 1,753 tests, 0 failures, 2 skipped; the runtime graph
   holds one quartz (0102e83c81) and the store at 4470ea789669, no arrow on either.
 
