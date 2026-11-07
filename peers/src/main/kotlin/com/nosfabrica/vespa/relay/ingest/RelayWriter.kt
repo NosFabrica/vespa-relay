@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.ingest
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT_BYTES
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthSnapshot
@@ -90,7 +91,12 @@ class RelayWriter(
     dns: Dns = Dns.SYSTEM,
     /** The log and boot-line prefix: the process writing, `sync` or `monitor`. */
     private val process: String = "sync",
+    /** How many [batchInsert]s may run at once: they share the socket's send queue, so its byte budget too. */
+    concurrentBatches: Int = 1,
 ) : StoreWriter {
+    /** Each batch's share of [SOCKET_IN_FLIGHT_BYTES]. Past OkHttp's queue it closes the socket, and the redial re-sends every unanswered event at once. */
+    private val inFlightBytes = SOCKET_IN_FLIGHT_BYTES / concurrentBatches.coerceAtLeast(1)
+
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
         OkHttpClient
@@ -220,7 +226,7 @@ class RelayWriter(
         val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
         try {
             if (toSend.isNotEmpty()) {
-                client.publishStream(dial, toSend.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs) { event, result ->
+                client.publishStream(dial, toSend.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs, maxInFlightBytes = inFlightBytes) { event, result ->
                     val outcome = outcomeOf(result)
                     synchronized(outcomes) { slots[event.id]?.forEach { outcomes[it] = outcome } }
                     owned[event.id]?.let { settle(event.id, it, outcome) }
@@ -319,6 +325,9 @@ class RelayWriter(
          * so the relay keeps reading the socket.
          */
         const val IN_FLIGHT = 2_000
+
+        /** Unanswered EVENT bytes on the socket across every batch: Quartz's half of OkHttp's 16 MiB send queue. */
+        const val SOCKET_IN_FLIGHT_BYTES = DEFAULT_STREAM_IN_FLIGHT_BYTES
 
         private val NOT_SENT = IEventStore.InsertOutcome.Failed("error: the relay went silent before this event was sent")
 

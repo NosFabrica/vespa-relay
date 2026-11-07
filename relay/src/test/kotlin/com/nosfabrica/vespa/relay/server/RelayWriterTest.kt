@@ -265,9 +265,12 @@ class RelayWriterTest {
         }
     }
 
-    @Test
-    fun `copies of one event in concurrent batches all hear the relay's verdict however slowly it answers`() {
-        // The same event from several upstreams lands in both ingest workers' batches before the relay answers.
+    /** A relay whose mirror lane takes [perEventMs] over each event, so a busy writer's frames queue up on its socket. */
+    private fun <T> withSlowRelay(
+        perEventMs: Long,
+        concurrentBatches: Int,
+        body: (RelayWriter) -> T,
+    ): T {
         val laneStore = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
         val slow =
             object : EventIngest {
@@ -276,7 +279,7 @@ class RelayWriterTest {
                     skipVerify: Boolean,
                     onComplete: (IEventStore.InsertOutcome) -> Unit,
                 ) {
-                    delay(500)
+                    delay(perEventMs)
                     onComplete(laneStore.batchInsert(listOf(event)).single())
                 }
 
@@ -293,9 +296,21 @@ class RelayWriterTest {
                     .first()
                     .port
             }
-        val toSlow = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$slowPort"), relayUrl, relayKey, scope)
+        val toSlow = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$slowPort"), relayUrl, relayKey, scope, concurrentBatches = concurrentBatches)
         try {
             runBlocking { toSlow.batchInsert(listOf(note(0))) }
+            return body(toSlow)
+        } finally {
+            toSlow.close()
+            slowServer.stop(0, 0)
+            slowRelay.close()
+        }
+    }
+
+    @Test
+    fun `copies of one event in concurrent batches all hear the relay's verdict however slowly it answers`() {
+        // The same event from several upstreams lands in both ingest workers' batches before the relay answers.
+        withSlowRelay(perEventMs = 500, concurrentBatches = 6) { toSlow ->
             val shared = note(1)
             val outcomes =
                 runBlocking {
@@ -304,10 +319,19 @@ class RelayWriterTest {
             assertTrue(outcomes.none { it is IEventStore.InsertOutcome.Failed }, "no copy is lost to the outbox: $outcomes")
             assertEquals(7, outcomes.count { it == IEventStore.InsertOutcome.Accepted }, "the event once, and each batch's own: $outcomes")
             assertEquals(0, toSlow.pendingInOutbox())
-        } finally {
-            toSlow.close()
-            slowServer.stop(0, 0)
-            slowRelay.close()
+        }
+    }
+
+    @Test
+    fun `concurrent batches of large events stay inside the socket's send queue`() {
+        // OkHttp closes a socket whose queue passes 16 MiB, and the redial re-sends everything unanswered at once.
+        val big = "x".repeat(120_000)
+        withSlowRelay(perEventMs = 10, concurrentBatches = 3) { toSlow ->
+            val outcomes =
+                runBlocking {
+                    (0 until 3).map { b -> async(Dispatchers.IO) { toSlow.batchInsert((1..100).map { someone.sign(1_700_000_000L + b * 100 + it, 1, emptyArray(), big + "$b-$it") }) } }.awaitAll().flatten()
+                }
+            assertEquals(List(300) { IEventStore.InsertOutcome.Accepted }, outcomes)
         }
     }
 }
