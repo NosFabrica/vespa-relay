@@ -594,7 +594,34 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-0c39dd5ba955 = vespa-eventstore main @ 2026-11-06, the merge of PR #195 (over b21f996c1849, below): every
+4470ea789669 = vespa-eventstore main @ 2026-11-07, the merge of PR #197 (over 0c39dd5ba955, below): cheaper
+trust ingest, found by stress-testing this mirror on a day of NIP-85 cards.
+  RECALLS NARROWED BY ID AND AUTHOR (5e79b50, a0eaff7). InMemoryEventIndex reads only the named ids' or
+    authors' docs and tests scalar fields before tag pairs: BulkMixedInsert's replay asked it per event over
+    its whole snapshot, O(batch^2 x tags), ~47% of the relay's ingest threads' CPU under the writer lock.
+  CELL UPDATES THROUGH THE BATCH HANDLER (eb90efd, a0eaff7). BatchFeedHandler takes `update` operations, and
+    VespaReputationIndex sends a document's only update in a call through it; a handler that predates
+    updates refuses them, and the update path parks for five minutes as a 404 parks the batch path.
+  CELLS BESIDE THEIR DOCUMENTS (b9bd430, 44dd33b). A putAll insured subject by subject writes its cells
+    while its documents are written; a coarse commit, one past DIRT_SUBJECT_CAP, or one carrying a 10040
+    keeps the old order. Measured on one service's day of kind 30382 (4 cores): a commit's lock hold
+    306 -> 167 ms, steady ingest ~1,810 -> ~4,450 cards/s.
+  QUARTZ UNCHANGED at 0102e83c81; the graph's arrows are the transitive ones noted below. PR #196 in the
+    range is test and docs only.
+  git merge-base --is-ancestor 0c39dd5ba955 4470ea789669   # verified
+
+DEPLOY: the application package changes, schemas and services.xml do not: components/eventstore-bundle.jar
+  carries the new handler. The boot's AUTO_DEPLOY finds the package changed and deploys it; nothing is
+  reindexed. Until it serves, cell updates take the feed client, so either order of rollout is safe.
+
+GATED: the store's integration gate at 4470ea789669 is RUNNING (its CI, run 42402710542, on the PR head
+  a0eaff7 over an unchanged main); this line is replaced with its counts when it finishes. Here,
+  ./gradlew build archTest against the JitPack jar: 1,753 tests, 0 failures, 2 skipped; the runtime graph
+  holds one quartz (0102e83c81) and the store at 4470ea789669, no arrow on either.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 0c39dd5ba955 = vespa-eventstore main @ 2026-11-06, the merge of PR #195 (over b21f996c1849, below): every
 dependency to its latest release, and quartz from JitPack at the relay's own pin.
   QUARTZ IS JITPACK'S, AT 0102e83c81 (94604c0). The store's POM names
     com.github.vitorpamplona.quartz:quartz-jvm:0102e83c81, the commit and group this relay pins, so the
