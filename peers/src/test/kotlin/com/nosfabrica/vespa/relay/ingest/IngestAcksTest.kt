@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 /** A bounded wait says which of the three ways it ended, as of the one instant it looked. */
 class IngestAcksTest {
@@ -44,5 +45,25 @@ class IngestAcksTest {
             val clean = IngestAcks()
             clean.track()(IEventStore.InsertOutcome.Rejected("duplicate: have it"))
             assertEquals(IngestAcks.Verdicts.Stored, clean.awaitWithin(50))
+        }
+
+    @Test
+    fun `a short wait names the newest stamp that failed or is still waiting`(): Unit =
+        runBlocking {
+            val acks = IngestAcks()
+            val at300 = acks.track(300)
+            val at200 = acks.track(200)
+            val at100 = acks.track(100)
+            at300(IEventStore.InsertOutcome.Accepted)
+            at100(IEventStore.InsertOutcome.Failed("error: store down"))
+            assertEquals(200, assertIs<IngestAcks.Verdicts.Unanswered>(acks.awaitWithin(50)).newestUnconfirmed, "200 still waits, above the failed 100")
+            at200(IEventStore.InsertOutcome.Rejected("duplicate: have it"))
+            assertEquals(100, assertIs<IngestAcks.Verdicts.Failed>(acks.awaitWithin(50)).newestUnconfirmed)
+
+            // An untimed submission bounds nothing: where its ground lies is unknown.
+            val untimed = IngestAcks()
+            untimed.track(500)(IEventStore.InsertOutcome.Accepted)
+            untimed.track()(IEventStore.InsertOutcome.Failed("error: store down"))
+            assertNull(assertIs<IngestAcks.Verdicts.Failed>(untimed.awaitWithin(50)).newestUnconfirmed)
         }
 }

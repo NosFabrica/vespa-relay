@@ -627,7 +627,12 @@ internal class VisitPool(
                 }
             }
         counters.bandsWithheld.incrementAndGet()
-        System.err.println("router: $stream ${url.url} — $why; its band is not recorded, and the next visit walks the ground again")
+        val kept =
+            when (val newest = (verdicts as? IngestAcks.Verdicts.Failed)?.newestUnconfirmed ?: (verdicts as? IngestAcks.Verdicts.Unanswered)?.newestUnconfirmed) {
+                null -> "its band is not recorded, and the next visit walks the ground again"
+                else -> "nothing at or below $newest is recorded covered, and the next visit walks from there down"
+            }
+        System.err.println("router: $stream ${url.url} — $why; $kept")
         return verdicts
     }
 
@@ -666,7 +671,7 @@ internal class VisitPool(
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track())
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track(event.createdAt))
                 }
             }
             // Stamped before the REQ goes out: a complaint older than this belongs to an earlier ask.
@@ -697,11 +702,16 @@ internal class VisitPool(
                 )
             }
             val verdicts = storedAll(acks, stream.name, url, ongoingVisit)
-            // Every further chunk would wait on the same silent store.
-            if (verdicts is IngestAcks.Verdicts.Unanswered) return Refusal(walked.end, chunk, askedAtMs, unstored = true)
+            val walkedTop = chunk.until ?: (askedAtMs / 1000)
+            if (verdicts is IngestAcks.Verdicts.Unanswered) {
+                recordAboveUnconfirmed(key, url, ask.filter, seenByKind, walkedTop, verdicts.newestUnconfirmed)
+                // Every further chunk would wait on the same silent store.
+                return Refusal(walked.end, chunk, askedAtMs, unstored = true)
+            }
             if (verdicts is IngestAcks.Verdicts.Failed) {
                 // Read to the end or not, ground whose events did not reach the store is not covered.
                 ongoingVisit.lastActivityMs = System.currentTimeMillis()
+                recordAboveUnconfirmed(key, url, ask.filter, seenByKind, walkedTop, verdicts.newestUnconfirmed)
             } else if (readToTheEnd(walked)) {
                 // An answered ask is the relay responding, whether or not it had anything to send.
                 ongoingVisit.lastActivityMs = System.currentTimeMillis()
@@ -716,10 +726,31 @@ internal class VisitPool(
                     drained = drainSettlesThePast(walked, chunk, floor),
                 )
             } else {
-                bands.recordCut(key, url, ask.filter, seenByKind, walkedTop = chunk.until ?: (askedAtMs / 1000))
+                bands.recordCut(key, url, ask.filter, seenByKind, walkedTop = walkedTop)
             }
         }
         return null
+    }
+
+    /**
+     * A walk the store did not answer in full, recorded as a cut above [newestUnconfirmed]: newest
+     * first, the walk read all of that ground, and every event in it was stored or refused for
+     * good. The next visit walks from there down. Nothing is recorded without a bound.
+     */
+    private fun recordAboveUnconfirmed(
+        key: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        seenByKind: Map<Int, SyncCoverage.Span>,
+        walkedTop: Long,
+        newestUnconfirmed: Long?,
+    ) {
+        newestUnconfirmed ?: return
+        val confirmed =
+            seenByKind
+                .filterValues { it.max > newestUnconfirmed }
+                .mapValues { (_, span) -> SyncCoverage.Span(maxOf(span.min, newestUnconfirmed + 1), span.max) }
+        if (confirmed.isNotEmpty()) bands.recordCut(key, url, filter, confirmed, walkedTop)
     }
 
     /** A walk through [pageThroughStalls]: the pager's last answer, and whether our own queue ended it. */

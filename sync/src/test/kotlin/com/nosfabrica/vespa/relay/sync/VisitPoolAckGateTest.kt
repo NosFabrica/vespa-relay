@@ -96,6 +96,50 @@ class VisitPoolAckGateTest {
             }
         }
 
+    /** An engine that refuses any write carrying [refused], as one poison event does; ingest's bisection isolates it. */
+    private class RefusingOne(
+        private val refused: String,
+        private val inner: EventIndex = InMemoryEventIndex(),
+    ) : EventIndex by inner {
+        override suspend fun put(doc: EventDoc) = if (doc.id == refused) error("the engine refused ${doc.id}") else inner.put(doc)
+
+        override suspend fun putAll(docs: List<EventDoc>) = if (docs.any { it.id == refused }) error("the engine refused $refused") else inner.putAll(docs)
+    }
+
+    private val five = (1..5).map { PoolFixture.event(it, createdAt = 1_700_000_000L + it) }
+
+    @Test
+    fun `a walk with one unstored event records the ground above it`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val bands = SyncBands(null)
+                val fixture = PoolFixture(scope, listOf(stream), PoolFixture.holding(five), bands, index = RefusingOne(five[1].id))
+                fixture.pool().start()
+                fixture.awaitTail()
+                val span = assertNotNull(bands.band("s", url, notes)?.spans?.get(1), "the ground above the unstored event is covered")
+                assertEquals(five[2].createdAt to five[4].createdAt, span.min to span.max, "and nothing at or below it")
+                assertEquals(1L, fixture.counts()["bandsWithheld"], "the walk still counts as withheld")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun `a walk whose newest event is unstored records nothing`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val bands = SyncBands(null)
+                val fixture = PoolFixture(scope, listOf(stream), PoolFixture.holding(five), bands, index = RefusingOne(five[4].id))
+                fixture.pool().start()
+                fixture.awaitTail()
+                assertNull(bands.band("s", url, notes), "no ground above the newest event")
+            } finally {
+                scope.cancel()
+            }
+        }
+
     @Test
     fun `a walk records its band only once the store has answered`() =
         runBlocking {
