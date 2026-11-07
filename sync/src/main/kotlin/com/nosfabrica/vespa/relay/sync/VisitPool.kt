@@ -671,7 +671,7 @@ internal class VisitPool(
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track(event.createdAt))
+                    ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions), acks.track(event.createdAt.takeIf { SyncCoverage.isPlausible(it) }))
                 }
             }
             // Stamped before the REQ goes out: a complaint older than this belongs to an earlier ask.

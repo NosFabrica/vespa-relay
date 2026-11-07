@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
@@ -281,6 +282,8 @@ class RelayWriterTest {
                     onComplete: (IEventStore.InsertOutcome) -> Unit,
                 ) {
                     delay(perEventMs)
+                    // The production lane verifies what the sync left to it.
+                    if (!event.verify()) return onComplete(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"))
                     onComplete(laneStore.batchInsert(listOf(event)).single())
                 }
 
@@ -349,5 +352,21 @@ class RelayWriterTest {
             outcomes,
         )
         assertEquals(setOf(note(1).id, note(2).id), stored())
+    }
+
+    @Test
+    fun `a genuine copy is not refused for a forged one sent ahead of it`() {
+        withSlowRelay(perEventMs = 500, concurrentBatches = 2) { toSlow ->
+            val genuine = note(1)
+            val forged = Event(genuine.id, genuine.pubKey, genuine.createdAt, genuine.kind, genuine.tags, genuine.content, "f".repeat(128))
+            val (forgedOutcome, genuineOutcome) =
+                runBlocking {
+                    val first = async(Dispatchers.IO) { toSlow.batchInsert(listOf(forged)).single() }
+                    delay(100)
+                    first to async(Dispatchers.IO) { toSlow.batchInsert(listOf(genuine)).single() }
+                }.let { (a, b) -> runBlocking { a.await() to b.await() } }
+            assertEquals(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"), forgedOutcome)
+            assertEquals(IEventStore.InsertOutcome.Accepted, genuineOutcome, "the genuine copy went out on its own")
+        }
     }
 }

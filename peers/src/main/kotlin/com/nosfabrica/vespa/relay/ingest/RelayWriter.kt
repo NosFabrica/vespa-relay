@@ -118,7 +118,13 @@ class RelayWriter(
      * than sending again: Quartz's outbox counts every unanswered send of an id as a retry and gives
      * the event up on the fourth, which a slow relay and the same event from several upstreams reach.
      */
-    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<IEventStore.InsertOutcome>>()
+    private val inFlight = ConcurrentHashMap<String, Sent>()
+
+    /** One id on the socket: the signature that went out, since a copy may carry another, and the relay's verdict. */
+    private class Sent(
+        val sig: String,
+        val verdict: CompletableDeferred<IEventStore.InsertOutcome> = CompletableDeferred(),
+    )
 
     /** Batches written before the socket was signed in, and so through the relay's publishers' lane. */
     val unsignedBatches = AtomicLong()
@@ -183,7 +189,7 @@ class RelayWriter(
     ): IEventStore.InsertOutcome? {
         if (limit == null) return null
         // JSON escapes a character into at most six, so most events need no serialization to fit.
-        val bound = FRAME_OVERHEAD + 6L * (event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length + 3 } })
+        val bound = FRAME_OVERHEAD + FIXED_FIELDS + 6L * (event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length + 3 } })
         if (bound <= limit) return null
         return if (FRAME_OVERHEAD + event.toJson().length > limit) IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)") else null
     }
@@ -239,8 +245,8 @@ class RelayWriter(
         if (!awaitSignedIn() && client.getOrCreateRelay(dial).isConnected()) unsigned()
         // Copies of one id share the relay's one verdict, so each id keeps the slots it fills.
         val slots = HashMap<String, MutableList<Int>>(events.size)
-        val owned = HashMap<String, CompletableDeferred<IEventStore.InsertOutcome>>(events.size)
-        val joined = ArrayList<Pair<Int, CompletableDeferred<IEventStore.InsertOutcome>>>()
+        val owned = HashMap<String, Sent>(events.size)
+        val joined = ArrayList<Pair<Int, Sent>>()
         val toSend = ArrayList<Event>(events.size)
         val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
         val limit = messageLimit
@@ -253,7 +259,7 @@ class RelayWriter(
                 it.add(i)
                 return@forEachIndexed
             }
-            val mine = CompletableDeferred<IEventStore.InsertOutcome>()
+            val mine = Sent(e.sig)
             val theirs = inFlight.putIfAbsent(e.id, mine)
             if (theirs != null) {
                 joined += i to theirs
@@ -275,19 +281,31 @@ class RelayWriter(
             // A stalled stream stops reading its input, so the events it never sent have no verdict.
             for ((id, waiting) in owned) settle(id, waiting, NOT_SENT)
         }
-        // The relay answers a second send of a stored event as a duplicate; a copy that waited hears the same.
-        for ((i, waiting) in joined) outcomes[i] = waiting.await().let { if (it == IEventStore.InsertOutcome.Accepted) DUPLICATE else it }
+        // A copy that waited hears what the relay answers a second send of a stored event, a duplicate.
+        // Any other verdict holds only for the same bytes: a forged copy's refusal is not the genuine one's.
+        val ownSend = ArrayList<Int>()
+        for ((i, theirs) in joined) {
+            val verdict = theirs.verdict.await()
+            when {
+                verdict == IEventStore.InsertOutcome.Accepted -> outcomes[i] = DUPLICATE
+                events[i].sig == theirs.sig || verdict.isDuplicate() -> outcomes[i] = verdict
+                else -> ownSend += i
+            }
+        }
+        if (ownSend.isNotEmpty()) batchInsert(ownSend.map { events[it] }).forEachIndexed { k, outcome -> outcomes[ownSend[k]] = outcome }
         return outcomes.map { it ?: NOT_SENT }
     }
+
+    private fun IEventStore.InsertOutcome.isDuplicate() = this is IEventStore.InsertOutcome.Rejected && reason.startsWith(RejectionReason.PREFIX_DUPLICATE)
 
     /** Ends one id's wait for every batch holding a copy; the first verdict stands. */
     private fun settle(
         id: String,
-        waiting: CompletableDeferred<IEventStore.InsertOutcome>,
+        sent: Sent,
         outcome: IEventStore.InsertOutcome,
     ) {
-        inFlight.remove(id, waiting)
-        waiting.complete(outcome)
+        inFlight.remove(id, sent)
+        sent.verdict.complete(outcome)
     }
 
     /** When the last unsigned batch was logged; a stuck sign-in would otherwise log every batch. */
@@ -368,6 +386,9 @@ class RelayWriter(
 
         /** `["EVENT",` and `]` around the event's JSON, as the relay measures a message. */
         private const val FRAME_OVERHEAD = 10
+
+        /** The JSON an event spends beyond its content and tags: keys, id, pubkey, sig, stamp and kind, with room to spare. */
+        private const val FIXED_FIELDS = 512
 
         /** How often the relay's NIP-11 limit is read again, and how soon after a read that failed. */
         private const val LIMIT_REFRESH_MS = 600_000L
