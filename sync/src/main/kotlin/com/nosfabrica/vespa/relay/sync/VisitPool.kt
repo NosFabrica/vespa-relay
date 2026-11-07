@@ -627,12 +627,7 @@ internal class VisitPool(
                 }
             }
         counters.bandsWithheld.incrementAndGet()
-        val kept =
-            when (val newest = (verdicts as? IngestAcks.Verdicts.Failed)?.newestUnconfirmed ?: (verdicts as? IngestAcks.Verdicts.Unanswered)?.newestUnconfirmed) {
-                null -> "its band is not recorded, and the next visit walks the ground again"
-                else -> "nothing at or below $newest is recorded covered, and the next visit walks from there down"
-            }
-        System.err.println("router: $stream ${url.url} — $why; $kept")
+        System.err.println("router: $stream ${url.url} — $why; its band is not recorded, and the next visit walks the ground again")
         return verdicts
     }
 
@@ -750,7 +745,9 @@ internal class VisitPool(
             seenByKind
                 .filterValues { it.max > newestUnconfirmed }
                 .mapValues { (_, span) -> SyncCoverage.Span(maxOf(span.min, newestUnconfirmed + 1), span.max) }
-        if (confirmed.isNotEmpty()) bands.recordCut(key, url, filter, confirmed, walkedTop)
+        if (confirmed.isNotEmpty() && bands.recordCut(key, url, filter, confirmed, walkedTop)) {
+            System.err.println("router: $key ${url.url} — the walk's ground above $newestUnconfirmed is recorded covered; the next visit walks from there down")
+        }
     }
 
     /** A walk through [pageThroughStalls]: the pager's last answer, and whether our own queue ended it. */

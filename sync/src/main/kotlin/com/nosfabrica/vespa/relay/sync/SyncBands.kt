@@ -437,6 +437,7 @@ class SyncBands(
     /**
      * Records a paged walk the relay cut short. Newest-first, it read from [walkedTop] down to
      * its oldest event, so a kind whose span would bridge unwalked ground to the band records nothing.
+     * Returns whether any kind was recorded.
      */
     fun recordCut(
         stream: String,
@@ -445,7 +446,7 @@ class SyncBands(
         observedByKind: Map<Int, SyncCoverage.Span>,
         walkedTop: Long,
         now: Long = System.currentTimeMillis() / 1000,
-    ) {
+    ): Boolean {
         val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) }
         // Keyed as quartz files them: a filter naming no kinds holds one span for all of them.
         val spans =
@@ -455,7 +456,7 @@ class SyncBands(
                 observedByKind
             }
         val kept = presentOnly(spans, now)!!.filter { (kind, span) -> touches(held?.spans?.get(kind), span.min, walkedTop) }
-        if (kept.isEmpty()) return
+        if (kept.isEmpty()) return false
         coverage(stream).record(
             url,
             filter,
@@ -466,6 +467,7 @@ class SyncBands(
             observedByKind = kept,
             drained = false,
         )
+        return true
     }
 
     /**

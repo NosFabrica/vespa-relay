@@ -97,7 +97,8 @@ class IngestAcks {
 
     /** The newest `created_at` that failed or is still waiting; null when an untimed one is either, or none is. */
     private fun newestUnconfirmed(): Long? {
-        if (untimedFailed.get() || untimedWaiting.get() > 0) return null
+        // Waiting first: an untimed outcome records its failure before it stops waiting.
+        if (untimedWaiting.get() > 0 || untimedFailed.get()) return null
         val waiting = synchronized(waitingAt) { waitingAt.lastEntry()?.key } ?: Long.MIN_VALUE
         return maxOf(waiting, newestFailedAt.get()).takeIf { it != Long.MIN_VALUE }
     }

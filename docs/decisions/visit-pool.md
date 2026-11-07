@@ -231,7 +231,10 @@ dropped writer socket and re-read 7M, nearly all of them duplicates. `IngestAcks
 submission's `created_at` and reports the newest that failed or was still waiting; the walk is
 newest-first, so everything above that stamp was read and has its verdict, and it is recorded as a
 cut (`recordCut`, which still refuses a span that would bridge unwalked ground to the band). The
-next visit walks from that second down. `VisitPoolAckGateTest` pins it, and fails on the old rule.
+next visit walks from that second down. It pays where the walk opens or extends a band (a first
+visit, an older leg); a newer leg whose unconfirmed event sits above the held band still records
+nothing, since its confirmed part would not touch the band. `VisitPoolAckGateTest` pins it, and
+fails on the old rule.
 
 **A drained walk of a closed window records the window, events or none (issue 291).** Quartz's
 `SyncCoverage` records only kinds that produced events, and claims up to the newest one. On a

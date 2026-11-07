@@ -189,7 +189,8 @@ class RelayWriter(
     ): IEventStore.InsertOutcome? {
         if (limit == null) return null
         // JSON escapes a character into at most six, so most events need no serialization to fit.
-        val bound = FRAME_OVERHEAD + FIXED_FIELDS + 6L * (event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length + 3 } })
+        val strings = event.id.length + event.pubKey.length + event.sig.length + event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length } }
+        val bound = FRAME_OVERHEAD + FIXED_FIELDS + 6L * strings + event.tags.sumOf { tag -> 3L * tag.size + 3 }
         if (bound <= limit) return null
         return if (FRAME_OVERHEAD + event.toJson().length > limit) IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)") else null
     }
@@ -250,11 +251,10 @@ class RelayWriter(
         val toSend = ArrayList<Event>(events.size)
         val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
         val limit = messageLimit
+        // First, apart: a throw here must not strand ids already registered as in flight.
+        events.forEachIndexed { i, e -> outcomes[i] = tooLarge(e, limit) }
         events.forEachIndexed { i, e ->
-            tooLarge(e, limit)?.let {
-                outcomes[i] = it
-                return@forEachIndexed
-            }
+            if (outcomes[i] != null) return@forEachIndexed
             slots[e.id]?.let {
                 it.add(i)
                 return@forEachIndexed
@@ -387,8 +387,8 @@ class RelayWriter(
         /** `["EVENT",` and `]` around the event's JSON, as the relay measures a message. */
         private const val FRAME_OVERHEAD = 10
 
-        /** The JSON an event spends beyond its content and tags: keys, id, pubkey, sig, stamp and kind, with room to spare. */
-        private const val FIXED_FIELDS = 512
+        /** The JSON an event spends beyond its strings and tag punctuation: keys, stamp and kind, with room to spare. */
+        private const val FIXED_FIELDS = 256
 
         /** How often the relay's NIP-11 limit is read again, and how soon after a read that failed. */
         private const val LIMIT_REFRESH_MS = 600_000L

@@ -42,6 +42,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.Dns
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -362,11 +363,24 @@ class RelayWriterTest {
             val (forgedOutcome, genuineOutcome) =
                 runBlocking {
                     val first = async(Dispatchers.IO) { toSlow.batchInsert(listOf(forged)).single() }
-                    delay(100)
+                    // The forged copy on the socket first, so the genuine one finds it in flight.
+                    withTimeout(10_000) { while (toSlow.pendingInOutbox() == 0) delay(5) }
                     first to async(Dispatchers.IO) { toSlow.batchInsert(listOf(genuine)).single() }
                 }.let { (a, b) -> runBlocking { a.await() to b.await() } }
             assertEquals(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"), forgedOutcome)
             assertEquals(IEventStore.InsertOutcome.Accepted, genuineOutcome, "the genuine copy went out on its own")
         }
+    }
+
+    @Test
+    fun `an event whose padded signature puts it over the limit is refused here too`() {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (writer.statedMessageLimit() == null && System.nanoTime() < deadline) Thread.sleep(50)
+        val limit = assertNotNull(writer.statedMessageLimit())
+        val genuine = note(1)
+        // The id is checked against the content; the signature is left to the relay, so its length is anyone's.
+        val padded = Event(genuine.id, genuine.pubKey, genuine.createdAt, genuine.kind, genuine.tags, genuine.content, "f".repeat(3 * limit + 100))
+        val outcomes = runBlocking { writer.batchInsert(listOf(padded, note(2))) }
+        assertEquals(listOf(IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)"), IEventStore.InsertOutcome.Accepted), outcomes)
     }
 }
