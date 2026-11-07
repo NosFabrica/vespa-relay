@@ -242,7 +242,8 @@ fun main() {
 
     keyChecked.await()
     // Its own scope: the writer outlives the engine's, which is cancelled first at shutdown.
-    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()))
+    // One batch per ingest worker at once, all on this socket.
+    val writer = RelayWriter(dial, relayUrl, identity, CoroutineScope(Dispatchers.IO + SupervisorJob()), concurrentBatches = config.ingestConcurrency)
     val engine =
         SyncEngine(
             store,

@@ -704,7 +704,7 @@ live leg knows its own yield.
 including zero — a `VirtualMachineError` kills whichever thread allocates next
 and is caught by nobody, so the router carries on looking merely quiet, and four
 once passed unnoticed. `lostToStore` counts events that passed every check and
-could not be written; walks fetch them again (their band is not recorded), so it
+could not be written; walks fetch them again (their band stops above the newest), so it
 means a failing store rather than lost data, but a count that keeps climbing
 stalls the mirror, so the card draws it alone, loud, and only when non-zero. And `rejections` splits
 the largest number here into the reasons that make it readable: 20M rejected

@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.ingest
 import com.nosfabrica.vespa.relay.util.BootClock
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DEFAULT_STREAM_IN_FLIGHT_BYTES
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PublishResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.publishStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthSnapshot
@@ -40,13 +41,17 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -88,7 +93,12 @@ class RelayWriter(
     dns: Dns = Dns.SYSTEM,
     /** The log and boot-line prefix: the process writing, `sync` or `monitor`. */
     private val process: String = "sync",
+    /** How many [batchInsert]s may run at once: they share the socket's send queue, so its byte budget too. */
+    concurrentBatches: Int = 1,
 ) : StoreWriter {
+    /** Each batch's share of [SOCKET_IN_FLIGHT_BYTES]. Past OkHttp's queue it closes the socket, and the redial re-sends every unanswered event at once. */
+    private val inFlightBytes = SOCKET_IN_FLIGHT_BYTES / concurrentBatches.coerceAtLeast(1)
+
     // Local and long-lived: no Tor, no dispatcher budget to share with the upstream sockets.
     private val okhttp =
         OkHttpClient
@@ -102,6 +112,19 @@ class RelayWriter(
 
     private val authenticator =
         RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template.signedFor(relay))) }
+
+    /**
+     * Ids on the socket awaiting the relay's verdict. A copy in a concurrent batch waits for it rather
+     * than sending again: Quartz's outbox counts every unanswered send of an id as a retry and gives
+     * the event up on the fourth, which a slow relay and the same event from several upstreams reach.
+     */
+    private val inFlight = ConcurrentHashMap<String, Sent>()
+
+    /** One id on the socket: the signature that went out, since a copy may carry another, and the relay's verdict. */
+    private class Sent(
+        val sig: String,
+        val verdict: CompletableDeferred<IEventStore.InsertOutcome> = CompletableDeferred(),
+    )
 
     /** Batches written before the socket was signed in, and so through the relay's publishers' lane. */
     val unsignedBatches = AtomicLong()
@@ -138,6 +161,39 @@ class RelayWriter(
     }
 
     private val redialing = scope.launch { redial() }
+
+    /**
+     * The relay's `max_message_length`, while its NIP-11 document states one. A larger EVENT is
+     * answered here in the relay's own words: past three times it, the relay drops the socket
+     * instead, and the redial re-sends it with every other unanswered event until all are given up.
+     */
+    @Volatile
+    private var messageLimit: Int? = null
+
+    /** The relay's stated `max_message_length` as last read; null until its NIP-11 document has answered with one. */
+    fun statedMessageLimit(): Int? = messageLimit
+
+    private val limitWatch = scope.launch { watchMessageLimit() }
+
+    private suspend fun watchMessageLimit() {
+        while (true) {
+            withContext(Dispatchers.IO) { relayMaxMessageLength(dial) }?.let { messageLimit = it }
+            delay(if (messageLimit == null) LIMIT_RETRY_MS else LIMIT_REFRESH_MS)
+        }
+    }
+
+    /** The relay's refusal for [event], when its EVENT frame is over [limit]; null when it fits. */
+    private fun tooLarge(
+        event: Event,
+        limit: Int?,
+    ): IEventStore.InsertOutcome? {
+        if (limit == null) return null
+        // JSON escapes a character into at most six, so most events need no serialization to fit.
+        val strings = event.id.length + event.pubKey.length + event.sig.length + event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length } }
+        val bound = FRAME_OVERHEAD + FIXED_FIELDS + 6L * strings + event.tags.sumOf { tag -> 3L * tag.size + 3 }
+        if (bound <= limit) return null
+        return if (FRAME_OVERHEAD + event.toJson().length > limit) IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)") else null
+    }
 
     /**
      * Dials the relay again every [redialMs] while it is down, past the client's back-off, which a name
@@ -188,17 +244,68 @@ class RelayWriter(
         // Unsigned only on an open socket: with the relay down nothing goes out on either lane, and
         // the batch fails (and withholds its band) on its own.
         if (!awaitSignedIn() && client.getOrCreateRelay(dial).isConnected()) unsigned()
-        // Copies of one id share the relay's one verdict, so each id keeps the slots it fills, in order.
-        val slots = HashMap<String, ArrayDeque<Int>>(events.size)
-        events.forEachIndexed { i, e -> slots.getOrPut(e.id) { ArrayDeque(1) }.addLast(i) }
+        // Copies of one id share the relay's one verdict, so each id keeps the slots it fills.
+        val slots = HashMap<String, MutableList<Int>>(events.size)
+        val owned = HashMap<String, Sent>(events.size)
+        val joined = ArrayList<Pair<Int, Sent>>()
+        val toSend = ArrayList<Event>(events.size)
         val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
-        client.publishStream(dial, events.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs) { event, result ->
-            synchronized(outcomes) {
-                slots[event.id]?.removeFirstOrNull()?.let { outcomes[it] = outcomeOf(result) }
+        val limit = messageLimit
+        // First, apart: a throw here must not strand ids already registered as in flight.
+        events.forEachIndexed { i, e -> outcomes[i] = tooLarge(e, limit) }
+        events.forEachIndexed { i, e ->
+            if (outcomes[i] != null) return@forEachIndexed
+            slots[e.id]?.let {
+                it.add(i)
+                return@forEachIndexed
+            }
+            val mine = Sent(e.sig)
+            val theirs = inFlight.putIfAbsent(e.id, mine)
+            if (theirs != null) {
+                joined += i to theirs
+            } else {
+                owned[e.id] = mine
+                slots[e.id] = mutableListOf(i)
+                toSend += e
             }
         }
-        // A stalled stream stops reading its input, so the events it never sent have no verdict.
+        try {
+            if (toSend.isNotEmpty()) {
+                client.publishStream(dial, toSend.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs, maxInFlightBytes = inFlightBytes) { event, result ->
+                    val outcome = outcomeOf(result)
+                    synchronized(outcomes) { slots[event.id]?.forEach { outcomes[it] = outcome } }
+                    owned[event.id]?.let { settle(event.id, it, outcome) }
+                }
+            }
+        } finally {
+            // A stalled stream stops reading its input, so the events it never sent have no verdict.
+            for ((id, waiting) in owned) settle(id, waiting, NOT_SENT)
+        }
+        // A copy that waited hears what the relay answers a second send of a stored event, a duplicate.
+        // Any other verdict holds only for the same bytes: a forged copy's refusal is not the genuine one's.
+        val ownSend = ArrayList<Int>()
+        for ((i, theirs) in joined) {
+            val verdict = theirs.verdict.await()
+            when {
+                verdict == IEventStore.InsertOutcome.Accepted -> outcomes[i] = DUPLICATE
+                events[i].sig == theirs.sig || verdict.isDuplicate() -> outcomes[i] = verdict
+                else -> ownSend += i
+            }
+        }
+        if (ownSend.isNotEmpty()) batchInsert(ownSend.map { events[it] }).forEachIndexed { k, outcome -> outcomes[ownSend[k]] = outcome }
         return outcomes.map { it ?: NOT_SENT }
+    }
+
+    private fun IEventStore.InsertOutcome.isDuplicate() = this is IEventStore.InsertOutcome.Rejected && reason.startsWith(RejectionReason.PREFIX_DUPLICATE)
+
+    /** Ends one id's wait for every batch holding a copy; the first verdict stands. */
+    private fun settle(
+        id: String,
+        sent: Sent,
+        outcome: IEventStore.InsertOutcome,
+    ) {
+        inFlight.remove(id, sent)
+        sent.verdict.complete(outcome)
     }
 
     /** When the last unsigned batch was logged; a stuck sign-in would otherwise log every batch. */
@@ -247,6 +354,7 @@ class RelayWriter(
 
     override fun close() {
         redialing.cancel()
+        limitWatch.cancel()
         runCatching { client.releaseConnection(dial) }
         runCatching { authenticator.destroy() }
         runCatching { client.close() }
@@ -276,7 +384,22 @@ class RelayWriter(
          */
         const val IN_FLIGHT = 2_000
 
+        /** `["EVENT",` and `]` around the event's JSON, as the relay measures a message. */
+        private const val FRAME_OVERHEAD = 10
+
+        /** The JSON an event spends beyond its strings and tag punctuation: keys, stamp and kind, with room to spare. */
+        private const val FIXED_FIELDS = 256
+
+        /** How often the relay's NIP-11 limit is read again, and how soon after a read that failed. */
+        private const val LIMIT_REFRESH_MS = 600_000L
+        private const val LIMIT_RETRY_MS = 2_000L
+
+        /** Unanswered EVENT bytes on the socket across every batch: Quartz's half of OkHttp's 16 MiB send queue. */
+        const val SOCKET_IN_FLIGHT_BYTES = DEFAULT_STREAM_IN_FLIGHT_BYTES
+
         private val NOT_SENT = IEventStore.InsertOutcome.Failed("error: the relay went silent before this event was sent")
+
+        private val DUPLICATE = IEventStore.InsertOutcome.Rejected(RejectionReason.DUPLICATE)
 
         /** OK false prefixes that say "not now" rather than "never": the write is retried, not suppressed. */
         private val TRANSIENT = listOf("error:", "rate-limited:", "auth-required:")

@@ -25,7 +25,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.TreeMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The outcomes of one walk's submissions, so its band is recorded only once the store has
@@ -43,11 +46,32 @@ class IngestAcks {
     private val pending = MutableStateFlow(0)
     private val failed = AtomicInteger()
 
-    /** The callback for one submission. Call it once per submit, before the submit. */
-    fun track(): (IEventStore.InsertOutcome) -> Unit {
+    /** `created_at` of each timed submission still waiting, as counts, so the newest is one lookup. */
+    private val waitingAt = TreeMap<Long, Int>()
+
+    private val newestFailedAt = AtomicLong(Long.MIN_VALUE)
+
+    /** Untimed submissions waiting, and whether one failed: either leaves no bound to report. */
+    private val untimedWaiting = AtomicInteger()
+    private val untimedFailed = AtomicBoolean()
+
+    /**
+     * The callback for one submission. Call it once per submit, before the submit. [createdAt]
+     * lets a wait that ends short say where its unconfirmed ground begins ([Verdicts]).
+     */
+    fun track(createdAt: Long? = null): (IEventStore.InsertOutcome) -> Unit {
+        if (createdAt == null) untimedWaiting.incrementAndGet() else synchronized(waitingAt) { waitingAt.merge(createdAt, 1, Int::plus) }
         pending.update { it + 1 }
         return { outcome ->
-            if (outcome is IEventStore.InsertOutcome.Failed) failed.incrementAndGet()
+            if (outcome is IEventStore.InsertOutcome.Failed) {
+                failed.incrementAndGet()
+                if (createdAt == null) untimedFailed.set(true) else newestFailedAt.accumulateAndGet(createdAt, ::maxOf)
+            }
+            if (createdAt == null) {
+                untimedWaiting.decrementAndGet()
+            } else {
+                synchronized(waitingAt) { waitingAt.computeIfPresent(createdAt) { _, n -> (n - 1).takeIf { it > 0 } } }
+            }
             pending.update { it - 1 }
         }
     }
@@ -65,13 +89,24 @@ class IngestAcks {
         val left = pending.value
         val failures = failed.get()
         return when {
-            left > 0 -> Verdicts.Unanswered(left)
-            failures > 0 -> Verdicts.Failed(failures)
+            left > 0 -> Verdicts.Unanswered(left, newestUnconfirmed())
+            failures > 0 -> Verdicts.Failed(failures, newestUnconfirmed())
             else -> Verdicts.Stored
         }
     }
 
-    /** How an [awaitWithin] ended. */
+    /** The newest `created_at` that failed or is still waiting; null when an untimed one is either, or none is. */
+    private fun newestUnconfirmed(): Long? {
+        // Waiting first: an untimed outcome records its failure before it stops waiting.
+        if (untimedWaiting.get() > 0 || untimedFailed.get()) return null
+        val waiting = synchronized(waitingAt) { waitingAt.lastEntry()?.key } ?: Long.MIN_VALUE
+        return maxOf(waiting, newestFailedAt.get()).takeIf { it != Long.MIN_VALUE }
+    }
+
+    /**
+     * How an [awaitWithin] ended. A short one carries [Failed.newestUnconfirmed]: every timed
+     * submission newer than it was stored or refused for good.
+     */
     sealed interface Verdicts {
         /** Every submission was stored or refused for good. */
         data object Stored : Verdicts
@@ -79,11 +114,13 @@ class IngestAcks {
         /** Every submission was answered, and [count] of them failed. */
         class Failed(
             val count: Int,
+            val newestUnconfirmed: Long? = null,
         ) : Verdicts
 
         /** [count] submissions had no answer at the deadline. */
         class Unanswered(
             val count: Int,
+            val newestUnconfirmed: Long? = null,
         ) : Verdicts
     }
 }

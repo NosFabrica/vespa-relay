@@ -224,6 +224,18 @@ store failed to take records nothing and counts in `bandsWithheld`, and the next
 again. The wait is one ingest round trip per chunk, since a chunk records once at its end, not per
 page. `VisitPoolAckGateTest` pins both directions, and fails on the old order.
 
+**A walk the store answers short records the ground above its newest unconfirmed event.** One
+event without a verdict withheld the whole walk's band, so the next visit re-paged the window from
+its top. On a 24h import over 1,408 prime relays, one walk of a NIP-85 relay lost 4,944 events to a
+dropped writer socket and re-read 7M, nearly all of them duplicates. `IngestAcks` now takes each
+submission's `created_at` and reports the newest that failed or was still waiting; the walk is
+newest-first, so everything above that stamp was read and has its verdict, and it is recorded as a
+cut (`recordCut`, which still refuses a span that would bridge unwalked ground to the band). The
+next visit walks from that second down. It pays where the walk opens or extends a band (a first
+visit, an older leg); a newer leg whose unconfirmed event sits above the held band still records
+nothing, since its confirmed part would not touch the band. `VisitPoolAckGateTest` pins it, and
+fails on the old rule.
+
 **A drained walk of a closed window records the window, events or none (issue 291).** Quartz's
 `SyncCoverage` records only kinds that produced events, and claims up to the newest one. On a
 past-only stream (`backfillMutesReports`, kinds 1984 + 10000, an `until` in the past) both failed:

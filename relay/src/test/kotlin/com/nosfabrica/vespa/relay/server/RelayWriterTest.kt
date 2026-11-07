@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
@@ -36,8 +37,12 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.Dns
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -50,6 +55,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -260,5 +266,121 @@ class RelayWriterTest {
         } finally {
             dead.close()
         }
+    }
+
+    /** A relay whose mirror lane takes [perEventMs] over each event, so a busy writer's frames queue up on its socket. */
+    private fun <T> withSlowRelay(
+        perEventMs: Long,
+        concurrentBatches: Int,
+        body: (RelayWriter) -> T,
+    ): T {
+        val laneStore = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+        val slow =
+            object : EventIngest {
+                override suspend fun submit(
+                    event: Event,
+                    skipVerify: Boolean,
+                    onComplete: (IEventStore.InsertOutcome) -> Unit,
+                ) {
+                    delay(perEventMs)
+                    // The production lane verifies what the sync left to it.
+                    if (!event.verify()) return onComplete(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"))
+                    onComplete(laneStore.batchInsert(listOf(event)).single())
+                }
+
+                override fun hasBacklog() = false
+
+                override fun close() = Unit
+            }
+        val slowRelay = NostrRelayServer(laneStore, relayUrl, mirrorLane = MirrorLane(relayKey.pubKey, slow))
+        val slowServer = serveRelay(relay = slowRelay, port = 0, nip11 = Nip11Info(), wait = false)
+        val slowPort =
+            runBlocking {
+                slowServer.engine
+                    .resolvedConnectors()
+                    .first()
+                    .port
+            }
+        val toSlow = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$slowPort"), relayUrl, relayKey, scope, concurrentBatches = concurrentBatches)
+        try {
+            runBlocking { toSlow.batchInsert(listOf(note(0))) }
+            return body(toSlow)
+        } finally {
+            toSlow.close()
+            slowServer.stop(0, 0)
+            slowRelay.close()
+        }
+    }
+
+    @Test
+    fun `copies of one event in concurrent batches all hear the relay's verdict however slowly it answers`() {
+        // The same event from several upstreams lands in both ingest workers' batches before the relay answers.
+        withSlowRelay(perEventMs = 500, concurrentBatches = 6) { toSlow ->
+            val shared = note(1)
+            val outcomes =
+                runBlocking {
+                    (1..6).map { n -> async(Dispatchers.IO) { toSlow.batchInsert(listOf(shared, note(10 + n))) } }.awaitAll().flatten()
+                }
+            assertTrue(outcomes.none { it is IEventStore.InsertOutcome.Failed }, "no copy is lost to the outbox: $outcomes")
+            assertEquals(7, outcomes.count { it == IEventStore.InsertOutcome.Accepted }, "the event once, and each batch's own: $outcomes")
+            assertEquals(0, toSlow.pendingInOutbox())
+        }
+    }
+
+    @Test
+    fun `concurrent batches of large events stay inside the socket's send queue`() {
+        // OkHttp closes a socket whose queue passes 16 MiB, and the redial re-sends everything unanswered at once.
+        val big = "x".repeat(120_000)
+        withSlowRelay(perEventMs = 10, concurrentBatches = 3) { toSlow ->
+            val outcomes =
+                runBlocking {
+                    (0 until 3).map { b -> async(Dispatchers.IO) { toSlow.batchInsert((1..100).map { someone.sign(1_700_000_000L + b * 100 + it, 1, emptyArray(), big + "$b-$it") }) } }.awaitAll().flatten()
+                }
+            assertEquals(List(300) { IEventStore.InsertOutcome.Accepted }, outcomes)
+        }
+    }
+
+    @Test
+    fun `an event over the relay's message limit is refused here and costs the socket nothing`() {
+        // Past three times the limit the relay drops the socket, and the redial re-sends it with everything unanswered.
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (writer.statedMessageLimit() == null && System.nanoTime() < deadline) Thread.sleep(50)
+        val limit = assertNotNull(writer.statedMessageLimit(), "the relay's NIP-11 limit was read")
+        val huge = someone.sign<Event>(1_700_000_000L, 1, Array(100) { arrayOf("t", "x".repeat(10_000) + it) }, "huge")
+        val outcomes = runBlocking { writer.batchInsert(listOf(note(1), huge, note(2))) }
+        assertEquals(
+            listOf(IEventStore.InsertOutcome.Accepted, IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)"), IEventStore.InsertOutcome.Accepted),
+            outcomes,
+        )
+        assertEquals(setOf(note(1).id, note(2).id), stored())
+    }
+
+    @Test
+    fun `a genuine copy is not refused for a forged one sent ahead of it`() {
+        withSlowRelay(perEventMs = 500, concurrentBatches = 2) { toSlow ->
+            val genuine = note(1)
+            val forged = Event(genuine.id, genuine.pubKey, genuine.createdAt, genuine.kind, genuine.tags, genuine.content, "f".repeat(128))
+            val (forgedOutcome, genuineOutcome) =
+                runBlocking {
+                    val first = async(Dispatchers.IO) { toSlow.batchInsert(listOf(forged)).single() }
+                    // The forged copy on the socket first, so the genuine one finds it in flight.
+                    withTimeout(10_000) { while (toSlow.pendingInOutbox() == 0) delay(5) }
+                    first to async(Dispatchers.IO) { toSlow.batchInsert(listOf(genuine)).single() }
+                }.let { (a, b) -> runBlocking { a.await() to b.await() } }
+            assertEquals(IEventStore.InsertOutcome.Rejected("invalid: bad signature or id"), forgedOutcome)
+            assertEquals(IEventStore.InsertOutcome.Accepted, genuineOutcome, "the genuine copy went out on its own")
+        }
+    }
+
+    @Test
+    fun `an event whose padded signature puts it over the limit is refused here too`() {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (writer.statedMessageLimit() == null && System.nanoTime() < deadline) Thread.sleep(50)
+        val limit = assertNotNull(writer.statedMessageLimit())
+        val genuine = note(1)
+        // The id is checked against the content; the signature is left to the relay, so its length is anyone's.
+        val padded = Event(genuine.id, genuine.pubKey, genuine.createdAt, genuine.kind, genuine.tags, genuine.content, "f".repeat(3 * limit + 100))
+        val outcomes = runBlocking { writer.batchInsert(listOf(padded, note(2))) }
+        assertEquals(listOf(IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)"), IEventStore.InsertOutcome.Accepted), outcomes)
     }
 }
