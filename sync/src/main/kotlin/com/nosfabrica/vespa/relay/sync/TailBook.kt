@@ -108,11 +108,14 @@ internal class TailBook(
 
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
-    /** Units whose tail was just evicted: the prompt visit catches up and does not evict in turn. */
-    private val evicted = ConcurrentHashMap.newKeySet<VisitKey>()
+    /** Units whose tail the book just closed and requeued: the prompt visit catches up and does not evict in turn. */
+    private val requeued = ConcurrentHashMap.newKeySet<VisitKey>()
 
     /** Tails closed to hand their permit to a unit with more yield, since boot. */
     val evictions = AtomicLong()
+
+    /** Tails closed after [VisitPool.TAIL_SILENCE_CLOSE_MS] without an event, since boot. */
+    val silenced = AtomicLong()
 
     val size: Int get() = tails.size
 
@@ -132,8 +135,8 @@ internal class TailBook(
         nowMs: Long,
     ): Double? = yields[url]?.foldedScore(nowMs)
 
-    /** Whether [key]'s tail was just evicted, consuming the mark: its prompt visit must not evict in turn. */
-    fun takeEvicted(key: VisitKey): Boolean = evicted.remove(key)
+    /** Whether [key]'s tail was just closed and requeued, consuming the mark: its prompt visit must not evict in turn. */
+    fun takeRequeued(key: VisitKey): Boolean = requeued.remove(key)
 
     /** Drops the tails and marks of units [wanted] no longer holds, and the yields of [goneUrls]. */
     fun retain(
@@ -143,7 +146,7 @@ internal class TailBook(
         // Per unit: a relay can leave one stream's roster and stay on another's.
         for (key in tails.keys.filter { !wanted(it) }) drop(key)
         for (url in goneUrls) yields.remove(url)
-        evicted.removeIf { !wanted(it) }
+        requeued.removeIf { !wanted(it) }
     }
 
     /**
@@ -276,20 +279,50 @@ internal class TailBook(
         // Another path dropped it first and released its permit; ask for one like anyone else.
         val handedOver = detach(weakest) ?: return limits.tryHold(candidate.stream, VisitPool.POOL_LIVE)
         evictions.incrementAndGet()
-        if (wanted(weakest)) {
-            evicted += weakest
-            queue.offer(weakest)
-        }
+        requeue(weakest)
         return handedOver
+    }
+
+    /**
+     * Closes every tail that has delivered nothing for [VisitPool.TAIL_SILENCE_CLOSE_MS], so a relay
+     * that keeps the socket up and sends nothing cannot hold a live permit for hours. Each unit is
+     * requeued: its visit pages over the silence, in case the subscription died, and opens a fresh tail.
+     */
+    fun closeSilent(nowMs: Long = System.currentTimeMillis()) {
+        for ((key, tail) in tails) {
+            if (nowMs - tail.lastEventMs < VisitPool.TAIL_SILENCE_CLOSE_MS) continue
+            // Our own full ingest queue silences the socket; that tail is backpressure, not a quiet relay.
+            if (ingest.parkedOn(key.url) > 0) continue
+            // Only this tail: one re-opened since the read is fresh.
+            val hold = detach(key, tail) ?: continue
+            hold.release()
+            silenced.incrementAndGet()
+            requeue(key)
+        }
+    }
+
+    private fun requeue(key: VisitKey) {
+        if (!wanted(key)) return
+        requeued += key
+        queue.offer(key)
     }
 
     fun drop(key: VisitKey) {
         detach(key)?.release()
     }
 
-    /** Takes [key]'s tail down and returns its live permit unreleased, or null when none was up. */
-    private fun detach(key: VisitKey): PoolLimits.Hold? {
-        val tail = tails.remove(key) ?: return null
+    /** Takes [key]'s tail down, or only [expected] when given, and returns its live permit unreleased, or null when none was. */
+    private fun detach(
+        key: VisitKey,
+        expected: Tail? = null,
+    ): PoolLimits.Hold? {
+        val tail =
+            if (expected == null) {
+                tails.remove(key) ?: return null
+            } else {
+                if (!tails.remove(key, expected)) return null
+                expected
+            }
         reads.untail(tail.subId)
         sockets.release(key.url)
         // The revisit timer was armed on the tailed cadence; let the next visit arm the untailed one.

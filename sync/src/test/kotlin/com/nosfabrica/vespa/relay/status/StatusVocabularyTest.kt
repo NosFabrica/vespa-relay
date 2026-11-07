@@ -313,6 +313,7 @@ class StatusVocabularyTest {
                         "negentropyRefused" to 2,
                         "retracted" to 2,
                         "liveEvicted" to 1,
+                        "liveSilenced" to 1,
                         "poolReceived" to 4_000,
                         "narrowedRelays" to 9,
                         "unreadableUnits" to 2,

@@ -307,6 +307,7 @@ function processorFact(p) {
     // Not a backlog: asks these relays refuse as policy, skipped until the verdict lapses.
     if (p.unreadableUnits) add(`${fmt(p.unreadableUnits)} refuse an ask as policy`, "unreadableUnits");
     if (p.liveEvicted) add(`${fmt(p.liveEvicted)} live subscription(s) rotated out`, "liveEvicted");
+    if (p.liveSilenced) add(`${fmt(p.liveSilenced)} closed for silence`, "liveSilenced");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;
   }

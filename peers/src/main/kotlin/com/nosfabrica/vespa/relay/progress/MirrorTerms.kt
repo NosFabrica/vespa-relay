@@ -637,6 +637,14 @@ internal val MIRROR_TERMS: JsonObject =
                 "falls back to the untailed revisit cadence; nothing about its certificate changes.",
         )
         term(
+            "liveSilenced",
+            "Live subscriptions closed because the relay sent nothing on them for 15 minutes, counted since " +
+                "boot. A relay that keeps the socket up can stop serving a subscription without closing it, " +
+                "and nothing else would notice. The unit is requeued promptly: its visit pages over the silence " +
+                "and opens a fresh subscription, so a relay that is merely quiet climbs this by about four an " +
+                "hour, and one climbing it while its visits keep finding events has a subscription that is dead.",
+        )
+        term(
             "visitsRun",
             "Visits completed since boot — catch-up, audit where due, heal drain, tail. Counted in the pool's " +
                 "units, so one relay three streams want contributes three: read it beside `rosterVisits` for " +
