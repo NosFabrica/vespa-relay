@@ -36,7 +36,10 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.Dns
 import java.net.InetAddress
@@ -259,6 +262,52 @@ class RelayWriterTest {
             assertEquals(0L, dead.unsignedBatches.get(), "nothing went out on the publishers' lane: nothing went out at all")
         } finally {
             dead.close()
+        }
+    }
+
+    @Test
+    fun `copies of one event in concurrent batches all hear the relay's verdict however slowly it answers`() {
+        // The same event from several upstreams lands in both ingest workers' batches before the relay answers.
+        val laneStore = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+        val slow =
+            object : EventIngest {
+                override suspend fun submit(
+                    event: Event,
+                    skipVerify: Boolean,
+                    onComplete: (IEventStore.InsertOutcome) -> Unit,
+                ) {
+                    delay(500)
+                    onComplete(laneStore.batchInsert(listOf(event)).single())
+                }
+
+                override fun hasBacklog() = false
+
+                override fun close() = Unit
+            }
+        val slowRelay = NostrRelayServer(laneStore, relayUrl, mirrorLane = MirrorLane(relayKey.pubKey, slow))
+        val slowServer = serveRelay(relay = slowRelay, port = 0, nip11 = Nip11Info(), wait = false)
+        val slowPort =
+            runBlocking {
+                slowServer.engine
+                    .resolvedConnectors()
+                    .first()
+                    .port
+            }
+        val toSlow = RelayWriter(RelayUrlNormalizer.normalize("ws://127.0.0.1:$slowPort"), relayUrl, relayKey, scope)
+        try {
+            runBlocking { toSlow.batchInsert(listOf(note(0))) }
+            val shared = note(1)
+            val outcomes =
+                runBlocking {
+                    (1..6).map { n -> async(Dispatchers.IO) { toSlow.batchInsert(listOf(shared, note(10 + n))) } }.awaitAll().flatten()
+                }
+            assertTrue(outcomes.none { it is IEventStore.InsertOutcome.Failed }, "no copy is lost to the outbox: $outcomes")
+            assertEquals(7, outcomes.count { it == IEventStore.InsertOutcome.Accepted }, "the event once, and each batch's own: $outcomes")
+            assertEquals(0, toSlow.pendingInOutbox())
+        } finally {
+            toSlow.close()
+            slowServer.stop(0, 0)
+            slowRelay.close()
         }
     }
 }

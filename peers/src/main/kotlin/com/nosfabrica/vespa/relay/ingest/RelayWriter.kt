@@ -40,6 +40,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asFlow
@@ -47,6 +48,7 @@ import kotlinx.coroutines.launch
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -102,6 +104,13 @@ class RelayWriter(
 
     private val authenticator =
         RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template.signedFor(relay))) }
+
+    /**
+     * Ids on the socket awaiting the relay's verdict. A copy in a concurrent batch waits for it rather
+     * than sending again: Quartz's outbox counts every unanswered send of an id as a retry and gives
+     * the event up on the fourth, which a slow relay and the same event from several upstreams reach.
+     */
+    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<IEventStore.InsertOutcome>>()
 
     /** Batches written before the socket was signed in, and so through the relay's publishers' lane. */
     val unsignedBatches = AtomicLong()
@@ -188,17 +197,52 @@ class RelayWriter(
         // Unsigned only on an open socket: with the relay down nothing goes out on either lane, and
         // the batch fails (and withholds its band) on its own.
         if (!awaitSignedIn() && client.getOrCreateRelay(dial).isConnected()) unsigned()
-        // Copies of one id share the relay's one verdict, so each id keeps the slots it fills, in order.
-        val slots = HashMap<String, ArrayDeque<Int>>(events.size)
-        events.forEachIndexed { i, e -> slots.getOrPut(e.id) { ArrayDeque(1) }.addLast(i) }
-        val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
-        client.publishStream(dial, events.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs) { event, result ->
-            synchronized(outcomes) {
-                slots[event.id]?.removeFirstOrNull()?.let { outcomes[it] = outcomeOf(result) }
+        // Copies of one id share the relay's one verdict, so each id keeps the slots it fills.
+        val slots = HashMap<String, MutableList<Int>>(events.size)
+        val owned = HashMap<String, CompletableDeferred<IEventStore.InsertOutcome>>(events.size)
+        val joined = ArrayList<Pair<Int, CompletableDeferred<IEventStore.InsertOutcome>>>()
+        val toSend = ArrayList<Event>(events.size)
+        events.forEachIndexed { i, e ->
+            slots[e.id]?.let {
+                it.add(i)
+                return@forEachIndexed
+            }
+            val mine = CompletableDeferred<IEventStore.InsertOutcome>()
+            val theirs = inFlight.putIfAbsent(e.id, mine)
+            if (theirs != null) {
+                joined += i to theirs
+            } else {
+                owned[e.id] = mine
+                slots[e.id] = mutableListOf(i)
+                toSend += e
             }
         }
-        // A stalled stream stops reading its input, so the events it never sent have no verdict.
+        val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
+        try {
+            if (toSend.isNotEmpty()) {
+                client.publishStream(dial, toSend.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs) { event, result ->
+                    val outcome = outcomeOf(result)
+                    synchronized(outcomes) { slots[event.id]?.forEach { outcomes[it] = outcome } }
+                    owned[event.id]?.let { settle(event.id, it, outcome) }
+                }
+            }
+        } finally {
+            // A stalled stream stops reading its input, so the events it never sent have no verdict.
+            for ((id, waiting) in owned) settle(id, waiting, NOT_SENT)
+        }
+        // The relay answers a second send of a stored event as a duplicate; a copy that waited hears the same.
+        for ((i, waiting) in joined) outcomes[i] = waiting.await().let { if (it == IEventStore.InsertOutcome.Accepted) DUPLICATE else it }
         return outcomes.map { it ?: NOT_SENT }
+    }
+
+    /** Ends one id's wait for every batch holding a copy; the first verdict stands. */
+    private fun settle(
+        id: String,
+        waiting: CompletableDeferred<IEventStore.InsertOutcome>,
+        outcome: IEventStore.InsertOutcome,
+    ) {
+        inFlight.remove(id, waiting)
+        waiting.complete(outcome)
     }
 
     /** When the last unsigned batch was logged; a stuck sign-in would otherwise log every batch. */
@@ -277,6 +321,8 @@ class RelayWriter(
         const val IN_FLIGHT = 2_000
 
         private val NOT_SENT = IEventStore.InsertOutcome.Failed("error: the relay went silent before this event was sent")
+
+        private val DUPLICATE = IEventStore.InsertOutcome.Rejected(RejectionReason.DUPLICATE)
 
         /** OK false prefixes that say "not now" rather than "never": the write is retried, not suppressed. */
         private val TRANSIENT = listOf("error:", "rate-limited:", "auth-required:")
