@@ -23,7 +23,8 @@ package com.nosfabrica.vespa.relay.ingest
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.URI
 import java.net.http.HttpClient
@@ -99,7 +100,27 @@ sealed interface RelaySelf {
  * holding a different `RELAY_NSEC` would write everything through the publishers' lane and never
  * know; and a relay that states no key runs no lane and no `MirrorDelete` hook at all.
  */
-fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
+fun relaySelf(dial: NormalizedRelayUrl): RelaySelf {
+    val doc = relayDocument(dial) ?: return RelaySelf.Unreachable
+    return doc["self"]
+        ?.jsonPrimitive
+        ?.content
+        ?.lowercase()
+        ?.let { RelaySelf.Key(it) } ?: RelaySelf.NoKey
+}
+
+/** The relay's NIP-11 `limitation.max_message_length`, or null when its document cannot be read or states none. */
+fun relayMaxMessageLength(dial: NormalizedRelayUrl): Int? =
+    relayDocument(dial)
+        ?.get("limitation")
+        ?.let { it as? JsonObject }
+        ?.get("max_message_length")
+        ?.jsonPrimitive
+        ?.intOrNull
+        ?.takeIf { it > 0 }
+
+/** The NIP-11 document served on the http(s) twin of [dial], or null when it does not answer with one. */
+private fun relayDocument(dial: NormalizedRelayUrl): JsonObject? =
     try {
         val request =
             HttpRequest
@@ -109,25 +130,15 @@ fun relaySelf(dial: NormalizedRelayUrl): RelaySelf =
                 .GET()
                 .build()
         val response = nip11Http.send(request, HttpResponse.BodyHandlers.ofString())
-        if (response.statusCode() != 200) {
-            RelaySelf.Unreachable
-        } else {
-            Json
-                .parseToJsonElement(response.body())
-                .jsonObject["self"]
-                ?.jsonPrimitive
-                ?.content
-                ?.lowercase()
-                ?.let { RelaySelf.Key(it) } ?: RelaySelf.NoKey
-        }
+        if (response.statusCode() != 200) null else Json.parseToJsonElement(response.body()) as? JsonObject
     } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
-        RelaySelf.Unreachable
+        null
     } catch (_: Exception) {
-        RelaySelf.Unreachable
+        null
     }
 
-/** One client for every [relaySelf]: the boot asks four times a second while its relay starts, and each client is a selector thread. */
+/** One client for every [relayDocument]: the boot asks four times a second while its relay starts, and each client is a selector thread. */
 private val nip11Http: HttpClient by lazy { HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build() }
 
 /** What the relay's stated key means for this process, which holds the relay's `RELAY_NSEC`. */

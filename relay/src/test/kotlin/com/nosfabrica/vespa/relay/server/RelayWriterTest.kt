@@ -53,6 +53,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -333,5 +334,20 @@ class RelayWriterTest {
                 }
             assertEquals(List(300) { IEventStore.InsertOutcome.Accepted }, outcomes)
         }
+    }
+
+    @Test
+    fun `an event over the relay's message limit is refused here and costs the socket nothing`() {
+        // Past three times the limit the relay drops the socket, and the redial re-sends it with everything unanswered.
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (writer.statedMessageLimit() == null && System.nanoTime() < deadline) Thread.sleep(50)
+        val limit = assertNotNull(writer.statedMessageLimit(), "the relay's NIP-11 limit was read")
+        val huge = someone.sign<Event>(1_700_000_000L, 1, Array(100) { arrayOf("t", "x".repeat(10_000) + it) }, "huge")
+        val outcomes = runBlocking { writer.batchInsert(listOf(note(1), huge, note(2))) }
+        assertEquals(
+            listOf(IEventStore.InsertOutcome.Accepted, IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)"), IEventStore.InsertOutcome.Accepted),
+            outcomes,
+        )
+        assertEquals(setOf(note(1).id, note(2).id), stored())
     }
 }

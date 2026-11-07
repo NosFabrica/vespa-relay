@@ -43,9 +43,11 @@ import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import java.time.Duration
@@ -155,6 +157,38 @@ class RelayWriter(
     private val redialing = scope.launch { redial() }
 
     /**
+     * The relay's `max_message_length`, while its NIP-11 document states one. A larger EVENT is
+     * answered here in the relay's own words: past three times it, the relay drops the socket
+     * instead, and the redial re-sends it with every other unanswered event until all are given up.
+     */
+    @Volatile
+    private var messageLimit: Int? = null
+
+    /** The relay's stated `max_message_length` as last read; null until its NIP-11 document has answered with one. */
+    fun statedMessageLimit(): Int? = messageLimit
+
+    private val limitWatch = scope.launch { watchMessageLimit() }
+
+    private suspend fun watchMessageLimit() {
+        while (true) {
+            withContext(Dispatchers.IO) { relayMaxMessageLength(dial) }?.let { messageLimit = it }
+            delay(if (messageLimit == null) LIMIT_RETRY_MS else LIMIT_REFRESH_MS)
+        }
+    }
+
+    /** The relay's refusal for [event], when its EVENT frame is over [limit]; null when it fits. */
+    private fun tooLarge(
+        event: Event,
+        limit: Int?,
+    ): IEventStore.InsertOutcome? {
+        if (limit == null) return null
+        // JSON escapes a character into at most six, so most events need no serialization to fit.
+        val bound = FRAME_OVERHEAD + 6L * (event.content.length + event.tags.sumOf { tag -> tag.sumOf { it.length + 3 } })
+        if (bound <= limit) return null
+        return if (FRAME_OVERHEAD + event.toJson().length > limit) IEventStore.InsertOutcome.Rejected("invalid: message too large (max $limit)") else null
+    }
+
+    /**
      * Dials the relay again every [redialMs] while it is down, past the client's back-off, which a name
      * that stops resolving (the relay's container down, on compose) sends straight to five minutes.
      * A dial already in flight is left to finish.
@@ -208,7 +242,13 @@ class RelayWriter(
         val owned = HashMap<String, CompletableDeferred<IEventStore.InsertOutcome>>(events.size)
         val joined = ArrayList<Pair<Int, CompletableDeferred<IEventStore.InsertOutcome>>>()
         val toSend = ArrayList<Event>(events.size)
+        val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
+        val limit = messageLimit
         events.forEachIndexed { i, e ->
+            tooLarge(e, limit)?.let {
+                outcomes[i] = it
+                return@forEachIndexed
+            }
             slots[e.id]?.let {
                 it.add(i)
                 return@forEachIndexed
@@ -223,7 +263,6 @@ class RelayWriter(
                 toSend += e
             }
         }
-        val outcomes = arrayOfNulls<IEventStore.InsertOutcome>(events.size)
         try {
             if (toSend.isNotEmpty()) {
                 client.publishStream(dial, toSend.asFlow(), maxInFlight = maxInFlight, idleTimeoutMs = idleTimeoutMs, maxInFlightBytes = inFlightBytes) { event, result ->
@@ -297,6 +336,7 @@ class RelayWriter(
 
     override fun close() {
         redialing.cancel()
+        limitWatch.cancel()
         runCatching { client.releaseConnection(dial) }
         runCatching { authenticator.destroy() }
         runCatching { client.close() }
@@ -325,6 +365,13 @@ class RelayWriter(
          * so the relay keeps reading the socket.
          */
         const val IN_FLIGHT = 2_000
+
+        /** `["EVENT",` and `]` around the event's JSON, as the relay measures a message. */
+        private const val FRAME_OVERHEAD = 10
+
+        /** How often the relay's NIP-11 limit is read again, and how soon after a read that failed. */
+        private const val LIMIT_REFRESH_MS = 600_000L
+        private const val LIMIT_RETRY_MS = 2_000L
 
         /** Unanswered EVENT bytes on the socket across every batch: Quartz's half of OkHttp's 16 MiB send queue. */
         const val SOCKET_IN_FLIGHT_BYTES = DEFAULT_STREAM_IN_FLIGHT_BYTES
