@@ -594,7 +594,40 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-4470ea789669 = vespa-eventstore main @ 2026-11-07, the merge of PR #197 (over 0c39dd5ba955, below): cheaper
+116f12e1c87a = vespa-eventstore main @ 2026-11-08, the merge of PR #198 (over 4470ea789669, below): a mirror's
+startup no longer re-walks the cards it is ingesting, found by the same stress test of this mirror.
+  WALKS ONLY WHERE A LIST FINDS CARDS (bbbde33, 4fda9b6). A 10040 naming a service for the first time
+    queued a walk of that service's cards; a walk reads them when it runs, so a mirror taking a
+    provider's lists and cards together re-applied every card stored since, each of which had already
+    written its cell (974 services named in 16 s, one with cards; walks of 58k, 33k and 110k cards).
+    Once the list is stored and the provider map dropped, one grouping counts the services' stored
+    cards and only a service with cards beyond the call's own is walked. Every fresh service is still
+    insured, so a list write that lands and then throws queues its walks and the map is dropped.
+  ONE GATED DRAIN AT A TIME (bbbde33). The background drainer and the boot reconcile's drain walked
+    the same services side by side; a second gated drain now waits, then drains what is left. An
+    inline drain, whose caller holds the writer lock, keeps its old path.
+  A PEER'S CARDS LANDING AFTER THE COUNT ARE THE PEER'S TO WALK, through its skip memory, which does
+    not survive a restart (the store's docs/multi-node-consistency.md). The walk this used to queue
+    caught such a card only by its timing.
+  Measured on one service's day of kind 30382 plus its lists (4 cores, 11 min, the store alone
+    changed): steady ingest 3,473 -> 5,304 cards/s, 2.18M -> 3.25M cards stored, cards re-read by
+    repair walks ~950k -> 5.8k.
+  QUARTZ UNCHANGED at 0102e83c81, and no build file moves in the range. de2294b is test-only (the
+    mock engine's request counters made atomic).
+  git merge-base --is-ancestor 4470ea789669 116f12e1c87a   # verified
+
+DEPLOY: nothing. No file under engine/app, bundle or the schemas moves, so the boot's AUTO_DEPLOY finds
+  the package unchanged and nothing is reindexed.
+
+GATED: the store's integration gate PASSED on 116f12e1c87a's tree: its CI run 42424461221, job
+  `integration`, `:benchmark:test -Pintegration` against vespaengine/vespa:latest, 33m 14s (PR #198's
+  merge ref, de2294b over an unchanged main, which is the tree 116f12e1c87a merged). Here,
+  ./gradlew build archTest against the JitPack jar: 1,753 tests, 0 failures, 2 skipped; the runtime graph
+  holds one quartz (0102e83c81) and the store at 116f12e1c87a, no arrow on either.
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 4470ea789669 = vespa-eventstore main @ 2026-11-07, the merge of PR #197 (over 0c39dd5ba955, below): cheaper
 trust ingest, found by stress-testing this mirror on a day of NIP-85 cards.
   RECALLS NARROWED BY ID AND AUTHOR (5e79b50, a0eaff7). InMemoryEventIndex reads only the named ids' or
     authors' docs and tests scalar fields before tag pairs: BulkMixedInsert's replay asked it per event over
