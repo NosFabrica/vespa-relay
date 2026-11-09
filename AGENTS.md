@@ -219,6 +219,7 @@ relay/tools/                  fetch-corpus.mjs and fetch-observer-corpus.mjs pul
                               drives NIP-FE against a running relay, every answer checked against its socket;
                               live-feeds.mjs ramps open {kinds:[1],limit:1} feeds under a publisher, and live-bench/ boots the relay
                               under it to read CPU, memory, churn, stalled clients and a JFR profile (docs/live-feeds.md);
+                              readonly-ramp.mjs ramps held feeds against a relay that serves people, publishing nothing;
                               nostr-sign.mjs is the BIP-340 signer the publishing tools share
 tor/                          both torrcs, publish-onion.sh, onion.extra.conf.example
 tools/                        record-cds-classlists.sh re-records relay/, sync/ and monitor/cds.classlist, the classes the image archives

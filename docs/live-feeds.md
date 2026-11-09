@@ -67,6 +67,43 @@ What falls out:
   scored**, by design (`LiveGate`); the run above uses `include:spam` for that
   reason. Measuring the gate's own cost under fan-out needs a seeded trust graph.
 
+## Against a deployment that serves people
+
+`relay/tools/readonly-ramp.mjs` holds feeds and publishes nothing, so it can
+be aimed at a live relay: the events it times are the ones the relay's own
+traffic brings. It stops at the first step past an abort line (EOSE p99,
+`/pressure`, failed opens, drops), and waits for `/pressure` to settle before
+it starts.
+
+```bash
+STEPS=500,1000,2000,4000 OPEN_RATE=40 node relay/tools/readonly-ramp.mjs wss://search.brainstorm.world
+```
+
+Measured 2026-11-09 against search.brainstorm.world (a store of ~600M
+documents, about 30 live kind-1 events a second), from one cloud sandbox
+whose egress proxy terminates TCP and TLS itself, at 40 opens a second, one
+feed a socket:
+
+| sockets | failed | EOSE p50 | p99 | dropped | `/pressure` peak |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 0 | 54 ms | 147 ms | 0 | 7.4 s |
+| 2,000 | 0 | 552 ms | 4.9 s | 0 | 63 s |
+| 4,000 | 7 | 1.0 s | 10.4 s | 0 | 78 s |
+
+- **Feeds held were not the limit; feeds arriving were.** No socket dropped.
+  With 1,000-2,000 already open, 40 new replays a second slowed every replay,
+  and at 4,000 the store answered `vespa searched only 50%` / `75% of the
+  corpus` and the relay closed those REQs. After the load stopped `/pressure`
+  climbed and fell on a ~60 s cycle for about four minutes before it settled.
+- **`/pressure` also rose to ~57 s with no load from this tool**, so a single
+  reading of it on that deployment is not this tool's doing; read the steps.
+- **About 0.5% of live events reached every feed twice**, byte-identical
+  (the `dup` column).
+- **The sandbox, not the relay, bounded opens and fan-out.** Its egress queued
+  TCP connects above ~50 a second (p50 7.6 s at 200 a second), and every frame
+  crosses it, so reach and spread above ~2,000 sockets are its numbers. A load
+  machine with its own address says more.
+
 ## Limits of the sandbox
 
 The sandbox caps a process at 20,000 open files and cannot raise it, so one
