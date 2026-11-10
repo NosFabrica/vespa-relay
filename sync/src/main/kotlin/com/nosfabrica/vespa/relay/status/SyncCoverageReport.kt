@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.status
 import com.nosfabrica.vespa.relay.util.canonicalRelay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
@@ -103,7 +104,7 @@ internal object SyncCoverageReport {
         ) {
             val min = o["min"]?.jsonPrimitive?.longOrNull ?: return
             val max = o["max"]?.jsonPrimitive?.longOrNull ?: return
-            val (everyMin, everyMax) = narrowed(o, min, max)
+            val everyKind = narrowed(o, min, max)
             legs++
             val row =
                 Row(
@@ -112,8 +113,7 @@ internal object SyncCoverageReport {
                     max = max,
                     complete = o["complete"]?.jsonPrimitive?.booleanOrNull ?: false,
                     fullAt = o["fullAt"]?.jsonPrimitive?.longOrNull ?: 0L,
-                    everyKindMin = everyMin,
-                    everyKindMax = everyMax,
+                    everyKind = everyKind,
                 )
             rows.merge(relay, row) { a, b -> a.mergedWith(b) }
         }
@@ -134,29 +134,22 @@ internal object SyncCoverageReport {
         val max: Long,
         val complete: Boolean,
         val fullAt: Long,
-        // The part of [min]..[max] every kind in the filter has been walked over.
-        val everyKindMin: Long,
-        val everyKindMax: Long,
+        // The part of [min]..[max] every kind in the filter has been walked over; null when no window holds them all.
+        val everyKind: LongRange?,
     ) {
         /**
          * Two legs of one stream against one relay, as one row: outer edges union, `complete`
-         * ands, the every-kind window intersects and falls back to the outer edges.
+         * ands, the every-kind window intersects, and an empty intersection stays empty.
          */
-        fun mergedWith(other: Row): Row {
-            val lo = maxOf(everyKindMin, other.everyKindMin)
-            val hi = minOf(everyKindMax, other.everyKindMax)
-            val outerMin = minOf(min, other.min)
-            val outerMax = maxOf(max, other.max)
-            return Row(
+        fun mergedWith(other: Row): Row =
+            Row(
                 relay = relay,
-                min = outerMin,
-                max = outerMax,
+                min = minOf(min, other.min),
+                max = maxOf(max, other.max),
                 complete = complete && other.complete,
                 fullAt = maxOf(fullAt, other.fullAt),
-                everyKindMin = if (lo > hi) outerMin else lo,
-                everyKindMax = if (lo > hi) outerMax else hi,
+                everyKind = intersect(everyKind, other.everyKind),
             )
-        }
     }
 
     /** The string form, kept for tests that state their fixtures as the files on disk. */
@@ -356,10 +349,15 @@ internal object SyncCoverageReport {
                                 put("max", r.max)
                                 put("complete", r.complete)
                                 if (r.fullAt > 0) put("fullAt", r.fullAt)
-                                // Only when the per-kind spans disagree; equal spans are the overwhelming case.
-                                if (r.everyKindMin != r.min || r.everyKindMax != r.max) {
-                                    put("everyKindMin", r.everyKindMin)
-                                    put("everyKindMax", r.everyKindMax)
+                                // Only when the per-kind spans disagree; equal spans are the overwhelming case. Kinds
+                                // sharing no window publish null: left out, the pair would read as the whole envelope.
+                                val every = r.everyKind
+                                if (every == null) {
+                                    put("everyKindMin", JsonNull)
+                                    put("everyKindMax", JsonNull)
+                                } else if (every.first != r.min || every.last != r.max) {
+                                    put("everyKindMin", every.first)
+                                    put("everyKindMax", every.last)
                                 }
                             }
                             // The learned window size is a property of the peer, keyed by relay alone.
@@ -388,14 +386,15 @@ internal object SyncCoverageReport {
 
     /**
      * The intersection of a band's per-kind `spans`: the widest window inside which no kind is
-     * missing, since the outer edges let one long-lived kind vouch for a short-lived one.
+     * missing, since the outer edges let one long-lived kind vouch for a short-lived one. Null when
+     * the kinds share no window; a band with no per-kind spans (a file from before them) is its envelope.
      */
     private fun narrowed(
         band: JsonObject,
         min: Long,
         max: Long,
-    ): Pair<Long, Long> {
-        val spans = band["spans"] as? JsonObject ?: return min to max
+    ): LongRange? {
+        val spans = band["spans"] as? JsonObject ?: return min..max
         var lo = Long.MIN_VALUE
         var hi = Long.MAX_VALUE
         var seen = 0
@@ -407,9 +406,19 @@ internal object SyncCoverageReport {
             if (sMax < hi) hi = sMax
             seen++
         }
-        // Disjoint kinds are a real state and must not come back inverted.
-        if (seen == 0 || lo > hi) return min to max
-        return lo to hi
+        if (seen == 0) return min..max
+        // Disjoint kinds are a real state: no window, never an inverted one, and never the envelope.
+        return if (lo > hi) null else lo..hi
+    }
+
+    private fun intersect(
+        a: LongRange?,
+        b: LongRange?,
+    ): LongRange? {
+        if (a == null || b == null) return null
+        val lo = maxOf(a.first, b.first)
+        val hi = minOf(a.last, b.last)
+        return if (lo > hi) null else lo..hi
     }
 
     /**

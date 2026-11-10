@@ -254,19 +254,23 @@ genuinely went bad. Raising `WINDOWS_PER_URL` is not either, for the same shape
 of reason one level down: the budget is a backstop against a hang, and a cadence
 that depends on it at all is the bug.
 
-**THE MIRROR'S READS HAVE THE SAME HOLE AND ARE DELIBERATELY LEFT WITH IT
-(#167).** Same deadline-less client, same failure — a response that never comes
-suspends its caller for the life of the process — but on the read side the
-caller is one of eight `IngestPipeline` workers, and eight is the whole of
-ingest. On staging the queue sat at 8206/8192 backpressuring every download
-while three events were accepted in nine minutes. The write side's answer does
-not port: a verdict write that is cut publishes nothing and the url re-earns it
-next sweep, whereas an ingest pass that is cut DISCARDS twenty thousand
-mirrored events that nothing re-offers before the next full resync. A router
-quietly bleeding a batch every few minutes while the store is sick is a worse
-failure than one that stops. **So nothing bounds these reads, and the wedge is
-reported instead — the remedy is at the store.** Read that as a decision, not
-an omission; the deadlines were written and removed.
+**THE MIRROR'S READS HAD THE SAME HOLE (#167), AND ARE BOUNDED WHERE A CUT
+DISCARDS NOTHING.** Same deadline-less client, same failure — a response that
+never comes suspends its caller for the life of the process — but on the read
+side the caller is one of eight `IngestPipeline` workers, and eight is the
+whole of ingest. On staging the queue sat at 8206/8192 backpressuring every
+download while three events were accepted in nine minutes. The write side's
+answer does not port to the whole pass: a verdict write that is cut publishes
+nothing and the url re-earns it next sweep, whereas an ingest pass that is cut
+DISCARDS twenty thousand mirrored events that nothing re-offers before the next
+full resync. So the pass itself is still never cut, and a pass that will not
+finish is reported as `wedged` instead. What IS cut is what costs nothing to
+lose (2bbe32a9, #289): the drop-probes stop at `IngestPipeline.PROBE_TIMEOUT_MS`
+and the batch goes to the store unprobed, and a walk's wait for the store's
+verdicts on its events stops at `IngestAcks.awaitWithin`. Below both, the
+store's query client cuts a body that stalls for 120 s (NosFabrica/vespa-eventstore
+c0a5fae, pinned since fec452107fe8). The deadlines first tried here cut the
+pass and were removed; these cut only a probe or a wait.
 
 **The thread dump for it reads as the exact opposite of the truth, and that is
 what the reporting is for.** All eight ingest threads were parked in
@@ -1022,7 +1026,7 @@ least meaningful of them was the one being read as progress:
 |---|---|---|
 | **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
 | **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
-| **evidence** | the span in which EVERY kind in the filter has produced an event | `everyKindMin`/`everyKindMax` |
+| **evidence** | the span in which EVERY kind in the filter has produced an event; null when the kinds share none | `everyKindMin`/`everyKindMax` |
 
 **A DURATION IS NOT A DIAGNOSIS — each in-flight row carries four numbers.** A
 relay with a real backlog and a walk that cannot terminate are both "held for

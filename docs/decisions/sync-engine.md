@@ -403,6 +403,14 @@ held through the pretty-printed write, so a tick that met a flush waited out
 the disk. A change counter lets both reuse one built document, and the write
 takes a lock of its own.
 
+**The state files are written compact.** They were pretty-printed for a human
+reader, and on staging the indentation was 134 of a 202 MB `sync-cursors.json`
+(#251), rewritten whole on every flush that had a change; the production-scale
+probe's file is 65% whitespace the same way. `jq .` gives the reader the
+indented form back. The read parses either, so a file an older build wrote
+loads unchanged and is rewritten compact by the next flush
+(`CompactStateFileTest`).
+
 **The file is behind when the counter is ahead of the last write.** A dirty
 flag set before the counter moved let a flush in between clear the flag and
 write the cached document of the old count, so the change stayed off disk
