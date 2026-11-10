@@ -631,8 +631,11 @@ DEPLOY: nothing. No file under engine/app, bundle or the schemas moves, so the b
   the package unchanged and nothing is reindexed. The keying sweep's removed-keys count moves to
   follower_counts on its progress document (b7744bb), an existing field.
 
-GATED: PENDING. The store's integration gate is running on 0287c3a21df8's tree; this line is replaced with its
-  counts, and with this repo's build against the JitPack jar, before the pin is merged.
+GATED: the store's integration gate PASSED on 0287c3a21df8 itself (checked out detached, so PR #200 and
+  #201 together), `:benchmark:test -Pintegration` against vespaengine/vespa:latest, 32m 20s: 56 tests,
+  0 failures, 0 errors, 1 skipped (StagingCorpusIT, no STAGING_CORPUS export). Here, ./gradlew build
+  archTest against the JitPack jar: 1,759 tests, 0 failures, 2 skipped; the runtime graph holds one
+  quartz (0102e83c81) and the store at 0287c3a21df8, no arrow on either.
 
 SPELLED WITH 12 HEX DIGITS. JitPack built it under `NosFabrica` (store and engine jars, 200).
 
