@@ -20,8 +20,10 @@
  */
 package com.nosfabrica.vespa.relay.util
 
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.nio.channels.FileChannel
 import java.nio.file.FileSystemException
 import java.nio.file.Files
@@ -35,13 +37,22 @@ import java.nio.file.StandardOpenOption
 fun writeDurably(
     target: File,
     bytes: ByteArray,
+) = writeDurably(target) { it.write(bytes) }
+
+/** [writeDurably] for content [write] streams out, so a large document is never held whole as bytes. */
+fun writeDurably(
+    target: File,
+    write: (OutputStream) -> Unit,
 ) {
     val dir = target.absoluteFile.parentFile
     dir.mkdirs()
     val tmp = File(dir, "${target.name}.tmp")
     try {
         FileOutputStream(tmp).use { out ->
-            out.write(bytes)
+            BufferedOutputStream(out).let {
+                write(it)
+                it.flush()
+            }
             out.fd.sync()
         }
         try {

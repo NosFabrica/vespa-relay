@@ -29,13 +29,9 @@ import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * The band file is written compact: indentation was two thirds of a 202 MB file rewritten every flush
- * (NosFabrica/vespa-relay#251). A file an older build wrote pretty must still load to the same state.
- */
+/** The band file is written compact, and an indented one an older build wrote still loads to the same state. */
 class CompactStateFileTest {
     private val a = RelayUrlNormalizer.normalize("wss://a.example")
     private val b = RelayUrlNormalizer.normalize("wss://b.example")
@@ -64,8 +60,8 @@ class CompactStateFileTest {
             written(f).close()
             val text = f.readText()
             assertTrue(text.contains("wss://a.example") && text.contains("wss://b.example"), "the premise: the file holds both bands")
-            assertFalse(text.contains('\n'), "no newlines: every one was followed by indentation")
-            assertFalse(text.contains(": "), "no space after a key either")
+            val compact = Json.encodeToString(JsonObject.serializer(), Json.parseToJsonElement(text) as JsonObject)
+            assertEquals(compact, text, "byte for byte the compact encoding of what it holds")
         } finally {
             dir.deleteRecursively()
         }

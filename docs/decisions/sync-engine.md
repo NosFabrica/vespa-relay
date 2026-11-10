@@ -411,6 +411,13 @@ indented form back. The read parses either, so a file an older build wrote
 loads unchanged and is rewritten compact by the next flush
 (`CompactStateFileTest`).
 
+**The state files are streamed to the temp file, not built as one string.**
+Encoding the document to a `String` and then to bytes held the encoder's
+buffer, the string and the byte array at once on every flush with a change.
+Writing the probe's 3.3 MB compact file allocated 25-39 MB that way and 5-9 MB
+streamed through `writeDurably`'s `OutputStream` form, so a 68 MB band file
+stops costing several hundred MB of short-lived heap every 30 s.
+
 **The file is behind when the counter is ahead of the last write.** A dirty
 flag set before the counter moved let a flush in between clear the flag and
 write the cached document of the old count, so the change stayed off disk
