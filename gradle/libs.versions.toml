@@ -5,9 +5,9 @@ app = "0.1.0"
 # A JitPack commit (main's head). Every module forces it and maps Central's quartz group onto it
 # (build-logic); a bump is checked with `./gradlew :relay:dependencies --configuration
 # runtimeClasspath`: one quartz module, every `com.vitorpamplona.quartz` line arrowed onto it.
-quartz = "0102e83c81"
+quartz = "ce558d9"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "0287c3a21df8"
+vespaEventStore = "d132e72adfe8"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
