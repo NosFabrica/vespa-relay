@@ -396,10 +396,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   `progress.store.calls` or the `store call SLOW` lines, which named it from
   the first five minutes. Bound it where you call it: the drop-probes are cut
   at `IngestPipeline.PROBE_TIMEOUT_MS`, a walk's wait for verdicts at
-  `LEG_QUIET_GIVE_UP_MS`. The store cuts a body that stalls from
-  NosFabrica/vespa-eventstore c0a5fae (#187) on; until `vespaEventStore` is
-  pinned past it, every other store read here is still unbounded, the relay's
-  own ingest included.
+  `LEG_QUIET_GIVE_UP_MS`. The store cuts a body that stalls for 120 s from
+  NosFabrica/vespa-eventstore c0a5fae on, pinned since fec452107fe8; a
+  query that keeps streaming, however slowly, is still bounded by nothing but
+  its caller.
 - **An auth-gated relay used to read as an EMPTY one, on every sync path.** A
   relay gating reads answers the REQ with `CLOSED auth-required:` before sending
   anything, and every fetch accessory took that as terminal — so the fetch
