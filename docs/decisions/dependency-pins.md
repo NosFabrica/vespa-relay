@@ -55,7 +55,29 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-0102e83c81 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-06 (the
+288217a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-09 (the
+quartz#102 merge, 288217a0e4), 21 commits over 0102e83c81 (below), which it descends from. The same commit as
+the store's pin on its claude/kind-archimedes-jcwe4q branch, which audits it against the store; the store
+pinned here (bfbb581c56cf) still names 0102e83c81, and the force moves it (one quartz). JitPack builds it
+(quartz-jvm's POM and jar answer 200). What this relay reaches:
+
+  A NEW JITPACK GROUP. quartz#99 moves quartz's pure-Kotlin secp256k1 into its own library,
+    com.github.vitorpamplona.libschnorr256k1-kotlin:schnorr256k1-kotlin-jvm (1d851c2, from JitPack until
+    its 1.0.1 is on Central), a runtime dependency of quartz-jvm. settings.gradle.kts routes that group to
+    JitPack beside quartz's and the store's; without it the graph does not resolve. Only Cashu, RoboSats
+    ratings and the deprecated utils.secp256k1.Secp256k1 shim call it: Event.verify() on the JVM stays on
+    ACINQ's libsecp256k1, so ingest checks every signature as before.
+  JVM 21 BYTECODE (quartz#100); every module's toolchain is 21 already.
+  Not reached: CachingEventDecoder's whitespace scan and knownEvents (quartz#96, #97; PeerClient passes
+    MessageDecoder.Default), NIP-60 Cashu's swap fee (#103), Namecoin's ElectrumX trust-on-first-use
+    (#102). No event class, filter, store or search file moved: the parse table is 0102e83c81's.
+  RUNTIME CLASSPATH (:relay, :sync): quartz moves and schnorr256k1-kotlin-jvm:1d851c2 joins; the POM's
+    other dependency versions are 0102e83c81's.
+  ./gradlew build archTest: 1,759 tests, 0 failed, 2 skipped. The runtime graph (:relay, :sync) holds one
+    quartz, 288217a, and reads `com.github.vitorpamplona.quartz:quartz:0102e83c81 -> 288217a` for the store's
+    request, the force at work; schnorr256k1-kotlin-jvm:1d851c2 resolves from JitPack.
+
+Prev 0102e83c81 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-06 (the
 quartz#95 merge, 0102e83c814c), 112 commits over v2.13.0 through 2.14.0, 2.14.1, 2.15.0, 2.15.1 and 2.16.0. The
 same commit as the store's pin on its claude/amazing-maxwell-5zralm branch (94604c04bbee), which audits it
 against the store. Back on JitPack for a commit past the last release; JitPack builds it, Android variant
@@ -594,7 +616,29 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-0287c3a21df8 = vespa-eventstore main @ 2026-11-10, the merge of PR #201 (over 37e4794, the merge of PR #200,
+bfbb581c56cf = vespa-eventstore main @ 2026-11-10, the merge of PR #202 (over 0287c3a21df8, below): visits off
+the shared h2c connection.
+  VISITS OVER HTTP/1.1 (f78c3f7). A visit page now and then took 121 s instead of ~0.3 s: multiplexed on the
+    store's busy h2c connection, the container sent the first bytes of the body and then stopped writing
+    that one stream until the 120 s read timeout reset it (not flow control: the stream had credit, and
+    other streams' DATA flowed meanwhile). VespaHttp.visitHttp now speaks HTTP/1.1 on a connection pool of
+    its own: 0 stalls in 30 walks against 4 in 15, walk time unchanged. Queries stay on h2c. This relay's
+    reindex pages, NIP-77 snapshots and paged walks are visits.
+  QUARTZ: the store pom names 0102e83c81; the quartz pin (above) moves it to 288217a.
+  No build file moves.
+  git merge-base --is-ancestor 0287c3a21df8 bfbb581c56cf   # verified
+
+DEPLOY: nothing. No file under engine/app, bundle or the schemas moves.
+
+GATED: the store's integration gate PASSED on its claude/kind-archimedes-jcwe4q branch, whose code is
+  bfbb581c56cf's with quartz 288217a (only pins and docs differ), so the combination this relay ships:
+  `:benchmark:test -Pintegration` against vespaengine/vespa:latest, 35m 18s: 56 tests, 0 failures, 0 errors,
+  1 skipped (StagingCorpusIT, no STAGING_CORPUS export). Here, ./gradlew build archTest against the JitPack
+  jars: 1,759 tests, 0 failures, 2 skipped (the quartz note above has the graph).
+
+SPELLED WITH 12 HEX DIGITS. JitPack built it under `NosFabrica` (store and engine jars, 200).
+
+Prev 0287c3a21df8 = vespa-eventstore main @ 2026-11-10, the merge of PR #201 (over 37e4794, the merge of PR #200,
 over 116f12e1c87a, below): the feed-client thread leak of the store's issue #199, and the fixes of an audit.
   NO MORE LEAKED FEED-CLIENT THREADS (2f31399). While Vespa refused writes, this relay gained ~500 Jetty
     threads an hour and never lost them (#199: 4,809 threads, RSS 5.0 GB against a 4.2 GB heap). The feed
