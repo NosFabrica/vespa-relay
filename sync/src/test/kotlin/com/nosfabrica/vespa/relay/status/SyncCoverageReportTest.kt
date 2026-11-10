@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.status
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -286,9 +287,12 @@ class SyncCoverageReportTest {
         assertTrue(row["complete"]!!.jsonPrimitive.booleanOrNull == true)
     }
 
-    /** Disjoint per-kind spans are a real state and must not come back as a bar of negative width. */
+    /**
+     * Disjoint per-kind spans are a real state: not a bar of negative width, and not the envelope either,
+     * which is what a missing pair reads as.
+     */
     @Test
-    fun `an empty intersection falls back rather than inverting`() {
+    fun `an empty intersection is published as no window`() {
         val doc =
             SyncCoverageReport.build(
                 bands(
@@ -302,7 +306,27 @@ class SyncCoverageReportTest {
                 now,
             )
         val row = rowsOf(streams(doc).single().jsonObject).single()
-        assertNull(row["everyKindMin"], "no window is covered for every kind; do not invent an inverted one")
+        assertEquals(JsonNull, row["everyKindMin"], "no window holds every kind; absent would claim the whole envelope")
+        assertEquals(JsonNull, row["everyKindMax"])
+    }
+
+    /** Two legs whose every-kind windows miss each other leave the merged row with none, not the outer edges. */
+    @Test
+    fun `legs whose every-kind windows do not meet merge into no window`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    leg("wss://a.example/", """{"kinds":[1],"authors":["aa"]}""", band(1_000, 2_000, true)),
+                    leg("wss://a.example/", """{"kinds":[1],"authors":["bb"]}""", band(8_000, 9_000, true)),
+                ),
+                null,
+                now,
+            )
+        val row = rowsOf(streams(doc).single().jsonObject).single()
+        assertEquals(1_000L, row["min"]!!.jsonPrimitive.longOrNull, "the envelope still unions")
+        assertEquals(9_000L, row["max"]!!.jsonPrimitive.longOrNull)
+        assertEquals(JsonNull, row["everyKindMin"], "2,000–8,000 was walked by neither leg")
+        assertEquals(JsonNull, row["everyKindMax"])
     }
 
     /** A pre-spans file still charts, which is why min/max are still written. */

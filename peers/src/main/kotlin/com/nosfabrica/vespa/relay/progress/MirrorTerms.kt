@@ -55,7 +55,8 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "evidence",
             "`everyKindMin`/`everyKindMax`: the part of the envelope in which EVERY kind in the filter has actually " +
-                "produced an event. Present only when it is narrower than the envelope. Still not a coverage claim in " +
+                "produced an event. Present only when it is narrower than the envelope, and null when the kinds share " +
+                "no window at all: absent means the whole envelope, null means none of it. Still not a coverage claim in " +
                 "the other direction either — a kind whose floor sits higher may simply have started existing later, " +
                 "which is indistinguishable here from a walk that stopped.",
         )
