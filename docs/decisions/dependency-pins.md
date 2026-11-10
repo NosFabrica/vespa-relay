@@ -628,7 +628,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-bfbb581c56cf = vespa-eventstore main @ 2026-11-10, the merge of PR #202 (over 0287c3a21df8, below): visits off
+d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
+quartz pin moves 0102e83c81 -> ce558d9, the same commit as this relay's. Its tree is the PR head's (3a0a3250).
+  ONE QUARTZ, NO ARROW. The store pom names ce558d9, which is this relay's pin, so the force has nothing to
+    move: the runtime graph reads `com.github.vitorpamplona.quartz:quartz:ce558d9` with no `->`.
+  The store's settings.gradle.kts routes com.github.vitorpamplona.libschnorr256k1-kotlin to JitPack, as this
+    relay's already does (the quartz note above). No store source, engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor bfbb581c56cf d132e72adfe8   # verified
+
+DEPLOY: nothing.
+
+GATED: the store's integration gate PASSED on d132e72adfe8 itself (checked out detached),
+  `:benchmark:test -Pintegration` against vespaengine/vespa:latest, 33m 45s: 56 tests, 0 failures, 0 errors,
+  1 skipped (StagingCorpusIT, no STAGING_CORPUS export). Here, ./gradlew build archTest against the JitPack
+  jars: 1,759 tests, 0 failures, 2 skipped; the runtime graph (:relay, :sync) holds one quartz (ce558d9),
+  schnorr256k1-kotlin-jvm:867bb13 and the store at d132e72adfe8, no arrow on any.
+
+SPELLED WITH 12 HEX DIGITS. JitPack built it under `NosFabrica` (store and engine jars, 200).
+
+Prev bfbb581c56cf = vespa-eventstore main @ 2026-11-10, the merge of PR #202 (over 0287c3a21df8, below): visits off
 the shared h2c connection.
   VISITS OVER HTTP/1.1 (f78c3f7). A visit page now and then took 121 s instead of ~0.3 s: multiplexed on the
     store's busy h2c connection, the container sent the first bytes of the body and then stopped writing
