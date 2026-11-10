@@ -22,9 +22,10 @@ package com.nosfabrica.vespa.relay.status
 
 import com.nosfabrica.vespa.relay.util.canonicalRelay
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -97,14 +98,15 @@ internal object SyncCoverageReport {
             filter = JsonObject(agreed)
         }
 
-        /** One relay's band, merged into any this group already holds for it. */
+        /** One relay's band, merged into any this group already holds for it. [kinds] are its leg's, null for none. */
         fun band(
             relay: String,
             o: JsonObject,
+            kinds: Set<String>?,
         ) {
             val min = o["min"]?.jsonPrimitive?.longOrNull ?: return
             val max = o["max"]?.jsonPrimitive?.longOrNull ?: return
-            val everyKind = narrowed(o, min, max)
+            val everyKind = narrowed(o, min, max, kinds)
             legs++
             val row =
                 Row(
@@ -134,12 +136,12 @@ internal object SyncCoverageReport {
         val max: Long,
         val complete: Boolean,
         val fullAt: Long,
-        // The part of [min]..[max] every kind in the filter has been walked over; null when no window holds them all.
-        val everyKind: LongRange?,
+        // The part of [min]..[max] every kind in the filter has produced an event over.
+        val everyKind: EveryKind,
     ) {
         /**
          * Two legs of one stream against one relay, as one row: outer edges union, `complete`
-         * ands, the every-kind window intersects, and an empty intersection stays empty.
+         * ands, the every-kind windows intersect.
          */
         fun mergedWith(other: Row): Row =
             Row(
@@ -148,8 +150,36 @@ internal object SyncCoverageReport {
                 max = maxOf(max, other.max),
                 complete = complete && other.complete,
                 fullAt = maxOf(fullAt, other.fullAt),
-                everyKind = intersect(everyKind, other.everyKind),
+                everyKind = everyKind.intersect(other.everyKind),
             )
+    }
+
+    /** Where every kind of a band has produced an event: a window, no window, or nothing known per kind. */
+    private sealed interface EveryKind {
+        data class Within(
+            val range: LongRange,
+        ) : EveryKind
+
+        /** Some kind is missing, or the kinds share no window. */
+        data object None : EveryKind
+
+        /** The band carries no per-kind spans, as a file from before them does. */
+        data object Unknown : EveryKind
+
+        /** Both legs' kinds at once: no window beats an unknown one, since nothing can widen an empty intersection. */
+        fun intersect(other: EveryKind): EveryKind =
+            when {
+                this == None || other == None -> None
+                this !is Within || other !is Within -> Unknown
+                else -> within(maxOf(range.first, other.range.first), minOf(range.last, other.range.last))
+            }
+
+        companion object {
+            fun within(
+                lo: Long,
+                hi: Long,
+            ): EveryKind = if (lo > hi) None else Within(lo..hi)
+        }
     }
 
     /** The string form, kept for tests that state their fixtures as the files on disk. */
@@ -204,17 +234,19 @@ internal object SyncCoverageReport {
             // A pre-stream entry is the band itself; a filter can never be named `min`.
             if (o["min"] != null) {
                 val (rawRelay, filterJson) = split(streamOrFlatKey, ' ') ?: continue
-                preStream(filterJson)?.band(canonicalRelay(rawRelay), o)
+                preStream(filterJson)?.band(canonicalRelay(rawRelay), o, kindsOf(parseFilter(filterJson)))
                 continue
             }
             val group = groups.getOrPut("stream:$streamOrFlatKey") { Group(streamOrFlatKey) }
             for ((filterJson, byRelay) in o) {
                 val relays = byRelay as? JsonObject ?: continue
                 if (relays.isEmpty()) continue
-                group.fold(parseFilter(filterJson) ?: continue)
+                val filter = parseFilter(filterJson) ?: continue
+                group.fold(filter)
+                val kinds = kindsOf(filter)
                 for ((rawRelay, band) in relays) {
                     // One spelling for both inputs and the peer map, so it cannot split a pair.
-                    group.band(canonicalRelay(rawRelay), band as? JsonObject ?: continue)
+                    group.band(canonicalRelay(rawRelay), band as? JsonObject ?: continue, kinds)
                 }
             }
         }
@@ -349,15 +381,22 @@ internal object SyncCoverageReport {
                                 put("max", r.max)
                                 put("complete", r.complete)
                                 if (r.fullAt > 0) put("fullAt", r.fullAt)
-                                // Only when the per-kind spans disagree; equal spans are the overwhelming case. Kinds
-                                // sharing no window publish null: left out, the pair would read as the whole envelope.
-                                val every = r.everyKind
-                                if (every == null) {
-                                    put("everyKindMin", JsonNull)
-                                    put("everyKindMax", JsonNull)
-                                } else if (every.first != r.min || every.last != r.max) {
-                                    put("everyKindMin", every.first)
-                                    put("everyKindMax", every.last)
+                                // Only when it is not the envelope, which is the overwhelming case; absent IS the envelope.
+                                when (val every = r.everyKind) {
+                                    EveryKind.None -> {
+                                        put("everyKind", "none")
+                                    }
+
+                                    EveryKind.Unknown -> {
+                                        put("everyKind", "unknown")
+                                    }
+
+                                    is EveryKind.Within -> {
+                                        if (every.range.first != r.min || every.range.last != r.max) {
+                                            put("everyKindMin", every.range.first)
+                                            put("everyKindMax", every.range.last)
+                                        }
+                                    }
                                 }
                             }
                             // The learned window size is a property of the peer, keyed by relay alone.
@@ -385,20 +424,22 @@ internal object SyncCoverageReport {
     }
 
     /**
-     * The intersection of a band's per-kind `spans`: the widest window inside which no kind is
-     * missing, since the outer edges let one long-lived kind vouch for a short-lived one. Null when
-     * the kinds share no window; a band with no per-kind spans (a file from before them) is its envelope.
+     * The intersection of a band's per-kind `spans` over [kinds], the leg's own: the widest window inside
+     * which no kind is missing, since the outer edges let one long-lived kind vouch for a short-lived one.
      */
     private fun narrowed(
         band: JsonObject,
         min: Long,
         max: Long,
-    ): LongRange? {
-        val spans = band["spans"] as? JsonObject ?: return min..max
-        var lo = Long.MIN_VALUE
-        var hi = Long.MAX_VALUE
+        kinds: Set<String>?,
+    ): EveryKind {
+        // One kind's envelope is that kind's own window.
+        val spans = band["spans"] as? JsonObject ?: return if (kinds?.size == 1) EveryKind.Within(min..max) else EveryKind.Unknown
+        var lo = min
+        var hi = max
         var seen = 0
-        for ((_, v) in spans) {
+        for ((kind, v) in spans) {
+            if (kinds != null && kind !in kinds) continue
             val o = v as? JsonObject ?: continue
             val sMin = o["min"]?.jsonPrimitive?.longOrNull ?: continue
             val sMax = o["max"]?.jsonPrimitive?.longOrNull ?: continue
@@ -406,20 +447,14 @@ internal object SyncCoverageReport {
             if (sMax < hi) hi = sMax
             seen++
         }
-        if (seen == 0) return min..max
-        // Disjoint kinds are a real state: no window, never an inverted one, and never the envelope.
-        return if (lo > hi) null else lo..hi
+        if (seen == 0) return EveryKind.Unknown
+        // A kind the leg asked for and never saw has produced no event anywhere in the envelope.
+        if (kinds != null && seen < kinds.size) return EveryKind.None
+        return EveryKind.within(lo, hi)
     }
 
-    private fun intersect(
-        a: LongRange?,
-        b: LongRange?,
-    ): LongRange? {
-        if (a == null || b == null) return null
-        val lo = maxOf(a.first, b.first)
-        val hi = minOf(a.last, b.last)
-        return if (lo > hi) null else lo..hi
-    }
+    /** A leg filter's kinds as the band file keys its spans, or null when it names none. */
+    private fun kindsOf(filter: JsonObject?): Set<String>? = (filter?.get("kinds") as? JsonArray)?.mapNotNullTo(HashSet()) { (it as? JsonPrimitive)?.longOrNull?.toString() }
 
     /**
      * A filter reduced to the key a pre-stream group is gathered under: time bounds dropped,

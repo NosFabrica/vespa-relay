@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.status
 
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -306,8 +305,58 @@ class SyncCoverageReportTest {
                 now,
             )
         val row = rowsOf(streams(doc).single().jsonObject).single()
-        assertEquals(JsonNull, row["everyKindMin"], "no window holds every kind; absent would claim the whole envelope")
-        assertEquals(JsonNull, row["everyKindMax"])
+        assertEquals("none", row["everyKind"]?.jsonPrimitive?.contentOrNull, "no window holds every kind; absent would claim the whole envelope")
+        assertNull(row["everyKindMin"])
+    }
+
+    /** A kind the leg asked for and never saw has no window anywhere, however well the others agree. */
+    @Test
+    fun `a kind with no span leaves no every-kind window`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(leg("wss://a.example/", """{"kinds":[0,1]}""", band(1_000, 9_000, false, spans = """{"1":{"min":1000,"max":9000}}"""))),
+                null,
+                now,
+            )
+        val row = rowsOf(streams(doc).single().jsonObject).single()
+        assertEquals("none", row["everyKind"]?.jsonPrimitive?.contentOrNull, "kind 0 produced nothing in 1,000–9,000")
+        assertNull(row["everyKindMin"])
+    }
+
+    /** A span for a kind outside the leg's filter vouches for nothing the leg asked. */
+    @Test
+    fun `spans outside the leg's kinds are not counted`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    leg(
+                        "wss://a.example/",
+                        """{"kinds":[1,6]}""",
+                        band(1_000, 9_000, false, spans = """{"1":{"min":1000,"max":9000},"7":{"min":1000,"max":9000}}"""),
+                    ),
+                ),
+                null,
+                now,
+            )
+        val row = rowsOf(streams(doc).single().jsonObject).single()
+        assertEquals("none", row["everyKind"]?.jsonPrimitive?.contentOrNull, "kind 6 is missing; kind 7 cannot stand in for it")
+    }
+
+    /** With no per-kind spans to read, a many-kind band says so instead of claiming its envelope. */
+    @Test
+    fun `a many-kind band without spans is unknown, and stays unknown through a merge`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    leg("wss://a.example/", """{"kinds":[0,1],"authors":["aa"]}""", band(1_000, 9_000, true)),
+                    leg("wss://a.example/", """{"kinds":[0,1],"authors":["bb"]}""", band(1_000, 9_000, true, spans = """{"0":{"min":1000,"max":9000},"1":{"min":1000,"max":9000}}""")),
+                ),
+                null,
+                now,
+            )
+        val row = rowsOf(streams(doc).single().jsonObject).single()
+        assertEquals("unknown", row["everyKind"]?.jsonPrimitive?.contentOrNull, "one leg says nothing per kind, so the row cannot claim the envelope")
+        assertNull(row["everyKindMin"])
     }
 
     /** Two legs whose every-kind windows miss each other leave the merged row with none, not the outer edges. */
@@ -325,8 +374,8 @@ class SyncCoverageReportTest {
         val row = rowsOf(streams(doc).single().jsonObject).single()
         assertEquals(1_000L, row["min"]!!.jsonPrimitive.longOrNull, "the envelope still unions")
         assertEquals(9_000L, row["max"]!!.jsonPrimitive.longOrNull)
-        assertEquals(JsonNull, row["everyKindMin"], "2,000–8,000 was walked by neither leg")
-        assertEquals(JsonNull, row["everyKindMax"])
+        assertEquals("none", row["everyKind"]?.jsonPrimitive?.contentOrNull, "2,000–8,000 was walked by neither leg")
+        assertNull(row["everyKindMin"])
     }
 
     /** A pre-spans file still charts, which is why min/max are still written. */
