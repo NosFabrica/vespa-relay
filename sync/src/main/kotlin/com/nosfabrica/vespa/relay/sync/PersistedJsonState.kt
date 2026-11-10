@@ -22,8 +22,10 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.util.quarantine
 import com.nosfabrica.vespa.relay.util.writeDurably
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToStream
 import kotlinx.serialization.json.jsonObject
 import java.io.File
 import java.io.IOException
@@ -186,10 +188,10 @@ internal class PersistedJsonState(
 
 /**
  * Replaces [target] with [doc] so a crash leaves the old document or the new one, never half of either.
- * Written compact: indentation was two thirds of a 202 MB band file rewritten every flush, and `jq .` restores it
- * for a reader. [PersistedJsonState.read] parses either form, so a pretty file from an older build still loads.
+ * Streamed and compact; [PersistedJsonState.read] parses an indented file as well.
  */
+@OptIn(ExperimentalSerializationApi::class)
 internal fun writeJsonFile(
     target: File,
     doc: JsonObject,
-) = writeDurably(target, Json.encodeToString(JsonObject.serializer(), doc))
+) = writeDurably(target) { Json.encodeToStream(JsonObject.serializer(), doc, it) }

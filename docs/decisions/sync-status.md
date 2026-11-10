@@ -125,6 +125,16 @@ three unnamed groups frozen at `reconciled=0`, while `SweepState` still claims a
 flat cursor lazily, so dropping those would chart a mid-sweep relay as
 un-walked.
 
+**A row's every-kind window has three states, and only one may be absent.**
+`everyKindMin`/`everyKindMax` are left out when they equal the envelope, so
+absence is a claim that every kind covers the whole envelope. Disjoint
+per-kind spans and legs whose windows missed each other fell back to the
+envelope and were left out, and so were a kind the leg asked for that never
+produced a span and a band with no per-kind spans at all (#98, item 3). Each
+now publishes `everyKind: none` or `everyKind: unknown` instead: a string,
+since a JSON null reads as absent to `longOrNull` and to `== null`. A
+single-kind leg with no spans keeps its envelope, which is that kind's own.
+
 **A group's filter is what its legs agree on.** An author-narrowed stream
 reaches the file as thousands of distinct filters under one stream name, and
 publishing one of them as the group's filter lied about the other 3,999.

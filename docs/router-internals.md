@@ -1026,7 +1026,7 @@ least meaningful of them was the one being read as progress:
 |---|---|---|
 | **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
 | **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
-| **evidence** | the span in which EVERY kind in the filter has produced an event; null when the kinds share none | `everyKindMin`/`everyKindMax` |
+| **evidence** | the span in which EVERY kind in the filter has produced an event; `none` when a kind is missing or they share none | `everyKindMin`/`everyKindMax`, `everyKind` |
 
 **A DURATION IS NOT A DIAGNOSIS — each in-flight row carries four numbers.** A
 relay with a real backlog and a walk that cannot terminate are both "held for
