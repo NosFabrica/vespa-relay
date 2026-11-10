@@ -55,7 +55,19 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-288217a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-09 (the
+ce558d9 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-10 (the
+quartz#106 merge, ce558d90e7): 288217a (below) plus one catalog line. The same commit as the store's pin on its
+claude/kind-archimedes-jcwe4q branch. quartz's libschnorr256k1-kotlin moves 1d851c2 -> 867bb13, from JitPack in
+the group settings.gradle.kts already routes: BIP-340 signing with no aux randomness, field compares on
+unreduced values and FieldP.add's double carry fixed, plus batch-verify and field speedups. This relay reaches
+none of it: Event.verify() on the JVM stays on ACINQ's libsecp256k1. No quartz source moves.
+  RUNTIME CLASSPATH (:relay, :sync): quartz and schnorr256k1-kotlin-jvm (1d851c2 -> 867bb13) move, nothing else.
+  ./gradlew build archTest: 1,759 tests, 0 failed, 2 skipped. The runtime graph (:relay, :sync) holds one quartz,
+    ce558d9 (`0102e83c81 -> ce558d9` for the store's request, the force), and schnorr256k1-kotlin-jvm:867bb13.
+  NOT RE-GATED: the store's integration gate ran with 288217a (the store pin's note); the one line between
+    them reaches no path the store runs, and the store's own build passes on ce558d9 (1,043 tests).
+
+Prev 288217a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-09 (the
 quartz#102 merge, 288217a0e4), 21 commits over 0102e83c81 (below), which it descends from. The same commit as
 the store's pin on its claude/kind-archimedes-jcwe4q branch, which audits it against the store; the store
 pinned here (bfbb581c56cf) still names 0102e83c81, and the force moves it (one quartz). JitPack builds it
