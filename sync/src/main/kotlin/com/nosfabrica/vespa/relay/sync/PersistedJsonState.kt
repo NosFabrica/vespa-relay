@@ -184,11 +184,12 @@ internal class PersistedJsonState(
     }
 }
 
-// Pretty-printed for a human reader.
-private val prettyJson = Json { prettyPrint = true }
-
-/** Replaces [target] with [doc] so a crash leaves the old document or the new one, never half of either. */
+/**
+ * Replaces [target] with [doc] so a crash leaves the old document or the new one, never half of either.
+ * Written compact: indentation was two thirds of a 202 MB band file rewritten every flush, and `jq .` restores it
+ * for a reader. [PersistedJsonState.read] parses either form, so a pretty file from an older build still loads.
+ */
 internal fun writeJsonFile(
     target: File,
     doc: JsonObject,
-) = writeDurably(target, prettyJson.encodeToString(JsonObject.serializer(), doc))
+) = writeDurably(target, Json.encodeToString(JsonObject.serializer(), doc))
