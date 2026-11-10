@@ -594,7 +594,49 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-116f12e1c87a = vespa-eventstore main @ 2026-11-08, the merge of PR #198 (over 4470ea789669, below): a mirror's
+0287c3a21df8 = vespa-eventstore main @ 2026-11-10, the merge of PR #201 (over 37e4794, the merge of PR #200,
+over 116f12e1c87a, below): the feed-client thread leak of the store's issue #199, and the fixes of an audit.
+  NO MORE LEAKED FEED-CLIENT THREADS (2f31399). While Vespa refused writes, this relay gained ~500 Jetty
+    threads an hour and never lost them (#199: 4,809 threads, RSS 5.0 GB against a 4.2 GB heap). The feed
+    client's default breaker half-opened after 10 s without a success, and every half-open made it replace
+    its whole Jetty cluster; a replaced cluster idle at the swap was never closed, not even by close()
+    (vespa-feed-client 8.781.11, HttpRequestStrategy.ResettableCluster). The breaker is now FUSED: nothing
+    is replaced. Retries stay bounded at 5; the breaker never opened anyway (no doom period was set).
+  FEED WRITES OFF THE CALLER'S THREAD (420e60f). The client's acquireSlot sleeps on the enqueuing thread
+    until a throttle slot frees; writes now hand over on Dispatchers.IO and stop when cancelled.
+  OKHTTP CLOSED WITH ITS INDEX (709c72f): its non-daemon dispatcher threads no longer outlive close().
+  THE OBSERVER GATE KEPT on a gated id walk's scan fallback, visitTags, visitDocsPage and an
+    observer-declared distinctTagValues (38d8ec0, d8b85d8): a NIP-77 snapshot or COUNT with `observer:`
+    could hand a peer below-floor authors.
+  READS INSIDE A DEPLOYED HITS CAP (4f377ea, 92a3838): the id walk and the recency read no longer over-ask
+    VESPA_UNBOUNDED_HITS, which Vespa refused outright below 20,064.
+  INGEST: a raced replaceable duplicate answers `duplicate:` instead of being removed and re-put (a00a63d);
+    a mixed batch's vanish erases through the paged sweep, not an unlimited preload a cap could cut
+    (cd8bc53); verdicts that need no I/O are answered without the writer lock (aa7bbd6).
+  TRUST: a 10040 re-signed through the bulk path walks only services it newly names (7e825af); the keying
+    sweep keeps cells of services named during its run (c297d47); a clean commit clears its own marker
+    cells while other work is pending (1cef5f5); a live-gate waiter never inherits a cancelled cold read
+    (3631b9d, this relay's ColdAuthorChecks waiter rethrew it and dropped the event).
+  PULSE: the lock-wait split is keyed by a closed shape (c76d51d), so its holder rows read `derive`,
+    `cell update`, `project service` instead of a sentence with per-call counts. Rendered generically here.
+  SEARCH: words split on every Unicode space, U+3000 included (391d349); stored text gains the new tokens
+    only on re-feed. Quartz's SearchQuery still splits on \s+ and needs the same fix upstream.
+  PR #200 (027ece5, b18221b): a reindex page is read with no write lock held and re-put by a conditional
+    put, batched (EventIndex.putAllIfStored).
+  QUARTZ UNCHANGED at 0102e83c81 (the store pom names it). Of the build files only benchmark/build.gradle.kts
+    moves.
+  git merge-base --is-ancestor 116f12e1c87a 0287c3a21df8   # verified
+
+DEPLOY: nothing. No file under engine/app, bundle or the schemas moves, so the boot's AUTO_DEPLOY finds
+  the package unchanged and nothing is reindexed. The keying sweep's removed-keys count moves to
+  follower_counts on its progress document (b7744bb), an existing field.
+
+GATED: PENDING. The store's integration gate is running on 0287c3a21df8's tree; this line is replaced with its
+  counts, and with this repo's build against the JitPack jar, before the pin is merged.
+
+SPELLED WITH 12 HEX DIGITS. JitPack built it under `NosFabrica` (store and engine jars, 200).
+
+Prev 116f12e1c87a = vespa-eventstore main @ 2026-11-08, the merge of PR #198 (over 4470ea789669, below): a mirror's
 startup no longer re-walks the cards it is ingesting, found by the same stress test of this mirror.
   WALKS ONLY WHERE A LIST FINDS CARDS (bbbde33, 4fda9b6). A 10040 naming a service for the first time
     queued a walk of that service's cards; a walk reads them when it runs, so a mirror taking a
