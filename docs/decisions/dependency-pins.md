@@ -628,7 +628,26 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-6776b070e269 = vespa-eventstore main @ 2026-11-11, the merge of PR #204 (over d132e72adfe8, below). Its tree is
+81056281ee52 = vespa-eventstore main @ 2026-11-11, the merge of PR #205 (over 6776b070e269, below). Its tree is
+the PR head's (cbe08c9f403f), byte for byte. #204's follow-ups, all inside the store:
+  A COLD LENS DURING AN OUTAGE. An AcceptPartial read whose provider map is cold (a restart, a 10040 write)
+    resolves the lens from the lists the cluster can still search, a pass held 30 s and never cached; an
+    observer whose list is on the missing node is refused (`PartialAnswer.LENS`), not ranked as trusting
+    nobody. Before, every AUTH'd REQ and `observer:` search on a restarted relay refused for the outage.
+  The recency window memory learns nothing from a page served partial, and the grouping funnel books its
+    served and refused partials in DegradedReads.
+  No quartz move. No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor 6776b070e269 81056281ee52   # verified
+
+DEPLOY: nothing.
+
+GATED: the store's integration gate PASSED on cbe08c9f403f, whose tree this merge is, `:benchmark:test
+  -Pintegration` against vespaengine/vespa:latest, 35m 53s: 56 tests, 0 failures, 0 errors, 1 skipped
+  (StagingCorpusIT, no STAGING_CORPUS export). JitPack built it under `NosFabrica` (store pom, 200).
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 6776b070e269 = vespa-eventstore main @ 2026-11-11, the merge of PR #204 (over d132e72adfe8, below). Its tree is
 the PR head's (d26cc38c7890), byte for byte.
   ACCEPTPARTIAL. With a Vespa content node offline every response came back below 100% with
     `non-ideal-state` (production: 75% over 624M documents, one of four nodes down), the store refused
@@ -641,8 +660,6 @@ the PR head's (d26cc38c7890), byte for byte.
     and OpenRanking's scoredProfileSearch (relay-server.md).
   No quartz move (the store pom still names ce558d9). No engine/app, bundle or schema file moves.
   git merge-base --is-ancestor d132e72adfe8 6776b070e269   # verified
-  NEXT: the store's follow-up (a cold lens during the outage, the recency window memory, groupings booked)
-    is its own PR; bump again when it merges.
 
 DEPLOY: nothing.
 
