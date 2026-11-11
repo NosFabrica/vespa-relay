@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.eventstore.AcceptPartial
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
+import com.nosfabrica.vespa.eventstore.PartialServed
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -120,6 +121,7 @@ class NostrRelayServer(
                     if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
+                    PartialNotice(),
                     // Last: a tag must mean every other policy accepted the event.
                     mirrorLane?.policy(),
                 ).toTypedArray<IRelayPolicy>(),
@@ -231,7 +233,7 @@ internal class ObserverBackend(
             timedEose(onEose) { onReplayed ->
                 gate.through(ctx, filters, onReplayed) { eose ->
                     live.open(liveGates?.invoke(filters), currentCoroutineContext())
-                    partial { block(eose) }
+                    partial(ctx, eose) { told -> block(told) }
                 }
             }
         }
@@ -333,7 +335,7 @@ internal class ObserverBackend(
         onEose: () -> Unit,
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
-            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> partial { inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } } }
+            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> partial(ctx, eose) { told -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, told) } } }
         }
     }
 
@@ -346,7 +348,7 @@ internal class ObserverBackend(
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
             gate.through(ctx, filters, onReplayed) { eose ->
-                gatedLive(filters) { admit -> partial { inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) } }
+                gatedLive(filters) { admit -> partial(ctx, eose) { told -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, told) } }
             }
         }
     }
@@ -388,9 +390,20 @@ internal class ObserverBackend(
 
     /**
      * Runs the store call that replays a REQ's stored rows, and nothing else, under [AcceptPartial]:
-     * served from the reachable corpus while a Vespa node is down.
+     * served from the reachable corpus while a Vespa node is down, and said so before its [eose].
      */
-    private suspend fun <T> partial(block: suspend () -> T): T = withContext(AcceptPartial) { block() }
+    private suspend fun <T> partial(
+        ctx: RequestContext,
+        eose: () -> Unit,
+        block: suspend (eose: () -> Unit) -> T,
+    ): T {
+        val report = PartialServed()
+        val told = {
+            if (report.served) PartialNotice.of(ctx.policy)?.tell()
+            eose()
+        }
+        return withContext(AcceptPartial + report) { block(told) }
+    }
 
     /**
      * Runs a subscription with its live deliveries held to [LiveGate], built inside [ranked] so the

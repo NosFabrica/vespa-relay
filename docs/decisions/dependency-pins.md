@@ -628,7 +628,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-81056281ee52 = vespa-eventstore main @ 2026-11-11, the merge of PR #205 (over 6776b070e269, below). Its tree is
+63c67e078f88 = vespa-eventstore main @ 2026-11-11, the merge of PR #207 (over 81056281ee52, below). Its tree is
+the PR head's (10e072773603), byte for byte.
+  PARTIALSERVED. A facade marker installed beside AcceptPartial that says whether THIS read was served
+    part of the corpus; ObserverBackend reads it to send the partial NOTICE (relay-server.md). Only
+    documents missing mark it, never a recency profile's own match-phase cut, which also restores the
+    recency window memory for AcceptPartial reads whose attempt the match phase cut on a healthy cluster.
+  No quartz move. No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor 81056281ee52 63c67e078f88   # verified
+
+DEPLOY: nothing.
+
+GATED: the store's integration gate PASSED on 10e072773603, whose tree this merge is, `:benchmark:test
+  -Pintegration` against vespaengine/vespa:latest, 36m 40s: 56 tests, 0 failures, 0 errors, 1 skipped (StagingCorpusIT, no
+  STAGING_CORPUS export). JitPack built it (store pom, 200). Here, ./gradlew build archTest against the
+  JitPack jars: 1,763 tests, 0 failures, 2 skipped.
+
+Prev 81056281ee52 = vespa-eventstore main @ 2026-11-11, the merge of PR #205 (over 6776b070e269, below). Its tree is
 the PR head's (cbe08c9f403f), byte for byte. #204's follow-ups, all inside the store:
   A COLD LENS DURING AN OUTAGE. An AcceptPartial read whose provider map is cold (a restart, a 10040 write)
     resolves the lens from the lists the cluster can still search, a pass held 30 s and never cached; an
