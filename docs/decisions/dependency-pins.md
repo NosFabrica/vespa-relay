@@ -628,8 +628,8 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-d26cc38c7890 = vespa-eventstore claude/friendly-cori-8vmwi8 @ 2026-11-11, ONE COMMIT over d132e72adfe8 (below),
-NOT YET MERGED: re-pin to the store's merge commit, and run its gate there, before this relay merges.
+6776b070e269 = vespa-eventstore main @ 2026-11-11, the merge of PR #204 (over d132e72adfe8, below). Its tree is
+the PR head's (d26cc38c7890), byte for byte.
   ACCEPTPARTIAL. With a Vespa content node offline every response came back below 100% with
     `non-ideal-state` (production: 75% over 624M documents, one of four nodes down), the store refused
     each one, and every REQ and NIP-50 search closed with "the response is a PARTIAL answer". The store
@@ -637,20 +637,20 @@ NOT YET MERGED: re-pin to the store's merge commit, and run its gate there, befo
     that answered, and only for a cluster missing documents (non-ideal-state, or a shortfall with no
     reason named, over at least one searched document); timeouts, unasked match-phase cuts, backend
     errors, counts, negentropy and every write path's reads still refuse. Served partials are booked
-    `served` in DegradedReads. This relay installs it in ObserverBackend.served (REQ replays, query,
-    queryRaw) and around OpenRanking's scoredProfileSearch, and nowhere else: COUNT, negentropy and the
-    relay's own reads (VerdictSupply, Healer, RelayProfile, RelayVerdictRecord, RelayDiscovery,
-    UpstreamPush) keep refusing, since they decide from what they read.
+    `served` in DegradedReads. This relay wraps only the store call that replays a REQ's stored rows,
+    and OpenRanking's scoredProfileSearch (relay-server.md).
   No quartz move (the store pom still names ce558d9). No engine/app, bundle or schema file moves.
-  git merge-base --is-ancestor d132e72adfe8 d26cc38c7890   # verified
+  git merge-base --is-ancestor d132e72adfe8 6776b070e269   # verified
+  NEXT: the store's follow-up (a cold lens during the outage, the recency window memory, groupings booked)
+    is its own PR; bump again when it merges.
 
 DEPLOY: nothing.
 
-GATED: the store's integration gate PASSED on d26cc38c7890 itself, `:benchmark:test -Pintegration` against
-  vespaengine/vespa:latest, 37m 13s: 56 tests, 0 failures, 0 errors, 1 skipped (StagingCorpusIT, no
-  STAGING_CORPUS export). The store's own `./gradlew build` passed. Here, ./gradlew build archTest against
-  the JitPack jars: 1,760 tests, 0 failures, 2 skipped. JitPack built it under `NosFabrica` (store pom, 200).
-  Still a branch pin: the merge commit gets its own gate run when this is re-pinned.
+GATED: the store's integration gate PASSED on d26cc38c7890, whose tree this merge is, `:benchmark:test
+  -Pintegration` against vespaengine/vespa:latest, 37m 13s: 56 tests, 0 failures, 0 errors, 1 skipped
+  (StagingCorpusIT, no STAGING_CORPUS export). JitPack built it under `NosFabrica` (store pom, 200).
+
+SPELLED WITH 12 HEX DIGITS.
 
 Prev d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
 quartz pin moves 0102e83c81 -> ce558d9, the same commit as this relay's. Its tree is the PR head's (3a0a3250).

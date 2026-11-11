@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.coroutines.coroutineContext
@@ -40,12 +41,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * A REQ's stored rows go to the client and nowhere else, so while a Vespa content node is offline
- * the store may serve them from the part of the corpus that answered — but only if this relay says
- * so, by running the read under [AcceptPartial]. COUNT must not (a count over part of the corpus is
- * a wrong number), and neither may anything the relay reads for itself, which never passes here.
- */
+/** A REQ's stored rows are read under [AcceptPartial]; COUNT and the live gate are not. */
 class AcceptPartialServingTest {
     /** Which store reads ran under [AcceptPartial], by the store call they arrived as. */
     private val seen = Collections.synchronizedList(mutableListOf<Pair<String, Boolean>>())
@@ -96,8 +92,12 @@ class AcceptPartialServingTest {
     fun `a REQ's stored rows are read under AcceptPartial and a COUNT is not`(): Unit =
         runBlocking {
             val ingest = IngestQueue(probe, SupervisorJob())
-            val backend = ObserverBackend(LiveEventStore(probe, ingest))
-            val filters = listOf(Filter(kinds = listOf(1), limit = 10))
+            val backend =
+                ObserverBackend(LiveEventStore(probe, ingest), liveGates = { f ->
+                    seen += "liveGate" to (currentCoroutineContext()[AcceptPartial] != null)
+                    inner.liveGate(f)
+                })
+            val filters = listOf(Filter(kinds = listOf(1), limit = 10, search = "hello"))
             try {
                 val raw = backend.openSubscription(ctx, filters, LiveListener { _, _ -> })
                 val screened = backend.openSubscription(ctx, filters, LiveListener { _, _ -> })
@@ -107,10 +107,12 @@ class AcceptPartialServingTest {
                 screened.cancel()
                 backend.count(ctx, filters)
 
-                val reads = seen.filter { it.first != "count" }
+                val reads = seen.filter { it.first != "count" && it.first != "liveGate" }
                 assertTrue(reads.isNotEmpty(), "no replay reached the store: $seen")
                 assertTrue(reads.all { it.second }, "a replay read the store strictly: $seen")
                 assertEquals(listOf(false), seen.filter { it.first == "count" }.map { it.second }, "a COUNT must stay strict: $seen")
+                val gates = seen.filter { it.first == "liveGate" }
+                assertTrue(gates.isNotEmpty() && gates.none { it.second }, "the live gate decides admission, so it is read strict: $seen")
             } finally {
                 ingest.close()
             }
