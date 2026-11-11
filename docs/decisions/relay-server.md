@@ -186,6 +186,21 @@ the wrap, so no admission decision is ever made off a partial corpus.
 `AcceptPartialServingTest` asserts the replay reads under it and COUNT and the
 gate do not.
 
+**A partial replay is told once per connection, before its EOSE.** A page
+served from part of the corpus looks exactly like a complete one, so the replay
+installs the store's `PartialServed` beside `AcceptPartial` and, when it
+reports partial, `PartialNotice` sends a plain `NOTICE` ahead of the `EOSE`.
+`EOSE` carries no text and `CLOSED` would end the subscription, so `NOTICE` is
+the only channel left; it names no subscription, so its text describes the
+relay, not a result. It goes out at most once per connection per ten minutes,
+because during an outage every read is partial and a feed client reads in
+bursts. NIP-01's machine prefixes are defined for `OK` and `CLOSED` only, so
+`partial:` is a convention for grepping, not a protocol claim. `PartialNotice`
+is a policy only to be handed the connection's `send` (quartz gives it to
+policies at connect); the backend finds it through `ctx.policy`, nested stacks
+included, since quartz stacks its `LimitsPolicy` over ours. OpenRanking's HTTP
+answers carry no such line.
+
 **The reference expansion moved into the store.** It lived here as an
 `IEventStore` decorator until store `a9ce0d254c`. The reader's enrolment had
 to be cached with a TTL, because a relay cannot see the sync process feeding
