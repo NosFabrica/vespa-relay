@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay
 
+import com.nosfabrica.vespa.eventstore.AcceptPartial
 import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.SchemaDeploy
 import com.nosfabrica.vespa.eventstore.VespaEventStore
@@ -127,6 +128,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -593,7 +595,7 @@ private fun serve(
         trustPage = resourceText("/trust.html"),
         trustJson = TrustDocument.reader(store, "This relay's trust projection"),
         trustExplain = { key -> TrustDocument.explain(store, key) },
-        openRanking = boot.openRanking?.let { config -> OpenRanking({ q, observer, limit -> store.scoredProfileSearch(q, observer, limit) }, config, pressure = pressure) },
+        openRanking = boot.openRanking?.let { config -> OpenRanking({ q, observer, limit -> withContext(AcceptPartial) { store.scoredProfileSearch(q, observer, limit) } }, config, pressure = pressure) },
         statsJson = statsSnapshot,
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,

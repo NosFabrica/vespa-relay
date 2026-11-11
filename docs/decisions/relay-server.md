@@ -172,6 +172,20 @@ subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
 more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
 the screened replay, and fails if `openSubscription` forwards past the gate.
 
+**A REQ's stored rows are served partial while a Vespa node is down.** With one
+content node offline every engine answer is `non-ideal-state` below 100%, and
+the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL
+answer". The store serves a read the caller runs under `AcceptPartial` from the
+part of the corpus that answered, so `ObserverBackend.partial` wraps exactly the
+store call that replays stored rows, and `RelayMain` the OpenRanking search.
+Nothing else: a COUNT over part of the corpus is a wrong number, a negentropy
+snapshot would tell a peer the missing node's events are absent here, and the
+relay's own reads (`VerdictSupply`, `Healer`, `RelayProfile`) decide from what
+they read. The live gate is read and the cold-author checks are started outside
+the wrap, so no admission decision is ever made off a partial corpus.
+`AcceptPartialServingTest` asserts the replay reads under it and COUNT and the
+gate do not.
+
 **The reference expansion moved into the store.** It lived here as an
 `IEventStore` decorator until store `a9ce0d254c`. The reader's enrolment had
 to be cached with a TTL, because a relay cannot see the sync process feeding

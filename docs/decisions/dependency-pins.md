@@ -628,7 +628,48 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
+81056281ee52 = vespa-eventstore main @ 2026-11-11, the merge of PR #205 (over 6776b070e269, below). Its tree is
+the PR head's (cbe08c9f403f), byte for byte. #204's follow-ups, all inside the store:
+  A COLD LENS DURING AN OUTAGE. An AcceptPartial read whose provider map is cold (a restart, a 10040 write)
+    resolves the lens from the lists the cluster can still search, a pass held 30 s and never cached; an
+    observer whose list is on the missing node is refused (`PartialAnswer.LENS`), not ranked as trusting
+    nobody. Before, every AUTH'd REQ and `observer:` search on a restarted relay refused for the outage.
+  The recency window memory learns nothing from a page served partial, and the grouping funnel books its
+    served and refused partials in DegradedReads.
+  No quartz move. No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor 6776b070e269 81056281ee52   # verified
+
+DEPLOY: nothing.
+
+GATED: the store's integration gate PASSED on cbe08c9f403f, whose tree this merge is, `:benchmark:test
+  -Pintegration` against vespaengine/vespa:latest, 35m 53s: 56 tests, 0 failures, 0 errors, 1 skipped
+  (StagingCorpusIT, no STAGING_CORPUS export). JitPack built it under `NosFabrica` (store pom, 200).
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev 6776b070e269 = vespa-eventstore main @ 2026-11-11, the merge of PR #204 (over d132e72adfe8, below). Its tree is
+the PR head's (d26cc38c7890), byte for byte.
+  ACCEPTPARTIAL. With a Vespa content node offline every response came back below 100% with
+    `non-ideal-state` (production: 75% over 624M documents, one of four nodes down), the store refused
+    each one, and every REQ and NIP-50 search closed with "the response is a PARTIAL answer". The store
+    now serves a read the consumer runs under `withContext(AcceptPartial)` from the part of the corpus
+    that answered, and only for a cluster missing documents (non-ideal-state, or a shortfall with no
+    reason named, over at least one searched document); timeouts, unasked match-phase cuts, backend
+    errors, counts, negentropy and every write path's reads still refuse. Served partials are booked
+    `served` in DegradedReads. This relay wraps only the store call that replays a REQ's stored rows,
+    and OpenRanking's scoredProfileSearch (relay-server.md).
+  No quartz move (the store pom still names ce558d9). No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor d132e72adfe8 6776b070e269   # verified
+
+DEPLOY: nothing.
+
+GATED: the store's integration gate PASSED on d26cc38c7890, whose tree this merge is, `:benchmark:test
+  -Pintegration` against vespaengine/vespa:latest, 37m 13s: 56 tests, 0 failures, 0 errors, 1 skipped
+  (StagingCorpusIT, no STAGING_CORPUS export). JitPack built it under `NosFabrica` (store pom, 200).
+
+SPELLED WITH 12 HEX DIGITS.
+
+Prev d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
 quartz pin moves 0102e83c81 -> ce558d9, the same commit as this relay's. Its tree is the PR head's (3a0a3250).
   ONE QUARTZ, NO ARROW. The store pom names ce558d9, which is this relay's pin, so the force has nothing to
     move: the runtime graph reads `com.github.vitorpamplona.quartz:quartz:ce558d9` with no `->`.

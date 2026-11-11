@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.AcceptPartial
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
@@ -230,7 +231,7 @@ internal class ObserverBackend(
             timedEose(onEose) { onReplayed ->
                 gate.through(ctx, filters, onReplayed) { eose ->
                     live.open(liveGates?.invoke(filters), currentCoroutineContext())
-                    block(eose)
+                    partial { block(eose) }
                 }
             }
         }
@@ -332,7 +333,7 @@ internal class ObserverBackend(
         onEose: () -> Unit,
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
-            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } }
+            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> partial { inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } } }
         }
     }
 
@@ -345,7 +346,7 @@ internal class ObserverBackend(
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
             gate.through(ctx, filters, onReplayed) { eose ->
-                gatedLive(filters) { admit -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) }
+                gatedLive(filters) { admit -> partial { inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) } }
             }
         }
     }
@@ -384,6 +385,12 @@ internal class ObserverBackend(
         if (observer == null) return block()
         return withContext(StoreQueryContext(setOf(observer))) { block() }
     }
+
+    /**
+     * Runs the store call that replays a REQ's stored rows, and nothing else, under [AcceptPartial]:
+     * served from the reachable corpus while a Vespa node is down.
+     */
+    private suspend fun <T> partial(block: suspend () -> T): T = withContext(AcceptPartial) { block() }
 
     /**
      * Runs a subscription with its live deliveries held to [LiveGate], built inside [ranked] so the
