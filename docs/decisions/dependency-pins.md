@@ -646,8 +646,11 @@ NOT YET MERGED: re-pin to the store's merge commit, and run its gate there, befo
 
 DEPLOY: nothing.
 
-NOT GATED: no Docker daemon where it was made, so `:benchmark:test -Pintegration` has not run on it. The
-  store's own `./gradlew build` passed. JitPack built it under `NosFabrica` (store pom, 200).
+GATED: the store's integration gate PASSED on d26cc38c7890 itself, `:benchmark:test -Pintegration` against
+  vespaengine/vespa:latest, 37m 13s: 56 tests, 0 failures, 0 errors, 1 skipped (StagingCorpusIT, no
+  STAGING_CORPUS export). The store's own `./gradlew build` passed. Here, ./gradlew build archTest against
+  the JitPack jars: 1,760 tests, 0 failures, 2 skipped. JitPack built it under `NosFabrica` (store pom, 200).
+  Still a branch pin: the merge commit gets its own gate run when this is re-pinned.
 
 Prev d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
 quartz pin moves 0102e83c81 -> ce558d9, the same commit as this relay's. Its tree is the PR head's (3a0a3250).
