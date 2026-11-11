@@ -628,7 +628,28 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
+d26cc38c7890 = vespa-eventstore claude/friendly-cori-8vmwi8 @ 2026-11-11, ONE COMMIT over d132e72adfe8 (below),
+NOT YET MERGED: re-pin to the store's merge commit, and run its gate there, before this relay merges.
+  ACCEPTPARTIAL. With a Vespa content node offline every response came back below 100% with
+    `non-ideal-state` (production: 75% over 624M documents, one of four nodes down), the store refused
+    each one, and every REQ and NIP-50 search closed with "the response is a PARTIAL answer". The store
+    now serves a read the consumer runs under `withContext(AcceptPartial)` from the part of the corpus
+    that answered, and only for a cluster missing documents (non-ideal-state, or a shortfall with no
+    reason named, over at least one searched document); timeouts, unasked match-phase cuts, backend
+    errors, counts, negentropy and every write path's reads still refuse. Served partials are booked
+    `served` in DegradedReads. This relay installs it in ObserverBackend.served (REQ replays, query,
+    queryRaw) and around OpenRanking's scoredProfileSearch, and nowhere else: COUNT, negentropy and the
+    relay's own reads (VerdictSupply, Healer, RelayProfile, RelayVerdictRecord, RelayDiscovery,
+    UpstreamPush) keep refusing, since they decide from what they read.
+  No quartz move (the store pom still names ce558d9). No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor d132e72adfe8 d26cc38c7890   # verified
+
+DEPLOY: nothing.
+
+NOT GATED: no Docker daemon where it was made, so `:benchmark:test -Pintegration` has not run on it. The
+  store's own `./gradlew build` passed. JitPack built it under `NosFabrica` (store pom, 200).
+
+Prev d132e72adfe8 = vespa-eventstore main @ 2026-11-10, the merge of PR #203 (over bfbb581c56cf, below): the store's
 quartz pin moves 0102e83c81 -> ce558d9, the same commit as this relay's. Its tree is the PR head's (3a0a3250).
   ONE QUARTZ, NO ARROW. The store pom names ce558d9, which is this relay's pin, so the force has nothing to
     move: the runtime graph reads `com.github.vitorpamplona.quartz:quartz:ce558d9` with no `->`.

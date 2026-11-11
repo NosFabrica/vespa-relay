@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.eventstore.AcceptPartial
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
@@ -226,7 +227,7 @@ internal class ObserverBackend(
         private suspend fun replayGated(
             onEose: () -> Unit,
             block: suspend (eose: () -> Unit) -> Unit,
-        ) = ranked(ctx) {
+        ) = served(ctx) {
             timedEose(onEose) { onReplayed ->
                 gate.through(ctx, filters, onReplayed) { eose ->
                     live.open(liveGates?.invoke(filters), currentCoroutineContext())
@@ -330,7 +331,7 @@ internal class ObserverBackend(
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) {
+    ) = served(ctx) {
         timedEose(onEose) { onReplayed ->
             gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, eose) } }
         }
@@ -342,7 +343,7 @@ internal class ObserverBackend(
         onEachStored: (RawEvent) -> Unit,
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) {
+    ) = served(ctx) {
         timedEose(onEose) { onReplayed ->
             gate.through(ctx, filters, onReplayed) { eose ->
                 gatedLive(filters) { admit -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, eose) }
@@ -384,6 +385,19 @@ internal class ObserverBackend(
         if (observer == null) return block()
         return withContext(StoreQueryContext(setOf(observer))) { block() }
     }
+
+    /**
+     * [ranked] for a REQ's stored rows, which go to the client and nowhere else: while a Vespa
+     * content node is offline the store serves them from the part of the corpus that answered
+     * ([AcceptPartial]) instead of closing every REQ and NIP-50 search with "PARTIAL answer".
+     * Deliberately not COUNT (a count over part of the corpus is a wrong number) and not
+     * negentropy (a peer would read the missing node's events as absent here); both keep refusing,
+     * as does every read this relay makes for itself.
+     */
+    private suspend fun <T> served(
+        ctx: RequestContext,
+        block: suspend () -> T,
+    ): T = ranked(ctx) { withContext(AcceptPartial) { block() } }
 
     /**
      * Runs a subscription with its live deliveries held to [LiveGate], built inside [ranked] so the
