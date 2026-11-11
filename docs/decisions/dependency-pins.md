@@ -629,7 +629,7 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 
 ```text
 10e072773603 = vespa-eventstore claude/friendly-cori-8vmwi8 @ 2026-11-11, ONE COMMIT over 81056281ee52 (below),
-NOT YET MERGED: re-pin to the store's merge commit before this relay merges.
+NOT YET MERGED (vespa-eventstore #207): re-pin to its merge commit before this relay merges.
   PARTIALSERVED. A facade marker installed beside AcceptPartial that says whether THIS read was served
     part of the corpus; ObserverBackend reads it to send the partial NOTICE (relay-server.md). Only
     documents missing mark it, never a recency profile's own match-phase cut, which also restores the
@@ -639,7 +639,10 @@ NOT YET MERGED: re-pin to the store's merge commit before this relay merges.
 
 DEPLOY: nothing.
 
-GATED: pending, the store's integration gate is running on 10e072773603. JitPack built it (store pom, 200).
+GATED: the store's integration gate PASSED on 10e072773603 itself, `:benchmark:test -Pintegration` against
+  vespaengine/vespa:latest, 36m 40s: 56 tests, 0 failures, 0 errors, 1 skipped (StagingCorpusIT, no
+  STAGING_CORPUS export). JitPack built it (store pom, 200). Here, ./gradlew build archTest against the
+  JitPack jars: 1,763 tests, 0 failures, 2 skipped.
 
 Prev 81056281ee52 = vespa-eventstore main @ 2026-11-11, the merge of PR #205 (over 6776b070e269, below). Its tree is
 the PR head's (cbe08c9f403f), byte for byte. #204's follow-ups, all inside the store:
