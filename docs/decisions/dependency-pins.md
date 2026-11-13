@@ -628,7 +628,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-63c67e078f88 = vespa-eventstore main @ 2026-11-11, the merge of PR #207 (over 81056281ee52, below). Its tree is
+5bea99939020 = vespa-eventstore main @ 2026-11-13, the merge of PR #208 (over 63c67e078f88, below). Its tree is
+the PR head's (33ea9532), byte for byte.
+  UNCOMPRESSED READS. VespaHttp sends `Accept-Encoding: identity` on every read (search, document get,
+    visit). Before, OkHttp added `gzip` on its own and Vespa compressed every answer on its container's
+    four rendering threads; on staging 2026-11-13 gzip was their top frame, all four were taken in 7 of 8
+    thread dumps, and rendering was 42% of the container's CPU while feed reads took up to 5.5 s. A
+    3,000-hit page is 17.8 MB plain against 3.2 MB gzipped, inside the cluster. Writes are untouched.
+    The latency it removes is not measured yet; read it after deploy.
+  No quartz move. No engine/app, bundle or schema file moves.
+  git merge-base --is-ancestor 63c67e078f88 5bea99939020   # verified
+
+DEPLOY: the relay and the sync both read through this client. The sync does most of the large reads
+  (negentropy snapshots), so most of the gain needs the sync on this image too.
+
+GATED: the store's integration gate PASSED on 5bea99939020 itself, `:benchmark:test -Pintegration`
+  against vespaengine/vespa:latest, 18m 37s: 56 tests, 0 failures, 0 errors, 1 skipped (StagingCorpusIT, no
+  STAGING_CORPUS export). JitPack built it (store pom, 200). Here, ./gradlew build archTest against the
+  JitPack jars: 1,763 tests, 0 failures, 2 skipped; common, monitor, peers, relay and sync all resolve
+  store:5bea99939020 with no `->`.
+
+Prev 63c67e078f88 = vespa-eventstore main @ 2026-11-11, the merge of PR #207 (over 81056281ee52, below). Its tree is
 the PR head's (10e072773603), byte for byte.
   PARTIALSERVED. A facade marker installed beside AcceptPartial that says whether THIS read was served
     part of the corpus; ObserverBackend reads it to send the partial NOTICE (relay-server.md). Only
