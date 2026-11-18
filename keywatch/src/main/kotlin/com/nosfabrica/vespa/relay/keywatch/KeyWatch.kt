@@ -111,9 +111,12 @@ class KeyWatch(
         log("read ${read.size} events: ${exposures.size} exposures, ${statements.size} statements, ${vanishes.size} vanish requests")
 
         val leaks = leakFindings(exposures, lens)
+        log("${leaks.size} leaked keys: ${leaks.count { it.keyClass == KeyClass.COMPROMISED_PUBLIC }} compromised, ${leaks.count { it.keyClass == KeyClass.PUBLIC_FROM_BIRTH }} public from birth")
         val excluded = leaks.map { it.pubkey }.toSet()
         val verdicts = transitionVerdicts(statements, lens, excluded, sweeper)
+        log("${verdicts.size} transitions: ${verdicts.groupingBy { it.status }.eachCount()}")
         val secondaries = secondaryFindings(statements.filterIsInstance<SecondaryClaim>(), excluded)
+        log("${secondaries.size} secondary keys")
 
         val findings =
             leaks +
@@ -134,6 +137,7 @@ class KeyWatch(
         val leakAt = byKey.mapValues { (_, list) -> list.minOf { it.event.createdAt } }
 
         val unranked = byKey.keys.filter { lens.cardOf(it) == null }
+        log("${byKey.size} leaked keys, ${byKey.size - unranked.size} with a rank card; asking the other ${unranked.size} for events before their leak")
         val before = authorsWithAny(unranked.map { Filter(authors = listOf(it), until = leakAt.getValue(it) - 1, limit = 1) })
         val withHistory = byKey.keys.filter { lens.cardOf(it) != null || it in before }
         val after = newestBy(withHistory.map { Filter(authors = listOf(it), since = leakAt.getValue(it) + 1, limit = 1) })
@@ -172,10 +176,12 @@ class KeyWatch(
                 .map { (pair, claims) -> Transition(pair.first, pair.second, claims) }
         if (transitions.isEmpty()) return emptyList()
         val byClaim = transitions.flatMap { t -> t.claims.map { it.event.id to t } }.toMap()
+        log("${transitions.size} transitions over ${byClaim.size} claim events; collecting citations")
 
         val vouches = mutableMapOf<Transition, MutableList<Vouch>>()
-        for (chunk in byClaim.keys.chunked(IDS_PER_FILTER)) {
+        for ((i, chunk) in byClaim.keys.chunked(IDS_PER_FILTER).withIndex()) {
             val cited = chunk.toSet()
+            log("citations of claims ${i * IDS_PER_FILTER + 1}..${i * IDS_PER_FILTER + chunk.size} of ${byClaim.size}")
             val filters =
                 listOf(
                     Filter(kinds = listOf(6, 16), tags = mapOf("e" to chunk)),
