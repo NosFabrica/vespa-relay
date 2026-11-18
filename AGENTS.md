@@ -69,7 +69,7 @@ it reads, and every reference it makes is document-relative (`./web/…`,
 ./gradlew -PvespaEventStoreDir=../vespa-eventstore build   # against a local store checkout instead of the pin
 ./gradlew -PquartzDir=../quartz build                      # against a local quartz; needs its Android SDK (sdk.dir in its local.properties)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
-KEYWATCH_OUT=/tmp/kw.json ./gradlew :keywatch:run   # leaked/moved/vouched keys off production, read-only (docs/keywatch.md)
+./gradlew :keywatch:installDist     # then keywatch/build/install/vespa-keywatch/bin/vespa-keywatch: leaked/moved/vouched keys off production, read-only (docs/keywatch.md)
 ./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
 node web/src/test/js/run.mjs       # the same suite, run directly
 

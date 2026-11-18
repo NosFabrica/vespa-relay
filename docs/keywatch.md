@@ -7,8 +7,15 @@ quartz alone: no store, no Vespa, and no module of ours, so it can leave this re
 
 ```bash
 ./gradlew :keywatch:test
-KEYWATCH_OUT=/tmp/keywatch-report.json ./gradlew :keywatch:run
+./gradlew :keywatch:installDist
+KEYWATCH_OUT=/tmp/keywatch-report.json keywatch/build/install/vespa-keywatch/bin/vespa-keywatch
 ```
+
+A full pass over production reads about 200k events and takes over an hour. Run it from an
+installed copy, not `./gradlew :keywatch:run`: `run` loads classes straight out of `build/`, so a
+compile while it runs swaps them underneath it and the pass dies on a `NoClassDefFoundError` an
+hour in (measured: the first production run). Copy the `install/` directory elsewhere if you will
+keep building.
 
 | Variable | Default | |
 |---|---|---|
