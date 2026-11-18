@@ -25,6 +25,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocket
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.io.EOFException
 import kotlin.test.Test
@@ -175,6 +177,58 @@ class SocketEndsTest {
             inner!!.out.onClosed(1001, "going away")
             assertEquals(1001, ends.since(mark).end?.code)
         }
+
+    @Test
+    fun `an end in the same millisecond as a later mark is not that mark's`() {
+        val (socket, _) = open()
+        socket.disconnect()
+        // The clock has not moved: only the order can tell the two apart.
+        val mark = ends.mark(url)
+        assertNull(ends.since(mark).end)
+    }
+
+    @Test
+    fun `NEG-MSG frames are counted for the NEG-OPEN that followed the mark, not for every session on the url`() =
+        runBlocking {
+            val (socket, _) = open()
+            val mark = ends.mark(url)
+            socket.send("[\"NEG-OPEN\",\"mine\",{},\"61\"]")
+            socket.send("[\"NEG-OPEN\",\"theirs\",{},\"61\"]")
+            inner!!.out.onMessage("[\"NEG-MSG\",\"mine\",\"6100\"]")
+            repeat(3) { inner!!.out.onMessage("[\"NEG-MSG\",\"theirs\",\"6100\"]") }
+
+            assertEquals(1L, ends.since(mark).negFramesIn)
+            assertNull(ends.since(ends.mark(url)).negFramesIn, "no NEG-OPEN went out after this mark")
+        }
+
+    private suspend fun closeInCoroutine(socket: WebSocket) = coroutineScope { launch { socket.disconnect() }.join() }
+
+    @Test
+    fun `a close from inside a coroutine is named after the function that launched it`() =
+        runBlocking {
+            val (socket, _) = open()
+            closeInCoroutine(socket)
+            assertEquals("SocketEndsTest.closeInCoroutine", ends.lastEnd(url)?.by)
+        }
+
+    @Test
+    fun `frames are named after the function the code is written in`() {
+        assertEquals("RelaySockets.release", SocketEnds.frameName("com.nosfabrica.vespa.relay.peers.RelaySockets\$release\$1", "invokeSuspend"))
+        assertEquals("VisitPool.close", SocketEnds.frameName("com.nosfabrica.vespa.relay.sync.VisitPool", "close\$lambda\$0"))
+        assertEquals("NostrClient.reconnect", SocketEnds.frameName("com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient", "reconnect"))
+    }
+
+    @Test
+    fun `a long exception message is kept short`() {
+        open()
+        inner!!.out.onFailure(java.io.IOException("x".repeat(10_000)), null, null)
+        assertTrue(ends.lastEnd(url)!!.reason!!.length <= 160)
+    }
+
+    @Test
+    fun `digits in a reason do not split one cause into many`() {
+        assertEquals("rate limited: # msgs from #.#.#.#", SocketEnds.foldDigits("rate limited: 37 msgs from 1.2.3.4"))
+    }
 
     @Test
     fun `sizes are UTF-8 bytes and verbs come off the frame`() {

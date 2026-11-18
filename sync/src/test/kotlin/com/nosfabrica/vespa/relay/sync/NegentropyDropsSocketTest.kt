@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.peers.PeerClient
+import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -90,7 +91,7 @@ class NegentropyDropsSocketTest {
         runBlocking {
             val server = closingRelay(1009, "too big")
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-            val peers = PeerClient(scope)
+            val peers = PeerClient(scope, socketEnds = SocketEnds())
             try {
                 val url = RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}/")
                 val drops = NegentropyDrops(peers.socketEnds)

@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
+import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -119,7 +120,7 @@ class SyncEngine(
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
     /** The websocket client, socket budget, Tor and NIP-42. */
-    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
+    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default, socketEnds = SocketEnds())
     private val client = peers.client
     private val tor = peers.tor
 

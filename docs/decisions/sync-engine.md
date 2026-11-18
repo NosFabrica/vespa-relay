@@ -262,6 +262,13 @@ first window failing already skips negentropy for the whole sweep
 (`negentropyUsable = false`), and this is the same decision taken mid-sweep.
 A reconcile that lands resets the count.
 
+**A resumed sweep is never declared unusable on its first window.** A cursor
+is earned by a window that was read, so a relay holding one has done
+negentropy for us; a first window that drops there is paged like any
+mid-sweep drop. Without this the paging bound below stopped a sweep, the
+next audit's first window dropped, and the band was struck as "negentropy
+cannot do it" instead of resuming.
+
 **Paging is bounded per sweep, by events.** With the give-up no longer
 stopping a relay that serves REQs, nothing bounded how much of a history one
 audit re-reads over REQ, where a reconcile would have downloaded only the
@@ -275,7 +282,10 @@ reason and no side; that was 21 of 33 failed windows in the staging sample.
 `NegentropyDrops` reads the socket's own end from `SocketEnds` (`:peers`),
 taken from a mark before the window's NEG-OPEN so an older socket's end is
 never printed as this window's cause, and counts it per cause and per
-(relay, cause). Our negentropy frames are uncapped (`frameSizeLimit = 0`), so
+(relay, cause). The socket's end is the cause only when quartz's sentence is
+that the socket went (`closed: relay disconnected`, `could not connect`); a
+refusal in the relay's own words stays its cause. Digits are folded to `#`,
+so a reason carrying counts or addresses stays one cause. Our negentropy frames are uncapped (`frameSizeLimit = 0`), so
 the largest frame we had sent rides beside every cause; a relay closing over
 its payload limit is a candidate, not a finding, until those numbers say so.
 

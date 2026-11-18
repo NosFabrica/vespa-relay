@@ -255,6 +255,8 @@ internal class NegentropyPager(
         val cursor = SweepState.keyFor(stream, url, shape)
         val stack = ArrayDeque<LongRange>()
         pushResumed(stack, url, cursor, floor, ceiling)
+        // A cursor was earned by an earlier sweep, so a failed first window here is a drop, not a refusal.
+        val resumed = state.reconciled(cursor) != null
 
         var downloaded = 0
         var reconciled = 0
@@ -404,7 +406,7 @@ internal class NegentropyPager(
 
                     NegentropySyncException.Reason.UNAVAILABLE -> {
                         val why = drops.record(url, socketMark, ours, e.detail)
-                        if (reconciled == 0 && paged == 0) {
+                        if (reconciled == 0 && paged == 0 && !resumed) {
                             System.err.println(
                                 "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — the first window, so negentropy is not used on this sweep",
                             )
@@ -548,6 +550,7 @@ internal class NegentropyPager(
                     if (walked.refused) refused = true
                     continue
                 }
+                val mark = drops.mark(url)
                 try {
                     // A slice the peer still refuses inside the per-kind reconcile lands on this hook.
                     var pagedSlices = 0
@@ -561,8 +564,13 @@ internal class NegentropyPager(
                             }, onEvent)
                             .downloaded
                     if (pagedSlices > 0) stillOver++
-                } catch (_: NegentropySyncException) {
+                } catch (e: NegentropySyncException) {
                     stillOver++
+                    if (e.reason == NegentropySyncException.Reason.UNAVAILABLE) {
+                        System.err.println(
+                            "router: sweep ${url.url} [${perKind.since}, ${perKind.until}] kind $kind could not reconcile (${drops.record(url, mark, mine, e.detail)}) — paging it",
+                        )
+                    }
                     val walked = peer.page(url, perKind, onEvent)
                     downloaded += walked.downloaded
                     if (walked.refused) refused = true

@@ -77,11 +77,15 @@ internal class NegentropyDrops(
     ): String {
         val seen = mark?.let { ends?.since(it) }
         val end = seen?.end
+        val socketWent = SOCKET_SENTENCES.any { detail.startsWith(it) }
         val cause =
             when {
-                end != null -> end.cause
-                seen != null -> "no socket end: ${detail.take(CAUSE_CHARS)}"
-                else -> detail.take(CAUSE_CHARS)
+                // Only when quartz says the socket went: a refusal in the relay's words is its own cause.
+                socketWent && end != null -> end.cause
+
+                socketWent && seen != null -> "no socket end: ${SocketEnds.foldDigits(detail).take(CAUSE_CHARS)}"
+
+                else -> SocketEnds.foldDigits(detail).take(CAUSE_CHARS)
             }
         val largestSent = seen?.sent?.largest?.bytes
         val at = now()
@@ -89,9 +93,11 @@ internal class NegentropyDrops(
         tally(byCause, cause, MAX_CAUSES, OTHER_CAUSE).add(largestSent, at)
         tally(byRelay, url.url to cause, MAX_PAIRS, OTHER_CAUSE to cause).add(largestSent, at)
         return detail +
-            (seen?.let { s -> " — " + (end?.toString() ?: "the socket did not end; ${s.sent ?: "no socket"}") + "; ${s.negFramesIn} NEG-MSG in, ${s.elapsedMs}ms after the ask" } ?: "") +
+            (seen?.let { s -> " — " + (end?.toString() ?: "the socket did not end; ${s.sent ?: "no socket"}") + "; ${negIn(s.negFramesIn)}, ${s.elapsedMs}ms after the ask" } ?: "") +
             "; " + (localCount?.let { "we hold ${fmtCount(it)} event(s) in the window" } ?: "the window is uncounted here")
     }
+
+    private fun negIn(frames: Long?) = frames?.let { "$it NEG-MSG answered our NEG-OPEN" } ?: "no NEG-OPEN went out"
 
     /** [key]'s tally, a new one while there is room, else [overflow]'s. */
     private fun <K : Any> tally(
@@ -138,6 +144,9 @@ internal class NegentropyDrops(
 
     companion object {
         private const val CAUSE_CHARS = 80
+
+        /** quartz's `detail` openings for a reconcile whose socket went away or never came. */
+        private val SOCKET_SENTENCES = listOf("closed: relay disconnected", "could not connect", "connection closed before")
         private const val MAX_CAUSES = 256
         private const val OTHER_CAUSE = "other"
         private const val MAX_PAIRS = 4_096

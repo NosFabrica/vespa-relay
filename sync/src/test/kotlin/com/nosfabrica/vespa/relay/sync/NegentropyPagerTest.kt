@@ -440,6 +440,22 @@ class NegentropyPagerTest {
         }
 
     @Test
+    fun `a per-kind reconcile the relay drops is counted with the sweep's own drops`() =
+        runBlocking {
+            val shape = Filter(kinds = listOf(1, 7))
+            val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
+            // Call 0 is the window; 1 and 2 are the dense second's per-kind reconciles.
+            val peer = FakePeer(hot, cap = 5_000, failAt = setOf(1, 2))
+            val drops = NegentropyDrops()
+            val out =
+                NegentropyPager(FakeIndex(Density(perSecond = 0)), peer, SweepState(null), NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000), drops = drops)
+                    .sweep(mirror, relay, shape, shape.copy(since = 1_000, until = 1_999)) {}
+
+            assertTrue(out.complete, "the dropped kinds were paged")
+            assertEquals("2", drops.document()?.get("windows")?.toString(), "both per-kind drops are counted")
+        }
+
+    @Test
     fun `a single-kind second the peer will not reconcile is paged`() =
         runBlocking {
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
@@ -499,17 +515,17 @@ class NegentropyPagerTest {
         }
 
     @Test
-    fun `a resumed sweep that cannot reconcile hands back only what is left`() =
+    fun `a resumed sweep whose first window drops pages on from its cursor`() =
         runBlocking {
             val state = SweepState(null)
+            // The cursor an earlier sweep earned, stopped by its paging bound.
             state.advance(SweepState.keyFor(mirror, relay, notes), 1_500, 1_999)
             val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0))
             val out = pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
-            assertFalse(out.negentropyUsable)
-            val rest = assertNotNull(out.outstanding, "the caller needs to know what to page")
-            assertEquals(1_000, rest.since)
-            assertEquals(1_499, rest.until, "everything the cursor already claims stays claimed")
+            assertTrue(out.negentropyUsable, "a relay that reconciled before is not one that refuses negentropy")
+            assertTrue(out.complete, "the dropped window was paged and the sweep went on")
+            assertEquals(listOf(1_000L..1_499L), peer.pagedRanges, "only what the cursor does not claim is paged")
         }
 
     @Test
