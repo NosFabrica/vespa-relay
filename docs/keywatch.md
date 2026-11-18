@@ -28,6 +28,7 @@ keep building.
 | `KEYWATCH_MIN_VOUCHERS` | `2` | |
 | `KEYWATCH_VOUCHER_ABOVE_NEW_KEY` | `true` | a voucher must outrank the key it admits |
 | `KEYWATCH_REQUIRE_KNEW_OLD_KEY` | `false` | only vouchers following the old key count |
+| `KEYWATCH_MAX_DEGRADED_WAIT_MINUTES` | `60` | how long to wait for a partial index to heal before giving up the pass |
 
 ## Classes
 
@@ -81,6 +82,21 @@ not another.
 - **Paging**: search answers are ranked, so an `until` cursor does not walk them (the second page of
   `nsec1` returned 44 of 26,820). `Sweeper` sizes each yearly window with COUNT, halves it until it
   fits under 4,000, then fetches it whole.
+
+## A partial index
+
+While part of its Vespa index is unreachable (`non-ideal-state`: a cluster settling), the relay
+refuses every COUNT (`CLOSED error: vespa searched only 80% of the corpus…`) but answers a REQ
+from what it can reach, with a plain EOSE and a `partial:` NOTICE at most once per ten minutes per
+connection. Measured 2026-11-18: the observer's kind 10040 came back as an empty EOSE. keywatch
+decides several things from absence (no event before a leak makes a key `PUBLIC_FROM_BIRTH`; no
+mention back leaves a secondary `CLAIMED`), so a partial read would misclassify silently.
+
+So every phase starts only once a canary COUNT is answered, and is redone from the start when one
+of its reads was partial: a `partial:` NOTICE, a COUNT refused for coverage, or a canary refused
+every 25 fetches and when the phase ends. After `KEYWATCH_MAX_DEGRADED_WAIT_MINUTES` of waiting, or
+five partial attempts at one phase, the pass ends and writes no report; the previous report stays.
+`DegradedRelayTest` pins it: without the guard, the victim it hides comes out `PUBLIC_FROM_BIRTH`.
 
 ## What the report never holds
 

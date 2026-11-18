@@ -26,8 +26,10 @@ import com.nosfabrica.vespa.relay.keywatch.RelayCorpus
 import com.nosfabrica.vespa.relay.keywatch.Report
 import com.nosfabrica.vespa.relay.keywatch.VouchPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -63,6 +65,7 @@ private val prettyJson = Json { prettyPrint = true }
  *   KEYWATCH_MIN_VOUCHERS          default 2
  *   KEYWATCH_VOUCHER_ABOVE_NEW_KEY default true
  *   KEYWATCH_REQUIRE_KNEW_OLD_KEY  default false
+ *   KEYWATCH_MAX_DEGRADED_WAIT_MINUTES  how long to wait for a partial index to heal (default 60)
  */
 fun main() {
     val env = System.getenv()
@@ -78,12 +81,19 @@ fun main() {
             aboveNewKey = env.bool("KEYWATCH_VOUCHER_ABOVE_NEW_KEY", true),
             requireKnewOldKey = env.bool("KEYWATCH_REQUIRE_KNEW_OLD_KEY", false),
         )
-    val config = KeyWatchConfig(observer = observer, policy = policy)
+    val config =
+        KeyWatchConfig(
+            observer = observer,
+            policy = policy,
+            maxDegradedWaitMs = env.long("KEYWATCH_MAX_DEGRADED_WAIT_MINUTES", 60) * 60_000,
+        )
 
     val okhttp = OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(20)).build()
     val scope = CoroutineScope(SupervisorJob())
     val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
-    val corpus = RelayCorpus(client, relay, env["KEYWATCH_READ_TOKEN"] ?: "include:spam")
+    // The canary only has to be a COUNT: the relay refuses every one while its index is partial.
+    val canary = Filter(kinds = listOf(TrustProviderListEvent.KIND), authors = listOf(observer))
+    val corpus = RelayCorpus(client, relay, env["KEYWATCH_READ_TOKEN"] ?: "include:spam", canary)
     val log: (String) -> Unit = { System.err.println("$LOG: $it") }
 
     log("reading ${relay.url} (read only); report to ${out.absolutePath}")
@@ -99,6 +109,7 @@ fun main() {
             }
         }
     } finally {
+        corpus.close()
         runCatching { client.disconnect() }
         scope.cancel()
         okhttp.dispatcher.executorService.shutdown()

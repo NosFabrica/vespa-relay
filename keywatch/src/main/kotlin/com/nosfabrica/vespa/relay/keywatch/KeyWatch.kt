@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.nip01Core.core.HexKey
 import com.vitorpamplona.quartz.nip01Core.core.hexToByteArray
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip19Bech32.toNpub
+import kotlinx.coroutines.delay
 
 class KeyWatchConfig(
     /** The observer whose rank provider ranks the vouchers. */
@@ -36,6 +37,12 @@ class KeyWatchConfig(
     val policy: VouchPolicy = VouchPolicy(),
     /** Under the relay's `max_limit` (5000), with room for COUNT drifting before the REQ. */
     val pageCap: Int = 4000,
+    /** How long to wait for a relay answering from part of its index before giving up the pass. */
+    val maxDegradedWaitMs: Long = 60 * 60_000L,
+    /** The first pause while waiting; doubled each time up to five minutes. */
+    val degradedPauseMs: Long = 30_000L,
+    /** How many times a phase is redone after a partial answer before the pass is given up. */
+    val phaseAttempts: Int = 5,
 ) {
     companion object {
         val DEFAULT_KEY_QUERIES = listOf("nsec1", "ncryptsec1", "privkey", "\"private key\"", "\"secret key\"", "\"seed phrase\"", "mnemonic")
@@ -91,8 +98,23 @@ class KeyWatch(
     private val config: KeyWatchConfig,
     private val log: (String) -> Unit,
 ) {
+    /**
+     * Never reports from a partial index. Each phase starts only once the relay answers COUNT (it
+     * refuses every COUNT while part of its index is unreachable), and is redone from the start
+     * when the relay answered any of its reads partially, or is partial again when it ends. The
+     * pass throws, writing nothing, when the relay does not settle.
+     */
     suspend fun run(nowSeconds: Long): KeyWatchResult {
-        val lens = RankLens.resolve(corpus, config.observer) ?: error("observer ${config.observer} names no 30382:rank provider in a kind 10040")
+        val lens =
+            steady("rank lens") {
+                RankLens.resolve(corpus, config.observer)
+                    // Measured: a partial index answered the observer's 10040 with an empty EOSE.
+                    ?: if (!corpus.healthy()) {
+                        throw RelayDegraded("no kind 10040 for the observer, from a partial index")
+                    } else {
+                        error("observer ${config.observer} names no 30382:rank provider in a kind 10040")
+                    }
+            }
         log("ranking through provider ${lens.provider} (observer ${config.observer})")
         val sweeper = Sweeper(corpus, config.pageCap, nowSeconds, log)
 
@@ -106,18 +128,20 @@ class KeyWatch(
                 statements += StatementReader.read(e)
             }
         }
-        for (q in config.keyQueries) sweeper.sweep(Filter(search = q), take).also { log("key material `$q`: ${read.size} events read so far") }
-        for (q in config.claimQueries) sweeper.sweep(Filter(kinds = listOf(0, 1), search = q), take).also { log("claims `$q`: ${read.size} events read so far") }
-        val vanishes = mutableListOf<Event>()
-        sweeper.sweep(Filter(kinds = listOf(VANISH_KIND))) { vanishes += it }
+        // A redone sweep re-reads its query; `take` skips what the first attempt already kept.
+        for (q in config.keyQueries) steady("key material `$q`") { sweeper.sweep(Filter(search = q), take) }.also { log("key material `$q`: ${read.size} events read so far") }
+        for (q in config.claimQueries) steady("claims `$q`") { sweeper.sweep(Filter(kinds = listOf(0, 1), search = q), take) }.also { log("claims `$q`: ${read.size} events read so far") }
+        val vanishById = mutableMapOf<String, Event>()
+        steady("vanish requests") { sweeper.sweep(Filter(kinds = listOf(VANISH_KIND))) { page -> page.forEach { vanishById[it.id] = it } } }
+        val vanishes = vanishById.values.toList()
         log("read ${read.size} events: ${exposures.size} exposures, ${statements.size} statements, ${vanishes.size} vanish requests")
 
-        val leaks = leakFindings(exposures, lens)
+        val leaks = steady("leak histories") { leakFindings(exposures, lens) }
         log("${leaks.size} leaked keys: ${leaks.count { it.keyClass == KeyClass.COMPROMISED_PUBLIC }} compromised, ${leaks.count { it.keyClass == KeyClass.PUBLIC_FROM_BIRTH }} public from birth")
         val excluded = leaks.map { it.pubkey }.toSet()
-        val verdicts = transitionVerdicts(statements, lens, excluded, sweeper)
+        val verdicts = steady("citations") { transitionVerdicts(statements, lens, excluded, sweeper) }
         log("${verdicts.size} transitions: ${verdicts.groupingBy { it.status }.eachCount()}")
-        val secondaries = secondaryFindings(statements.filterIsInstance<SecondaryClaim>(), excluded)
+        val secondaries = steady("secondary keys") { secondaryFindings(statements.filterIsInstance<SecondaryClaim>(), excluded) }
         log("${secondaries.size} secondary keys")
 
         val findings =
@@ -126,9 +150,43 @@ class KeyWatch(
                 verdicts.map(::transitionFinding) +
                 secondaries +
                 vanishes.groupBy { it.pubKey }.map { (pubkey, events) -> vanishFinding(pubkey, events) }
-        lens.load(findings.map { it.pubkey })
+        steady("rank cards") { lens.load(findings.map { it.pubkey }) }
         if (sweeper.gaps.isNotEmpty()) log("${sweeper.gaps.size} window(s) may be incomplete; listed under `gaps`")
         return KeyWatchResult(nowSeconds, lens.provider, findings, verdicts, read.size, lens::cardOf, sweeper.gaps.toList())
+    }
+
+    /** Runs [block] on a whole index: waits for one first, and redoes the block if any read in it was partial. */
+    private suspend fun <T> steady(
+        phase: String,
+        block: suspend () -> T,
+    ): T {
+        var attempt = 0
+        while (true) {
+            attempt++
+            awaitWholeIndex(phase)
+            val outcome =
+                try {
+                    block().takeIf { corpus.healthy() }
+                } catch (e: RelayDegraded) {
+                    log("$phase: ${e.message}")
+                    null
+                }
+            if (outcome != null) return outcome
+            if (attempt >= config.phaseAttempts) throw IllegalStateException("$phase: the relay answered partially $attempt times; no report written")
+            log("$phase: read from a partial index; redoing it once the index is whole (attempt ${attempt + 1} of ${config.phaseAttempts})")
+        }
+    }
+
+    private suspend fun awaitWholeIndex(phase: String) {
+        var waited = 0L
+        var pause = config.degradedPauseMs
+        while (!corpus.healthy()) {
+            if (waited >= config.maxDegradedWaitMs) throw IllegalStateException("$phase: the relay's index stayed partial for ${waited / 60_000} min; no report written")
+            log("$phase: the relay is answering from part of its index; waiting ${pause / 1000}s")
+            delay(pause)
+            waited += pause
+            pause = (pause * 2).coerceAtMost(MAX_PAUSE_MS)
+        }
     }
 
     private suspend fun leakFindings(
@@ -293,5 +351,6 @@ class KeyWatch(
         const val VANISH_KIND = 62
         const val IDS_PER_FILTER = 200
         const val FOLLOW_LISTS_PER_FILTER = 100
+        const val MAX_PAUSE_MS = 5 * 60_000L
     }
 }

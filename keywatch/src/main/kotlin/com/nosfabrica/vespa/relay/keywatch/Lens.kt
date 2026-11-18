@@ -53,12 +53,15 @@ class RankLens private constructor(
     /** Fetches the cards of every key in [pubkeys] not asked for yet. */
     suspend fun load(pubkeys: Collection<HexKey>) {
         val missing = pubkeys.filter { it !in cards }.distinct()
-        missing.forEach { cards[it] = null }
         val filters =
             missing.chunked(CARDS_PER_FILTER).map {
                 Filter(kinds = listOf(UserAssertionEvent.KIND), authors = listOf(provider), tags = mapOf("d" to it), limit = it.size)
             }
-        corpus.fetch(filters).forEach { card ->
+        // Fetched before anything is cached: a fetch that throws (a partial answer) must leave
+        // these keys unasked, or the retry would read "no card" for the ones it missed.
+        val found = corpus.fetch(filters)
+        missing.forEach { cards[it] = null }
+        found.forEach { card ->
             val subject = card.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return@forEach
             if (subject in cards) cards[subject] = Card(card.tags.rank(), card.tags.followerCount())
         }
