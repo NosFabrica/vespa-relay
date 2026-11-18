@@ -53,6 +53,7 @@ object Report {
             put("observer", observer)
             put("rankProvider", result.rankProvider)
             put("eventsRead", result.eventsRead)
+            putJsonArray("gaps") { result.gaps.forEach { add(it) } }
             putJsonObject("policy") {
                 put("minVoucherRank", policy.minVoucherRank)
                 put("minVouchers", policy.minVouchers)

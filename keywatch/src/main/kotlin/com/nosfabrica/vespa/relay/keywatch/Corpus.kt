@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.coroutines.delay
 import java.time.LocalDate
 import java.time.ZoneOffset
 
@@ -37,8 +38,8 @@ interface Corpus {
     /** One REQ per [MAX_FILTERS_PER_REQ] filters; each filter returns at most its own `limit`. */
     suspend fun fetch(filters: List<Filter>): List<Event>
 
-    /** NIP-45 COUNT of one filter. Never null: a relay that cannot count cannot be swept. */
-    suspend fun count(filter: Filter): Int
+    /** NIP-45 COUNT of one filter, or null when the relay gave no answer (it will not, sometimes, under load). */
+    suspend fun count(filter: Filter): Int?
 
     companion object {
         /** search.brainstorm.world's NIP-11 `max_filters`. */
@@ -73,15 +74,17 @@ class RelayCorpus(
             client.fetchAll(relay, chunk.map { it.withSearchToken(readToken) }, idleTimeoutMs)
         }
 
-    override suspend fun count(filter: Filter): Int {
-        repeat(COUNT_ATTEMPTS) {
+    /** Asked again after 2, 4 and 8 seconds; a relay under load drops a COUNT now and then. */
+    override suspend fun count(filter: Filter): Int? {
+        repeat(COUNT_ATTEMPTS) { attempt ->
             client.count(relay, filter.withSearchToken(readToken), idleTimeoutMs)?.let { return it.count }
+            if (attempt < COUNT_ATTEMPTS - 1) delay(2_000L shl attempt)
         }
-        error("${relay.url} answered no COUNT for ${filter.toJson()} after $COUNT_ATTEMPTS attempts")
+        return null
     }
 
     private companion object {
-        const val COUNT_ATTEMPTS = 3
+        const val COUNT_ATTEMPTS = 4
     }
 }
 
@@ -93,6 +96,11 @@ class RelayCorpus(
  * with COUNT and halved until it fits under [pageCap], then fetched whole. Windows start one per
  * year so the bisection does not spend thirty COUNTs crossing empty decades; the first and last
  * catch the corpus's impossible timestamps (0, the year 2100).
+ *
+ * A window the relay will not count is halved anyway: a narrower COUNT is cheaper, and one
+ * unanswered COUNT ended an hour-long production pass when it threw. Under [MIN_UNSIZED_SPAN] it is
+ * fetched up to the cap unsized, and a full page there is recorded in [gaps], since the window may
+ * hold more.
  */
 class Sweeper(
     private val corpus: Corpus,
@@ -100,6 +108,9 @@ class Sweeper(
     private val nowSeconds: Long,
     private val log: (String) -> Unit,
 ) {
+    /** Windows read without knowing they were whole, one line each, for the report. */
+    val gaps = mutableListOf<String>()
+
     suspend fun sweep(
         filter: Filter,
         onPage: suspend (List<Event>) -> Unit,
@@ -114,9 +125,25 @@ class Sweeper(
         onPage: suspend (List<Event>) -> Unit,
     ) {
         val n = corpus.count(filter.window(since, until, null))
+        if (n == null) {
+            if (until - since >= MIN_UNSIZED_SPAN) {
+                val mid = since + (until - since) / 2
+                sweepWindow(filter, mid + 1, until, onPage)
+                sweepWindow(filter, since, mid, onPage)
+                return
+            }
+            val page = corpus.fetch(listOf(filter.window(since, until, pageCap)))
+            if (page.size >= pageCap) gaps += "${filter.toJson()} in [$since, $until]: no COUNT, and a full page of ${page.size}"
+            log("${filter.search}: no COUNT for [$since, $until]; read ${page.size} unsized")
+            onPage(page)
+            return
+        }
         if (n == 0) return
         if (n <= pageCap || until <= since) {
-            if (n > pageCap) log("${filter.search}: $n events share second $since; kept the first $pageCap")
+            if (n > pageCap) {
+                gaps += "${filter.toJson()} at second $since: $n events, kept $pageCap"
+                log("${filter.search}: $n events share second $since; kept the first $pageCap")
+            }
             onPage(corpus.fetch(listOf(filter.window(since, until, pageCap))))
             return
         }
@@ -139,5 +166,8 @@ class Sweeper(
 
         /** Past every far-future `created_at` the corpus holds, inside a 32-bit `until`. */
         const val LAST_SECOND = 4_294_967_295L
+
+        /** An hour: below it, a window that cannot be counted is read rather than split further. */
+        const val MIN_UNSIZED_SPAN = 3_600L
     }
 }

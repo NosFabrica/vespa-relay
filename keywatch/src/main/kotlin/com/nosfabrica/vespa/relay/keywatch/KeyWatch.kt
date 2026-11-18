@@ -78,6 +78,8 @@ class KeyWatchResult(
     val transitions: List<TransitionVerdict>,
     val eventsRead: Int,
     val cards: (HexKey) -> Card?,
+    /** Windows the sweep could not prove it read whole; empty on a complete pass. */
+    val gaps: List<String> = emptyList(),
 )
 
 /**
@@ -125,7 +127,8 @@ class KeyWatch(
                 secondaries +
                 vanishes.groupBy { it.pubKey }.map { (pubkey, events) -> vanishFinding(pubkey, events) }
         lens.load(findings.map { it.pubkey })
-        return KeyWatchResult(nowSeconds, lens.provider, findings, verdicts, read.size, lens::cardOf)
+        if (sweeper.gaps.isNotEmpty()) log("${sweeper.gaps.size} window(s) may be incomplete; listed under `gaps`")
+        return KeyWatchResult(nowSeconds, lens.provider, findings, verdicts, read.size, lens::cardOf, sweeper.gaps.toList())
     }
 
     private suspend fun leakFindings(
