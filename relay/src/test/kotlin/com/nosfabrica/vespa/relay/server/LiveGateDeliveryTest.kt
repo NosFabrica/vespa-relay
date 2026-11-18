@@ -150,8 +150,11 @@ class LiveGateDeliveryTest {
                 publish(earlyBad)
                 publish(earlyGood)
 
-                rawSub.replayRaw({}, {})
-                screenedSub.replay({}, {})
+                // Kept, not dropped: an event accepted before the replay may be delivered BY it.
+                val rawReplayed = Collections.synchronizedList(mutableListOf<String>())
+                val screenedReplayed = Collections.synchronizedList(mutableListOf<String>())
+                rawSub.replayRaw({ rawReplayed.add(it.id) }, {})
+                screenedSub.replay({ screenedReplayed.add(it.id) }, {})
 
                 val good = trusted.sign<Event>(now, 1, emptyArray(), "after EOSE, trusted")
                 val bad = spammer.sign<Event>(now, 1, emptyArray(), "after EOSE, below the floor")
@@ -159,11 +162,22 @@ class LiveGateDeliveryTest {
                 publish(good)
 
                 for (out in listOf(raw, screened)) awaitId(out, good.id)
-                // The trusted note overtook nothing: give the cold-author read time to have answered.
+                // An event accepted between registration and replay reaches a subscription ONCE, by
+                // whichever path claims its id first (LiveEventStore's SeenIds): the stored replay, when
+                // the replay's query sees it, or live, held by the gate until its cold-author read
+                // answers. WHICH is a race. Measured under load, 40 runs: live on both subscriptions in
+                // 29, replayed on both in 8, split in 3, and never lost or doubled. Asserting the live
+                // path alone failed whenever the replay won (relay main, CI, 2026-11-18).
+                val paths = listOf(raw to rawReplayed, screened to screenedReplayed)
+                for ((live, replayed) in paths) if (earlyGood.id !in replayed) awaitId(live, earlyGood.id)
+                // An id that must NEVER arrive has nothing to poll for: give the below-floor authors'
+                // reads time to have answered.
                 delay(500)
-                for (out in listOf(raw, screened)) {
-                    assertTrue(earlyGood.id in out, "a held live event from a trusted author was never sent: $out")
-                    assertEquals(emptyList(), out.filter { it == bad.id || it == earlyBad.id }, "a below-floor author was streamed")
+                for ((live, replayed) in paths) {
+                    val sent = synchronized(live) { live.count { it == earlyGood.id } } + replayed.count { it == earlyGood.id }
+                    assertEquals(1, sent, "the early trusted note must reach the subscription exactly once, live or replayed: live=$live replayed=$replayed")
+                    // Live only: the in-memory index cannot gate the replay (see the class doc).
+                    assertEquals(emptyList(), synchronized(live) { live.filter { it == bad.id || it == earlyBad.id } }, "a below-floor author was streamed")
                 }
             } finally {
                 rawSub.cancel()
