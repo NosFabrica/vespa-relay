@@ -55,7 +55,30 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-ce558d9 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-10 (the
+74c6a4a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-18 (the
+quartz#121 merge, 74c6a4ae66), 84 commits over ce558d9 (below), which it descends from. The same commit as the
+store's pin at fc1dea38d5a0 (vespaEventStore, below), which audits it against the store. JitPack builds it
+(quartz-jvm's POM answers 200). What this relay reaches:
+
+  MAGPIE. quartz's crypto-kmp (2.1.0 -> 2.1.1) and libschnorr256k1-kotlin (JitPack 867bb13 -> 1.0.2) are
+    released on Nostr + Blossom only, under com.vitorpamplona.crypto and com.vitorpamplona.schnorr256k1;
+    neither is on Maven Central. settings.gradle.kts resolves both groups through the Magpie settings plugin
+    (0.2.0), trusting only the key vitorpamplona.com names as `releases`; gradle/magpie.lock pins that key
+    and every resolved file (commit its changes with the bump that causes them; a lock failure means a key
+    or a release changed). JitPack serves the store and quartz only. The image build resolves through
+    Magpie too: it needs the network to the key's relays and Blossom servers, and its Gradle cache mount
+    keeps Magpie's cache (/root/.gradle/magpie) between builds.
+  SEARCH (through the store): a decentralized list's own tag values are indexed, keywords included
+    (quartz#121); 38421 (Routstr nodes) is searchable. See the store pin's note.
+  Not reached: INostrClient's refused kinds and filter cap (19cd46e, opt-in), NIP-85's TrustNetworkIndex
+    keyed by the whole pubkey, NIP-51 private tags, Namecoin, the new NIP-FA/FB/FC kinds (parsed, stored
+    as before).
+  RUNTIME CLASSPATH (:relay, :sync): quartz moves; crypto-jvm 2.1.0 -> 2.1.1 and schnorr256k1-kotlin-jvm
+    867bb13 (JitPack) -> 1.0.2 (Magpie). The one `->` is crypto 2.1.0 -> 2.1.1 inside schnorr256k1's own
+    graph (a version conflict Gradle settles upward); quartz and the store resolve with none.
+  ./gradlew build archTest: 1,763 tests, 0 failed, 2 skipped.
+
+Prev ce558d9 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-10 (the
 quartz#106 merge, ce558d90e7): 288217a (below) plus one catalog line. The same commit as the store's pin on its
 claude/kind-archimedes-jcwe4q branch. quartz's libschnorr256k1-kotlin moves 1d851c2 -> 867bb13, from JitPack in
 the group settings.gradle.kts already routes: BIP-340 signing with no aux randomness, field compares on
@@ -628,7 +651,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-9b28001b7071 = vespa-eventstore main @ 2026-11-18, the merge of PR #210 (over 5bea99939020, below). Its tree is
+fc1dea38d5a0 = vespa-eventstore claude/affectionate-planck-iplvwi @ 2026-11-18, two commits over 9b28001b7071
+(below), which it descends from (`git merge-base --is-ancestor 9b28001b7071 fc1dea38d5a0`, verified). JitPack
+builds it (store pom and jar, 200).
+  QUARTZ 74c6a4a (above), resolved through Magpie: the store's settings.gradle.kts adopts the same plugin and
+    lock, and its POM names quartz-jvm:74c6a4a.
+  LIST KEYWORDS. IndexableFields.Tiered.keywords (a decentralized list item's usernames, codes, numbers) is
+    appended to the body text after the prose values, as quartz's SQLite reference indexes them. A REINDEX
+    of kinds 9998 / 9999 / 39998 / 39999 rolls it out (reindexFullTextSearch); until then old rows keep
+    their old text.
+  RELEASES TO NOSTR TOO: the store's release workflow gains publishToNostr (Magpie). Build-only here.
+  No engine/app, bundle or schema file moves: no deploy-time migration.
+
+NOT GATED: the store's integration gate (`:benchmark:test -Pintegration`) has NOT run against this commit:
+  the container it was bumped in has no Docker. Its unit build passes (`./gradlew build`). Run the gate
+  before deploying this pin (AGENTS.md, Commands).
+  Here, ./gradlew build archTest against the JitPack jars: 1,763 tests, 0 failures, 2 skipped; common,
+  monitor, peers, relay and sync all resolve store:fc1dea38d5a0 and quartz:74c6a4a with no `->`.
+
+Prev 9b28001b7071 = vespa-eventstore main @ 2026-11-18, the merge of PR #210 (over 5bea99939020, below). Its tree is
 the PR head's (1af0363), byte for byte. Closes the store's #209.
   SLICED ID WALKS. The snapshot cursor (VespaEventIndex.visitIdsByCursor, NIP-77 `Snapshot`) lowered only
     `until` between pages, so every page re-matched the rest of its window: on staging 2026-11-17 the
