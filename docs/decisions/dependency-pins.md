@@ -57,7 +57,7 @@ The relay application's version (image tag / --version display).
 ```text
 74c6a4a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-18 (the
 quartz#121 merge, 74c6a4ae66), 84 commits over ce558d9 (below), which it descends from. The same commit as the
-store's pin at fc1dea38d5a0 (vespaEventStore, below), which audits it against the store. JitPack builds it
+store's pin at a276f3e28676 (vespaEventStore, below), which audits it against the store. JitPack builds it
 (quartz-jvm's POM answers 200). What this relay reaches:
 
   MAGPIE. quartz's crypto-kmp (2.1.0 -> 2.1.1) and libschnorr256k1-kotlin (JitPack 867bb13 -> 1.0.2) are
@@ -651,9 +651,9 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-fc1dea38d5a0 = vespa-eventstore claude/affectionate-planck-iplvwi @ 2026-11-18, two commits over 9b28001b7071
-(below), which it descends from (`git merge-base --is-ancestor 9b28001b7071 fc1dea38d5a0`, verified). JitPack
-builds it (store pom and jar, 200).
+a276f3e28676 = vespa-eventstore main @ 2026-11-18, the merge of PR #211 (over 9b28001b7071, below), whose tree is
+the PR head's (fc1dea38d5a0), byte for byte: two commits over 9b28001b7071, which it descends from
+(`git merge-base --is-ancestor 9b28001b7071 a276f3e28676`, verified). JitPack builds it (store pom and jar, 200).
   QUARTZ 74c6a4a (above), resolved through Magpie: the store's settings.gradle.kts adopts the same plugin and
     lock, and its POM names quartz-jvm:74c6a4a.
   LIST KEYWORDS. IndexableFields.Tiered.keywords (a decentralized list item's usernames, codes, numbers) is
@@ -663,11 +663,11 @@ builds it (store pom and jar, 200).
   RELEASES TO NOSTR TOO: the store's release workflow gains publishToNostr (Magpie). Build-only here.
   No engine/app, bundle or schema file moves: no deploy-time migration.
 
-NOT GATED: the store's integration gate (`:benchmark:test -Pintegration`) has NOT run against this commit:
+NOT GATED: the store's integration gate (`:benchmark:test -Pintegration`) has NOT run against this tree:
   the container it was bumped in has no Docker. Its unit build passes (`./gradlew build`). Run the gate
   before deploying this pin (AGENTS.md, Commands).
   Here, ./gradlew build archTest against the JitPack jars: 1,763 tests, 0 failures, 2 skipped; common,
-  monitor, peers, relay and sync all resolve store:fc1dea38d5a0 and quartz:74c6a4a with no `->`.
+  monitor, peers, relay and sync all resolve store:a276f3e28676 and quartz:74c6a4a with no `->`.
 
 Prev 9b28001b7071 = vespa-eventstore main @ 2026-11-18, the merge of PR #210 (over 5bea99939020, below). Its tree is
 the PR head's (1af0363), byte for byte. Closes the store's #209.
