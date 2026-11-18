@@ -628,7 +628,35 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-5bea99939020 = vespa-eventstore main @ 2026-11-13, the merge of PR #208 (over 63c67e078f88, below). Its tree is
+9b28001b7071 = vespa-eventstore main @ 2026-11-18, the merge of PR #210 (over 5bea99939020, below). Its tree is
+the PR head's (1af0363), byte for byte. Closes the store's #209.
+  SLICED ID WALKS. The snapshot cursor (VespaEventIndex.visitIdsByCursor, NIP-77 `Snapshot`) lowered only
+    `until` between pages, so every page re-matched the rest of its window: on staging 2026-11-17 the
+    sync's `Snapshot / unranked / kinds,since,until` row matched 15.8 documents per id served and was
+    91.5% of the sync's engine + summary time. Every page after the first now asks for a slice of about
+    one page, sized from the density the previous page showed; the next walk of a shape starts on a slice
+    too (a remembered width, switched by VESPA_RECENCY_MEMORY). Same ids, same NIP-01 order. Measured in
+    the store's MockVespaEngine only: 5.21-8.44 documents matched per hit served -> 1.69-2.07 on a cold
+    walk. Staging is NOT measured: whether engine time falls with documents matched is what to read.
+  Slices are booked under the walk's own clause shape, so `engineByCaller` rows keep their meaning. New
+    IngestStats stages: `walk.slice.short`, `walk.slice.empty`.
+  No quartz move. No engine/app, bundle or schema file moves; no coverage key or filter changes, so no
+    sync state migration.
+  git merge-base --is-ancestor 5bea99939020 9b28001b7071   # verified
+
+DEPLOY: the sync is the caller #209 measured (its negentropy snapshots, through vespa-4's container), so
+  the gain needs the sync on this image; the relay reads through the same client. Read after deploy: the sync's `/pulse.json` `engineByCaller`,
+  two readings minutes apart, row `Snapshot / unranked / kinds,since,until`: docsMatched / hitsServed
+  (was 15.8-16.8) and engineMs; and per-process CPU of vespa-4's container and proton.
+
+GATED: the store's integration gate PASSED on the PR head 1af0363, whose tree is this merge's:
+  `:benchmark:test -Pintegration` against vespaengine/vespa:latest, 32m 54s: 34 ITs, 33 ran, 0 failures,
+  0 errors, 1 skipped (StagingCorpusIT, no STAGING_CORPUS export), plus the module's 22 unit tests. Its unit
+  build: 1,073 tests, 0 failures. JitPack built it (store pom, 200).
+  Here, ./gradlew build archTest against the JitPack jars: 1,763 tests, 0 failures, 2 skipped; common,
+  monitor, peers, relay and sync all resolve store:9b28001b7071 with no `->`.
+
+Prev 5bea99939020 = vespa-eventstore main @ 2026-11-13, the merge of PR #208 (over 63c67e078f88, below). Its tree is
 the PR head's (33ea9532), byte for byte.
   UNCOMPRESSED READS. VespaHttp sends `Accept-Encoding: identity` on every read (search, document get,
     visit). Before, OkHttp added `gzip` on its own and Vespa compressed every answer on its container's
