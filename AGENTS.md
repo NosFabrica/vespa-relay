@@ -3,7 +3,8 @@
 A Nostr relay with trust-ranked NIP-50 search: quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays into the same
-store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), three processes:
+store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), three processes,
+and one standalone reader beside them (`:keywatch`):
 
 - `:relay` — the serving side. `RelayMain` is its entrypoint.
 - `:sync` — the mirror, its own process so it restarts without the relay or
@@ -25,6 +26,11 @@ store. Six Gradle modules, JVM only (toolchain 21, run on JDK 27 in the image), 
   (`fold/`), `RelayDiscovery`, `RouterConfig`, `IngestPipeline`, `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
   `IngestPipeline`, which writes the relay's publishes the way it writes the
   mirror's downloads (`RELAY_INGEST`).
+- `:keywatch` — a standalone fourth process (`KeyWatchMain`) outside the
+  deployment: it reads one relay (production search.brainstorm.world, read-only)
+  and writes a JSON report of keys whose secret is public, keys that say they
+  moved, and whether well-ranked third parties vouched for the move. Depends on
+  quartz alone, nothing of ours. [docs/keywatch.md](docs/keywatch.md).
 - `:web` — every `.html`, `.js` and `.css` in the repo and the Ktor scaffolding
   that serves them. Depends on Ktor and kotlinx.serialization, nothing of ours.
 
@@ -63,6 +69,7 @@ it reads, and every reference it makes is document-relative (`./web/…`,
 ./gradlew -PvespaEventStoreDir=../vespa-eventstore build   # against a local store checkout instead of the pin
 ./gradlew -PquartzDir=../quartz build                      # against a local quartz; needs its Android SDK (sdk.dir in its local.properties)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
+KEYWATCH_OUT=/tmp/kw.json ./gradlew :keywatch:run   # leaked/moved/vouched keys off production, read-only (docs/keywatch.md)
 ./gradlew :web:jsTest              # the web UI's own tests (plain node, no deps)
 node web/src/test/js/run.mjs       # the same suite, run directly
 
