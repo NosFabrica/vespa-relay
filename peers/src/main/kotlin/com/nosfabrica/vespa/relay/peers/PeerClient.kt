@@ -80,7 +80,10 @@ class PeerClient(
     /** The OkHttp client that can reach [url], for dials outside quartz's websocket path. */
     fun httpFor(url: NormalizedRelayUrl): OkHttpClient = tor?.clientFor(url) ?: okhttp
 
-    val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope, decoder)
+    /** How each socket ended and what we sent on it, which quartz's disconnect does not say. */
+    val socketEnds = SocketEnds()
+
+    val client = NostrClient(socketEnds.around(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }), scope, decoder)
 
     // NIP-42: an unanswered challenge looks exactly like an empty relay.
     private val authenticator =

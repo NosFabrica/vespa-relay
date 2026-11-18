@@ -47,6 +47,8 @@ internal data class NegPageTuning(
     val maxTarget: Int = 1_000_000,
     /** How far below `now` a sweep stops; a window must be immutable to be checkpointed. */
     val slackSeconds: Long = 60,
+    /** The most a sweep re-reads over plain REQs for windows negentropy dropped; the cursor resumes the rest. */
+    val pagedEventsPerSweep: Int = 1_000_000,
 )
 
 /** One window against one peer: reconcile it, or page it. */
@@ -215,6 +217,8 @@ internal class NegentropyPager(
     private val tuning: NegPageTuning,
     /** What each relay said when it refused. Deaf for probes and tests. */
     private val complaints: RelayComplaints = RelayComplaints.DEAF,
+    /** Why each window that could not reconcile failed, and how often. */
+    private val drops: NegentropyDrops = NegentropyDrops(),
 ) {
     /** How far below `now` a sweep stops. */
     internal val slackSeconds: Long get() = tuning.slackSeconds
@@ -256,8 +260,58 @@ internal class NegentropyPager(
         var reconciled = 0
         var paged = 0
         var refusedWindows = 0
-        var consecutiveFailures = 0
+        // Only a window left unread counts toward giving up; one the fallback read was still read.
+        var unclaimedInARow = 0
+        var droppedInARow = 0
+        // Once negentropy keeps dropping, the rest of the sweep pages without opening it.
+        var pagingOnly = false
+        var pagedEvents = 0L
         var lastFailure: NegentropySyncException? = null
+
+        /** Walks [sweepWindow] over plain REQs, claiming it only if it was served to the end. */
+        suspend fun pageWindow(
+            sweepWindow: LongRange,
+            askedAtMs: Long,
+            why: String,
+        ) {
+            val walked = peer.page(url, windowFilter(shape, sweepWindow), onEvent)
+            downloaded += walked.downloaded
+            pagedEvents += walked.downloaded
+            paged++
+            if (walked.refused) {
+                refusedWindows++
+                unclaimedInARow++
+                sayRefused(url, sweepWindow, why, askedAtMs)
+            } else {
+                unclaimedInARow = 0
+                complete(cursor, sweepWindow)
+            }
+        }
+
+        /** The outcome of a sweep stopped after a paged window, or null to keep going. */
+        fun stopAfterPaging(sweepWindow: LongRange): SweepOutcome? {
+            val holdsAt = state.reconciled(cursor)?.downTo ?: sweepWindow.first
+            when {
+                unclaimedInARow >= MAX_UNCLAIMED_IN_A_ROW -> {
+                    System.err.println(
+                        "router: sweep ${url.url} gave up after $unclaimedInARow window(s) in a row went unread" +
+                            " — ${fmtCount(downloaded)} event(s) kept, cursor holds at $holdsAt",
+                    )
+                }
+
+                pagedEvents >= tuning.pagedEventsPerSweep && stack.isNotEmpty() -> {
+                    System.err.println(
+                        "router: sweep ${url.url} paged ${fmtCount(pagedEvents.toInt())} event(s), this sweep's bound" +
+                            " — cursor holds at $holdsAt and the next audit resumes below it",
+                    )
+                }
+
+                else -> {
+                    return null
+                }
+            }
+            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = lastFailure, refusedWindows = refusedWindows)
+        }
 
         while (stack.isNotEmpty()) {
             // Newest first, the invariant the cursor rests on.
@@ -278,6 +332,12 @@ internal class NegentropyPager(
             var refusedHere = false
             // The floor for reading what the relay says about this window.
             val askedAtMs = System.currentTimeMillis()
+            if (pagingOnly) {
+                pageWindow(sweepWindow, askedAtMs, "the page was refused or cut short")
+                stopAfterPaging(sweepWindow)?.let { return it }
+                continue
+            }
+            val socketMark = drops.mark(url)
             try {
                 // quartz counts from zero per NEG-OPEN; offset so the progress line never walks backwards.
                 val base = downloaded
@@ -301,7 +361,8 @@ internal class NegentropyPager(
                 downloaded += result.downloaded
                 reconciled++
                 paged += pagedHere
-                consecutiveFailures = 0
+                unclaimedInARow = 0
+                droppedInARow = 0
                 // Their side: a stated cap fits in one step, a split shrinks, anything else grows.
                 target =
                     when {
@@ -337,11 +398,16 @@ internal class NegentropyPager(
                         } else if (badTo >= sweepWindow.last) {
                             state.advance(cursor, badFrom, sweepWindow.last)
                         }
-                        consecutiveFailures = 0
+                        unclaimedInARow = 0
+                        droppedInARow = 0
                     }
 
                     NegentropySyncException.Reason.UNAVAILABLE -> {
+                        val why = drops.record(url, socketMark, ours, e.detail)
                         if (reconciled == 0 && paged == 0) {
+                            System.err.println(
+                                "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — the first window, so negentropy is not used on this sweep",
+                            )
                             // The first window never landed: this peer does not do negentropy for us.
                             return SweepOutcome(
                                 downloaded,
@@ -356,24 +422,16 @@ internal class NegentropyPager(
                         }
                         // Mid-sweep: page this window so the sweep keeps its contiguity.
                         System.err.println(
-                            "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile (${e.detail}) — paging this window",
+                            "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — paging this window",
                         )
-                        val walked = peer.page(url, windowFilter(shape, sweepWindow), onEvent)
-                        downloaded += walked.downloaded
-                        paged++
-                        if (walked.refused) {
-                            refusedWindows++
-                            sayRefused(url, sweepWindow, "the fallback page was refused or cut short too", askedAtMs)
-                        } else {
-                            complete(cursor, sweepWindow)
-                        }
-                        if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                        pageWindow(sweepWindow, askedAtMs, "the fallback page was refused or cut short too")
+                        if (++droppedInARow >= DROPS_BEFORE_PAGING_ONLY && stack.isNotEmpty()) {
+                            pagingOnly = true
                             System.err.println(
-                                "router: sweep ${url.url} gave up after $consecutiveFailures window(s) in a row failed" +
-                                    " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${state.reconciled(cursor)?.downTo ?: sweepWindow.first}",
+                                "router: sweep ${url.url} negentropy failed $droppedInARow window(s) in a row — paging the rest of this sweep",
                             )
-                            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = e, refusedWindows = refusedWindows)
                         }
+                        stopAfterPaging(sweepWindow)?.let { return it }
                     }
                 }
             }
@@ -587,7 +645,10 @@ internal class NegentropyPager(
 
         private const val GROWTH = 1.25
 
-        /** Windows that may fail in a row before the sweep stops; the cursor keeps what was earned. */
-        private const val MAX_CONSECUTIVE_FAILURES = 3
+        /** Windows that may go unread in a row before the sweep stops; the cursor keeps what was earned. */
+        internal const val MAX_UNCLAIMED_IN_A_ROW = 3
+
+        /** Negentropy failures in a row before the rest of a sweep pages without opening it. */
+        internal const val DROPS_BEFORE_PAGING_ONLY = 2
     }
 }

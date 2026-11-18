@@ -718,6 +718,49 @@ internal val MIRROR_TERMS: JsonObject =
                 "merely running slowly, which is the distinction `negentropyRuns` alone cannot make.",
         )
         term(
+            "negentropyDrops",
+            "Why negentropy windows FAILED TO RECONCILE since boot, one count per failed window: an audit's " +
+                "window the relay dropped, refused or went silent on before the reconcile finished. Where the socket " +
+                "itself ended, the cause is how: `relay closed <code> <reason>` is a close frame the relay sent, " +
+                "`we closed (<caller>)` is this process ending it (a socket release, quartz's reconnect), and " +
+                "`transport <exception>` is a socket that died with no close frame (a reset, an EOF, a failed ping). " +
+                "`no socket end: …` is a reconcile that failed with the socket still up, in quartz's words. A " +
+                "measurement only: nothing reads it to decide anything. Each window's own line in the log, " +
+                "`could not reconcile (…)`, carries the same cause with the frames we had sent and the window's size.",
+        )
+        term(
+            "windows",
+            "Negentropy windows that failed to reconcile, in this row's scope: the whole process, one cause, or one " +
+                "(relay, cause) pair.",
+        )
+        term(
+            "causes",
+            "The failed windows split by cause, most frequent first. They sum to `windows`; a cause past the " +
+                "first 256 distinct ones is counted under `other`.",
+        )
+        term(
+            "cause",
+            "How the window failed: how its socket ended if it did, else quartz's sentence. See `negentropyDrops`.",
+        )
+        term(
+            "byRelay",
+            "The failed windows split by (relay, cause), most frequent first, the top 200 published and the rest " +
+                "counted in `omitted`. Pairs past the first 4,096 are counted under the relay `other`.",
+        )
+        term(
+            "largestSentMin",
+            "Bytes: the smallest, across this cause's windows, of the LARGEST frame we had sent on the socket " +
+                "before it failed. Beside `largestSentMax` it says whether size predicts the cause: a relay closing " +
+                "for an oversized frame shows a high floor, and a cause that also strikes after small frames is " +
+                "not about size.",
+        )
+        term(
+            "largestSentMax",
+            "Bytes: the largest frame we had sent on the socket before a window failed, the most across this row's " +
+                "windows. Our negentropy frames are not capped, so this is the number to hold against a relay's " +
+                "stated payload limit.",
+        )
+        term(
             "retracted",
             "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
                 "retracted scores, and nothing else — a provider's own profile is another stream's record and " +

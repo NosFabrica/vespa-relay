@@ -20,15 +20,21 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.sync.NegentropyDrops
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocket
+import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
+import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -61,6 +67,7 @@ class StatusVocabularyTest {
             "to",
             "startedAt",
             "endedAt",
+            "lastAt",
             "relay",
             "min",
             "max",
@@ -106,6 +113,7 @@ class StatusVocabularyTest {
                 live = live(),
                 store = storeCalls(),
                 nowSeconds = now,
+                negentropyDrops = negentropyDrops(),
             )
         val data =
             buildJsonObject {
@@ -448,6 +456,57 @@ class StatusVocabularyTest {
             callers = listOf(StoreCalls.Caller(caller = "ingest.dedup", issued = 41_022, returned = 41_020, failed = 0, cancelled = 0, outstanding = 2, oldestOutstandingSec = 794)),
             ages = listOf(StoreCalls.Age(fromSec = 0, calls = 1), StoreCalls.Age(fromSec = 900, calls = 2)),
         )
+
+    /** One window dropped by a relay's close frame, through the recorder the pager writes. */
+    private fun negentropyDrops(): JsonObject {
+        val url = RelayUrlNormalizer.normalize("wss://relay.example")
+        val ends = SocketEnds()
+        val drops = NegentropyDrops(ends)
+        val mark = drops.mark(url)
+        var relaySide: WebSocketListener? = null
+        val inner =
+            object : WebsocketBuilder {
+                override fun build(
+                    url: NormalizedRelayUrl,
+                    out: WebSocketListener,
+                ): WebSocket {
+                    relaySide = out
+                    return object : WebSocket {
+                        override fun needsReconnect() = false
+
+                        override fun connect() = Unit
+
+                        override fun disconnect() = Unit
+
+                        override fun send(msg: String) = true
+                    }
+                }
+            }
+        val quartzSide =
+            object : WebSocketListener {
+                override fun onOpen(
+                    pingMillis: Int,
+                    compression: Boolean,
+                ) = Unit
+
+                override suspend fun onMessage(text: String) = Unit
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) = Unit
+
+                override fun onFailure(
+                    t: Throwable,
+                    code: Int?,
+                    response: String?,
+                ) = Unit
+            }
+        ends.around(inner).build(url, quartzSide).send("[\"NEG-OPEN\",\"s\",{},\"61\"]")
+        relaySide!!.onClosed(1009, "message too big")
+        drops.record(url, mark, 1_000, "closed: relay disconnected")
+        return drops.document()!!
+    }
 
     /** Every member the document publishes, at any depth. */
     private fun publishedMembers(): Set<String> {

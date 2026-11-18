@@ -96,6 +96,19 @@ Reach for it first.
   `VisitAborts` and `RelayComplaints`. `narrowedRelays` beside them is not a
   fault: it counts relays that have told us how wide a filter they take, and
   each one is a relay that could never finish an ask before.
+- **`negentropyDrops` on the mirror's progress document, and the `could not
+  reconcile (…)` lines** — WHY a negentropy window failed. quartz reports every
+  drop of the socket as `closed: relay disconnected` and nothing more, so
+  `SocketEnds` (`:peers`) records each socket's end beside it: a close frame
+  from the relay with its code and reason, our own close with the frame of ours
+  that asked for it, or a transport failure with its exception, plus the
+  largest and the last frame we had sent on that socket. Every failed window's
+  line carries that, the NEG-MSG frames the relay sent during the window, the
+  time since the ask and our own count for the window; the document counts the
+  same causes per cause and per (relay, cause), with the range of largest-sent
+  sizes per cause, so a day of it says whether the drops are the relay's close
+  codes, ours, or the network, and whether size predicts them. It only
+  measures. Read it before proposing a fix for the drops (#324).
 - **the `prime relays` table on the mirror's page** — TWO AXES, and reading
   either one alone is how this table was wrong first. `syncStatus` is the PAST
   (`notStarted` / `paging` / `complete` / `refused`); `behind` is the PRESENT —

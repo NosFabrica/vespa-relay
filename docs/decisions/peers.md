@@ -1,10 +1,23 @@
 # Peers decisions
 
-The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`,
+The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`, `SocketEnds`,
 `DialGate`, `TorTransport`, `RelayUrlCache`, `RelayDiscovery`,
 `RelayVerdictRecord`, `RelayFacts`, `Verdict`), moved out of the source so
 the code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.
+
+**`SocketEnds` records each socket's end beside quartz, around its socket builder.**
+`RelayConnectionListener.onDisconnected` carries no close code, no reason and
+no side, so a negentropy window that failed on a dropped socket could not say
+who dropped it (#324). Wrapping the `WebsocketBuilder` sees all three: the
+close frame and the transport failure arrive on the socket's listener, and
+our own close is a `disconnect()` call, attributed by a stack walk to the
+first frame of ours. The end is recorded before quartz's handler runs, since
+that handler is what fails the reconcile reading it, and the first end wins
+because quartz answers a failure with a `disconnect()` of its own. The cost:
+quartz's sockets skip the listener's guard only for its own listener class,
+so every message now takes the guarded path. Remove when quartz's disconnect
+carries the close.
 
 **The OkHttp dispatcher is 4,096 wide, not the stock 64.** An open websocket
 holds a dispatcher slot for its whole life, so at 64 every stream's

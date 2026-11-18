@@ -66,6 +66,8 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
                           mirror's and the monitor's
     RelaySockets.kt       who is still using this socket: one refcount across
                           every stream and every probe pass
+    SocketEnds.kt         how each socket ended and what we sent on it, which
+                          quartz's onDisconnected drops
     RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
                           the mirror reads. The contract between the planes
     Verdict.kt            …and the label vocabulary they are written in. In
@@ -349,6 +351,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           compare both ways, delete what the provider no
                           longer serves
     NegentropyPager.kt    the windowed history sweep every reconcile runs
+    NegentropyDrops.kt    why its windows failed to reconcile, per cause and
+                          relay, off the sockets' own ends
     SweepState.kt         per-peer window sizes and the in-progress cursor
     SyncBands.kt          covered created_at bands per (relay, filter)
     PersistedJsonState.kt the state files' shared flusher, written through

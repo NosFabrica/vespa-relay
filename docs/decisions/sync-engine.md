@@ -1,6 +1,6 @@
 # Sync engine decisions
 
-The history behind `sync/.../{SyncEngine,SyncBands,NegentropyPager,
+The history behind `sync/.../{SyncEngine,SyncBands,NegentropyPager,NegentropyDrops,
 SweepState,RosterBuilder,RetractionAudit}.kt`, moved out of the source so the
 code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.
@@ -246,6 +246,38 @@ peer's cap from its refusal (`NegentropySyncResult.peerCap`) or, failing that,
 a window quartz had to split. quartz owns everything inside one call; the pager
 owns what survives a call: the cursor, the per-peer size, and the newest-first
 order every push onto the stack keeps.
+
+**Only a window left unread counts toward giving up.** The sweep stopped after
+three failed negentropy windows in a row, counted whether or not the paging
+fallback then read and claimed the window, so a relay that dropped every
+NEG-OPEN but served REQs never finished a sweep: on staging (2026-11-18)
+`scores.brainstorm.world` paged and claimed four windows and gave up with
+2.5M events kept, and both it and `jskitty.com` had been incomplete for seven
+to eight weeks (#324). Three unread windows in a row still stop a relay that
+refuses everything, exactly as before.
+
+**Two drops in a row page the rest of the sweep.** Opening a session the
+relay will drop costs a round trip, or a full idle window, per window; the
+first window failing already skips negentropy for the whole sweep
+(`negentropyUsable = false`), and this is the same decision taken mid-sweep.
+A reconcile that lands resets the count.
+
+**Paging is bounded per sweep, by events.** With the give-up no longer
+stopping a relay that serves REQs, nothing bounded how much of a history one
+audit re-reads over REQ, where a reconcile would have downloaded only the
+diff. `pagedEventsPerSweep` stops the sweep at the first window past it; the
+cursor keeps what was read and the next audit resumes below it, so a deep
+history finishes over several audits rather than never.
+
+**Why a window failed is measured, not inferred.** quartz reports any drop
+of the target relay as `closed: relay disconnected`, with no close code, no
+reason and no side; that was 21 of 33 failed windows in the staging sample.
+`NegentropyDrops` reads the socket's own end from `SocketEnds` (`:peers`),
+taken from a mark before the window's NEG-OPEN so an older socket's end is
+never printed as this window's cause, and counts it per cause and per
+(relay, cause). Our negentropy frames are uncapped (`frameSizeLimit = 0`), so
+the largest frame we had sent rides beside every cause; a relay closing over
+its payload limit is a candidate, not a finding, until those numbers say so.
 
 ## SweepState
 
