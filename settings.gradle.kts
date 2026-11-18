@@ -8,20 +8,31 @@ pluginManagement {
     }
 }
 
+// Quartz's crypto-kmp (com.vitorpamplona.crypto) and libschnorr256k1-kotlin
+// (com.vitorpamplona.schnorr256k1) are released on Nostr + Blossom only, not Maven Central: Magpie
+// serves those two groups, trusting only the release key vitorpamplona.com names as `releases`, and
+// gradle/magpie.lock pins that key and every resolved version's files, as in quartz and the store.
+plugins {
+    id("com.vitorpamplona.magpie") version "0.2.0"
+}
+
+magpie {
+    group("com.vitorpamplona.crypto")
+    group("com.vitorpamplona.schnorr256k1")
+}
+
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // JitPack serves the store, quartz and quartz's own JitPack dependency (libschnorr256k1-kotlin,
-        // until it is on Central) and nothing else, so a coordinate missing upstream cannot be
-        // substituted from it; the store's group is spelled both ways because JitPack caches per
-        // spelling. Quartz is a JitPack commit (build-logic maps Central's group onto it).
+        // JitPack serves the store and quartz and nothing else, so a coordinate missing upstream
+        // cannot be substituted from it; the store's group is spelled both ways because JitPack
+        // caches per spelling. Quartz is a JitPack commit (build-logic maps Central's group onto it).
         exclusiveContent {
             forRepository { maven { url = uri("https://jitpack.io") } }
             filter {
                 includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
                 includeGroup("com.github.vitorpamplona.quartz")
-                includeGroup("com.github.vitorpamplona.libschnorr256k1-kotlin")
             }
         }
     }
