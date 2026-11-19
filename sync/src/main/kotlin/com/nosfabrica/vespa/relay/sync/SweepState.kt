@@ -49,6 +49,8 @@ class SweepState(
     data class Peer(
         val target: Int,
         val cap: Int? = null,
+        /** When a sweep last switched to paging after negentropy kept dropping here; null once one reconciles. */
+        val pagingOnlySince: Long? = null,
     )
 
     /** The contiguous slice of one sweep already reconciled, [downTo]..[upTo] inclusive. */
@@ -106,7 +108,7 @@ class SweepState(
     ) {
         if (peers[url.url]?.target == target) return
         // compute(), so a cap learned on another coroutine at the same moment is not dropped.
-        peers.compute(url.url) { _, before -> Peer(target, before?.cap) }
+        peers.compute(url.url) { _, before -> before?.copy(target = target) ?: Peer(target) }
         changed()
     }
 
@@ -118,7 +120,27 @@ class SweepState(
     ) {
         val before = peers[url.url]
         if (before?.cap == cap && before.target == target) return
-        peers.compute(url.url) { _, _ -> Peer(target, cap) }
+        peers.compute(url.url) { _, before -> before?.copy(target = target, cap = cap) ?: Peer(target, cap) }
+        changed()
+    }
+
+    /** When sweeps against this peer started paging without negentropy, or null. */
+    fun pagingOnlySince(url: NormalizedRelayUrl): Long? = peers[url.url]?.pagingOnlySince
+
+    /** Negentropy kept dropping on this peer: later sweeps page without opening it, from [at]. */
+    fun startPagingOnly(
+        url: NormalizedRelayUrl,
+        target: Int,
+        at: Long,
+    ) {
+        peers.compute(url.url) { _, before -> before?.copy(pagingOnlySince = at) ?: Peer(target, pagingOnlySince = at) }
+        changed()
+    }
+
+    /** A window reconciled on this peer, so its sweeps open negentropy again. */
+    fun stopPagingOnly(url: NormalizedRelayUrl) {
+        if (peers[url.url]?.pagingOnlySince == null) return
+        peers.computeIfPresent(url.url) { _, before -> before.copy(pagingOnlySince = null) }
         changed()
     }
 
@@ -222,7 +244,7 @@ class SweepState(
     private fun restore(root: JsonObject) {
         root["peers"]?.jsonObject?.forEach { (url, v) ->
             val o = v.jsonObject
-            peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
+            peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int, o[PAGING_ONLY_SINCE]?.jsonPrimitive?.longOrNull)
         }
         root[UNOWNED_SINCE]?.jsonObject?.forEach { (url, ts) -> ts.jsonPrimitive.longOrNull?.let { unowned.restore(url, it) } }
         root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
@@ -273,6 +295,7 @@ class SweepState(
                             buildJsonObject {
                                 put("target", p.target)
                                 p.cap?.let { put("cap", it) }
+                                p.pagingOnlySince?.let { put(PAGING_ONLY_SINCE, it) }
                             },
                         )
                     }
@@ -320,6 +343,9 @@ class SweepState(
             url: NormalizedRelayUrl,
             shape: Filter,
         ): Cursor = Cursor(stream, shape.copy(since = null, until = null, limit = null).toJson(), url.url)
+
+        /** A peer's member, published by the coverage report beside its `target` and `cap`. */
+        internal const val PAGING_ONLY_SINCE = "pagingOnlySince"
 
         /** Beside `peers` and `sweeps`, which are all the status page reads. */
         private const val UNOWNED_SINCE = "unownedSince"

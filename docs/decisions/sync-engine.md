@@ -262,6 +262,19 @@ first window failing already skips negentropy for the whole sweep
 (`negentropyUsable = false`), and this is the same decision taken mid-sweep.
 A reconcile that lands resets the count.
 
+**Paging-only is remembered per relay, for a day.** Forgotten with the sweep,
+every audit of a relay that drops negentropy paid two drops again before
+switching, and a drop is not only a lost window: it ends the socket, and with it
+every other subscription on that relay. So the switch is written to the peer in
+`SweepState` (`pagingOnlySince`, published on the coverage rows), also when the
+second drop was the sweep's last window, and every sweep of that relay, of any
+stream, pages without opening negentropy for `pagingOnlySeconds` (a day). Per
+relay rather than per cursor because the drops are the relay's socket, not an
+ask's. After the day negentropy is tried again: a window that reconciles clears
+the mark, two more drops renew it. Paging-only is not "negentropy cannot do
+it": the sweep keeps its cursor, its bound and `negentropyUsable`, so the band
+is not struck.
+
 **A resumed sweep is never declared unusable on its first window.** A cursor
 is earned by a window that was read, so a relay holding one has done
 negentropy for us; a first window that drops there is paged like any
@@ -286,6 +299,14 @@ per (relay, cause). Digits are folded to `#`,
 so a reason carrying counts or addresses stays one cause. Our negentropy frames are uncapped (`frameSizeLimit = 0`), so
 the largest frame we had sent rides beside every cause; a relay closing over
 its payload limit is a candidate, not a finding, until those numbers say so.
+
+**One socket end is counted once.** A dense second is retried per kind inside
+the enclosing window's reconcile, on the same socket, so a per-kind drop also
+ends the enclosing session and quartz hands both the same `RelayDisconnect`.
+Counted per window, one close looked like two. The drops keep the last end
+counted per relay and match by identity, not by value: quartz builds one object
+per end, so a later close with the same code and reason is a new end. Both
+windows still log their line; the second says it was not counted again.
 
 ## SweepState
 

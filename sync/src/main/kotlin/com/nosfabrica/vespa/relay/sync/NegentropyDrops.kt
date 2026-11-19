@@ -33,7 +33,9 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Why negentropy windows failed to reconcile, counted per cause and per (relay, cause), off
- * quartz's typed failure and the socket end it carries. Measures; changes nothing.
+ * quartz's typed failure and the socket end it carries. One socket end is counted once, however
+ * many windows it failed: a per-kind reconcile inside a dense window shares its enclosing
+ * window's socket, so a drop there fails both. Measures; changes nothing.
  */
 internal class NegentropyDrops(
     private val now: () -> Long = System::currentTimeMillis,
@@ -73,6 +75,9 @@ internal class NegentropyDrops(
     private val byCause = ConcurrentHashMap<String, Tally>()
     private val byRelay = ConcurrentHashMap<Pair<String, String>, Tally>()
 
+    /** Per relay, the last socket end counted. quartz hands every session on that socket the same object. */
+    private val lastEnd = ConcurrentHashMap<String, RelayDisconnect>()
+
     /** Counts one window that could not reconcile and returns the sentence for its log line. */
     fun record(
         url: NormalizedRelayUrl,
@@ -80,17 +85,34 @@ internal class NegentropyDrops(
         localCount: Int?,
         failure: NegentropySyncException,
     ): String {
-        val cause = causeOf(failure)
         val sent = failure.disconnect?.sent ?: failure.sent
-        val largestSent = sent?.largestBytes?.takeIf { sent.count > 0 }
-        val at = now()
-        total.incrementAndGet()
-        tally(byCause, cause, MAX_CAUSES, OTHER_CAUSE).add(largestSent, at)
-        tally(byRelay, url.url to cause, MAX_PAIRS, OTHER_CAUSE to cause).add(largestSent, at)
+        val counted = firstWindowOf(url, failure.disconnect)
+        if (counted) {
+            val cause = causeOf(failure)
+            val largestSent = sent?.largestBytes?.takeIf { sent.count > 0 }
+            val at = now()
+            total.incrementAndGet()
+            tally(byCause, cause, MAX_CAUSES, OTHER_CAUSE).add(largestSent, at)
+            tally(byRelay, url.url to cause, MAX_PAIRS, OTHER_CAUSE to cause).add(largestSent, at)
+        }
         return failure.detail +
             (failure.disconnect?.let { " — $it" } ?: sent?.let { " — the socket did not end; $it" } ?: "") +
             (failure.rounds?.let { "; $it NEG-MSG round(s) completed" } ?: "") +
-            "; " + (localCount?.let { "we hold ${fmtCount(it)} event(s) in the window" } ?: "the window is uncounted here")
+            "; " + (localCount?.let { "we hold ${fmtCount(it)} event(s) in the window" } ?: "the window is uncounted here") +
+            (if (counted) "" else "; the socket end an earlier window was counted for, not counted again")
+    }
+
+    /**
+     * False when [end] was already counted for [url]: the same object, so the same socket, even
+     * when two windows on it fail at once. A failure with the socket still up is its own.
+     */
+    private fun firstWindowOf(
+        url: NormalizedRelayUrl,
+        end: RelayDisconnect?,
+    ): Boolean {
+        if (end == null) return true
+        if (lastEnd.size >= MAX_PAIRS && !lastEnd.containsKey(url.url)) lastEnd.clear()
+        return lastEnd.put(url.url, end) !== end
     }
 
     /** [key]'s tally, a new one while there is room, else [overflow]'s. */

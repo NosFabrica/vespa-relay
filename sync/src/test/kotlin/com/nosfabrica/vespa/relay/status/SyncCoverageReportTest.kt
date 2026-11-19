@@ -127,7 +127,7 @@ class SyncCoverageReportTest {
                 bands(leg("wss://nos.lol/", filter, band(1_000, 2_000, false))),
                 sweeps(
                     leg("wss://nos.lol/", filter, mark(500, 1_500)),
-                    peers = """{"wss://nos.lol/":{"target":12500,"cap":12500}}""",
+                    peers = """{"wss://nos.lol/":{"target":12500,"cap":12500,"pagingOnlySince":1700000000}}""",
                 ),
                 now,
             )
@@ -140,6 +140,7 @@ class SyncCoverageReportTest {
         assertEquals(500L, row["sweep"]!!.jsonObject["downTo"]!!.jsonPrimitive.longOrNull)
         // The learned window is keyed by relay alone, a property of the peer.
         assertEquals(12_500L, row["target"]!!.jsonPrimitive.longOrNull)
+        assertEquals(1_700_000_000L, row["pagingOnlySince"]!!.jsonPrimitive.longOrNull, "so is paging without negentropy")
     }
 
     /** A sweep's filter drops the time bounds and a band's keeps them; they are one leg either way. */

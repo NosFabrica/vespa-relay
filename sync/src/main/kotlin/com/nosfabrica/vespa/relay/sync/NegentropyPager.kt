@@ -49,6 +49,11 @@ internal data class NegPageTuning(
     val slackSeconds: Long = 60,
     /** The most a sweep re-reads over plain REQs for windows negentropy dropped; the cursor resumes the rest. */
     val pagedEventsPerSweep: Int = 1_000_000,
+    /**
+     * How long a relay's sweeps page without opening negentropy after it dropped
+     * [NegentropyPager.DROPS_BEFORE_PAGING_ONLY] windows in a row; then they try it again.
+     */
+    val pagingOnlySeconds: Long = 86_400,
 )
 
 /** One window against one peer: reconcile it, or page it. */
@@ -249,96 +254,93 @@ internal class NegentropyPager(
             // The whole leg is inside the live head: not an error and not complete.
             return SweepOutcome(0, 0, 0, complete = false, negentropyUsable = true, outstanding = null, failure = null, refusedWindows = 0)
         }
+        return Sweep(url, shape, SweepState.keyFor(stream, url, shape), floor, ceiling, onProgress, onWindow, onEvent).run()
+    }
 
-        var target = state.target(url, tuning.target).coerceIn(tuning.minTarget, tuning.maxTarget)
-        val startedTarget = target
-        val cursor = SweepState.keyFor(stream, url, shape)
-        val stack = ArrayDeque<LongRange>()
-        pushResumed(stack, url, cursor, floor, ceiling)
-        // A cursor was earned by an earlier sweep, so a failed first window here is a drop, not a refusal.
-        val resumed = state.reconciled(cursor) != null
+    /** One call of [sweep]: its window stack, the target it sizes them by, and what it has done so far. */
+    private inner class Sweep(
+        private val url: NormalizedRelayUrl,
+        private val shape: Filter,
+        private val cursor: SweepState.Cursor,
+        private val floor: Long,
+        private val ceiling: Long,
+        private val onProgress: ((Int, Int) -> Unit)?,
+        private val onWindow: ((Long, Long) -> Unit)?,
+        private val onEvent: suspend (Event) -> Unit,
+    ) {
+        private var target = state.target(url, tuning.target).coerceIn(tuning.minTarget, tuning.maxTarget)
+        private val startedTarget = target
+        private val stack = ArrayDeque<LongRange>().also { pushResumed(it, url, cursor, floor, ceiling) }
 
-        var downloaded = 0
-        var reconciled = 0
-        var paged = 0
-        var refusedWindows = 0
-        // Only a window left unread counts toward giving up; one the fallback read was still read.
-        var unclaimedInARow = 0
-        var droppedInARow = 0
-        // Once negentropy keeps dropping, the rest of the sweep pages without opening it.
-        var pagingOnly = false
-        var pagedEvents = 0L
-        var lastFailure: NegentropySyncException? = null
+        /** A cursor was earned by an earlier sweep, so a failed first window here is a drop, not a refusal. */
+        private val resumed = state.reconciled(cursor) != null
 
-        /** Walks [sweepWindow] over plain REQs, claiming it only if it was served to the end. */
-        suspend fun pageWindow(
+        private var downloaded = 0
+        private var reconciled = 0
+        private var paged = 0
+        private var refusedWindows = 0
+
+        /** Only a window left unread counts toward giving up; one the fallback read was still read. */
+        private var unclaimedInARow = 0
+        private var droppedInARow = 0
+
+        /** Once negentropy keeps dropping, the rest of the sweep pages without opening it. */
+        private var pagingOnly = rememberedPagingOnly()
+        private var pagedEvents = 0L
+        private var lastFailure: NegentropySyncException? = null
+
+        suspend fun run(): SweepOutcome {
+            while (stack.isNotEmpty()) {
+                // Newest first, the invariant the cursor rests on.
+                val sweepWindow = stack.removeLast()
+                val minimal = sweepWindow.last - sweepWindow.first <= MIN_WINDOW_SECONDS
+
+                // Our side first: this sizes the checkpoint.
+                val ours = if (minimal) null else local.count(windowFilter(shape, sweepWindow))
+                if (ours != null && ours > target) {
+                    bisect(stack, sweepWindow)
+                    continue
+                }
+                // After the cut, so the reported depth only descends.
+                onWindow?.invoke(sweepWindow.first, sweepWindow.last)
+
+                // The floor for reading what the relay says about this window.
+                val askedAtMs = System.currentTimeMillis()
+                val stopped =
+                    if (pagingOnly) {
+                        pageWindow(sweepWindow, askedAtMs, "the page was refused or cut short")
+                        stopAfterPaging(sweepWindow)
+                    } else {
+                        reconcileWindow(sweepWindow, ours, askedAtMs)
+                    }
+                if (stopped != null) return stopped
+            }
+            return finished()
+        }
+
+        /**
+         * Paging-only carried over from an earlier sweep of this peer, while it is younger than
+         * [NegPageTuning.pagingOnlySeconds]. Past that, negentropy is tried again.
+         */
+        private fun rememberedPagingOnly(): Boolean {
+            val since = state.pagingOnlySince(url) ?: return false
+            if (nowSeconds() - since >= tuning.pagingOnlySeconds) return false
+            System.err.println(
+                "router: sweep ${url.url} paging without negentropy since $since, when it kept dropping here" +
+                    " — tried again ${tuning.pagingOnlySeconds}s after that",
+            )
+            return true
+        }
+
+        /** Reconciles one window; the outcome when the sweep stops here, else null. */
+        private suspend fun reconcileWindow(
             sweepWindow: LongRange,
+            ours: Int?,
             askedAtMs: Long,
-            why: String,
-        ) {
-            val walked = peer.page(url, windowFilter(shape, sweepWindow), onEvent)
-            downloaded += walked.downloaded
-            pagedEvents += walked.downloaded
-            paged++
-            if (walked.refused) {
-                refusedWindows++
-                unclaimedInARow++
-                sayRefused(url, sweepWindow, why, askedAtMs)
-            } else {
-                unclaimedInARow = 0
-                complete(cursor, sweepWindow)
-            }
-        }
-
-        /** The outcome of a sweep stopped after a paged window, or null to keep going. */
-        fun stopAfterPaging(sweepWindow: LongRange): SweepOutcome? {
-            val holdsAt = state.reconciled(cursor)?.downTo ?: sweepWindow.first
-            when {
-                unclaimedInARow >= MAX_UNCLAIMED_IN_A_ROW -> {
-                    System.err.println(
-                        "router: sweep ${url.url} gave up after $unclaimedInARow window(s) in a row went unread" +
-                            " — ${fmtCount(downloaded)} event(s) kept, cursor holds at $holdsAt",
-                    )
-                }
-
-                pagedEvents >= tuning.pagedEventsPerSweep && stack.isNotEmpty() -> {
-                    System.err.println(
-                        "router: sweep ${url.url} paged ${fmtCount(pagedEvents.toInt())} event(s), this sweep's bound" +
-                            " — cursor holds at $holdsAt and the next audit resumes below it",
-                    )
-                }
-
-                else -> {
-                    return null
-                }
-            }
-            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = lastFailure, refusedWindows = refusedWindows)
-        }
-
-        while (stack.isNotEmpty()) {
-            // Newest first, the invariant the cursor rests on.
-            val sweepWindow = stack.removeLast()
-            val minimal = sweepWindow.last - sweepWindow.first <= MIN_WINDOW_SECONDS
-
-            // Our side first: this sizes the checkpoint.
-            val ours = if (minimal) null else local.count(windowFilter(shape, sweepWindow))
-            if (ours != null && ours > target) {
-                bisect(stack, sweepWindow)
-                continue
-            }
-            // After the cut, so the reported depth only descends.
-            onWindow?.invoke(sweepWindow.first, sweepWindow.last)
-
+        ): SweepOutcome? {
             var pagedHere = 0
             // The cursor may only advance over ground that was read; a refused REQ read nothing.
             var refusedHere = false
-            // The floor for reading what the relay says about this window.
-            val askedAtMs = System.currentTimeMillis()
-            if (pagingOnly) {
-                pageWindow(sweepWindow, askedAtMs, "the page was refused or cut short")
-                stopAfterPaging(sweepWindow)?.let { return it }
-                continue
-            }
             try {
                 // quartz counts from zero per NEG-OPEN; offset so the progress line never walks backwards.
                 val base = downloaded
@@ -364,6 +366,7 @@ internal class NegentropyPager(
                 paged += pagedHere
                 unclaimedInARow = 0
                 droppedInARow = 0
+                state.stopPagingOnly(url)
                 // Their side: a stated cap fits in one step, a split shrinks, anything else grows.
                 target =
                     when {
@@ -377,86 +380,158 @@ internal class NegentropyPager(
                 } else {
                     complete(cursor, sweepWindow)
                 }
+                return null
             } catch (e: NegentropySyncException) {
                 lastFailure = e
-                when (e.reason) {
+                return when (e.reason) {
                     NegentropySyncException.Reason.OVER_MAX_SYNC_EVENTS -> {
-                        // Defensive: quartz normally hands an unreconcilable window to the hook above.
-                        e.cap?.let { fitToCap(url, it) } ?: shrink(url, target)
-                        target = state.target(url, tuning.target)
-                        val badFrom = (e.window.since ?: sweepWindow.first).coerceIn(sweepWindow.first, sweepWindow.last)
-                        val badTo = (e.window.until ?: sweepWindow.last).coerceIn(badFrom, sweepWindow.last)
-                        val drained = drainDense(url, shape, windowFilter(shape, badFrom..badTo), target, onEvent)
-                        downloaded += drained.downloaded
-                        paged++
-                        if (badFrom > sweepWindow.first) stack.addLast(sweepWindow.first..(badFrom - 1))
-                        if (badTo < sweepWindow.last) stack.addLast((badTo + 1)..sweepWindow.last)
-                        // Claimable only when the drained slice reaches the top of the window
-                        // and the drain was served.
-                        if (drained.refused) {
-                            refusedWindows++
-                            sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused or cut short", askedAtMs)
-                        } else if (badTo >= sweepWindow.last) {
-                            state.advance(cursor, badFrom, sweepWindow.last)
-                        }
-                        unclaimedInARow = 0
-                        droppedInARow = 0
+                        overCap(e, sweepWindow, askedAtMs)
+                        null
                     }
 
                     NegentropySyncException.Reason.UNAVAILABLE -> {
-                        val why = drops.record(url, ours, e)
-                        if (reconciled == 0 && paged == 0 && !resumed) {
-                            System.err.println(
-                                "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — the first window, so negentropy is not used on this sweep",
-                            )
-                            // The first window never landed: this peer does not do negentropy for us.
-                            return SweepOutcome(
-                                downloaded,
-                                0,
-                                0,
-                                complete = false,
-                                negentropyUsable = false,
-                                outstanding = outstanding(shape, floor, ceiling, cursor),
-                                failure = e,
-                                refusedWindows = refusedWindows,
-                            )
-                        }
-                        // Mid-sweep: page this window so the sweep keeps its contiguity.
-                        System.err.println(
-                            "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — paging this window",
-                        )
-                        pageWindow(sweepWindow, askedAtMs, "the fallback page was refused or cut short too")
-                        if (++droppedInARow >= DROPS_BEFORE_PAGING_ONLY && stack.isNotEmpty()) {
-                            pagingOnly = true
-                            System.err.println(
-                                "router: sweep ${url.url} negentropy failed $droppedInARow window(s) in a row — paging the rest of this sweep",
-                            )
-                        }
-                        stopAfterPaging(sweepWindow)?.let { return it }
+                        dropped(e, sweepWindow, ours, askedAtMs)
                     }
                 }
             }
         }
 
-        // The band the caller records is the durable statement; the working cursor goes.
-        state.finish(cursor)
-        if (target != startedTarget) {
+        /** Defensive: quartz normally hands an unreconcilable window to the hook in [reconcileWindow]. */
+        private suspend fun overCap(
+            e: NegentropySyncException,
+            sweepWindow: LongRange,
+            askedAtMs: Long,
+        ) {
+            e.cap?.let { fitToCap(url, it) } ?: shrink(url, target)
+            target = state.target(url, tuning.target)
+            val badFrom = (e.window.since ?: sweepWindow.first).coerceIn(sweepWindow.first, sweepWindow.last)
+            val badTo = (e.window.until ?: sweepWindow.last).coerceIn(badFrom, sweepWindow.last)
+            val drained = drainDense(url, shape, windowFilter(shape, badFrom..badTo), target, onEvent)
+            downloaded += drained.downloaded
+            paged++
+            if (badFrom > sweepWindow.first) stack.addLast(sweepWindow.first..(badFrom - 1))
+            if (badTo < sweepWindow.last) stack.addLast((badTo + 1)..sweepWindow.last)
+            // Claimable only when the drained slice reaches the top of the window and the drain was served.
+            if (drained.refused) {
+                refusedWindows++
+                sayRefused(url, badFrom..sweepWindow.last, "the dense slice was refused or cut short", askedAtMs)
+            } else if (badTo >= sweepWindow.last) {
+                state.advance(cursor, badFrom, sweepWindow.last)
+            }
+            unclaimedInARow = 0
+            droppedInARow = 0
+        }
+
+        /** Negentropy could not do this window: give up on it for the sweep, or page the window. */
+        private suspend fun dropped(
+            e: NegentropySyncException,
+            sweepWindow: LongRange,
+            ours: Int?,
+            askedAtMs: Long,
+        ): SweepOutcome? {
+            val why = drops.record(url, ours, e)
+            if (reconciled == 0 && paged == 0 && !resumed) {
+                System.err.println(
+                    "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — the first window, so negentropy is not used on this sweep",
+                )
+                // The first window never landed: this peer does not do negentropy for us.
+                return SweepOutcome(
+                    downloaded,
+                    0,
+                    0,
+                    complete = false,
+                    negentropyUsable = false,
+                    outstanding = outstanding(shape, floor, ceiling, cursor),
+                    failure = e,
+                    refusedWindows = refusedWindows,
+                )
+            }
+            // Mid-sweep: page this window so the sweep keeps its contiguity.
             System.err.println(
-                "router: sweep ${url.url} window size ${fmtCount(startedTarget)} → ${fmtCount(target)} event(s)" +
-                    (state.peer(url)?.cap?.let { " (their cap ${fmtCount(it)})" } ?: ""),
+                "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — paging this window",
+            )
+            pageWindow(sweepWindow, askedAtMs, "the fallback page was refused or cut short too")
+            if (++droppedInARow >= DROPS_BEFORE_PAGING_ONLY) {
+                // Remembered even when this was the last window, so the next audit starts paging.
+                state.startPagingOnly(url, target, nowSeconds())
+                if (stack.isNotEmpty()) {
+                    pagingOnly = true
+                    System.err.println(
+                        "router: sweep ${url.url} negentropy failed $droppedInARow window(s) in a row — paging the rest of this" +
+                            " sweep, and this relay's sweeps for the next ${tuning.pagingOnlySeconds}s",
+                    )
+                }
+            }
+            return stopAfterPaging(sweepWindow)
+        }
+
+        /** Walks [sweepWindow] over plain REQs, claiming it only if it was served to the end. */
+        private suspend fun pageWindow(
+            sweepWindow: LongRange,
+            askedAtMs: Long,
+            why: String,
+        ) {
+            val walked = peer.page(url, windowFilter(shape, sweepWindow), onEvent)
+            downloaded += walked.downloaded
+            pagedEvents += walked.downloaded
+            paged++
+            if (walked.refused) {
+                refusedWindows++
+                unclaimedInARow++
+                sayRefused(url, sweepWindow, why, askedAtMs)
+            } else {
+                unclaimedInARow = 0
+                complete(cursor, sweepWindow)
+            }
+        }
+
+        /** The outcome of a sweep stopped after a paged window, or null to keep going. */
+        private fun stopAfterPaging(sweepWindow: LongRange): SweepOutcome? {
+            val holdsAt = state.reconciled(cursor)?.downTo ?: sweepWindow.first
+            when {
+                unclaimedInARow >= MAX_UNCLAIMED_IN_A_ROW -> {
+                    System.err.println(
+                        "router: sweep ${url.url} gave up after $unclaimedInARow window(s) in a row went unread" +
+                            " — ${fmtCount(downloaded)} event(s) kept, cursor holds at $holdsAt",
+                    )
+                }
+
+                pagedEvents >= tuning.pagedEventsPerSweep && stack.isNotEmpty() -> {
+                    System.err.println(
+                        "router: sweep ${url.url} paged ${fmtCount(pagedEvents.toInt())} event(s), this sweep's bound" +
+                            " — cursor holds at $holdsAt and the next audit resumes below it",
+                    )
+                }
+
+                else -> {
+                    return null
+                }
+            }
+            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = lastFailure, refusedWindows = refusedWindows)
+        }
+
+        /** Every window was visited: drop the working cursor and say whether every one was answered. */
+        private fun finished(): SweepOutcome {
+            // The band the caller records is the durable statement; the working cursor goes.
+            state.finish(cursor)
+            if (target != startedTarget) {
+                System.err.println(
+                    "router: sweep ${url.url} window size ${fmtCount(startedTarget)} → ${fmtCount(target)} event(s)" +
+                        (state.peer(url)?.cap?.let { " (their cap ${fmtCount(it)})" } ?: ""),
+                )
+            }
+            // An empty stack means every window was visited, not that every window was answered.
+            return SweepOutcome(
+                downloaded,
+                reconciled,
+                paged,
+                complete = refusedWindows == 0,
+                negentropyUsable = true,
+                outstanding = null,
+                failure = lastFailure,
+                refusedWindows = refusedWindows,
             )
         }
-        // An empty stack means every window was visited, not that every window was answered.
-        return SweepOutcome(
-            downloaded,
-            reconciled,
-            paged,
-            complete = refusedWindows == 0,
-            negentropyUsable = true,
-            outstanding = null,
-            failure = lastFailure,
-            refusedWindows = refusedWindows,
-        )
     }
 
     /** The peer stated its `max_sync_events`: fit the target to it now. Never raises the target. */

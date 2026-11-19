@@ -297,7 +297,9 @@ window:
 Neither source knows anything about the other and the same work stack absorbs
 both, which is what makes this automatic rather than tuned. What the relay
 learns is remembered per peer in `SYNC_SWEEP_STATE_FILE`, so the next sync
-starts at the right size instead of rediscovering it.
+starts at the right size instead of rediscovering it. So is a relay that keeps
+dropping negentropy: after two drops in a row its sweeps page plain REQs for a
+day without opening it (`pagingOnlySince` on its coverage rows), then try again.
 
 The split with quartz is worth knowing when reading the logs: quartz owns
 everything inside one reconcile — sub-splitting a window it cannot answer,
