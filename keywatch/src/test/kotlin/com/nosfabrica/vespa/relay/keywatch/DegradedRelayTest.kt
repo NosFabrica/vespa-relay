@@ -66,8 +66,8 @@ class DegradedRelayTest {
 
     private fun config() = KeyWatchConfig(lens.observer.hex, pageCap = 4, degradedPauseMs = 1, maxDegradedWaitMs = 50, phaseAttempts = 3)
 
-    /** An unranked victim, so its history is asked for: one note, then its secret in a stranger's profile. */
-    private fun corpusWithVictim(victim: TestKey): InMemoryCorpus = InMemoryCorpus(listOf(lens.list(1), event(victim, 1, "gm", 1_000), profile(TestKey(), 2_000, victim.nsec)))
+    /** An unranked victim, so its history is asked for: one note, then two days later its secret in a stranger's profile. */
+    private fun corpusWithVictim(victim: TestKey): InMemoryCorpus = InMemoryCorpus(listOf(lens.list(1), event(victim, 1, "gm", 1_000), profile(TestKey(), 1_000 + 2 * 86_400, victim.nsec)))
 
     private val historyCheck: (Filter) -> Boolean = { it.until != null && it.authors?.size == 1 && it.limit == 1 }
 

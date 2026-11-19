@@ -70,7 +70,7 @@ class Finding(
 
 /** What is known of a key whose secret was found, besides the finding itself. */
 class LeakFacts(
-    /** An event it signed before its secret first appeared, or a rank card: it was somebody's. */
+    /** An event it signed a day or more before its secret first appeared, or a rank card: it was somebody's. */
     val hadHistory: Boolean,
     /** Its newest event after the leak; whoever signed it, owner or not, holds the key. */
     val activeAfter: Long?,

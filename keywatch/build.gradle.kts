@@ -16,3 +16,8 @@ application {
     mainClass = "com.nosfabrica.vespa.relay.KeyWatchMainKt"
     applicationName = "vespa-keywatch"
 }
+
+tasks.test {
+    // ProbeSwitchesAreForwardedTest checks this list; it runs under `:common:archTest`.
+    forwardProbeSwitches("statementProbe")
+}

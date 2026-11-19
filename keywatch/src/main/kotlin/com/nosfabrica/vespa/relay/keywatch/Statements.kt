@@ -28,7 +28,6 @@ import com.vitorpamplona.quartz.nip19Bech32.entities.NPub
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlin.math.abs
 
 /** Why a key says it changed hands, strongest first. */
 enum class Reason { COMPROMISE, LOST, PRECAUTION, ROTATION }
@@ -76,25 +75,41 @@ class ThirdPartyStatement(
 object StatementReader {
     private fun words(pattern: String) = Regex(pattern, RegexOption.IGNORE_CASE)
 
-    /** The speaker is the OLD key, pointing at its successor. */
+    /**
+     * The speaker is the OLD key, and the phrase leads into its successor ("my new npub is …",
+     * "follow me at …", "I have moved to …"). Measured on 1,809 claims from the first production
+     * report: half of the "validated" ones were popular notes with migration words somewhere and
+     * an unrelated npub elsewhere ("a new beginning", "conversations have moved to", "switched to
+     * Amber"), and their reposts endorsed the note, not a key change. So the phrase must come
+     * right before the key it names, and a bare "moved to" needs a speaker who is the account.
+     */
     private val OUTGOING =
         words(
-            "\\bnew (npub|account|key|profile|pubkey|identity|nostr account)|\\bmov(ed|ing) (over )?to\\b|\\bmigrat(e|ed|ing)\\b[^.\\n]{0,24}\\bto\\b|" +
-                "\\bswitch(ed|ing) to\\b|\\bnow (at|on|using)\\b|\\bfollow me (at|on|here)\\b|\\bdead account\\b|\\bno longer (use|using|active)\\b|" +
-                "\\bthis (account|npub|key) is (dead|retired|abandoned|deprecated|inactive|compromised|hacked)|" +
-                "\\bnova conta\\b|\\bnueva cuenta\\b|\\bneue[rn]? (account|npub|schlüssel)",
+            "\\bnew (npub|account|key|keys|profile|pubkey|identity|nostr account|home)\\b|" +
+                "\\b(i|i'?ve|i have|i'?m|i am|we|we'?ve|we have|we'?re|this account|account)( (have|has|had|just|now|finally))? " +
+                "(moved|moving|migrated|migrating)( (over|my account|this account|accounts))? to\\b|" +
+                "\\bmigrat(e|ed|ing) (my account |this account )?to\\b|\\bswitch(ed|ing) to (a |my )?new\\b|" +
+                "\\bfollow (me|us) (at|on|here|over at|instead|now)\\b|\\bdead account\\b|" +
+                "\\bthis (account|npub|key) (is|was|has been) (dead|retired|abandoned|deprecated|inactive|compromised|hacked|moved)\\b|" +
+                "\\bnova conta\\b|\\bnovo npub\\b|\\bnueva cuenta\\b|\\bnuevo npub\\b|\\bneue[rn]? (account|npub|schlüssel)",
         )
 
-    /** The speaker is the NEW key, naming the one it replaces. */
+    /** In a profile the speaker is the account itself, so a bare "moved to" is enough there. */
+    private val OUTGOING_IN_PROFILE = words("\\bmov(ed|ing)( over)? to\\b|\\bnow at\\b")
+
+    /** The speaker is the NEW key, and the phrase leads into the one it replaces. */
     private val INCOMING =
         words(
-            "\\bold (npub|account|key|profile|pubkey)|\\bprevious (npub|account|key)|\\bformer(ly)?\\b|\\bused to be\\b|" +
+            "\\bold (npub|account|key|keys|profile|pubkey)\\b|\\b(previous|original|former) (npub|account|key|profile)\\b|" +
                 "\\bconta antiga\\b|\\bcuenta (antigua|vieja)\\b|\\balte[rn]? (account|npub|schlüssel)",
         )
 
-    /** The speaker is a secondary key of the one it names. */
+    /** The speaker is a secondary key, and the phrase leads into its primary. */
     private val SECONDARY =
-        words("\\balt( account)?\\b|\\bsecondary (account|key)\\b|\\bbackup account\\b|\\bbot (run|operated|maintained|managed|made) by\\b|\\b(main|primary) (account|npub|key)\\b")
+        words(
+            "\\balts?( account)?\\b|\\bsecondary (account|key)\\b|\\bbackup account\\b|" +
+                "\\b(bot )?(run|operated|maintained|managed|made|owned) by\\b|\\b(main|primary) (account|npub|key)\\b",
+        )
 
     private val COMPROMISE = words("compromis|\\bhack|\\bleak|\\bstolen\\b|\\bstole\\b|\\bexposed\\b|\\bbreach|gehackt|hackead|comprometid|vazad|filtrad")
     private val PRECAUTION =
@@ -102,15 +117,33 @@ object StatementReader {
             "\\b(may|might) (have )?(been )?(leak|compromis)|\\bpossibl[ey] (leak|compromis)|\\bjust in case\\b|\\bto be safe\\b|\\bprecaution|\\bout of caution\\b",
         )
     private val LOST = words("\\blost (my |the )?(key|nsec|private key|access|keys|seed)|\\bcan'?t (access|log ?in)|\\bcannot (access|log ?in)|\\bforgot (my )?(nsec|key|password)")
-    private val FIRST_PERSON = words("\\b(my|i|i'm|i am|me|this account|this npub|this key|minha|meu|eu|mi|yo|mein|meine|ich)\\b")
+    private val FIRST_PERSON = words("\\b(my|i|i'm|i am|i've|me|we|our|us|this account|this npub|this key|minha|meu|eu|mi|yo|mein|meine|ich)\\b")
+
+    /** Words between the phrase and the key that make it someone else's account being recommended. */
+    private val RECOMMENDING = words("\\bgo follow|\\bcheck (out|them)|\\bshout ?out|\\bthanks|\\bexcited about|\\bgreat\\b")
+
+    /** Before "a new account": the speaker made another one, not a successor. */
+    private val CREATED = words("\\b(created|made|started|opened|set up|setting up|launched|launching)( (a|another|my|an))?( (brand|second|separate|dedicated))? ?$")
+
+    /** Right after an "old account" phrase: it points away from the speaker, so the speaker is the old one. */
+    private val REDIRECTS = words("^\\s*(of\\b|[.!)\\]]|-+|>|go to\\b|follow\\b|new\\b|now\\b|moved\\b|see\\b|please\\b)")
+
+    /** Right before an "old account" phrase: "this is (my) old account". */
+    private val SELF_IS_OLD = words("\\b(this is|this was|i am|i'm|it's|its)( (my|an|the))? ?$|\\($")
 
     /** A citation that warns rather than endorses. */
     val WARNING = words("\\bscam|\\bfake\\b|impersonat|\\bnot (him|her|them|me|real)\\b|\\bdon'?t follow|\\bdo not follow|\\bbeware\\b|phishing|\\bimpost[eo]r|\\bfraud")
 
     private val KEY_REF = Regex("(?:nostr:)?(npub1[02-9ac-hj-np-z]{58}|nprofile1[02-9ac-hj-np-z]+)", RegexOption.IGNORE_CASE)
 
-    /** How close the wording must sit to the key it is about, in a note. A profile is short enough to read whole. */
-    private const val NOTE_WINDOW = 120
+    /** At most this much between the end of the phrase and the key: "… is here: ", "… can be found at ". */
+    private const val MAX_GAP = 30
+
+    /** How much text before a phrase is read for what qualifies it ("I just created …", "this is my …"). */
+    private const val SPEAKER_LOOKBACK = 24
+
+    /** How far before the key a note's first-person word may sit. */
+    private const val SPEAKER_WINDOW = 160
 
     fun read(event: Event): List<Statement> {
         val text = textOf(event) ?: return emptyList()
@@ -128,22 +161,59 @@ object StatementReader {
         }
     }
 
+    private enum class Lead { OUTGOING, INCOMING, SECONDARY }
+
+    /**
+     * What the phrase right before a key mention says, if anything: the match that ends closest
+     * to the key, within [MAX_GAP], with nothing recommending someone else in between.
+     */
+    private fun leadInto(
+        text: String,
+        at: Int,
+        profile: Boolean,
+    ): Lead? {
+        val from = (at - MAX_GAP - LONGEST_PHRASE).coerceAtLeast(0)
+        val before = text.substring(from, at)
+        val patterns =
+            listOfNotNull(
+                Lead.OUTGOING to OUTGOING,
+                (Lead.OUTGOING to OUTGOING_IN_PROFILE).takeIf { profile },
+                Lead.INCOMING to INCOMING,
+                Lead.SECONDARY to SECONDARY,
+            )
+        val (lead, match) =
+            patterns
+                .flatMap { (lead, re) -> re.findAll(before).map { lead to it } }
+                .maxByOrNull { it.second.range.last } ?: return null
+        val gap = before.substring(match.range.last + 1)
+        if (gap.length > MAX_GAP || RECOMMENDING.containsMatchIn(gap)) return null
+        val ahead = before.substring((match.range.first - SPEAKER_LOOKBACK).coerceAtLeast(0), match.range.first)
+        return when {
+            // "I just created a new npub / brand called …": an extra account, not a replacement.
+            lead == Lead.OUTGOING && CREATED.containsMatchIn(ahead) && match.value.startsWith("new", ignoreCase = true) -> Lead.SECONDARY
+
+            // "Old account. New one at …", "OLD ACCOUNT go to …", "Old account of …", "This is my
+            // old account. I'm now on …": the speaker IS the old key, and the key named is its successor.
+            lead == Lead.INCOMING && (REDIRECTS.containsMatchIn(gap) || SELF_IS_OLD.containsMatchIn(ahead)) -> Lead.OUTGOING
+
+            else -> lead
+        }
+    }
+
     private fun selfStatement(
         event: Event,
         text: String,
         other: HexKey,
         positions: List<Int>,
     ): Statement? {
-        val near = if (event.kind == 0) text else positions.joinToString(" … ") { around(text, it) }
-        if (event.kind == 1 && !FIRST_PERSON.containsMatchIn(near)) return null
-        val outgoing = nearestMatch(OUTGOING, near, positions, text)
-        val incoming = nearestMatch(INCOMING, near, positions, text)
-        val reason = reasonOf(near)
-        return when {
-            outgoing != null && (incoming == null || outgoing <= incoming) -> TransitionClaim(event.pubKey, other, reason, Signer.OLD_KEY, event)
-            incoming != null -> TransitionClaim(other, event.pubKey, reason, Signer.NEW_KEY, event)
-            SECONDARY.containsMatchIn(near) -> SecondaryClaim(event.pubKey, other, event)
-            else -> null
+        val profile = event.kind == 0
+        val (lead, at) = positions.firstNotNullOfOrNull { p -> leadInto(text, p, profile)?.let { it to p } } ?: return null
+        if (!profile && !FIRST_PERSON.containsMatchIn(text.substring((at - SPEAKER_WINDOW).coerceAtLeast(0), at))) return null
+        val reason = reasonOf(text)
+        return when (lead) {
+            Lead.OUTGOING -> TransitionClaim(event.pubKey, other, reason, Signer.OLD_KEY, event)
+            Lead.INCOMING -> TransitionClaim(other, event.pubKey, reason, Signer.NEW_KEY, event)
+            Lead.SECONDARY -> SecondaryClaim(event.pubKey, other, event)
         }
     }
 
@@ -166,23 +236,8 @@ object StatementReader {
             else -> Reason.ROTATION
         }
 
-    /** Distance from the wording to the nearest key mention; in a profile every match is "near". */
-    private fun nearestMatch(
-        pattern: Regex,
-        near: String,
-        positions: List<Int>,
-        text: String,
-    ): Int? {
-        if (!pattern.containsMatchIn(near)) return null
-        val hits = pattern.findAll(text).map { it.range.first }.toList()
-        if (hits.isEmpty()) return 0
-        return positions.minOf { p -> hits.minOf { abs(it - p) } }
-    }
-
-    private fun around(
-        text: String,
-        at: Int,
-    ) = text.substring((at - NOTE_WINDOW).coerceAtLeast(0), (at + NOTE_WINDOW).coerceAtMost(text.length))
+    /** Room for the longest phrase above before [MAX_GAP] starts counting. */
+    private const val LONGEST_PHRASE = 80
 
     /** A note's content; a profile's name, display name and about, the fields a person writes in. */
     private fun textOf(event: Event): String? =

@@ -73,6 +73,24 @@ class KeyWatchTest {
     }
 
     @Test
+    fun `an unranked key needs a day of history before its leak to have been anyone's`() {
+        val burner = TestKey()
+        val person = TestKey()
+        val stranger = TestKey()
+        val result =
+            run(
+                // Measured shape of the bot farms: one profile, then 83 seconds later its own nsec.
+                profile(burner, 1_000, "gm"),
+                profile(burner, 1_083, "Mr.${burner.nsec}"),
+                event(person, 1, "gm", 1_000),
+                profile(stranger, 1_000 + 2 * 86_400, person.nsec),
+            )
+
+        assertEquals(KeyClass.PUBLIC_FROM_BIRTH, result.of(burner).single().keyClass)
+        assertEquals(KeyClass.COMPROMISED_PUBLIC, result.of(person).single().keyClass)
+    }
+
+    @Test
     fun `a self-published key with no past, or a shared invite key, was public from birth`() {
         val bot = TestKey()
         val group = TestKey()

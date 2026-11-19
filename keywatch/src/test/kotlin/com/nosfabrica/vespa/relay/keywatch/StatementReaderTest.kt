@@ -81,4 +81,45 @@ class StatementReaderTest {
         val warning = assertIs<ThirdPartyStatement>(StatementReader.read(event(me, 1, "${b.npub} is a scam impersonating ${a.npub}, their old key is fine", 1)).single())
         assertTrue(warning.against)
     }
+
+    // The cases below are real phrasings from the first production report's 1,809 claims.
+
+    @Test
+    fun `migration words that do not lead into the key are no claim`() {
+        for (text in listOf(
+            "Most of my signal conversations have moved to nostr:${other.npub}",
+            "now I switched to using Amber to sign in and Fountain is just spinning. Apparently, nostr:${other.npub}",
+            "new account i am excited about on nostr, go follow ${other.npub}",
+            "I moved to WordPress/Woocommerce. BTW: static HTML is cool, editable in browser, no superskills needed. check out nostr:${other.npub}",
+            "nostr:${other.npub} thanks! I moved to my new account yesterday",
+        )) {
+            assertTrue(StatementReader.read(event(me, 1, text, 1)).isEmpty(), text)
+        }
+    }
+
+    @Test
+    fun `a newly created account is a secondary, not a successor`() {
+        val text = "I just created a new npub / brand called, nostr:${other.npub}"
+        assertIs<SecondaryClaim>(StatementReader.read(event(me, 1, text, 1)).single())
+    }
+
+    @Test
+    fun `a profile calling itself the old account names its successor`() {
+        for (about in listOf("Old account. New one at nostr:${other.npub}", "OLD ACCOUNT go to nostr:${other.npub}", "Old account of nostr:${other.npub}", "This is my old account. I'm now on mstdn.social: nostr:${other.npub}")) {
+            val claim = assertIs<TransitionClaim>(StatementReader.read(profile(me, 1, "me", about)).single(), about)
+            assertEquals(me.hex, claim.oldKey, about)
+            assertEquals(Signer.OLD_KEY, claim.signedBy, about)
+        }
+        val newKey = assertIs<TransitionClaim>(StatementReader.read(profile(me, 1, "me", "i fixed my handle\n\nold account at nostr:${other.npub}")).single())
+        assertEquals(Signer.NEW_KEY, newKey.signedBy)
+    }
+
+    @Test
+    fun `the claims that were real still read`() {
+        val compromised = assertIs<TransitionClaim>(StatementReader.read(event(me, 1, "THIS ACCOUNT HAS BEEN COMPROMISED Please unfollow this account and follow our new account nostr:${other.npub}", 1)).single())
+        assertEquals(Reason.COMPROMISE, compromised.reason)
+        assertEquals(Signer.OLD_KEY, compromised.signedBy)
+        assertIs<TransitionClaim>(StatementReader.read(event(me, 1, "I'm migrating to new keys. Here's my new shiny npub: nostr:${other.npub}", 1)).single())
+        assertIs<TransitionClaim>(StatementReader.read(profile(me, 1, "me", "this account will be deleted in 2 weeks my new account can be found at nostr:${other.npub}")).single())
+    }
 }

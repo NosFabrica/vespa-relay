@@ -199,7 +199,10 @@ class KeyWatch(
 
         val unranked = byKey.keys.filter { lens.cardOf(it) == null }
         log("${byKey.size} leaked keys, ${byKey.size - unranked.size} with a rank card; asking the other ${unranked.size} for events before their leak")
-        val before = authorsWithAny(unranked.map { Filter(authors = listOf(it), until = leakAt.getValue(it) - 1, limit = 1) })
+        // A life is a day long at least. Measured on the first production report: the typical
+        // self-leaking "compromised" key had signed one profile a median 83 seconds before naming
+        // itself after its nsec, a key born and burned in a minute that never authenticated anyone.
+        val before = authorsWithAny(unranked.map { Filter(authors = listOf(it), until = leakAt.getValue(it) - MIN_LIFE_SECONDS, limit = 1) })
         val withHistory = byKey.keys.filter { lens.cardOf(it) != null || it in before }
         val after = newestBy(withHistory.map { Filter(authors = listOf(it), since = leakAt.getValue(it) + 1, limit = 1) })
 
@@ -352,5 +355,8 @@ class KeyWatch(
         const val IDS_PER_FILTER = 200
         const val FOLLOW_LISTS_PER_FILTER = 100
         const val MAX_PAUSE_MS = 5 * 60_000L
+
+        /** How long before its leak a key must have signed something to have been anyone's. */
+        const val MIN_LIFE_SECONDS = 86_400L
     }
 }

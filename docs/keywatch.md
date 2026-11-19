@@ -38,8 +38,8 @@ keys involved say so), `CONTESTED`.
 
 | Class | Evidence | `since` |
 |---|---|---|
-| `COMPROMISED_PUBLIC` | a published nsec, hex secret or NIP-06 mnemonic derives this key, and the key had a life before (an event, or a rank card) | the first event that published it |
-| `PUBLIC_FROM_BIRTH` | the same, but the key signed nothing before, or the secret was handed out in an invite link (`iris.to/chat#nsec1…`) | idem |
+| `COMPROMISED_PUBLIC` | a published nsec, hex secret or NIP-06 mnemonic derives this key, and the key had a life before: a rank card, or an event signed at least a day before the leak | the first event that published it |
+| `PUBLIC_FROM_BIRTH` | the same, but the key had no such life (the bot farms sign one profile a median 83 s before naming themselves after their nsec), or the secret was handed out in an invite link (`iris.to/chat#nsec1…`) | idem |
 | `COMPROMISED_ACCESS` | a transition whose wording claims a compromise | the first claim |
 | `SUSPECTED` | a precautionary move ("may have leaked, just in case"), or a posted `ncryptsec` | idem |
 | `LOST` | a transition claiming a lost key | idem |
@@ -76,9 +76,16 @@ not another.
 - **Secrets**: NIP-50 searches (`nsec1`, `ncryptsec1`, `privkey`, `"private key"`, `"secret key"`,
   `"seed phrase"`, `mnemonic`). A 64-hex string counts only right after a word naming a secret; a
   mnemonic only as a checksum-valid run of BIP-39 words.
-- **Statements**: phrase searches over kinds 0 and 1, each paired with `npub`/`nprofile`. A note's
-  claim needs first-person wording near the key. Exactly one foreign key makes a self claim; two
-  make a third-party statement; more are dropped.
+- **Statements**: phrase searches over kinds 0 and 1, each paired with `npub`/`nprofile`. The
+  phrase must lead into the key, ending at most 30 characters before it ("my new npub is …",
+  "follow me at …", "I have moved to …", "my old account: …"), with nothing recommending someone else
+  in between, and a note needs a first-person word before it. "Created a new account …" is a
+  secondary; an "old account" phrase that redirects ("Old account. New one at …") makes the speaker
+  the old key. Exactly one foreign key makes a self claim; two make a third-party statement; more
+  are dropped. Measured on the first report's 1,809 claims: the looser reader it replaced had half
+  of its ten validated transitions wrong (a birthday post, a recommendation, "my signal
+  conversations have moved to …"), reposted for what they were, not for a key change; this one
+  keeps 866 and keeps none of those. `StatementReaderProbe` reruns that check on any JSONL of events.
 - **Paging**: search answers are ranked, so an `until` cursor does not walk them (the second page of
   `nsec1` returned 44 of 26,820). `Sweeper` sizes each yearly window with COUNT, halves it until it
   fits under 4,000, then fetches it whole.
