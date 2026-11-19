@@ -99,9 +99,11 @@ class SyncProgress {
         fatals: Long = 0,
         /** Null on a process with no registry, which publishes no section rather than an empty one. */
         store: StoreCalls.Snapshot? = null,
+        /** Why negentropy windows failed to reconcile; null before the first one did. */
+        negentropyDrops: JsonObject? = null,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
-        latest = document(streams, processors, fatals, health, live, store, nowSeconds)
+        latest = document(streams, processors, fatals, health, live, store, nowSeconds, negentropyDrops)
     }
 
     companion object {
@@ -116,6 +118,7 @@ class SyncProgress {
             live: InFlight? = null,
             store: StoreCalls.Snapshot? = null,
             nowSeconds: Long,
+            negentropyDrops: JsonObject? = null,
         ): JsonObject =
             buildJsonObject {
                 put("fatals", fatals)
@@ -226,6 +229,7 @@ class SyncProgress {
                     putJsonArray("processors") { for (p in rows) add(Processors.published(p)) }
                 }
                 store?.let { put("store", it.document()) }
+                negentropyDrops?.let { put("negentropyDrops", it) }
             }
 
         /** A list of held relays, one shape for a stream's `inFlight` and the root's `live`. */

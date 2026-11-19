@@ -163,6 +163,9 @@ class SyncEngine(
     /** Per-relay kind caps, one instance for the pool and the pager alike. */
     private val widths = FilterWidths()
 
+    /** Why negentropy windows failed, off quartz's typed failure and the socket end it carries. */
+    private val negentropyDrops = NegentropyDrops()
+
     /** The window chunker. */
     private val pager =
         NegentropyPager(
@@ -176,6 +179,7 @@ class SyncEngine(
                 slackSeconds = config.negPageSlackSec,
             ),
             complaints,
+            negentropyDrops,
         )
 
     /** One socket refcount across every stream. */
@@ -366,6 +370,7 @@ class SyncEngine(
                     fatals.get(),
                     // Same tick as the rest, so the batch row and the store-call row describe one instant.
                     store = storeCalls.snapshot(),
+                    negentropyDrops = negentropyDrops.document(),
                 )
             }
         }

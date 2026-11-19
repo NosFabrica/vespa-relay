@@ -349,6 +349,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           compare both ways, delete what the provider no
                           longer serves
     NegentropyPager.kt    the windowed history sweep every reconcile runs
+    NegentropyDrops.kt    why its windows failed to reconcile, per cause and
+                          relay, off the sockets' own ends
     SweepState.kt         per-peer window sizes and the in-progress cursor
     SyncBands.kt          covered created_at bands per (relay, filter)
     PersistedJsonState.kt the state files' shared flusher, written through

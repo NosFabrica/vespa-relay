@@ -86,6 +86,8 @@ class NegentropyPagerTest {
         val failAt: Set<Int> = emptySet(),
         val throwsOverMax: Boolean = false,
         val statesCap: Boolean = true,
+        // Every window from this call on is dropped as well.
+        val failFrom: Int = Int.MAX_VALUE,
     ) : WindowSync {
         val asked = mutableListOf<LongRange>()
         val reconciled = mutableListOf<LongRange>()
@@ -107,7 +109,8 @@ class NegentropyPagerTest {
             asked += range
             kindsAsked += window.kinds
             targetsSeen += targetWindow
-            if (calls++ in failAt) {
+            val call = calls++
+            if (call in failAt || call >= failFrom) {
                 throw NegentropySyncException(url, window, NegentropySyncException.Reason.UNAVAILABLE, "relay disconnected")
             }
             val done = mutableListOf<LongRange>()
@@ -155,15 +158,19 @@ class NegentropyPagerTest {
         /** Events a refused page still delivered: a chunked page can serve one chunk and lose the next. */
         var refusedPagesStillDeliver = 0
 
+        /** Which fallback pages, by call order, are refused; overrides [refusesPages] when set. */
+        var refusesPageAt: ((Int) -> Boolean)? = null
+
         override suspend fun page(
             url: NormalizedRelayUrl,
             window: Filter,
             onEvent: suspend (Event) -> Unit,
         ): PagedWindow {
             val range = window.since!!..window.until!!
+            val call = pagedRanges.size
             pagedRanges += range
             kindsAsked += window.kinds
-            if (refusesPages) return PagedWindow(refusedPagesStillDeliver, refused = true)
+            if (refusesPageAt?.invoke(call) ?: refusesPages) return PagedWindow(refusedPagesStillDeliver, refused = true)
             return PagedWindow(density.count(range), refused = false)
         }
     }
@@ -369,8 +376,8 @@ class NegentropyPagerTest {
     fun `a stopped sweep keeps its cursor and a resume skips what it covers`() =
         runBlocking {
             val state = SweepState(null)
-            // Three failures in a row stop the sweep, with everything above still done.
-            val stopping = FakePeer(Density(perSecond = 1), failAt = setOf(1, 2, 3, 4, 5, 6))
+            // Three unread windows in a row stop the sweep, with everything above still done.
+            val stopping = FakePeer(Density(perSecond = 1), failAt = setOf(1, 2, 3, 4, 5, 6)).apply { refusesPages = true }
             val index = FakeIndex(Density(perSecond = 100))
             val first = pager(index, stopping, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
@@ -433,6 +440,22 @@ class NegentropyPagerTest {
         }
 
     @Test
+    fun `a per-kind reconcile the relay drops is counted with the sweep's own drops`() =
+        runBlocking {
+            val shape = Filter(kinds = listOf(1, 7))
+            val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
+            // Call 0 is the window; 1 and 2 are the dense second's per-kind reconciles.
+            val peer = FakePeer(hot, cap = 5_000, failAt = setOf(1, 2))
+            val drops = NegentropyDrops()
+            val out =
+                NegentropyPager(FakeIndex(Density(perSecond = 0)), peer, SweepState(null), NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000), drops = drops)
+                    .sweep(mirror, relay, shape, shape.copy(since = 1_000, until = 1_999)) {}
+
+            assertTrue(out.complete, "the dropped kinds were paged")
+            assertEquals("2", drops.document()?.get("windows")?.toString(), "both per-kind drops are counted")
+        }
+
+    @Test
     fun `a single-kind second the peer will not reconcile is paged`() =
         runBlocking {
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
@@ -492,17 +515,17 @@ class NegentropyPagerTest {
         }
 
     @Test
-    fun `a resumed sweep that cannot reconcile hands back only what is left`() =
+    fun `a resumed sweep whose first window drops pages on from its cursor`() =
         runBlocking {
             val state = SweepState(null)
+            // The cursor an earlier sweep earned, stopped by its paging bound.
             state.advance(SweepState.keyFor(mirror, relay, notes), 1_500, 1_999)
             val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0))
             val out = pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
-            assertFalse(out.negentropyUsable)
-            val rest = assertNotNull(out.outstanding, "the caller needs to know what to page")
-            assertEquals(1_000, rest.since)
-            assertEquals(1_499, rest.until, "everything the cursor already claims stays claimed")
+            assertTrue(out.negentropyUsable, "a relay that reconciled before is not one that refuses negentropy")
+            assertTrue(out.complete, "the dropped window was paged and the sweep went on")
+            assertEquals(listOf(1_000L..1_499L), peer.pagedRanges, "only what the cursor does not claim is paged")
         }
 
     @Test
@@ -563,6 +586,86 @@ class NegentropyPagerTest {
             assertTrue(peer.pagedRanges.isNotEmpty(), "the fallback page was attempted")
             assertEquals(0, out.refusedWindows)
             assertTrue(out.complete, "every window was read, one way or the other")
+        }
+
+    // ---- when negentropy keeps dropping mid-sweep -----------------------------
+
+    private val unbounded = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60, pagedEventsPerSweep = Int.MAX_VALUE)
+
+    @Test
+    fun `a relay that drops every NEG-OPEN but serves REQs completes the sweep by paging`() =
+        runBlocking {
+            val state = SweepState(null)
+            // The first window reconciles, so the sweep is under way when the drops start.
+            val peer = FakePeer(Density(perSecond = 100), failFrom = 1)
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state, unbounded).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(out.complete, "every window was read, by negentropy or by paging")
+            assertEquals(0, out.refusedWindows)
+            assertTrue(peer.pagedRanges.size > NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, "more windows were paged than the old give-up allowed")
+            assertTiles(peer.reconciled + peer.pagedRanges, 1_000, 1_999)
+            assertNull(state.reconciled(SweepState.keyFor(mirror, relay, notes)), "a completed sweep leaves no cursor behind")
+        }
+
+    @Test
+    fun `a relay that keeps dropping negentropy is paged without opening it on every window`() =
+        runBlocking {
+            val peer = FakePeer(Density(perSecond = 100), failFrom = 1)
+            pager(FakeIndex(Density(perSecond = 100)), peer, tuning = unbounded).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(peer.pagedRanges.size > 10, "the leg is many windows wide")
+            assertEquals(1 + NegentropyPager.DROPS_BEFORE_PAGING_ONLY, peer.asked.size, "NEG-OPEN stops after a run of drops")
+        }
+
+    @Test
+    fun `a relay that drops NEG-OPEN and refuses REQs stops after three unread windows and claims none of them`() =
+        runBlocking {
+            val state = SweepState(null)
+            val peer = FakePeer(Density(perSecond = 100), failFrom = 1).apply { refusesPages = true }
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state, unbounded).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertFalse(out.complete)
+            assertTrue(out.negentropyUsable)
+            assertEquals(NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, out.refusedWindows, "reported refused, as before")
+            assertEquals(NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, peer.pagedRanges.size, "and stopped there")
+            val held = assertNotNull(state.reconciled(SweepState.keyFor(mirror, relay, notes)))
+            peer.pagedRanges.forEach { assertTrue(it.last < held.downTo, "the refused window $it was claimed by $held") }
+        }
+
+    @Test
+    fun `a window the fallback read breaks the run of unread windows`() =
+        runBlocking {
+            // Refused, refused, served, then refused from there on.
+            val peer = FakePeer(Density(perSecond = 100), failFrom = 1).apply { refusesPageAt = { it != 2 } }
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, tuning = unbounded).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertFalse(out.complete)
+            assertEquals(2 + 1 + NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, peer.pagedRanges.size, "the served page reset the count")
+            assertEquals(2 + NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, out.refusedWindows)
+        }
+
+    @Test
+    fun `paging is bounded per sweep and the next sweep resumes below the cursor`() =
+        runBlocking {
+            val state = SweepState(null)
+            val density = Density(perSecond = 100)
+            val budget = 4_000
+            val tuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60, pagedEventsPerSweep = budget)
+            val dropping = FakePeer(density, failFrom = 1)
+            val first = pager(FakeIndex(density), dropping, state, tuning).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertFalse(first.complete, "the bound stopped the sweep before the leg was done")
+            assertEquals(0, first.refusedWindows, "a bound is not a refusal")
+            val pagedEvents = dropping.pagedRanges.sumOf { density.count(it) }
+            assertTrue(pagedEvents >= budget, "paged $pagedEvents, stopped short of the bound")
+            assertTrue(pagedEvents - density.count(dropping.pagedRanges.last()) < budget, "paged $pagedEvents, a window past the bound")
+            assertTrue(dropping.pagedRanges.size > NegentropyPager.MAX_UNCLAIMED_IN_A_ROW, "every window below the bound was read")
+
+            val mark = assertNotNull(state.reconciled(SweepState.keyFor(mirror, relay, notes)), "the paged windows were claimed")
+            val healthy = FakePeer(density)
+            val second = pager(FakeIndex(density), healthy, state, tuning).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+            assertTrue(second.complete)
+            healthy.asked.forEach { assertTrue(it.last < mark.downTo, "resumed windows must stay below the cursor, asked $it against $mark") }
         }
 
     // ---- the live head -------------------------------------------------------

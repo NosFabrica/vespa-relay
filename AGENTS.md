@@ -319,6 +319,9 @@ operator page shows and why is
   NIP-07 extension in a browser, or sign a kind-27235 token for a script.
 - The progress document (`SyncProgress`): each stream's phase and clock,
   `roster`/`tails`, the in-flight legs, every running pass.
+- `negentropyDrops` on the progress document and the `could not reconcile (…)` lines: who ended a
+  negentropy socket (the relay's close code, our own close and its reason, the transport), and the
+  largest frame we had sent on it (`NegentropyDrops`, off quartz's typed `NegentropySyncException`).
 - `store` on `/stats.json` and the `store call SLOW` lines: which store calls
   are outstanding, whose, how old (`StoreCalls`). Do not wait for `bottleneck`.
 - The abort partition on the visits row (`abortedAuthRequired`, `abortedClosed`,

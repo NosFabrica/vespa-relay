@@ -25,8 +25,12 @@ import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusPlane
 import com.nosfabrica.vespa.relay.progress.StatusVocabulary
 import com.nosfabrica.vespa.relay.progress.StoreCalls
+import com.nosfabrica.vespa.relay.sync.NegentropyDrops
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.RelayDisconnect
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.SentFrames
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.JsonArray
@@ -61,6 +65,7 @@ class StatusVocabularyTest {
             "to",
             "startedAt",
             "endedAt",
+            "lastAt",
             "relay",
             "min",
             "max",
@@ -106,6 +111,7 @@ class StatusVocabularyTest {
                 live = live(),
                 store = storeCalls(),
                 nowSeconds = now,
+                negentropyDrops = negentropyDrops(),
             )
         val data =
             buildJsonObject {
@@ -448,6 +454,19 @@ class StatusVocabularyTest {
             callers = listOf(StoreCalls.Caller(caller = "ingest.dedup", issued = 41_022, returned = 41_020, failed = 0, cancelled = 0, outstanding = 2, oldestOutstandingSec = 794)),
             ages = listOf(StoreCalls.Age(fromSec = 0, calls = 1), StoreCalls.Age(fromSec = 900, calls = 2)),
         )
+
+    /** One window dropped by a relay's close frame, through the recorder the pager writes. */
+    private fun negentropyDrops(): JsonObject {
+        val url = RelayUrlNormalizer.normalize("wss://relay.example")
+        val drops = NegentropyDrops()
+        val end = RelayDisconnect(RelayDisconnect.Side.RELAY, 1009, "message too big", null, 2_000, 1_000, SentFrames(2, 74, "NEG-OPEN", 74, "NEG-OPEN"))
+        drops.record(
+            url,
+            1_000,
+            NegentropySyncException(url, Filter(kinds = listOf(1)), NegentropySyncException.Reason.UNAVAILABLE, "closed: relay disconnected", failure = NegentropySyncException.Failure.DISCONNECTED, disconnect = end),
+        )
+        return drops.document()!!
+    }
 
     /** Every member the document publishes, at any depth. */
     private fun publishedMembers(): Set<String> {

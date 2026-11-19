@@ -6,6 +6,16 @@ The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`,
 the code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.
 
+**How a socket ended is quartz's to say, not a wrapper's.** `RelayConnectionListener.onDisconnected`
+carried no close code, no reason and no side, so a negentropy window that failed on a dropped
+socket could not say who dropped it (#324). A wrapper around quartz's `WebsocketBuilder`
+(`SocketEnds`) recovered all three, at the cost of every message taking quartz's guarded delivery
+path, a stack walk per close, and matching quartz's English to tell a drop from a refusal. quartz
+2.20.0 records the end on the relay client itself (`IRelayClient.lastDisconnect`, set before
+`onDisconnected` runs) and types a negentropy failure (`NegentropySyncException.failure`, with the
+socket's `disconnect`, the frames `sent` and the `rounds`), so the wrapper is gone; `RelaySockets`
+names its own closes with `disconnect("released")`.
+
 **The OkHttp dispatcher is 4,096 wide, not the stock 64.** An open websocket
 holds a dispatcher slot for its whole life, so at 64 every stream's
 `concurrency` silently stopped meaning anything: a 20,340-relay cycle
