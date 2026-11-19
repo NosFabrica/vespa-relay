@@ -122,4 +122,14 @@ class StatementReaderTest {
         assertIs<TransitionClaim>(StatementReader.read(event(me, 1, "I'm migrating to new keys. Here's my new shiny npub: nostr:${other.npub}", 1)).single())
         assertIs<TransitionClaim>(StatementReader.read(profile(me, 1, "me", "this account will be deleted in 2 weeks my new account can be found at nostr:${other.npub}")).single())
     }
+
+    @Test
+    fun `a footer advertising an account is no claim, and a far-off word does not set the reason`() {
+        val bulletin = "Use the recent chaos as a chance to review all your security protocols. Follow us on NOSTR: ${other.npub}"
+        assertTrue(StatementReader.read(event(me, 1, bulletin, 1)).isEmpty())
+        assertIs<TransitionClaim>(StatementReader.read(profile(me, 1, "me", "follow me on nostr: ${other.npub}")).single())
+
+        val far = "A compromised DevOps laptop drained an exchange. " + "Market notes. ".repeat(40) + "I have moved to nostr:${other.npub}"
+        assertEquals(Reason.ROTATION, assertIs<TransitionClaim>(StatementReader.read(event(me, 1, far, 1)).single()).reason)
+    }
 }

@@ -89,13 +89,17 @@ object StatementReader {
                 "\\b(i|i'?ve|i have|i'?m|i am|we|we'?ve|we have|we'?re|this account|account)( (have|has|had|just|now|finally))? " +
                 "(moved|moving|migrated|migrating)( (over|my account|this account|accounts))? to\\b|" +
                 "\\bmigrat(e|ed|ing) (my account |this account )?to\\b|\\bswitch(ed|ing) to (a |my )?new\\b|" +
-                "\\bfollow (me|us) (at|on|here|over at|instead|now)\\b|\\bdead account\\b|" +
+                "\\bfollow (me|us) (at|here|over at|instead|now)\\b|\\bdead account\\b|" +
                 "\\bthis (account|npub|key) (is|was|has been) (dead|retired|abandoned|deprecated|inactive|compromised|hacked|moved)\\b|" +
                 "\\bnova conta\\b|\\bnovo npub\\b|\\bnueva cuenta\\b|\\bnuevo npub\\b|\\bneue[rn]? (account|npub|schlüssel)",
         )
 
-    /** In a profile the speaker is the account itself, so a bare "moved to" is enough there. */
-    private val OUTGOING_IN_PROFILE = words("\\bmov(ed|ing)( over)? to\\b|\\bnow at\\b")
+    /**
+     * In a profile the speaker is the account itself, so a bare "moved to", or "follow me on …",
+     * is enough there. In a note "follow us on NOSTR: npub…" is a footer advertising an account
+     * (measured: a daily bulletin carried it in every one of ~100 issues), not a successor.
+     */
+    private val OUTGOING_IN_PROFILE = words("\\bmov(ed|ing)( over)? to\\b|\\bnow at\\b|\\bfollow (me|us) on\\b")
 
     /** The speaker is the NEW key, and the phrase leads into the one it replaces. */
     private val INCOMING =
@@ -141,6 +145,9 @@ object StatementReader {
 
     /** How much text before a phrase is read for what qualifies it ("I just created …", "this is my …"). */
     private const val SPEAKER_LOOKBACK = 24
+
+    /** How much of a note before the key says why it moved. */
+    private const val REASON_WINDOW = 300
 
     /** How far before the key a note's first-person word may sit. */
     private const val SPEAKER_WINDOW = 160
@@ -209,7 +216,9 @@ object StatementReader {
         val profile = event.kind == 0
         val (lead, at) = positions.firstNotNullOfOrNull { p -> leadInto(text, p, profile)?.let { it to p } } ?: return null
         if (!profile && !FIRST_PERSON.containsMatchIn(text.substring((at - SPEAKER_WINDOW).coerceAtLeast(0), at))) return null
-        val reason = reasonOf(text)
+        // A profile is about its key throughout; a note only around the claim (a bulletin said
+        // "compromised" 5,000 characters from its footer and read as a compromise).
+        val reason = reasonOf(if (profile) text else text.substring((at - REASON_WINDOW).coerceAtLeast(0), at))
         return when (lead) {
             Lead.OUTGOING -> TransitionClaim(event.pubKey, other, reason, Signer.OLD_KEY, event)
             Lead.INCOMING -> TransitionClaim(other, event.pubKey, reason, Signer.NEW_KEY, event)

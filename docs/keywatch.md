@@ -79,7 +79,9 @@ not another.
 - **Statements**: phrase searches over kinds 0 and 1, each paired with `npub`/`nprofile`. The
   phrase must lead into the key, ending at most 30 characters before it ("my new npub is …",
   "follow me at …", "I have moved to …", "my old account: …"), with nothing recommending someone else
-  in between, and a note needs a first-person word before it. "Created a new account …" is a
+  in between, and a note needs a first-person word before it. In a note "follow us on …" is a footer advertising an account (a daily bulletin carried
+  one in each of ~100 issues), so only a profile may say it; a note's reason is read from the 300
+  characters before the key. "Created a new account …" is a
   secondary; an "old account" phrase that redirects ("Old account. New one at …") makes the speaker
   the old key. Exactly one foreign key makes a self claim; two make a third-party statement; more
   are dropped. Measured on the first report's 1,809 claims: the looser reader it replaced had half
