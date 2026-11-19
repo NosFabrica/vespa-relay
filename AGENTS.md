@@ -160,7 +160,7 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets, SocketEnds,
+  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`; monitorFromEnv
@@ -320,8 +320,8 @@ operator page shows and why is
 - The progress document (`SyncProgress`): each stream's phase and clock,
   `roster`/`tails`, the in-flight legs, every running pass.
 - `negentropyDrops` on the progress document and the `could not reconcile (…)` lines: who ended a
-  negentropy socket (the relay's close code, our own close and its caller, the transport), and the
-  largest frame we had sent on it (`SocketEnds`, `NegentropyDrops`).
+  negentropy socket (the relay's close code, our own close and its reason, the transport), and the
+  largest frame we had sent on it (`NegentropyDrops`, off quartz's typed `NegentropySyncException`).
 - `store` on `/stats.json` and the `store call SLOW` lines: which store calls
   are outstanding, whose, how old (`StoreCalls`). Do not wait for `bottleneck`.
 - The abort partition on the visits row (`abortedAuthRequired`, `abortedClosed`,

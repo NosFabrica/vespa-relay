@@ -1,29 +1,20 @@
 # Peers decisions
 
-The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`, `SocketEnds`,
+The history behind `peers/.../` (`PeerClient`, `RelaySockets`, `Sockets`,
 `DialGate`, `TorTransport`, `RelayUrlCache`, `RelayDiscovery`,
 `RelayVerdictRecord`, `RelayFacts`, `Verdict`), moved out of the source so
 the code reads on its own. One paragraph per decision; `git log -L` on the
 function finds the commit.
 
-**`SocketEnds` records each socket's end beside quartz, around its socket builder.**
-`RelayConnectionListener.onDisconnected` carries no close code, no reason and
-no side, so a negentropy window that failed on a dropped socket could not say
-who dropped it (#324). Wrapping the `WebsocketBuilder` sees all three: the
-close frame and the transport failure arrive on the socket's listener, and
-our own close is a `disconnect()` call, attributed by a stack walk to the
-first frame outside the socket layer and the first of ours beneath it, since
-quartz often decides a close inside a call we made. The end is recorded
-before quartz's handler runs, since that handler is what fails the reconcile
-reading it, and the first end wins because quartz answers a failure with a
-`disconnect()` of its own. Ends and NEG-OPENs are ordered by a sequence
-number, not the clock: a socket's end and the next window's mark often share
-a millisecond. The cost: quartz's sockets skip the listener's guard only for
-its own listener class, so every message on a wrapped socket takes the
-guarded path, which is why `PeerClient` wraps only when handed a `SocketEnds`
-and only the sync does. Remove when quartz's
-`RelayConnectionListener.onDisconnected` carries the close code, the reason
-and which side ended it.
+**How a socket ended is quartz's to say, not a wrapper's.** `RelayConnectionListener.onDisconnected`
+carried no close code, no reason and no side, so a negentropy window that failed on a dropped
+socket could not say who dropped it (#324). A wrapper around quartz's `WebsocketBuilder`
+(`SocketEnds`) recovered all three, at the cost of every message taking quartz's guarded delivery
+path, a stack walk per close, and matching quartz's English to tell a drop from a refusal. quartz
+2.20.0 records the end on the relay client itself (`IRelayClient.lastDisconnect`, set before
+`onDisconnected` runs) and types a negentropy failure (`NegentropySyncException.failure`, with the
+socket's `disconnect`, the frames `sent` and the `rounds`), so the wrapper is gone; `RelaySockets`
+names its own closes with `disconnect("released")`.
 
 **The OkHttp dispatcher is 4,096 wide, not the stock 64.** An open websocket
 holds a dispatcher slot for its whole life, so at 64 every stream's

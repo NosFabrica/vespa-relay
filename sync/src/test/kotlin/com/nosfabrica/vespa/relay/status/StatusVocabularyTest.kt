@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.status
 
-import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
 import com.nosfabrica.vespa.relay.progress.StatusPlane
@@ -29,12 +28,11 @@ import com.nosfabrica.vespa.relay.progress.StoreCalls
 import com.nosfabrica.vespa.relay.sync.NegentropyDrops
 import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.RelayDisconnect
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.SentFrames
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocket
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -460,51 +458,13 @@ class StatusVocabularyTest {
     /** One window dropped by a relay's close frame, through the recorder the pager writes. */
     private fun negentropyDrops(): JsonObject {
         val url = RelayUrlNormalizer.normalize("wss://relay.example")
-        val ends = SocketEnds()
-        val drops = NegentropyDrops(ends)
-        val mark = drops.mark(url)
-        var relaySide: WebSocketListener? = null
-        val inner =
-            object : WebsocketBuilder {
-                override fun build(
-                    url: NormalizedRelayUrl,
-                    out: WebSocketListener,
-                ): WebSocket {
-                    relaySide = out
-                    return object : WebSocket {
-                        override fun needsReconnect() = false
-
-                        override fun connect() = Unit
-
-                        override fun disconnect() = Unit
-
-                        override fun send(msg: String) = true
-                    }
-                }
-            }
-        val quartzSide =
-            object : WebSocketListener {
-                override fun onOpen(
-                    pingMillis: Int,
-                    compression: Boolean,
-                ) = Unit
-
-                override suspend fun onMessage(text: String) = Unit
-
-                override fun onClosed(
-                    code: Int,
-                    reason: String,
-                ) = Unit
-
-                override fun onFailure(
-                    t: Throwable,
-                    code: Int?,
-                    response: String?,
-                ) = Unit
-            }
-        ends.around(inner).build(url, quartzSide).send("[\"NEG-OPEN\",\"s\",{},\"61\"]")
-        relaySide!!.onClosed(1009, "message too big")
-        drops.record(url, mark, 1_000, "closed: relay disconnected")
+        val drops = NegentropyDrops()
+        val end = RelayDisconnect(RelayDisconnect.Side.RELAY, 1009, "message too big", null, 2_000, 1_000, SentFrames(2, 74, "NEG-OPEN", 74, "NEG-OPEN"))
+        drops.record(
+            url,
+            1_000,
+            NegentropySyncException(url, Filter(kinds = listOf(1)), NegentropySyncException.Reason.UNAVAILABLE, "closed: relay disconnected", failure = NegentropySyncException.Failure.DISCONNECTED, disconnect = end),
+        )
         return drops.document()!!
     }
 

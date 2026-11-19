@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.peers.PeerClient
-import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -47,7 +46,7 @@ import kotlin.test.assertTrue
 
 /** A relay that closes the socket on our NEG-OPEN, through the real client, quartz and the pager. */
 class NegentropyDropsSocketTest {
-    /** Accepts one websocket, reads one frame, and answers it with a close frame carrying [code]. */
+    /** Accepts one websocket, reads frames until our NEG-OPEN, and answers it with a close frame carrying [code]. */
     private fun closingRelay(
         code: Int,
         reason: String,
@@ -61,15 +60,19 @@ class NegentropyDropsSocketTest {
                 val key = Regex("Sec-WebSocket-Key: (.+)\r\n", RegexOption.IGNORE_CASE).find(headers)!!.groupValues[1].trim()
                 val accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1").digest((key + WS_GUID).toByteArray()))
                 s.getOutputStream().write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n".toByteArray())
-                // The client's first frame, masked: skip it whole.
-                input.readByte()
-                val len =
-                    when (val l = input.readByte().toInt() and 0x7f) {
-                        126 -> input.readUnsignedShort().toLong()
-                        127 -> input.readLong()
-                        else -> l.toLong()
-                    }
-                input.skipNBytes(4 + len)
+                // Client frames are masked: unmask each until the NEG-OPEN arrives.
+                do {
+                    input.readByte()
+                    val len =
+                        when (val l = input.readByte().toInt() and 0x7f) {
+                            126 -> input.readUnsignedShort()
+                            127 -> input.readLong().toInt()
+                            else -> l
+                        }
+                    val mask = ByteArray(4).also { input.readFully(it) }
+                    val payload = ByteArray(len).also { input.readFully(it) }
+                    val text = String(ByteArray(len) { i -> (payload[i].toInt() xor mask[i % 4].toInt()).toByte() })
+                } while (!text.startsWith("[\"NEG-OPEN\""))
                 val body = byteArrayOf((code shr 8).toByte(), code.toByte()) + reason.toByteArray()
                 s.getOutputStream().write(byteArrayOf(0x88.toByte(), body.size.toByte()) + body)
                 s.getOutputStream().flush()
@@ -91,10 +94,10 @@ class NegentropyDropsSocketTest {
         runBlocking {
             val server = closingRelay(1009, "too big")
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-            val peers = PeerClient(scope, socketEnds = SocketEnds())
+            val peers = PeerClient(scope)
             try {
                 val url = RelayUrlNormalizer.normalize("ws://127.0.0.1:${server.localPort}/")
-                val drops = NegentropyDrops(peers.socketEnds)
+                val drops = NegentropyDrops()
                 val pager =
                     NegentropyPager(
                         EmptyIndex,
@@ -110,7 +113,7 @@ class NegentropyDropsSocketTest {
                 val doc = drops.document()!!
                 val cause = (doc["causes"] as JsonArray).single() as JsonObject
                 assertEquals("relay closed 1009 too big", cause["cause"]!!.jsonPrimitive.content)
-                assertTrue(cause["largestSentMax"]!!.jsonPrimitive.content.toInt() > 0, "the NEG-OPEN we sent is on the record")
+                assertTrue(cause["largestSentMax"]!!.jsonPrimitive.content.toInt() > 0, "the frames we sent are on the record")
             } finally {
                 peers.close()
                 scope.cancel()

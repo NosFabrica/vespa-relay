@@ -20,68 +20,36 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.peers.SocketEnds
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.RelayDisconnect
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.SentFrames
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocket
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebSocketListener
-import com.vitorpamplona.quartz.nip01Core.relay.sockets.WebsocketBuilder
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
-/** Which cause a failed window is counted under. */
+/** Which cause a failed window is counted under, from quartz's typed failure. */
 class NegentropyDropsTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
-    private val ends = SocketEnds()
-    private val drops = NegentropyDrops(ends)
+    private val drops = NegentropyDrops()
 
-    /** Opens one socket through [ends] and has the relay close it. */
-    private fun relayCloses(code: Int) {
-        var relaySide: WebSocketListener? = null
-        val inner =
-            object : WebsocketBuilder {
-                override fun build(
-                    url: NormalizedRelayUrl,
-                    out: WebSocketListener,
-                ): WebSocket {
-                    relaySide = out
-                    return object : WebSocket {
-                        override fun needsReconnect() = false
+    private fun failed(
+        detail: String,
+        failure: NegentropySyncException.Failure?,
+        disconnect: RelayDisconnect? = null,
+        sent: SentFrames? = null,
+    ) = NegentropySyncException(url, Filter(kinds = listOf(1)), NegentropySyncException.Reason.UNAVAILABLE, detail, failure = failure, disconnect = disconnect, sent = sent)
 
-                        override fun connect() = Unit
-
-                        override fun disconnect() = Unit
-
-                        override fun send(msg: String) = true
-                    }
-                }
-            }
-        ends.around(inner).build(url, Quiet)
-        relaySide!!.onClosed(code, "bye")
-    }
-
-    private object Quiet : WebSocketListener {
-        override fun onOpen(
-            pingMillis: Int,
-            compression: Boolean,
-        ) = Unit
-
-        override suspend fun onMessage(text: String) = Unit
-
-        override fun onClosed(
-            code: Int,
-            reason: String,
-        ) = Unit
-
-        override fun onFailure(
-            t: Throwable,
-            code: Int?,
-            response: String?,
-        ) = Unit
-    }
+    private fun end(
+        side: RelayDisconnect.Side,
+        code: Int? = null,
+        reason: String? = null,
+        errorType: String? = null,
+    ) = RelayDisconnect(side, code, reason, errorType, 2_000, 1_000, SentFrames(3, 1_200_000, "NEG-MSG", 900, "NEG-MSG"))
 
     private fun causes(): Map<String, Long> =
         (drops.document()!!["causes"] as JsonArray).associate {
@@ -91,30 +59,50 @@ class NegentropyDropsTest {
 
     @Test
     fun `a dropped socket is counted under how it ended`() {
-        val mark = drops.mark(url)
-        relayCloses(1009)
-        drops.record(url, mark, 10, "closed: relay disconnected")
-        assertEquals(mapOf("relay closed 1009 bye" to 1L), causes())
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end(RelayDisconnect.Side.RELAY, 1009, "bye")))
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end(RelayDisconnect.Side.CLIENT, reason = "released")))
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end(RelayDisconnect.Side.TRANSPORT, reason = "reset", errorType = "SocketException")))
+        assertEquals(mapOf("relay closed 1009 bye" to 1L, "we closed (released)" to 1L, "transport SocketException" to 1L), causes())
     }
 
     @Test
-    fun `a refusal in the relay's own words keeps them, whatever the socket did after`() {
-        val mark = drops.mark(url)
-        relayCloses(1000)
-        drops.record(url, mark, 10, "blocked: negentropy disabled")
-        assertEquals(mapOf("blocked: negentropy disabled" to 1L), causes())
-    }
-
-    @Test
-    fun `a drop with no socket end says so`() {
-        drops.record(url, drops.mark(url), 10, "closed: relay disconnected")
-        assertEquals(mapOf("no socket end: closed: relay disconnected" to 1L), causes())
+    fun `a refusal in the relay's own words keeps them`() {
+        drops.record(url, 10, failed("blocked: negentropy disabled", NegentropySyncException.Failure.REFUSED))
+        assertEquals(mapOf("refused: blocked: negentropy disabled" to 1L), causes())
     }
 
     @Test
     fun `refusals that differ only in their numbers are one cause`() {
-        drops.record(url, drops.mark(url), 10, "rate-limited: 37 requests in 10s")
-        drops.record(url, drops.mark(url), 10, "rate-limited: 52 requests in 10s")
-        assertEquals(mapOf("rate-limited: # requests in #s" to 2L), causes())
+        drops.record(url, 10, failed("rate-limited: 37 requests in 10s", NegentropySyncException.Failure.REFUSED))
+        drops.record(url, 10, failed("rate-limited: 52 requests in 10s", NegentropySyncException.Failure.REFUSED))
+        assertEquals(mapOf("refused: rate-limited: # requests in #s" to 2L), causes())
+    }
+
+    @Test
+    fun `the largest frame comes from the ended socket, else from the live one`() {
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end(RelayDisconnect.Side.RELAY, 1009)))
+        drops.record(url, 10, failed("relay went silent", NegentropySyncException.Failure.SILENT, sent = SentFrames(1, 700, "NEG-OPEN", 700, "NEG-OPEN")))
+        val rows = (drops.document()!!["causes"] as JsonArray).map { it as JsonObject }.associateBy { it["cause"]!!.jsonPrimitive.content }
+        assertEquals("1200000", rows["relay closed 1009"]!!["largestSentMax"].toString())
+        assertEquals("700", rows["silent"]!!["largestSentMax"].toString())
+    }
+
+    @Test
+    fun `the log sentence carries the end, the rounds and our side of the window`() {
+        val line =
+            drops.record(
+                url,
+                4_200,
+                NegentropySyncException(
+                    url,
+                    Filter(kinds = listOf(1)),
+                    NegentropySyncException.Reason.UNAVAILABLE,
+                    "closed: relay disconnected",
+                    failure = NegentropySyncException.Failure.DISCONNECTED,
+                    disconnect = end(RelayDisconnect.Side.RELAY, 1009, "too big"),
+                    rounds = 3,
+                ),
+            )
+        assertTrue("1009" in line && "3 NEG-MSG round(s)" in line && "we hold 4k" in line, line)
     }
 }

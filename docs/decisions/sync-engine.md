@@ -279,12 +279,10 @@ history finishes over several audits rather than never.
 **Why a window failed is measured, not inferred.** quartz reports any drop
 of the target relay as `closed: relay disconnected`, with no close code, no
 reason and no side; that was 21 of 33 failed windows in the staging sample.
-`NegentropyDrops` reads the socket's own end from `SocketEnds` (`:peers`),
-taken from a mark before the window's NEG-OPEN so an older socket's end is
-never printed as this window's cause, and counts it per cause and per
-(relay, cause). The socket's end is the cause only when quartz's sentence is
-that the socket went (`closed: relay disconnected`, `could not connect`); a
-refusal in the relay's own words stays its cause. Digits are folded to `#`,
+`NegentropyDrops` reads quartz's typed failure (2.20.0): the socket's own end,
+captured as quartz reported it so a reconnect cannot replace it, else the kind of
+failure, with the relay's own words for a refusal; and counts it per cause and
+per (relay, cause). Digits are folded to `#`,
 so a reason carrying counts or addresses stays one cause. Our negentropy frames are uncapped (`frameSizeLimit = 0`), so
 the largest frame we had sent rides beside every cause; a relay closing over
 its payload limit is a candidate, not a finding, until those numbers say so.

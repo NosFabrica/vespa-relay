@@ -339,7 +339,6 @@ internal class NegentropyPager(
                 stopAfterPaging(sweepWindow)?.let { return it }
                 continue
             }
-            val socketMark = drops.mark(url)
             try {
                 // quartz counts from zero per NEG-OPEN; offset so the progress line never walks backwards.
                 val base = downloaded
@@ -405,7 +404,7 @@ internal class NegentropyPager(
                     }
 
                     NegentropySyncException.Reason.UNAVAILABLE -> {
-                        val why = drops.record(url, socketMark, ours, e.detail)
+                        val why = drops.record(url, ours, e)
                         if (reconciled == 0 && paged == 0 && !resumed) {
                             System.err.println(
                                 "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile ($why) — the first window, so negentropy is not used on this sweep",
@@ -550,7 +549,6 @@ internal class NegentropyPager(
                     if (walked.refused) refused = true
                     continue
                 }
-                val mark = drops.mark(url)
                 try {
                     // A slice the peer still refuses inside the per-kind reconcile lands on this hook.
                     var pagedSlices = 0
@@ -568,7 +566,7 @@ internal class NegentropyPager(
                     stillOver++
                     if (e.reason == NegentropySyncException.Reason.UNAVAILABLE) {
                         System.err.println(
-                            "router: sweep ${url.url} [${perKind.since}, ${perKind.until}] kind $kind could not reconcile (${drops.record(url, mark, mine, e.detail)}) — paging it",
+                            "router: sweep ${url.url} [${perKind.since}, ${perKind.until}] kind $kind could not reconcile (${drops.record(url, mine, e)}) — paging it",
                         )
                     }
                     val walked = peer.page(url, perKind, onEvent)

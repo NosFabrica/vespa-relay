@@ -32,7 +32,6 @@ import com.nosfabrica.vespa.relay.ingest.StoreWriter
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
 import com.nosfabrica.vespa.relay.peers.PeerClient
 import com.nosfabrica.vespa.relay.peers.RelaySockets
-import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.nosfabrica.vespa.relay.peers.TorSettings
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -120,7 +119,7 @@ class SyncEngine(
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
     /** The websocket client, socket budget, Tor and NIP-42. */
-    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default, socketEnds = SocketEnds())
+    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
     private val client = peers.client
     private val tor = peers.tor
 
@@ -164,8 +163,8 @@ class SyncEngine(
     /** Per-relay kind caps, one instance for the pool and the pager alike. */
     private val widths = FilterWidths()
 
-    /** Why negentropy windows failed, off the sockets' own ends. */
-    private val negentropyDrops = NegentropyDrops(peers.socketEnds)
+    /** Why negentropy windows failed, off quartz's typed failure and the socket end it carries. */
+    private val negentropyDrops = NegentropyDrops()
 
     /** The window chunker. */
     private val pager =

@@ -722,9 +722,10 @@ internal val MIRROR_TERMS: JsonObject =
             "Why negentropy windows FAILED TO RECONCILE since boot, one count per failed window: an audit's " +
                 "window the relay dropped, refused or went silent on before the reconcile finished. Where the socket " +
                 "itself ended, the cause is how: `relay closed <code> <reason>` is a close frame the relay sent, " +
-                "`we closed (<caller>)` is this process ending it (a socket release, quartz's reconnect), and " +
+                "`we closed (<reason>)` is this process ending it (`released`, or quartz's own pool reasons), and " +
                 "`transport <exception>` is a socket that died with no close frame (a reset, an EOF, a failed ping). " +
-                "`no socket end: …` is a reconcile that failed with the socket still up, in quartz's words. A " +
+                "With the socket still up, the cause is quartz's kind of failure: `silent`, `refused: <the relay's words>`, " +
+                "`no connection, no dial ended`, `not converging`, `downloads failed`. A " +
                 "measurement only: nothing reads it to decide anything. Each window's own line in the log, " +
                 "`could not reconcile (…)`, carries the same cause with the frames we had sent and the window's size.",
         )

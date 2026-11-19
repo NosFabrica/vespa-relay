@@ -66,8 +66,6 @@ peers/src/main/kotlin/com/nosfabrica/vespa/relay/
                           mirror's and the monitor's
     RelaySockets.kt       who is still using this socket: one refcount across
                           every stream and every probe pass
-    SocketEnds.kt         how each socket ended and what we sent on it, which
-                          quartz's onDisconnected drops
     RelayVerdictRecord.kt the signed kind-30166 records — the monitor writes,
                           the mirror reads. The contract between the planes
     Verdict.kt            …and the label vocabulary they are written in. In

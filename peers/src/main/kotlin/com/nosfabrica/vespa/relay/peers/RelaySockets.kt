@@ -73,6 +73,11 @@ class RelaySockets(
      */
     private fun close(url: NormalizedRelayUrl) {
         if (url !in client.availableRelaysFlow().value) return
-        runCatching { client.getOrCreateRelay(url).disconnect() }
+        runCatching { client.getOrCreateRelay(url).disconnect(RELEASED) }
+    }
+
+    companion object {
+        /** The reason quartz records on a socket this refcount closed, as `we closed (released)`. */
+        const val RELEASED = "released"
     }
 }

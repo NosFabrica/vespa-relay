@@ -20,8 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
-import com.nosfabrica.vespa.relay.peers.SocketEnds
 import com.nosfabrica.vespa.relay.util.fmtCount
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.RelayDisconnect
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -31,19 +32,17 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Why negentropy windows failed to reconcile: the socket's own end where one landed, else
- * quartz's sentence, counted per cause and per (relay, cause). Measures; changes nothing.
+ * Why negentropy windows failed to reconcile, counted per cause and per (relay, cause), off
+ * quartz's typed failure and the socket end it carries. Measures; changes nothing.
  */
 internal class NegentropyDrops(
-    /** Null where nothing records the sockets: the probes and the tests. */
-    private val ends: SocketEnds? = null,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private class Tally {
-        var windows = 0L
-        var largestSentMin: Int? = null
-        var largestSentMax: Int? = null
-        var lastAtMs = 0L
+        private var windows = 0L
+        private var largestSentMin: Int? = null
+        private var largestSentMax: Int? = null
+        private var lastAtMs = 0L
 
         @Synchronized
         fun add(
@@ -57,47 +56,42 @@ internal class NegentropyDrops(
                 largestSentMax = maxOf(largestSentMax ?: largestSent, largestSent)
             }
         }
+
+        /** One instant of this row, read under the lock that writes it. */
+        @Synchronized
+        fun snapshot() = Row(windows, largestSentMin, largestSentMax, lastAtMs)
     }
+
+    private class Row(
+        val windows: Long,
+        val largestSentMin: Int?,
+        val largestSentMax: Int?,
+        val lastAtMs: Long,
+    )
 
     private val total = AtomicLong()
     private val byCause = ConcurrentHashMap<String, Tally>()
     private val byRelay = ConcurrentHashMap<Pair<String, String>, Tally>()
 
-    /** Taken before a window's reconcile, so what is read back belongs to that window. */
-    fun mark(url: NormalizedRelayUrl): SocketEnds.Mark? = ends?.mark(url)
-
     /** Counts one window that could not reconcile and returns the sentence for its log line. */
     fun record(
         url: NormalizedRelayUrl,
-        mark: SocketEnds.Mark?,
         /** Our entries in the window; null for a window too narrow to count. */
         localCount: Int?,
-        /** Quartz's own sentence, `NegentropySyncException.detail`. */
-        detail: String,
+        failure: NegentropySyncException,
     ): String {
-        val seen = mark?.let { ends?.since(it) }
-        val end = seen?.end
-        val socketWent = SOCKET_SENTENCES.any { detail.startsWith(it) }
-        val cause =
-            when {
-                // Only when quartz says the socket went: a refusal in the relay's words is its own cause.
-                socketWent && end != null -> end.cause
-
-                socketWent && seen != null -> "no socket end: ${SocketEnds.foldDigits(detail).take(CAUSE_CHARS)}"
-
-                else -> SocketEnds.foldDigits(detail).take(CAUSE_CHARS)
-            }
-        val largestSent = seen?.sent?.largest?.bytes
+        val cause = causeOf(failure)
+        val sent = failure.disconnect?.sent ?: failure.sent
+        val largestSent = sent?.largestBytes?.takeIf { sent.count > 0 }
         val at = now()
         total.incrementAndGet()
         tally(byCause, cause, MAX_CAUSES, OTHER_CAUSE).add(largestSent, at)
         tally(byRelay, url.url to cause, MAX_PAIRS, OTHER_CAUSE to cause).add(largestSent, at)
-        return detail +
-            (seen?.let { s -> " — " + (end?.toString() ?: "the socket did not end; ${s.sent ?: "no socket"}") + "; ${negIn(s.negFramesIn)}, ${s.elapsedMs}ms after the ask" } ?: "") +
+        return failure.detail +
+            (failure.disconnect?.let { " — $it" } ?: sent?.let { " — the socket did not end; $it" } ?: "") +
+            (failure.rounds?.let { "; $it NEG-MSG round(s) completed" } ?: "") +
             "; " + (localCount?.let { "we hold ${fmtCount(it)} event(s) in the window" } ?: "the window is uncounted here")
     }
-
-    private fun negIn(frames: Long?) = frames?.let { "$it NEG-MSG answered our NEG-OPEN" } ?: "no NEG-OPEN went out"
 
     /** [key]'s tally, a new one while there is room, else [overflow]'s. */
     private fun <K : Any> tally(
@@ -110,11 +104,11 @@ internal class NegentropyDrops(
     /** The `negentropyDrops` member of the progress document, or null before the first drop. */
     fun document(): JsonObject? {
         if (total.get() == 0L) return null
-        val relays = byRelay.entries.sortedByDescending { it.value.windows }
+        val relays = byRelay.entries.map { it.key to it.value.snapshot() }.sortedByDescending { it.second.windows }
         return buildJsonObject {
             put("windows", total.get())
             putJsonArray("causes") {
-                for ((cause, t) in byCause.entries.sortedByDescending { it.value.windows }) {
+                for ((cause, t) in byCause.entries.map { it.key to it.value.snapshot() }.sortedByDescending { it.second.windows }) {
                     add(
                         buildJsonObject {
                             put("cause", cause)
@@ -144,9 +138,37 @@ internal class NegentropyDrops(
 
     companion object {
         private const val CAUSE_CHARS = 80
+        private const val REASON_CHARS = 60
+        private val DIGITS = Regex("[0-9]+")
 
-        /** quartz's `detail` openings for a reconcile whose socket went away or never came. */
-        private val SOCKET_SENTENCES = listOf("closed: relay disconnected", "could not connect", "connection closed before")
+        /** [s] with every run of digits as `#`, so a reason carrying counts or addresses is one cause. */
+        internal fun foldDigits(s: String): String = DIGITS.replace(s, "#")
+
+        /**
+         * A short key to count a failure by: how its socket ended where it did, else what kind of
+         * failure quartz says it was, with the relay's own words for a refusal.
+         */
+        internal fun causeOf(failure: NegentropySyncException): String {
+            val end = failure.disconnect
+            val kind = failure.failure
+            return when {
+                end != null -> causeOf(end)
+                kind == NegentropySyncException.Failure.DISCONNECTED -> "disconnected, no end recorded"
+                kind == NegentropySyncException.Failure.CONNECT_TIMEOUT -> "no connection, no dial ended"
+                kind == NegentropySyncException.Failure.SILENT -> "silent"
+                kind == NegentropySyncException.Failure.REFUSED -> "refused: ${foldDigits(failure.detail).take(CAUSE_CHARS)}"
+                kind != null -> kind.name.lowercase().replace('_', ' ')
+                else -> foldDigits(failure.detail).take(CAUSE_CHARS)
+            }
+        }
+
+        private fun causeOf(end: RelayDisconnect): String =
+            when (end.side) {
+                RelayDisconnect.Side.RELAY -> "relay closed ${end.code ?: "?"}" + (end.reason?.takeIf { it.isNotBlank() }?.let { " ${foldDigits(it).take(REASON_CHARS)}" } ?: "")
+                RelayDisconnect.Side.CLIENT -> "we closed (${end.reason ?: "no reason"})"
+                RelayDisconnect.Side.TRANSPORT -> "transport ${end.errorType ?: "failure"}" + (end.code?.let { " http $it" } ?: "")
+            }
+
         private const val MAX_CAUSES = 256
         private const val OTHER_CAUSE = "other"
         private const val MAX_PAIRS = 4_096
