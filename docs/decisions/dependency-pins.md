@@ -55,7 +55,25 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-74c6a4a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-18 (the
+2.20.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.20.0 (main @ 2026-11-19, the quartz#126 merge e69dd07a67), 18 commits over 74c6a4a (below), which it descends
+from. The first quartz this relay takes from Magpie rather than JitPack: quartz releases only there.
+
+  MAGPIE. settings.gradle.kts now serves com.vitorpamplona.quartz and com.vitorpamplona.negentropy beside crypto
+    and schnorr256k1, through the Magpie settings plugin 0.2.1 (was 0.2.0, as quartz's). negentropy-kmp moves
+    v1.2.1 (Maven Central) -> v1.2.3 (Nostr + Blossom only); libschnorr256k1-kotlin 1.0.2 -> 1.0.3.
+    gradle/magpie.lock gains the two new groups under the same release key, and their files. JitPack now serves
+    the store alone.
+  GROUPS. The store pinned at a276f3e28676 still names quartz's JitPack group (com.github.vitorpamplona.quartz:
+    quartz:74c6a4a); build-logic substitutes it with this release, so the graph holds one quartz module, and
+    `./gradlew :relay:dependencies --configuration runtimeClasspath` shows that line arrowed onto 2.20.0.
+  WHAT THIS RELAY REACHES (quartz#122, quartz#124): IRelayClient.lastDisconnect and NegentropySyncException's
+    typed `failure`, `disconnect`, `sent` and `rounds`. NegentropyDrops reads them instead of the SocketEnds
+    wrapper around quartz's socket builder, which is gone with its per-message cost; RelaySockets closes with
+    disconnect("released").
+  Not reached: llama.garden's model-torrent kinds (parsed, stored as before).
+
+Prev 74c6a4a = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-18 (the
 quartz#121 merge, 74c6a4ae66), 84 commits over ce558d9 (below), which it descends from. The same commit as the
 store's pin at a276f3e28676 (vespaEventStore, below), which audits it against the store. JitPack builds it
 (quartz-jvm's POM answers 200). What this relay reaches:
