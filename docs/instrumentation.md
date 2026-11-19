@@ -104,8 +104,8 @@ Reach for it first.
   failure with its exception, plus the largest and the last frame we had sent
   on that socket. Every failed window's line carries that, the NEG-MSG rounds
   the window completed and our own count for the window; the document counts the
-  same causes per cause and per (relay, cause), with the range of largest-sent
-  sizes per cause, so a day of it says whether the drops are the relay's close
+  same causes per cause and per (relay, cause), one count per socket end however
+  many windows it failed, with the range of largest-sent sizes per cause, so a day of it says whether the drops are the relay's close
   codes, ours, or the network, and whether size predicts them. It only
   measures. Read it before proposing a fix for the drops (#324).
 - **the `prime relays` table on the mirror's page** — TWO AXES, and reading

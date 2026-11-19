@@ -73,6 +73,32 @@ class SweepStateTest {
     }
 
     @Test
+    fun `paging-only survives a restart and a learned size or cap, and a reconcile ends it`() {
+        val f = tempFile()
+        SweepState(f).use {
+            it.startPagingOnly(relay, 50_000, 1_700_000_000)
+            it.setTarget(relay, 40_000)
+            it.learnCap(relay, 30_000, 24_000)
+            it.flush()
+        }
+        val reopened = SweepState(f)
+        assertEquals(1_700_000_000, reopened.pagingOnlySince(relay))
+        assertEquals(24_000, reopened.target(relay, 1), "the size learned after the switch is kept beside it")
+        assertNull(reopened.pagingOnlySince(other))
+        reopened.stopPagingOnly(relay)
+        assertNull(reopened.pagingOnlySince(relay))
+        assertEquals(30_000, reopened.peer(relay)?.cap, "ending paging-only forgets nothing else")
+    }
+
+    @Test
+    fun `paging-only on a peer never asked keeps the sweep's size`() {
+        val state = SweepState(null)
+        state.startPagingOnly(relay, 50_000, 1_700_000_000)
+        assertEquals(50_000, state.target(relay, 1))
+        assertNull(state.peer(relay)?.cap)
+    }
+
+    @Test
     fun `a cursor survives a restart and is keyed on the stream and the peer`() {
         val f = tempFile()
         SweepState(f).use {

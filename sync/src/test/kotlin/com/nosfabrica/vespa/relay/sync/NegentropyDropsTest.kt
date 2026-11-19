@@ -88,6 +88,25 @@ class NegentropyDropsTest {
     }
 
     @Test
+    fun `one socket end is counted once, however many windows it failed`() {
+        val end = end(RelayDisconnect.Side.RELAY, 1009, "too big")
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end))
+        val again = drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end))
+        assertEquals(mapOf("relay closed 1009 too big" to 1L), causes())
+        assertTrue("not counted again" in again, again)
+
+        // The same words on a later socket are a later end.
+        drops.record(url, 10, failed("closed: relay disconnected", NegentropySyncException.Failure.DISCONNECTED, end(RelayDisconnect.Side.RELAY, 1009, "too big")))
+        assertEquals(mapOf("relay closed 1009 too big" to 2L), causes())
+    }
+
+    @Test
+    fun `a failure with the socket still up is counted every time`() {
+        repeat(2) { drops.record(url, 10, failed("relay went silent", NegentropySyncException.Failure.SILENT)) }
+        assertEquals(mapOf("silent" to 2L), causes())
+    }
+
+    @Test
     fun `the log sentence carries the end, the rounds and our side of the window`() {
         val line =
             drops.record(

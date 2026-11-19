@@ -156,6 +156,7 @@ class StatusVocabularyTest {
     private fun sweeps() =
         SweepState(null).apply {
             setTarget(busy, 100_000)
+            startPagingOnly(busy, 100_000, now - 3_600)
         }
 
     /** Both readings of every optional row member: one pair carrying each, one carrying none. */

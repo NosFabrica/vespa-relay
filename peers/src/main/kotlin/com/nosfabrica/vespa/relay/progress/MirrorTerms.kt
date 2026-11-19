@@ -719,7 +719,8 @@ internal val MIRROR_TERMS: JsonObject =
         )
         term(
             "negentropyDrops",
-            "Why negentropy windows FAILED TO RECONCILE since boot, one count per failed window: an audit's " +
+            "Why negentropy windows FAILED TO RECONCILE since boot, one count per failed window, a socket end counted " +
+                "once however many windows it took down: an audit's " +
                 "window the relay dropped, refused or went silent on before the reconcile finished. Where the socket " +
                 "itself ended, the cause is how: `relay closed <code> <reason>` is a close frame the relay sent, " +
                 "`we closed (<reason>)` is this process ending it (`released`, or quartz's own pool reasons), and " +
@@ -732,7 +733,8 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "windows",
             "Negentropy windows that failed to reconcile, in this row's scope: the whole process, one cause, or one " +
-                "(relay, cause) pair.",
+                "(relay, cause) pair. One socket end is one count however many windows it failed: a per-kind " +
+                "reconcile inside a dense window shares its enclosing window's socket, so a drop there fails both.",
         )
         term(
             "causes",
@@ -760,6 +762,14 @@ internal val MIRROR_TERMS: JsonObject =
             "Bytes: the largest frame we had sent on the socket before a window failed, the most across this row's " +
                 "windows. Our negentropy frames are not capped, so this is the number to hold against a relay's " +
                 "stated payload limit.",
+        )
+        term(
+            "pagingOnlySince",
+            "Epoch seconds: when this relay's audits last switched to PAGING WITHOUT NEGENTROPY, after it dropped " +
+                "two negentropy windows in a row. Every audit against it, of any stream, pages its windows over plain " +
+                "REQs for a day from then without opening negentropy, keeping the cursor and the per-sweep paging " +
+                "bound; then negentropy is tried again, and the first window that reconciles removes this. Absent " +
+                "means its audits open negentropy.",
         )
         term(
             "retracted",

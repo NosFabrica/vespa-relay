@@ -24,6 +24,8 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.RelayDisconnect
+import com.vitorpamplona.quartz.nip01Core.relay.client.single.SentFrames
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -456,6 +458,56 @@ class NegentropyPagerTest {
         }
 
     @Test
+    fun `a per-kind drop that also fails its enclosing window is one socket end, counted once`() =
+        runBlocking {
+            val shape = Filter(kinds = listOf(1, 7))
+            val end = RelayDisconnect(RelayDisconnect.Side.RELAY, 1009, "too big", null, 2_000, 1_000, SentFrames(4, 900_000, "NEG-MSG", 900, "NEG-MSG"))
+
+            fun dropped(window: Filter) =
+                NegentropySyncException(
+                    relay,
+                    window,
+                    NegentropySyncException.Reason.UNAVAILABLE,
+                    "closed: relay disconnected",
+                    failure = NegentropySyncException.Failure.DISCONNECTED,
+                    disconnect = end,
+                )
+            // quartz's shape: the hook runs inside the enclosing reconcile, on its socket, so the
+            // per-kind drop ends the enclosing session too, with the same end.
+            val peer =
+                object : WindowSync {
+                    override suspend fun reconcile(
+                        url: NormalizedRelayUrl,
+                        window: Filter,
+                        local: NegentropyLocalIndex,
+                        targetWindow: Int,
+                        onProgress: ((Int, Int) -> Unit)?,
+                        onUnreconcilable: suspend (Filter) -> Unit,
+                        onEvent: suspend (Event) -> Unit,
+                    ): NegentropySyncResult {
+                        if (window.kinds == listOf(1)) throw dropped(window)
+                        if (window.kinds == shape.kinds) {
+                            onUnreconcilable(window.copy(since = 1_500, until = 1_500))
+                            throw dropped(window)
+                        }
+                        return NegentropySyncResult(0, 0, 0, 1, null)
+                    }
+
+                    override suspend fun page(
+                        url: NormalizedRelayUrl,
+                        window: Filter,
+                        onEvent: suspend (Event) -> Unit,
+                    ) = PagedWindow(0, refused = false)
+                }
+            val drops = NegentropyDrops()
+            NegentropyPager(FakeIndex(Density(perSecond = 0)), peer, SweepState(null), NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000), drops = drops)
+                .sweep(mirror, relay, shape, shape.copy(since = 1_000, until = 1_999)) {}
+
+            val doc = assertNotNull(drops.document())
+            assertEquals("1", doc["windows"].toString(), "the enclosing window failed on the end the kind was counted for")
+        }
+
+    @Test
     fun `a single-kind second the peer will not reconcile is paged`() =
         runBlocking {
             val hot = Density(perSecond = 1, spikes = mapOf(1_500L to 10_000))
@@ -650,7 +702,8 @@ class NegentropyPagerTest {
             val state = SweepState(null)
             val density = Density(perSecond = 100)
             val budget = 4_000
-            val tuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60, pagedEventsPerSweep = budget)
+            // Paging-only is not carried over here, so the second sweep reconciles and shows where it resumes.
+            val tuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60, pagedEventsPerSweep = budget, pagingOnlySeconds = 0)
             val dropping = FakePeer(density, failFrom = 1)
             val first = pager(FakeIndex(density), dropping, state, tuning).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
 
@@ -666,6 +719,56 @@ class NegentropyPagerTest {
             val second = pager(FakeIndex(density), healthy, state, tuning).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
             assertTrue(second.complete)
             healthy.asked.forEach { assertTrue(it.last < mark.downTo, "resumed windows must stay below the cursor, asked $it against $mark") }
+        }
+
+    // ---- paging-only, remembered per relay -------------------------------------
+
+    @Test
+    fun `the next sweep of a relay that kept dropping negentropy pages without opening it`() =
+        runBlocking {
+            val state = SweepState(null)
+            val dropping = FakePeer(Density(perSecond = 100), failFrom = 1)
+            pager(FakeIndex(Density(perSecond = 100)), dropping, state, unbounded).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+            assertNotNull(state.pagingOnlySince(relay), "the switch to paging is kept for the relay")
+
+            // Another ask on the same relay, an audit later: no NEG-OPEN at all.
+            val next = FakePeer(Density(perSecond = 100))
+            val profiles = Filter(kinds = listOf(0))
+            val out = pager(FakeIndex(Density(perSecond = 100)), next, state, unbounded).sweep("profiles", relay, profiles, profiles.copy(since = 1_000, until = 1_999)) {}
+
+            assertTrue(out.complete, "paging read every window")
+            assertTrue(out.negentropyUsable, "paging-only is not 'negentropy cannot do it'")
+            assertTrue(next.asked.isEmpty(), "opened negentropy on ${next.asked}")
+            assertTiles(next.pagedRanges, 1_000, 1_999)
+        }
+
+    @Test
+    fun `a relay that drops on the sweep's last window still has its sweeps page next time`() =
+        runBlocking<Unit> {
+            val state = SweepState(null)
+            // Resumed, so a first window that drops is paged; what is left is two windows, and both drop.
+            state.advance(SweepState.keyFor(mirror, relay, notes), 2_500, 2_999)
+            val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0, 1))
+            val tuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 1_000, slackSeconds = 60, pagedEventsPerSweep = Int.MAX_VALUE)
+            val out = pager(FakeIndex(Density(perSecond = 1)), peer, state, tuning).sweep(mirror, relay, notes, leg(1_000, 2_999)) {}
+
+            assertTrue(out.complete)
+            assertEquals(2, peer.pagedRanges.size, "both windows dropped and were paged")
+            assertNotNull(state.pagingOnlySince(relay), "remembered though no window was left to page in this sweep")
+        }
+
+    @Test
+    fun `paging-only expires, and a window that reconciles clears it`() =
+        runBlocking {
+            val state = SweepState(null)
+            val tuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60, pagingOnlySeconds = 3_600)
+            state.startPagingOnly(relay, 1_000, System.currentTimeMillis() / 1000 - 3_600)
+            val peer = FakePeer(Density(perSecond = 100))
+            val out = pager(FakeIndex(Density(perSecond = 100)), peer, state, tuning).sweep(mirror, relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(out.complete)
+            assertTrue(peer.pagedRanges.isEmpty(), "an hour on, negentropy is tried again")
+            assertNull(state.pagingOnlySince(relay), "and once it reconciles, the relay is no longer paged")
         }
 
     // ---- the live head -------------------------------------------------------

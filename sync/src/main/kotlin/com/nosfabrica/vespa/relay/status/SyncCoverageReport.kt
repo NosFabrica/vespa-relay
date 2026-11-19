@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.status
 
+import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.util.canonicalRelay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -403,6 +404,7 @@ internal object SyncCoverageReport {
                             peers[relay]?.jsonObject?.let { p ->
                                 p["target"]?.jsonPrimitive?.longOrNull?.let { put("target", it) }
                                 p["cap"]?.jsonPrimitive?.longOrNull?.let { put("cap", it) }
+                                p[SweepState.PAGING_ONLY_SINCE]?.jsonPrimitive?.longOrNull?.let { put(SweepState.PAGING_ONLY_SINCE, it) }
                             }
                             marks[relay]?.let { m ->
                                 span(m)?.let { (downTo, upTo) ->
