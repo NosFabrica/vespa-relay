@@ -669,7 +669,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-a276f3e28676 = vespa-eventstore main @ 2026-11-18, the merge of PR #211 (over 9b28001b7071, below), whose tree is
+514a45384152 = vespa-eventstore main @ 2026-11-19, the merge of PR #212 (over a276f3e28676, below), whose tree is
+the PR head's (5e33185), byte for byte: one commit over a276f3e28676, which it descends from
+(`git merge-base --is-ancestor a276f3e28676 514a45384152`, verified). JitPack builds it (store pom and jar, 200,
+under both group spellings); JitPack's build resolved quartz through Magpie.
+  QUARTZ 2.20.0 (above) FROM MAGPIE: the store pins quartz's release, not a JitPack commit, and its POM names
+    com.vitorpamplona.quartz:quartz-jvm:2.20.0. build-logic's substitution of quartz's JitPack group no
+    longer fires: every module's runtime classpath resolves store:514a45384152 and quartz:2.20.0 with no `->`
+    on either line. gradle/magpie.lock does not move (2.20.0's files were already in it).
+  No store source moves (build files, docs and its copy of quartz's skill only): no engine/app, bundle or
+    schema change, no deploy-time migration.
+
+GATED: the store's integration gate ran against this tree (`TESTCONTAINERS_RYUK_DISABLED=true ./gradlew
+  :benchmark:test -Pintegration`, Vespa `latest` pulled 2026-11-19): 30 IT classes, 56 tests, 0 failures, 1
+  skipped (StagingCorpusIT, which runs only on a STAGING_CORPUS export).
+  Here, ./gradlew check archTest against the JitPack jars: 1,762 tests, 0 failures, 2 skipped.
+
+Prev a276f3e28676 = vespa-eventstore main @ 2026-11-18, the merge of PR #211 (over 9b28001b7071, below), whose tree is
 the PR head's (fc1dea38d5a0), byte for byte: two commits over 9b28001b7071, which it descends from
 (`git merge-base --is-ancestor 9b28001b7071 a276f3e28676`, verified). JitPack builds it (store pom and jar, 200).
   QUARTZ 74c6a4a (above), resolved through Magpie: the store's settings.gradle.kts adopts the same plugin and
