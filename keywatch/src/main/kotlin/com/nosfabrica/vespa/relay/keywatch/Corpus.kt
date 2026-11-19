@@ -183,11 +183,16 @@ class Sweeper(
     /** Windows read without knowing they were whole, one line each, for the report. */
     val gaps = mutableListOf<String>()
 
+    /** Every event [filter] matches with a `created_at` of [from] or later (all of them at 0). */
     suspend fun sweep(
         filter: Filter,
+        from: Long = 0,
         onPage: suspend (List<Event>) -> Unit,
     ) {
-        for ((since, until) in initialWindows()) sweepWindow(filter, since, until, onPage)
+        for ((since, until) in initialWindows()) {
+            if (until < from) continue
+            sweepWindow(filter, maxOf(since, from), until, onPage)
+        }
     }
 
     private suspend fun sweepWindow(
@@ -225,7 +230,8 @@ class Sweeper(
     }
 
     private fun initialWindows(): List<Pair<Long, Long>> {
-        val lastYear = LocalDate.ofEpochDay(nowSeconds / 86_400).year + 1
+        // At least through FIRST_YEAR, so a clock before it (a test's, a broken host's) still gets windows.
+        val lastYear = maxOf(LocalDate.ofEpochDay(nowSeconds / 86_400).year + 1, FIRST_YEAR)
         val starts = (FIRST_YEAR..lastYear + 1).map { LocalDate.of(it, 1, 1).atStartOfDay().toEpochSecond(ZoneOffset.UTC) }
         return listOf(0L to starts.first() - 1) +
             starts.zipWithNext { a, b -> a to b - 1 } +

@@ -35,9 +35,21 @@ enum class Reason { COMPROMISE, LOST, PRECAUTION, ROTATION }
 /** Which side of a transition signed its claim. Neither one proves the new key is the person's. */
 enum class Signer { OLD_KEY, NEW_KEY }
 
+/**
+ * The three things a claim or a vouch needs of its event, and all a report keeps of it: a later run
+ * rebuilds its transitions from these without fetching anything.
+ */
+data class EventRef(
+    val id: String,
+    val pubKey: HexKey,
+    val createdAt: Long,
+)
+
+fun Event.ref() = EventRef(id, pubKey, createdAt)
+
 /** Something an event says about keys. */
 sealed interface Statement {
-    val event: Event
+    val event: EventRef
 }
 
 /** "This key is now that key", signed by one of the two. A claim and nothing more. */
@@ -46,14 +58,14 @@ class TransitionClaim(
     val newKey: HexKey,
     val reason: Reason,
     val signedBy: Signer,
-    override val event: Event,
+    override val event: EventRef,
 ) : Statement
 
 /** "This key is an alt / bot / backup of that one", signed by the secondary. */
 class SecondaryClaim(
     val secondary: HexKey,
     val primary: HexKey,
-    override val event: Event,
+    override val event: EventRef,
 ) : Statement
 
 /**
@@ -64,7 +76,7 @@ class SecondaryClaim(
 class ThirdPartyStatement(
     val keys: Set<HexKey>,
     val against: Boolean,
-    override val event: Event,
+    override val event: EventRef,
 ) : Statement
 
 /**
@@ -220,9 +232,9 @@ object StatementReader {
         // "compromised" 5,000 characters from its footer and read as a compromise).
         val reason = reasonOf(if (profile) text else text.substring((at - REASON_WINDOW).coerceAtLeast(0), at))
         return when (lead) {
-            Lead.OUTGOING -> TransitionClaim(event.pubKey, other, reason, Signer.OLD_KEY, event)
-            Lead.INCOMING -> TransitionClaim(other, event.pubKey, reason, Signer.NEW_KEY, event)
-            Lead.SECONDARY -> SecondaryClaim(event.pubKey, other, event)
+            Lead.OUTGOING -> TransitionClaim(event.pubKey, other, reason, Signer.OLD_KEY, event.ref())
+            Lead.INCOMING -> TransitionClaim(other, event.pubKey, reason, Signer.NEW_KEY, event.ref())
+            Lead.SECONDARY -> SecondaryClaim(event.pubKey, other, event.ref())
         }
     }
 
@@ -234,7 +246,7 @@ object StatementReader {
         if (event.kind != 1) return null
         val talksTransition = OUTGOING.containsMatchIn(text) || INCOMING.containsMatchIn(text) || COMPROMISE.containsMatchIn(text)
         if (!talksTransition) return null
-        return ThirdPartyStatement(keys, WARNING.containsMatchIn(text), event)
+        return ThirdPartyStatement(keys, WARNING.containsMatchIn(text), event.ref())
     }
 
     fun reasonOf(text: String): Reason =

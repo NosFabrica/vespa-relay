@@ -29,6 +29,9 @@ keep building.
 | `KEYWATCH_VOUCHER_ABOVE_NEW_KEY` | `true` | a voucher must outrank the key it admits |
 | `KEYWATCH_REQUIRE_KNEW_OLD_KEY` | `false` | only vouchers following the old key count |
 | `KEYWATCH_MAX_DEGRADED_WAIT_MINUTES` | `60` | how long to wait for a partial index to heal before giving up the pass |
+| `KEYWATCH_FULL` | `false` | `true` reads the whole corpus even when `KEYWATCH_OUT` holds a report to build on |
+| `KEYWATCH_FULL_EVERY_DAYS` | `30` | a full pass at least this often: only a full pass finds events that arrive backdated |
+| `KEYWATCH_OVERLAP_HOURS` | `48` | how far before the prior report's cursor an incremental pass starts reading |
 
 ## Classes
 
@@ -39,7 +42,7 @@ keys involved say so), `CONTESTED`.
 | Class | Evidence | `since` |
 |---|---|---|
 | `COMPROMISED_PUBLIC` | a published nsec, hex secret or NIP-06 mnemonic derives this key, and the key had a life before: a rank card, or an event signed at least a day before the leak | the first event that published it |
-| `PUBLIC_FROM_BIRTH` | the same, but the key had no such life (the bot farms sign one profile a median 83 s before naming themselves after their nsec), or the secret was handed out in an invite link (`iris.to/chat#nsec1…`) | idem |
+| `PUBLIC_FROM_BIRTH` | the same, but the key had no such life, or the secret was handed out in an invite link (`iris.to/chat#nsec1…`). Read by hand, a sample was a mix: spam generators (a stock-photo profile, then within seconds a note carrying the key's own nsec), newcomers pasting their nsec into a public chat (kind 42) minutes after their first post, profiles with the nsec in a field, and a family of ~4,200 profiles named `Mr.nsec1…`. In a 40-key sample the events before the leak were a median 83 s older than it | idem |
 | `COMPROMISED_ACCESS` | a transition whose wording claims a compromise | the first claim |
 | `SUSPECTED` | a precautionary move ("may have leaked, just in case"), or a posted `ncryptsec` | idem |
 | `LOST` | a transition claiming a lost key | idem |
@@ -91,6 +94,36 @@ not another.
 - **Paging**: search answers are ranked, so an `until` cursor does not walk them (the second page of
   `nsec1` returned 44 of 26,820). `Sweeper` sizes each yearly window with COUNT, halves it until it
   fits under 4,000, then fetches it whole.
+
+## Updating the report
+
+The report at `KEYWATCH_OUT` is also the state. A pass that finds one it can build on (same
+format, relay and observer, and a full pass within `KEYWATCH_FULL_EVERY_DAYS`) runs incrementally;
+otherwise, or with `KEYWATCH_FULL=true`, it reads everything. `pass`, `sweptFrom`, `sweptUntil`
+and `lastFullPassAt` at the top of the report say which it was.
+
+What an incremental pass does with each kind of finding:
+
+| Finding | Can it change? | The next pass |
+|---|---|---|
+| a published secret (`COMPROMISED_PUBLIC`, `PUBLIC_FROM_BIRTH`), a posted `ncryptsec`, a NIP-62 vanish | no: published stays published | keeps it, adds any new evidence; asks every compromised key again whether it still signs (`activeAfter`) |
+| a `VALIDATED` transition | only on contrary evidence | decides it again; it stays validated when a voucher's rank drifts below the bar, and becomes `CONTESTED` on an eligible warning or a rival successor |
+| a `CLAIMED` or `CONTESTED` transition | yes | decides it again from its stored claims and vouches, the citations since the cursor, and today's ranks |
+| a `CLAIMED` secondary | yes | asks the primary again; a `VALIDATED` one is kept |
+| keys never seen | | found by sweeping only events from the cursor on |
+
+It reads events with a `created_at` from the prior report's `sweptUntil` less `KEYWATCH_OVERLAP_HOURS`
+on, and citations of claims it already knows from the same point; a claim it has not seen before
+has its citations read in full. Every transition keeps all of its claims and vouches, with their
+times, so deciding them again costs nothing but fresh rank cards. A changed `VouchPolicy` decides
+every transition afresh, without the validated-stays-validated rule.
+
+`changes` lists what is new since the prior report: `NEW` findings, `STATUS` changes (`from`,
+`to`), and `SIGNING_AGAIN` for a compromised key that signed since; the warning list for this run.
+
+**What it cannot see.** A filter asks by `created_at`, never by when the relay received an event,
+so an event that arrives dated before the overlap (a client that backdates, a mirror catching up on
+old history) is missed until the next full pass. `IncrementalPassTest` pins that.
 
 ## A partial index
 

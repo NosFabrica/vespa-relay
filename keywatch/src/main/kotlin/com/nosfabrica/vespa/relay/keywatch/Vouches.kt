@@ -31,11 +31,11 @@ enum class Stance { ENDORSE, AGAINST }
 /** How a third party cited a transition. A plain reply only ever counts against. */
 enum class VouchForm { REPOST, QUOTE, REPLY, STATEMENT }
 
-class Vouch(
+data class Vouch(
     val voucher: HexKey,
     val stance: Stance,
     val form: VouchForm,
-    val event: Event,
+    val event: EventRef,
 )
 
 /**
@@ -177,14 +177,14 @@ object VouchReader {
         val referenced = event.tags.filter { it.size > 1 && it[0] == "e" && it[1] in cited }.map { it[1] }
         return when (event.kind) {
             6, 16 -> {
-                referenced.map { it to Vouch(event.pubKey, Stance.ENDORSE, VouchForm.REPOST, event) }
+                referenced.map { it to Vouch(event.pubKey, Stance.ENDORSE, VouchForm.REPOST, event.ref()) }
             }
 
             1 -> {
                 val stance = if (warns) Stance.AGAINST else Stance.ENDORSE
                 val asQuote = (quoted + referenced.filter { it in mentionsIn(event.content) }).toSet()
-                asQuote.map { it to Vouch(event.pubKey, stance, VouchForm.QUOTE, event) } +
-                    (referenced.toSet() - asQuote).map { it to Vouch(event.pubKey, stance, VouchForm.REPLY, event) }
+                asQuote.map { it to Vouch(event.pubKey, stance, VouchForm.QUOTE, event.ref()) } +
+                    (referenced.toSet() - asQuote).map { it to Vouch(event.pubKey, stance, VouchForm.REPLY, event.ref()) }
             }
 
             else -> {

@@ -50,17 +50,26 @@ enum class KeyClass {
 }
 
 /**
+ * What a finding rests on, which decides what a later run does with it: a published secret
+ * ([SECRET], [ENCRYPTED_SECRET]) and a NIP-62 request ([VANISH]) are facts and are only added to;
+ * a [TRANSITION] is recomputed from its stored claims and vouches; a [SECONDARY] is asked again
+ * until its primary names it back.
+ */
+enum class Basis { SECRET, ENCRYPTED_SECRET, TRANSITION, SECONDARY, VANISH }
+
+/**
  * One fact about one key. [since] bounds when it became true: for a leaked secret, the earliest
  * event that published it, so the key's events before it stay trustworthy. [evidence] holds
  * event ids only; a report never carries a secret.
  */
-class Finding(
+data class Finding(
     val pubkey: HexKey,
     val keyClass: KeyClass,
     val status: Status,
     val since: Long?,
     val evidence: List<String>,
     val detail: String,
+    val basis: Basis,
     /** Set only once a transition is [Status.VALIDATED]: the key that speaks for this one now. */
     val successor: HexKey? = null,
     /** The other key a claim names (claimed successor, or a secondary's primary), whatever its status. */
@@ -105,14 +114,24 @@ object LeakClassifier {
             }
         return if (exposures.all { it.sharedLink } || !facts.hadHistory) {
             val why = if (exposures.all { it.sharedLink }) "handed out in an invite link" else "published $by before the key signed anything"
-            Finding(pubkey, KeyClass.PUBLIC_FROM_BIRTH, Status.PROVEN, leakAt, evidence, "$forms $why")
+            Finding(pubkey, KeyClass.PUBLIC_FROM_BIRTH, Status.PROVEN, leakAt, evidence, "$forms $why", Basis.SECRET)
         } else {
-            val after = facts.activeAfter?.let { "; the key signed again after it (newest $it)" } ?: "; nothing signed since"
-            Finding(pubkey, KeyClass.COMPROMISED_PUBLIC, Status.PROVEN, leakAt, evidence, "$forms published $by$after", activeAfter = facts.activeAfter)
+            // Whether the key still signs goes in [Finding.activeAfter], which every run refreshes.
+            Finding(pubkey, KeyClass.COMPROMISED_PUBLIC, Status.PROVEN, leakAt, evidence, "$forms published $by", Basis.SECRET, activeAfter = facts.activeAfter)
         }
     }
 
-    private const val EVIDENCE_CAP = 10
+    /** The same leak seen again in a later run: more evidence, and an earlier bound if a backdated copy turned up. */
+    fun merge(
+        prior: Finding,
+        exposures: List<Exposure>,
+    ): Finding =
+        prior.copy(
+            since = listOfNotNull(prior.since, exposures.minOfOrNull { it.event.createdAt }).min(),
+            evidence = (prior.evidence + exposures.sortedBy { it.event.createdAt }.map { it.event.id }).distinct().take(EVIDENCE_CAP),
+        )
+
+    const val EVIDENCE_CAP = 10
 }
 
 /** The class a transition gives its old key. */

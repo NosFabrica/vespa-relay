@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay
 
 import com.nosfabrica.vespa.relay.keywatch.KeyWatch
 import com.nosfabrica.vespa.relay.keywatch.KeyWatchConfig
+import com.nosfabrica.vespa.relay.keywatch.PriorReport
 import com.nosfabrica.vespa.relay.keywatch.RelayCorpus
 import com.nosfabrica.vespa.relay.keywatch.Report
 import com.nosfabrica.vespa.relay.keywatch.VouchPolicy
@@ -36,6 +37,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import java.io.File
 import java.time.Duration
@@ -66,6 +68,12 @@ private val prettyJson = Json { prettyPrint = true }
  *   KEYWATCH_VOUCHER_ABOVE_NEW_KEY default true
  *   KEYWATCH_REQUIRE_KNEW_OLD_KEY  default false
  *   KEYWATCH_MAX_DEGRADED_WAIT_MINUTES  how long to wait for a partial index to heal (default 60)
+ *   KEYWATCH_FULL                  true reads the whole corpus even when KEYWATCH_OUT holds a report to build on
+ *   KEYWATCH_FULL_EVERY_DAYS       a full pass at least this often (default 30): only a full pass finds backdated events
+ *   KEYWATCH_OVERLAP_HOURS         how far before the prior report's cursor an incremental pass reads (default 48)
+ *
+ * The report at KEYWATCH_OUT is also the state: a pass that finds one it can build on reads only
+ * what arrived since and decides again only what can still change (docs/keywatch.md, Updating).
  */
 fun main() {
     val env = System.getenv()
@@ -86,7 +94,10 @@ fun main() {
             observer = observer,
             policy = policy,
             maxDegradedWaitMs = env.long("KEYWATCH_MAX_DEGRADED_WAIT_MINUTES", 60) * 60_000,
+            overlapSeconds = env.long("KEYWATCH_OVERLAP_HOURS", 48) * 3_600,
         )
+    val forceFull = env.bool("KEYWATCH_FULL", false)
+    val fullEverySeconds = env.long("KEYWATCH_FULL_EVERY_DAYS", 30) * 86_400
 
     val okhttp = OkHttpClient.Builder().connectTimeout(Duration.ofSeconds(20)).build()
     val scope = CoroutineScope(SupervisorJob())
@@ -101,7 +112,9 @@ fun main() {
         runBlocking {
             while (true) {
                 val started = System.currentTimeMillis()
-                val result = KeyWatch(corpus, config, log).run(System.currentTimeMillis() / 1000)
+                val now = started / 1000
+                val prior = if (forceFull) null.also { log("KEYWATCH_FULL=true: running a full pass") } else priorReport(out, relay.url, observer, now, fullEverySeconds, log)
+                val result = KeyWatch(corpus, config, log).run(now, prior)
                 writeAtomically(out, prettyJson.encodeToString(Report.toJson(result, relay.url, observer, policy)))
                 log("${result.findings.size} findings over ${result.findings.map { it.pubkey }.toSet().size} keys in ${(System.currentTimeMillis() - started) / 1000}s")
                 if (intervalMinutes <= 0) break
@@ -115,6 +128,27 @@ fun main() {
         okhttp.dispatcher.executorService.shutdown()
         okhttp.connectionPool.evictAll()
     }
+}
+
+/** The report a previous pass left at [out], if this pass can build on it. */
+private fun priorReport(
+    out: File,
+    relay: String,
+    observer: String,
+    nowSeconds: Long,
+    fullEverySeconds: Long,
+    log: (String) -> Unit,
+): PriorReport? {
+    if (!out.isFile) {
+        log("no report at ${out.path} yet: running a full pass")
+        return null
+    }
+    val json = runCatching { Json.parseToJsonElement(out.readText()) as? JsonObject }.getOrNull()
+    if (json == null) {
+        log("${out.path} is not a report: running a full pass")
+        return null
+    }
+    return Report.read(json, relay, observer, nowSeconds, fullEverySeconds, log)
 }
 
 /** A reader never sees half a report: write beside it, then rename over it. */
