@@ -38,14 +38,12 @@ rootProject.name = "vespa-relay"
 //   :monitor — the alias fold, the consistency gate and the fitness grades; never depends on :sync.
 //   :relay   — the serving side (RelayMain).
 //   :sync    — the mirror, which hosts the monitor (SyncMain).
-//   :keywatch — a standalone reader of one relay: leaked, moved and vouched-for keys (KeyWatchMain).
 include(":common")
 include(":web")
 include(":peers")
 include(":monitor")
 include(":relay")
 include(":sync")
-include(":keywatch")
 
 // Local checkouts in place of the pins, to build against an upstream change before it is released:
 //   ./gradlew -PvespaEventStoreDir=../vespa-eventstore :relay:compileKotlin
