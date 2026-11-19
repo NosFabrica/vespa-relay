@@ -55,7 +55,28 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.20.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.20.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.20.1 (the v2.20.1 tag e3a43e852 over the quartz#129 merge 2884f8548), 8 commits over 2.20.0 (below), which it
+descends from.
+
+  LIVE EVENTS AFTER EOSE (quartz#127), the reason for this bump. LiveEventStore registered a REQ's live
+    listener before its stored replay (so nothing accepted meanwhile is missed) but forwarded what it accepted
+    at once: ahead of the stored rows and the EOSE, outside the filter's `limit`. Measured on
+    search.brainstorm.world while the mirror ingested: {"search":"nostr include:spam","limit":1} came back with
+    40 events before EOSE, 39 notes accepted during the search and the one ranked hit last. Quartz now holds
+    them and forwards them right after the replay's EOSE, in acceptance order, so everything before EOSE is the
+    stored answer `limit` bounds. NostrRelayServer builds LiveEventStore with the two-argument constructor, so
+    the cap is quartz's default: a REQ holds at most 1,000 live events, past which they go out ahead of EOSE as
+    before (a slow replay under heavy ingest loses its clean limit, never an event). ObserverBackend's HeldLive
+    still holds live events until the trust gate is read, which now happens before quartz releases anything;
+    GatedSubscription always runs the inner replay or throws (RelaySession then cancels), which is what quartz
+    now requires of a wrapper.
+  MAGPIE. The settings plugin 0.2.1 -> 0.2.3, as quartz's (quartz#128). gradle/magpie.lock gains quartz
+    2.20.1's files under the release key it already trusts; no existing entry changes.
+  RUNTIME CLASSPATH (:relay, :sync): quartz-jvm 2.20.0 -> 2.20.1, with the store pin (below) naming the same
+    release; nothing else moves.
+
+Prev 2.20.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.20.0 (main @ 2026-11-19, the quartz#126 merge e69dd07a67), 18 commits over 74c6a4a (below), which it descends
 from. The first quartz this relay takes from Magpie rather than JitPack: quartz releases only there.
 
@@ -669,7 +690,18 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-514a45384152 = vespa-eventstore main @ 2026-11-19, the merge of PR #212 (over a276f3e28676, below), whose tree is
+d002f5920024 = vespa-eventstore main @ 2026-11-19, the merge of PR #213 (over 514a45384152, below), whose tree is
+the PR head's (277eaa29), byte for byte: one commit over 514a45384152, which it descends from
+(`git merge-base --is-ancestor 514a45384152 d002f5920024`, verified). JitPack builds it (store pom and jar, 200).
+  QUARTZ 2.20.1 (above): the store's pin moves 2.20.0 -> 2.20.1 and its POM names
+    com.vitorpamplona.quartz:quartz-jvm:2.20.1, the same release this relay pins, so every module resolves
+    store:d002f5920024 and quartz:2.20.1 with no `->` on either line. Its Magpie settings plugin moves to 0.2.3.
+  No store source moves (build files, its pin note and its copy of quartz's skill only): no engine/app, bundle
+    or schema change, no deploy-time migration. The store constructs no LiveEventStore; this relay does.
+
+GATED: pending (the store's integration gate is running against d002f5920024; recorded here before this pin merges).
+
+Prev 514a45384152 = vespa-eventstore main @ 2026-11-19, the merge of PR #212 (over a276f3e28676, below), whose tree is
 the PR head's (5e33185), byte for byte: one commit over a276f3e28676, which it descends from
 (`git merge-base --is-ancestor a276f3e28676 514a45384152`, verified). JitPack builds it (store pom and jar, 200,
 under both group spellings); JitPack's build resolved quartz through Magpie.

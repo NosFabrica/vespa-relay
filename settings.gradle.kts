@@ -14,7 +14,7 @@ pluginManagement {
 // trusting only the release key vitorpamplona.com names as `releases`, and gradle/magpie.lock pins
 // that key and every resolved version's files, as in quartz and the store.
 plugins {
-    id("com.vitorpamplona.magpie") version "0.2.1"
+    id("com.vitorpamplona.magpie") version "0.2.3"
 }
 
 magpie {
