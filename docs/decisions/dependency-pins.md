@@ -699,7 +699,10 @@ the PR head's (277eaa29), byte for byte: one commit over 514a45384152, which it 
   No store source moves (build files, its pin note and its copy of quartz's skill only): no engine/app, bundle
     or schema change, no deploy-time migration. The store constructs no LiveEventStore; this relay does.
 
-GATED: pending (the store's integration gate is running against d002f5920024; recorded here before this pin merges).
+GATED: the store's integration gate ran against this tree (`TESTCONTAINERS_RYUK_DISABLED=true ./gradlew
+  :benchmark:test -Pintegration --rerun`, Vespa `latest` as of 2026-11-10): 30 IT classes, 56 tests (34 IT, 22
+  unit), 0 failures, 1 skipped (StagingCorpusIT, which runs only on a STAGING_CORPUS export).
+  Here, ./gradlew check archTest against the JitPack jars: 1,783 tests, 0 failures, 2 skipped.
 
 Prev 514a45384152 = vespa-eventstore main @ 2026-11-19, the merge of PR #212 (over a276f3e28676, below), whose tree is
 the PR head's (5e33185), byte for byte: one commit over a276f3e28676, which it descends from
