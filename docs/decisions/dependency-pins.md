@@ -55,7 +55,24 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.20.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.20.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.20.2 (the v2.20.2 tag 14c8c263f over the quartz#133 merge df4930979), 19 commits over 2.20.1 (below), which it
+descends from.
+
+  NIP-77 CLIENT FRAMES (quartz#132), the reason for this bump. The client reconciled with no frame size limit,
+    so a diff spread across a large set went out as one NEG-MSG: ~570 KB per frame from NegentropyPager's
+    100k-event windows, 3.78 MB from one whole-filter window, against strfry's default 131,072-byte
+    maxWebsocketPayloadSize and the 262,144 this relay advertises. strfry closed the socket mid-reconcile, so
+    two windows in a row dropped, the sweep paged the rest of the leg over REQ and marked the peer paging-only
+    for a day. Measured with NegentropyBenchProbe (1.01M events a side, 10k unique each way, strfry defaults):
+    on 2.20.1 the sweep paged 650,619 events for that 10,000-event diff; on 2.20.2 it reconciles all 8 windows,
+    pages none and downloads 10,000. Each frame is now at most 60,000 raw bytes, strfry's own client default.
+  ALSO IN THE RANGE: Concord Roles v2 and Buzz / NIP-29 work, in packages nothing here imports.
+  RUNTIME CLASSPATH (:relay, :sync): quartz-jvm 2.20.1 -> 2.20.2. The store pin (below) still names 2.20.1;
+    force(libs.quartz) arrows it onto 2.20.2, a patch with no change on any path the store calls.
+    gradle/magpie.lock gains 2.20.2's files under the key it already trusts.
+
+Prev 2.20.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.20.1 (the v2.20.1 tag e3a43e852 over the quartz#129 merge 2884f8548), 8 commits over 2.20.0 (below), which it
 descends from.
 
