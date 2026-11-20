@@ -4,6 +4,13 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The build needs JDK 25 (November 2026)
+
+Building from source now needs a JDK 25 for Gradle's toolchain: every module compiles to Java 25. The image is
+unchanged for an operator: its build stage brings its own JDK 25 and the runtime is still JDK 27. A local
+`./gradlew` that finds no JDK 25 stops with a toolchain error; install one (Temurin 25, or `openjdk-25-jdk` on
+Ubuntu 24.04) and Gradle picks it up from the usual locations.
+
 ## The search page asks the sync about your posts (November 2026)
 
 The line under the search box that says whether the mirror has a reader's own

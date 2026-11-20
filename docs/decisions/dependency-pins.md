@@ -55,7 +55,19 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.20.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.21.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge 0cfd8bdd5), over 2.20.2 (below), which it descends from.
+
+  STREAMED NEGENTROPY SNAPSHOTS (quartz#134), the reason for this bump with the store's (below). IEventStore gains
+    sealedNegentropyStorage(filters, maxEntries), and LiveEventStore builds every NEG-OPEN's storage through it
+    instead of sealing snapshotIdsForNegentropy's list; the store overrides it to stream. The default snapshot
+    also takes a cap at Int.MAX_VALUE as no cap, where maxEntries + 1 had wrapped and thrown.
+  Also in the range, nothing this relay calls: Observer params `publish` and `place` (quartz#135) and a NIP-46
+    nostrconnect name reading `+` as a space (quartz#136).
+  RUNTIME CLASSPATH (:relay, :sync): quartz-jvm 2.20.2 -> 2.21.0, the release the store pin (below) names, so no
+    quartz line is arrowed. gradle/magpie.lock gains 2.21.0's files under the release key it already trusts.
+
+Prev 2.20.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.20.2 (the v2.20.2 tag 14c8c263f over the quartz#133 merge df4930979), 19 commits over 2.20.1 (below), which it
 descends from.
 
@@ -707,7 +719,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-d002f5920024 = vespa-eventstore main @ 2026-11-19, the merge of PR #213 (over 514a45384152, below), whose tree is
+4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
+the PR head's (0dd7136), byte for byte: four commits over d002f5920024, which it descends from. JitPack builds it
+on JDK 25 (store pom and jar).
+  STREAMED SNAPSHOTS. NostrSemanticsStore overrides quartz 2.21.0's sealedNegentropyStorage and inserts each
+    walked page straight into the negentropy storage; snapshotIdsForNegentropy shares the walk, so both answer the
+    same set through the same engine queries. Measured here, 1.01M ids, four concurrent distinct-filter NEG-OPENs:
+    peak heap after GC 1,146-1,729 MB on d002f5920024, 371-481 MB on this, same wall time and have/need counts.
+    The cap at Int.MAX_VALUE is no cap there too.
+  JDK 25. The store's bytecode is Java 25 (its Vespa bundle stays --release 17), so this pin needs this relay's
+    25 toolchain (docs/decisions/build.md).
+  QUARTZ 2.21.0 (above), the same release this relay pins: every module resolves store:4c73195f7d3d and
+    quartz:2.21.0 with no `->`. No engine/app, bundle or schema change, no deploy-time migration.
+
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed in vespa-eventstore CI on the PR head
+  0dd7136, this tree.
+
+Prev d002f5920024 = vespa-eventstore main @ 2026-11-19, the merge of PR #213 (over 514a45384152, below), whose tree is
 the PR head's (277eaa29), byte for byte: one commit over 514a45384152, which it descends from
 (`git merge-base --is-ancestor 514a45384152 d002f5920024`, verified). JitPack builds it (store pom and jar, 200).
   QUARTZ 2.20.1 (above): the store's pin moves 2.20.0 -> 2.20.1 and its POM names

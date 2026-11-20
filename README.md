@@ -3,7 +3,7 @@
 [![build](https://github.com/NosFabrica/vespa-relay/actions/workflows/build.yml/badge.svg)](https://github.com/NosFabrica/vespa-relay/actions/workflows/build.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Kotlin 2.4](https://img.shields.io/badge/Kotlin-2.4-7F52FF.svg)](https://kotlinlang.org)
-[![JDK 21](https://img.shields.io/badge/JDK-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![JDK 25](https://img.shields.io/badge/JDK-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 
 A [Vespa](https://vespa.ai)-backed standalone [Nostr](https://nostr.com) relay
 that filters and ranks everything — REQs, COUNTs, and full-text
@@ -411,7 +411,7 @@ existing server. See `server/NostrRelayServer.kt` and `server/HttpServer.kt`.
 ./gradlew :sync:installDist  #   …and sync/build/install/vespa-sync
 ```
 
-Kotlin 2.4 / JDK 21. Quartz and the [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
+Kotlin 2.4 / JDK 25. Quartz and the [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store come from JitPack, pinned by commit in `gradle/libs.versions.toml`.
 
 ## License

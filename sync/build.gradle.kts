@@ -47,6 +47,7 @@ tasks.test {
         "fleetUrls",
         "negBench",
         "negBenchMode",
+        "negBenchPath",
         "negBenchRepeat",
         "negBenchTarget",
         "negBenchUrl",

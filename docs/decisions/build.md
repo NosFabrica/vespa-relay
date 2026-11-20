@@ -57,3 +57,7 @@ tags, so the image is pinned by digest. `--enable-native-access=ALL-UNNAMED` is 
 the CDS dump: Netty loads its own native libraries, which JDK 24+ warns about at every boot without it, and
 the archive is dumped under the module options it runs with.
 
+**The build moved to the JDK 25 toolchain.** Every module compiles and tests on 25, the LTS after 21, and
+emits 25 bytecode; the image's build stage is Temurin 25 and its runtime stays 27, which runs 25 bytecode
+unchanged. vespa-eventstore moves to 25 in step, after this: a 21 toolchain cannot read a store compiled for
+25, while a 25 one reads the 21 store this pins today. Quartz stays on 21, which every newer toolchain reads.

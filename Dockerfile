@@ -2,7 +2,7 @@
 # carries them all — same code, same store lib, same schema — so the relay, the
 # sync and the monitor cannot drift apart by tag; docker-compose picks the
 # process with an `entrypoint` override on the sync and monitor services.
-FROM eclipse-temurin:21.0.12.1_1-jdk-noble AS build
+FROM eclipse-temurin:25.0.5.1_2-jdk-noble AS build
 WORKDIR /src
 COPY . .
 # The cache mount keeps Gradle's dependency cache across builds — COPY . .
@@ -10,7 +10,7 @@ COPY . .
 # artifacts are slow to re-download from scratch.
 RUN --mount=type=cache,target=/root/.gradle ./gradlew --no-daemon :relay:installDist :sync:installDist :monitor:installDist
 
-# The runtime is JDK 27 while the build stays on the 21 toolchain: 27 turns compact object headers on by
+# The runtime is JDK 27 while the build is on the 25 toolchain (the LTS): 27 turns compact object headers on by
 # default, about 9% less heap per open connection, and its CPU and latency matched 21 (docs/live-feeds.md).
 # Pinned by digest, since 27 publishes only moving tags so far: Temurin 27+35 on Ubuntu 26.04.
 FROM eclipse-temurin:27-jre-resolute@sha256:7520762e9fac9c34ae0ef3a898ff0e9fc652b019860ab859728b17df41f2b497
