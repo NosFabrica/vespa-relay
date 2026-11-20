@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.ingest.refused.RefusedIds
+import com.sun.management.GarbageCollectionNotificationInfo
 import com.sun.management.ThreadMXBean
 import com.vitorpamplona.negentropy.storage.IStorage
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -39,9 +40,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import java.lang.management.ManagementFactory
+import java.lang.management.MemoryType
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import javax.management.NotificationEmitter
+import javax.management.openmbean.CompositeData
 import kotlin.concurrent.thread
 import kotlin.test.Test
 
@@ -144,6 +148,84 @@ class NegentropyBenchProbe {
         }
     }
 
+    /**
+     * The peak live heap of one whole-filter snapshot built as the relay builds it: `list` walks
+     * into IdAndTime and seals it, `stream` inserts each page straight into the storage.
+     * `-DnegBenchPath=list|stream`; the peak is the largest heap-after-GC seen while it runs.
+     */
+    @Test
+    fun snapshotPeak() {
+        if (System.getProperty("negBench") != "true") return
+        val vespa = System.getProperty("negBenchVespa", "http://localhost:8080")
+        val path = System.getProperty("negBenchPath", "list")
+        val repeat = System.getProperty("negBenchRepeat", "3").toInt()
+        val peak = GcPeak().also { it.install() }
+        VespaEventStore.open(vespa, relay = RelayUrlNormalizer.normalize("ws://bench.local"), autoDeploy = false, readOnly = true).use { store ->
+            runBlocking {
+                repeat(repeat) { run ->
+                    val base = liveHeap()
+                    peak.reset()
+                    val a0 = allocated()
+                    val t0 = System.nanoTime()
+                    val size =
+                        when (path) {
+                            "stream" -> store.store.sealedNegentropyStorage(listOf(Filter()), 2_000_000)!!.size()
+                            else -> NegentropyServerSession.sealVector(store.snapshotIdsForNegentropy(listOf(Filter()), 2_000_000)).size()
+                        }
+                    val ms = (System.nanoTime() - t0) / 1_000_000
+                    val alloc = (allocated() - a0) shr 20
+                    delay(1)
+                    val retained = liveHeap() - base
+                    println(
+                        "PEAKBENCH run=$run path=$path ids=$size ms=$ms allocated_mb=$alloc " +
+                            "peak_live_above_base_mb=${(peak.max() - base) shr 20} gcs=${peak.count()} retained_mb=${retained shr 20}",
+                    )
+                }
+            }
+        }
+    }
+
+    /** The largest heap in use right after any collection, across the heap pools. */
+    private class GcPeak {
+        private val max = AtomicLong()
+        private val gcs = AtomicInteger()
+
+        fun install() {
+            for (gc in ManagementFactory.getGarbageCollectorMXBeans()) {
+                (gc as NotificationEmitter).addNotificationListener({ n, _ ->
+                    if (n.type == GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION) {
+                        val info = GarbageCollectionNotificationInfo.from(n.userData as CompositeData).gcInfo
+                        val used =
+                            info.memoryUsageAfterGc
+                                .filterKeys { it in HEAP_POOLS }
+                                .values
+                                .sumOf { it.used }
+                        max.accumulateAndGet(used) { a, b -> maxOf(a, b) }
+                        gcs.incrementAndGet()
+                    }
+                }, null, null)
+            }
+        }
+
+        fun reset() {
+            max.set(0)
+            gcs.set(0)
+        }
+
+        fun max() = max.get()
+
+        fun count() = gcs.get()
+
+        private companion object {
+            val HEAP_POOLS =
+                ManagementFactory
+                    .getMemoryPoolMXBeans()
+                    .filter { it.type == MemoryType.HEAP }
+                    .map { it.name }
+                    .toSet()
+        }
+    }
+
     private class Walked(
         val ids: Int,
         val walkMs: Long,
@@ -202,7 +284,7 @@ class NegentropyBenchProbe {
         }
     }
 
-    /** Heap in use after each young collection is the honest live set; sampled every 20 ms here. */
+    /** Heap in use, sampled every 20 ms: garbage included, so a peak here is an upper bound, not the live set. */
     private class HeapSampler {
         @Volatile private var running = true
         private val max = AtomicLong()
