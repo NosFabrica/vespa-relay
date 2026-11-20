@@ -760,7 +760,8 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `DEFAULT_LIMIT` | relay | `1`–`MAX_LIMIT`; unset, it is lowered to a smaller `MAX_LIMIT` |
 | `MIN_POW_DIFFICULTY` | relay | `0`–`256` |
 | `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | relay | `0` or more, lower at most upper |
-| `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | `0` or more |
+| `NEG_FRAME_SIZE_LIMIT` | relay | `0` (no limit) or `4096` or more, the smallest frame negentropy builds |
+| `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | relay | `0` or more |
 | `STATS_INTERVAL_SECONDS` | relay | `0`–`604800` (`0` turns the rollup off) |
 | `SYNC_PUBLIC_URL` | relay | an `http`/`https` url with a host and no query, or unset |
 | `EXPIRATION_SWEEP_SECONDS` | relay | any |

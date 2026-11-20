@@ -96,11 +96,20 @@ private const val MIN_MESSAGE_LENGTH = 512
 /** A sha256 has 256 bits, so no event could meet a harder target. */
 private const val MAX_POW_DIFFICULTY = 256
 
+/** The negentropy library's smallest frame; it refuses a session below it, so a relay would answer no NEG-OPEN. */
+private const val MIN_NEG_FRAME_SIZE = 4_096L
+
+/** `NEG_FRAME_SIZE_LIMIT`: 0 is no limit; any other value is a frame the library can build. */
+private fun frameSizeLimitFromEnv(env: Map<String, String>): Long? =
+    env.strictLong("NEG_FRAME_SIZE_LIMIT", 0..Long.MAX_VALUE)?.also {
+        if (it in 1 until MIN_NEG_FRAME_SIZE) error("NEG_FRAME_SIZE_LIMIT='$it' is below $MIN_NEG_FRAME_SIZE, the smallest frame negentropy builds. Use 0 for no limit or at least $MIN_NEG_FRAME_SIZE.")
+    }
+
 /** NIP-77 bounds from the environment. `NEG_MAX_SYNC_EVENTS` caps the ids one reconciliation walks. */
 fun negentropySettingsFromEnv(env: Map<String, String>): NegentropySettings {
     val d = NegentropySettings.Default
     return NegentropySettings(
-        frameSizeLimit = env.longOr("NEG_FRAME_SIZE_LIMIT", d.frameSizeLimit, 0..Long.MAX_VALUE) ?: d.frameSizeLimit,
+        frameSizeLimit = frameSizeLimitFromEnv(env) ?: d.frameSizeLimit,
         maxSyncEvents = env.intOr("NEG_MAX_SYNC_EVENTS", d.maxSyncEvents, 0..Int.MAX_VALUE) ?: d.maxSyncEvents,
         maxSessionsPerConnection = env.intOr("NEG_MAX_SESSIONS_PER_CONNECTION", d.maxSessionsPerConnection, 0..Int.MAX_VALUE) ?: d.maxSessionsPerConnection,
     )
