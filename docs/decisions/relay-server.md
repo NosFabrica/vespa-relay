@@ -569,3 +569,10 @@ that decoder (like the lenient one before it) fishes a key out of surrounding
 text and takes bare hex. A setting must match an npub or nprofile, `nostr:` or
 not, with nothing around it, so `npub1…nsec1…` is refused as a private key and
 `npub1… trailing words` as junk, where both used to boot as the npub.
+
+**`NEG_FRAME_SIZE_LIMIT` is 0 or at least 4,096.** The setting was read as any non-negative
+number, but negentropy-kmp refuses a session whose frame limit is between 1 and 4,095, and the
+relay builds that session only after the NEG-OPEN's snapshot: such a value booted cleanly, then
+spent a full id walk on every NEG-OPEN and answered none of them, outside the handler that would
+have sent NEG-ERR. It now stops the boot and names the setting, as every other out-of-range
+setting does.

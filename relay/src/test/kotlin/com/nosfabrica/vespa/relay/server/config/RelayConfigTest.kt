@@ -80,6 +80,12 @@ class RelayConfigTest {
         for (key in listOf("NEG_FRAME_SIZE_LIMIT", "NEG_MAX_SYNC_EVENTS", "NEG_MAX_SESSIONS_PER_CONNECTION")) {
             assertFailsWith<IllegalStateException>(key) { negentropySettingsFromEnv(mapOf(key to "-1")) }
         }
+        // Below the library's smallest frame, every NEG-OPEN would fail after its snapshot; 0 is no limit.
+        val tiny = assertFailsWith<IllegalStateException> { negentropySettingsFromEnv(mapOf("NEG_FRAME_SIZE_LIMIT" to "4095")) }
+        assertTrue("NEG_FRAME_SIZE_LIMIT='4095'" in tiny.message.orEmpty(), tiny.message)
+        assertFailsWith<IllegalStateException> { negentropySettingsFromEnv(mapOf("NEG_FRAME_SIZE_LIMIT" to "1")) }
+        assertEquals(4_096L, negentropySettingsFromEnv(mapOf("NEG_FRAME_SIZE_LIMIT" to "4096")).frameSizeLimit)
+        assertEquals(0L, negentropySettingsFromEnv(mapOf("NEG_FRAME_SIZE_LIMIT" to "0")).frameSizeLimit)
         // Zero sessions is the operator's switch for NIP-77, so it stays legal.
         assertEquals(0, negentropySettingsFromEnv(mapOf("NEG_MAX_SESSIONS_PER_CONNECTION" to "0")).maxSessionsPerConnection)
     }
