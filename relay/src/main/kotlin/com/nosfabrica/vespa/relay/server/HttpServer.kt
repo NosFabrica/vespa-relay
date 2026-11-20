@@ -109,6 +109,8 @@ fun serveRelay(
     httpRelay: HttpRelay? = null,
     // Serves the websocket on Netty directly instead of through Ktor (NativeWebSocket.kt).
     nativeWebSocket: Boolean = false,
+    // Offers permessage-deflate on Ktor's websocket; the native one takes the upgrade first and offers none.
+    webSocketDeflate: Boolean = false,
     // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
     onReady: () -> Unit = {},
     wait: Boolean = true,
@@ -152,6 +154,7 @@ fun serveRelay(
             pingPeriodMillis = PING_PERIOD_MS
             timeoutMillis = SILENCE_TIMEOUT_MS
             maxFrameSize = maxFrameBytes(limits)
+            if (webSocketDeflate) offerDeflate(maxFrameSize)
         }
         routing {
             nostrRelay(relay)

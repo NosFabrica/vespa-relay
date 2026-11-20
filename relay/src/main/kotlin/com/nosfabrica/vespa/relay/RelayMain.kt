@@ -95,6 +95,7 @@ import com.nosfabrica.vespa.relay.server.config.setUnder
 import com.nosfabrica.vespa.relay.server.config.statsIntervalsFromEnv
 import com.nosfabrica.vespa.relay.server.config.syncPublicUrlFromEnv
 import com.nosfabrica.vespa.relay.server.config.syncSettingsIgnored
+import com.nosfabrica.vespa.relay.server.config.webSocketDeflateFromEnv
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.nosfabrica.vespa.relay.store.STORE_WRITERS
@@ -210,6 +211,7 @@ private class Boot(
     val openRanking: OpenRankingConfig?,
     val httpRelay: HttpRelay?,
     val nativeWebSocket: Boolean,
+    val webSocketDeflate: Boolean,
     val searchExpansion: SearchExpansionLimits,
     val nip11: Nip11Info,
     val adminPubkeys: Set<String>,
@@ -304,6 +306,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         System.err.println("relay: REINDEX_FTS_KINDS is set but REINDEX_FTS_ON_START is not true — no reindex runs")
     }
     val files = relayFilesFromEnv(env)
+    val nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: false
     val adminPubkeys = adminPubkeysFromEnv(env)
     storeTuning.feedBatch?.let { n ->
         System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
@@ -326,7 +329,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
-        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: false,
+        nativeWebSocket = nativeWebSocket,
+        webSocketDeflate = webSocketDeflateFromEnv(env, nativeWebSocket),
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,
@@ -600,6 +604,7 @@ private fun serve(
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
         nativeWebSocket = boot.nativeWebSocket,
+        webSocketDeflate = boot.webSocketDeflate,
         // Once the port is bound: printed before the server started, this line claimed a port that
         // refused connections for another second or more.
         onReady = {

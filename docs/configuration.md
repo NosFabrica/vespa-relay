@@ -59,6 +59,7 @@ writes, and every other value is the check that writes nothing.
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 | `NATIVE_WEBSOCKET` | serve the websocket on Netty directly instead of through Ktor (`NativeWebSocket.kt`): an upgrade on `/` is taken ahead of Ktor's HTTP/1.1 handler, and every page and HTTP command stays Ktor's. Same slow-consumer rule, ping and silence timeout as the Ktor path; measured 3–4× lower delivery latency and a third less CPU per frame at 12,000 feeds ([live-feeds.md](live-feeds.md)). An experiment until it has soaked | `false` |
+| `WEBSOCKET_DEFLATE` | offer RFC 7692 permessage-deflate on Ktor's websocket to clients that ask for it; a client that does not is served as before. Answers under 256 bytes go out uncompressed, and an inbound frame is held to the same byte cap inflated as uncompressed, so compression cannot carry a larger message in. Costs CPU per frame and a deflater and inflater per compressed socket. Refused beside `NATIVE_WEBSOCKET`, which takes the upgrade first and offers none | `false` |
 
 ## Corpus statistics (`GET /stats.json`, `/stats.html`)
 
@@ -790,5 +791,5 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `PARSE_AUDIT_INTERVAL_SECONDS` | sync | `5` or more |
 | `SYNC_WIRE_LOG` | sync | `sent` or `full`, in any case |
 | `AUTO_DEPLOY` | relay | a switch |
-| `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `NATIVE_WEBSOCKET` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
+| `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `NATIVE_WEBSOCKET` / `WEBSOCKET_DEFLATE` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
 | `SYNC_PULSE_PUBLIC` / `SYNC_PULSE_CLIENT_DETAIL` / `SYNC_TOR_ALL` | sync | a switch |

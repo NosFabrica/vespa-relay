@@ -132,6 +132,19 @@ fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY
 fun requireReadLensFromEnv(env: Map<String, String>): Boolean = env.strictFlag("REQUIRE_READ_LENS") ?: true
 
 /**
+ * `WEBSOCKET_DEFLATE`: whether Ktor's websocket offers permessage-deflate. Off unless set; refused beside
+ * `NATIVE_WEBSOCKET`, whose upgrade is taken before Ktor's and offers none.
+ */
+fun webSocketDeflateFromEnv(
+    env: Map<String, String>,
+    nativeWebSocket: Boolean,
+): Boolean {
+    val deflate = env.strictFlag("WEBSOCKET_DEFLATE") ?: false
+    if (deflate && nativeWebSocket) error("WEBSOCKET_DEFLATE=true is served by Ktor's websocket, and NATIVE_WEBSOCKET=true takes every upgrade before it; unset one.")
+    return deflate
+}
+
+/**
  * Whether a search also answers with the records its hits point at, and how much of the feed that
  * may be: `SEARCH_EXPAND_REFERENCES`, `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`.
  * A cap of 0 is honoured as 0.

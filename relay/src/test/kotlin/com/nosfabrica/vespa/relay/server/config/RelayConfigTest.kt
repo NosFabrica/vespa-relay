@@ -268,6 +268,16 @@ class RelayConfigTest {
     }
 
     @Test
+    fun `websocket deflate is off unless set, and never silently inert beside the native websocket`() {
+        assertFalse(webSocketDeflateFromEnv(emptyMap(), nativeWebSocket = false))
+        assertTrue(webSocketDeflateFromEnv(mapOf("WEBSOCKET_DEFLATE" to "true"), nativeWebSocket = false))
+        assertFalse(webSocketDeflateFromEnv(emptyMap(), nativeWebSocket = true), "the native websocket alone still boots")
+        val refused = assertFailsWith<IllegalStateException> { webSocketDeflateFromEnv(mapOf("WEBSOCKET_DEFLATE" to "true"), nativeWebSocket = true) }
+        assertTrue("NATIVE_WEBSOCKET" in refused.message.orEmpty(), refused.message)
+        assertFailsWith<IllegalStateException> { webSocketDeflateFromEnv(mapOf("WEBSOCKET_DEFLATE" to "maybe"), nativeWebSocket = false) }
+    }
+
+    @Test
     fun `expiration sweep interval defaults to an hour`() {
         assertEquals(3_600L, expirationSweepSecondsFromEnv(emptyMap()))
         assertEquals(60L, expirationSweepSecondsFromEnv(mapOf("EXPIRATION_SWEEP_SECONDS" to "60")))

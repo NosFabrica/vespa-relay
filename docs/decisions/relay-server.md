@@ -294,6 +294,19 @@ quartz's character limit ever saw a message. The cap is three bytes per
 character, the same bound the HTTP body cap uses, and a refused frame closes
 with 1009.
 
+**permessage-deflate is an opt-in on Ktor's websocket (`WEBSOCKET_DEFLATE`).**
+A compressed frame passes the header check at its wire size, so the inflated
+frame is held to the same cap (`maxInflatedFrameSize`; Ktor's default is 256
+MiB): without it a megabyte of padding in a few hundred bytes reached the
+engine. Ktor's negotiation throws on an offer it cannot honour
+(`server_max_window_bits=10`, an unknown parameter) and the upgrade answered
+500; `DecliningDeflate` declines the offer instead, as RFC 7692 asks, and the
+client connects uncompressed. Off by default: every compressed socket holds a
+native deflater and inflater, and the native websocket's live frames are one
+shared body written past the frame encoder, so it has nowhere to compress per
+socket; the switch beside `NATIVE_WEBSOCKET` stops the boot rather than doing
+nothing.
+
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a
 burst of keys was a burst of walks. The notice is a courtesy, so a saturated
