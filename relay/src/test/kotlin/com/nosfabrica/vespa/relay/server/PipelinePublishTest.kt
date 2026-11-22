@@ -99,7 +99,8 @@ class PipelinePublishTest {
     fun `RELAY_INGEST picks the writer and the pipeline's shape`() {
         // One batch per worker may wait: the relay's publishes are buffered by their senders.
         // And a byte bound over them, since every publish may be a full frame.
-        assertEquals(IngestTuning(2, 1_000, queue = 2_000, queueBytes = 512L shl 20), relayIngestFromEnv(emptyMap()).tuning)
+        // One worker by default: a second only splits a shallow queue of publishes into narrow writes.
+        assertEquals(IngestTuning(1, 1_000, queue = 1_000, queueBytes = 512L shl 20), relayIngestFromEnv(emptyMap()).tuning)
         assertEquals(
             IngestTuning(4, 4_096, queue = 16_384, queueBytes = 64L shl 20),
             relayIngestFromEnv(mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096", "RELAY_INGEST_QUEUE_MB" to "64")).tuning,

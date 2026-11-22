@@ -186,7 +186,7 @@ fun relayIngestFromEnv(
 
         else -> {
             val batch = ingestBatchFromEnv(env, DEFAULT_PIPELINE_BATCH)
-            val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
+            val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PUBLISH_CONCURRENCY
             val queueMb = env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
             // One batch per worker waiting: enough to keep every worker fed, and no deeper, since
             // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
@@ -223,6 +223,17 @@ private fun EngineTuning.dedupWidth(): Int = dedupChunk ?: EngineTuning.DEFAULT_
 /** The mirror's own defaults (`RouterConfig`), so one store sees one write shape. */
 private const val DEFAULT_PIPELINE_BATCH = 1_000
 private const val DEFAULT_PIPELINE_CONCURRENCY = 2
+
+/**
+ * One worker for client publishes, not the mirror's two. Commits serialize on the store's writer
+ * lock, so a second worker only pays when it can plan a wide batch while the other commits, and
+ * publishes are mostly many clients each awaiting their OK: a shallow queue, which two workers
+ * split into narrow writes that queue on the lock. Measured 2026-11-22 (docs/ingest-benchmark.md):
+ * 20 publishers at 202-322 ev/s with two workers against 316-462 with one, and a 100k bulk
+ * publish level within the box's spread (1,580-1,808 against 1,507-1,721). The mirror lane is
+ * always a deep queue and keeps [DEFAULT_PIPELINE_CONCURRENCY].
+ */
+private const val DEFAULT_PUBLISH_CONCURRENCY = 1
 
 /**
  * Parsed publishes the pipeline may hold, in the estimate's (high) megabytes. Measured
