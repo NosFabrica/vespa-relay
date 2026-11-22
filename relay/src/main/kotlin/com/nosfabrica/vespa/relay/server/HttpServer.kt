@@ -107,8 +107,9 @@ fun serveRelay(
     selfIconUrl: String? = null,
     // When set, a POST to the relay's URL answers one command frame without a socket (NIP-FE).
     httpRelay: HttpRelay? = null,
-    // Serves the websocket on Netty directly instead of through Ktor (NativeWebSocket.kt).
-    nativeWebSocket: Boolean = false,
+    // Serves the websocket on Netty directly instead of through Ktor (NativeWebSocket.kt): the default,
+    // as it ships, so a test that does not ask for a path runs the one operators run.
+    nativeWebSocket: Boolean = true,
     // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
     onReady: () -> Unit = {},
     wait: Boolean = true,
