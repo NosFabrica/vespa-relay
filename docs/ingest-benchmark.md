@@ -165,3 +165,37 @@ final build (store `75be510686`, quartz `020e714858`), `none`, same slice and bo
 | final build, `none` (two runs) | **822, 844** | 930-950 | 2,080-2,110¹ |
 
 ¹ The window that ends at the last answer.
+
+### One publish worker, not two
+
+Measured 2026-11-22 in a 4-core, 15 GB sandbox, `CPUS=0-2`, `VESPA_FEED_COMPRESSION=none`,
+`VESPA_ACCESS_LOG=disabled`, arms alternated. Not comparable with the rows above: `amy` was not on
+the box, so a stand-in publisher took its command line (one socket, 2,048 events or 16 MiB in
+flight, the same JSON summary), and the slice was a fresh pull of ditto's newest 100,000 kind 3s
+(420 MB, against 345 MB above), less the one event over the relay's frame cap.
+
+| arm | ev/s (each run) |
+|---|---|
+| bulk, 1 publisher, 2 workers | 1,808 · 1,720 · 1,580 · 1,726 |
+| bulk, 1 publisher, 1 worker | 1,507 · 1,625 · 1,685 · 1,721 |
+| bulk, 4 publishers, 2 workers | 1,725 · 1,807 |
+| bulk, 4 publishers, 1 worker | 1,646 |
+| 20 clients each awaiting its OK (nostr-bench `event -c 20`), 2 workers | 234 · 322 · 202 · 239 |
+| the same, 1 worker | 316 · 376 · 462 · 371 |
+| 100 clients, 2 workers | 2,117 · 2,191 · 2,596 · 2,524 |
+| the same, 1 worker | 2,476 · 2,710 · 2,585 · 2,549 |
+
+- **Two workers lose on a shallow queue.** The idle one takes the next publish the moment it
+  arrives, so a few events become two narrow writes that queue on the writer lock, each paying a
+  full write's round trips. At 20 clients two workers averaged 249 ev/s against 381 with one, and
+  three of their four runs are below every run with one.
+- **On a bulk publish the two are level within this box's spread.** Two workers still overlap (the
+  second waits 26-39 s at the lock over a ~58 s arm, and makes ~148 narrower writes against ~102),
+  but fresh writes here are bound by Vespa's CPU, not the lock, so the overlap buys no rate.
+- A turn gate was also tried (two workers, the second starting only past one batch of backlog): it
+  made full-width writes and kept the overlap, and measured no better than one worker on either
+  load, so the default became `RELAY_INGEST_CONCURRENCY=1` instead. The mirror lane, always a deep
+  queue, keeps two.
+- An event whose frame passes the cap (3 x `max_message_length`, 786,432 bytes) is not refused
+  with `OK false`: the relay closes the socket from the frame header, and everything in flight on
+  it goes unanswered. One 1 MB kind 3 in the first pull ended an arm at event 18,460.
