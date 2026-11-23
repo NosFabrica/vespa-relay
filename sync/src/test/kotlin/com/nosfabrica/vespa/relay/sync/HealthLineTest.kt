@@ -65,6 +65,13 @@ class HealthLineTest {
     }
 
     @Test
+    fun `a pipeline wedged by a stopped worker blames the worker, not the store`() {
+        val line = healthLine(calm.copy(bottleneck = "wedged", ingestWorkersRunning = 1, inBatch = 0))
+        assertTrue("NOT DRAINING" in line && "1 of 2 worker(s) stopped" in line, line)
+        assertFalse("store stopped answering" in line, line)
+    }
+
+    @Test
     fun `the failures that lose data or capacity are each named`() {
         val line =
             healthLine(

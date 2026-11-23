@@ -130,6 +130,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.system.exitProcess
 
 /**
  * The relay process: open the store, serve the NIP-50 relay and the NIP-11 doc, and block.
@@ -512,7 +513,8 @@ private fun startMirrorLane(
     }
     val tuning = boot.mirrorIngest
     println("relay: the mirror lane writes what the sync forwards, ${tuning.concurrency} worker(s) of up to ${tuning.batch} event(s)")
-    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane").also(IngestPipeline::start)
+    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane", onWorkerStopped = exitOnStoppedWorker("mirror lane"))
+        .also(IngestPipeline::start)
 }
 
 /** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
@@ -526,8 +528,19 @@ private fun startIngest(
         "relay: publishes write through " +
             (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
-    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
+    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes", onWorkerStopped = exitOnStoppedWorker("publish")).also(IngestPipeline::start) }
 }
+
+/**
+ * Nothing restarts an ingest worker, and every write it would have taken waits on it unanswered, so
+ * the process ends non-zero and compose's restart policy brings it back.
+ */
+private fun exitOnStoppedWorker(lane: String): (Int, Throwable) -> Unit =
+    { worker, cause ->
+        System.err.println("relay: $lane ingest worker $worker stopped on ${cause.javaClass.simpleName}; exiting so the relay restarts")
+        cause.printStackTrace()
+        exitProcess(1)
+    }
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
 private fun startPulseSite(

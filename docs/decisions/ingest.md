@@ -119,6 +119,18 @@ An outcome loop that dies partway (only an `Error` gets past the sink's guard)
 books the outcomes it had not reached as an `ingest fault`, so
 `accepted + rejected` still meets `submitted`.
 
+**A worker an `Error` ends is fatal to the relay and reads as `wedged`.** The
+relay publishes through one worker by default, and nothing restarted a dead
+one: every publish after it waited for an OK that never came, while `wedged`
+read the dead worker's slot as idle and the relay never asked. The pipeline
+now counts such an exit (`workersStopped`), `wedged` is true while any worker
+is gone, and `onWorkerStopped` tells the owner: the relay logs and exits 1 for
+compose to restart it; the sync keeps reporting it on its health line. A store
+write still isolates any throwable as poison, so the exits left are the pass's
+own bookkeeping, and an `OutOfMemoryError` ends every process at its throw
+(`-XX:+ExitOnOutOfMemoryError` in each start script) before any catch can
+leave the JVM running without the thread it killed.
+
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store
 refusal, and the fast path exists to stop the store producing it for the

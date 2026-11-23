@@ -87,6 +87,8 @@ class IngestPipeline(
     private val bootName: String? = null,
     /** How long one drop-probe may take before the pass goes on without it; see [PROBE_TIMEOUT_MS]. */
     private val probeTimeoutMs: Long = PROBE_TIMEOUT_MS,
+    /** Told once per worker whose loop an uncaught throwable ended; nothing restarts it, so its owner decides what follows. */
+    private val onWorkerStopped: ((worker: Int, cause: Throwable) -> Unit)? = null,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -179,6 +181,9 @@ class IngestPipeline(
 
     /** Worker loops still running. Below [workers] means one exited and nothing drains its share. */
     private val loopsRunning = AtomicInteger()
+
+    /** Worker loops an uncaught throwable ended, as opposed to a closed channel. */
+    private val workersStopped = AtomicInteger()
 
     fun start() {
         if (batchSize < configuredBatch) {
@@ -290,6 +295,8 @@ class IngestPipeline(
                 "router: ingest worker $worker STOPPED on ${e.javaClass.simpleName}: ${e.message} — " +
                     "${loopsRunning.get() - 1} of $workers worker(s) left to drain the queue",
             )
+            workersStopped.incrementAndGet()
+            onWorkerStopped?.let { hook -> runCatching { hook(worker, e) } }
             throw e
         } finally {
             loopsRunning.decrementAndGet()
@@ -850,13 +857,17 @@ class IngestPipeline(
     /** How many workers are still looping. Below [workerCount] means a worker exited. */
     fun workersRunning(): Int = loopsRunning.get()
 
+    /** Worker loops an uncaught throwable ended; nothing restarts one, so above zero ingest is short a drain for good. */
+    fun workersStopped(): Int = workersStopped.get()
+
     /**
-     * Whether ingest has stopped: no worker is waiting on the channel, and none has started a
-     * batch within [wedgeAfterMs]. Defined by the workers, not the queue depth. Reports, never ends.
+     * Whether ingest has stopped: a worker died ([workersStopped]), or no worker is waiting on the channel and
+     * none has started a batch within [wedgeAfterMs]. Defined by the workers, not the queue depth. Reports, never ends.
      */
     fun wedged(): Boolean {
         // The loop below is vacuously true over no workers.
         if (workers == 0) return false
+        if (workersStopped.get() > 0) return true
         val now = System.currentTimeMillis()
         for (i in 0 until workers) {
             val since = busySince.get(i)
