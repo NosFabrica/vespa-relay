@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
+import com.nosfabrica.vespa.relay.ingest.shutDownIngest
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
@@ -179,17 +180,18 @@ fun main() {
             pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
-            ingest?.closeIntake()
-            mirror?.closeIntake()
-            ingestScope.cancel()
-            ingest?.close()
-            mirror?.close()
+            if (!shutDownIngest(listOfNotNull(ingest, mirror), ingestScope, INGEST_DRAIN_MS)) {
+                System.err.println("relay: ingest was still writing ${INGEST_DRAIN_MS / 1000}s into shutdown; the rest was cancelled")
+            }
             store.close()
         },
     )
     BootClock.mark("relay: built, starting the server")
     serve(boot, relay, store, servingPressure, statsSnapshot, profile)
 }
+
+/** How long shutdown waits for the publish and mirror-lane workers to write what they hold; inside compose's stop grace. */
+private const val INGEST_DRAIN_MS = 15_000L
 
 /** Everything the process reads from its environment, parsed before anything touches the network. */
 private class Boot(

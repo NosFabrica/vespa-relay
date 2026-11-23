@@ -917,9 +917,27 @@ class IngestPipeline(
         inbound.close()
     }
 
-    /** Called after the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. */
+    /** After [closeIntake]: true once every worker has written what it held and exited, false at [deadlineNanos]. */
+    fun awaitDrained(deadlineNanos: Long): Boolean {
+        while (loopsRunning.get() > 0) {
+            if (System.nanoTime() - deadlineNanos >= 0) return false
+            Thread.sleep(DRAIN_POLL_MS)
+        }
+        return true
+    }
+
+    /**
+     * Called after the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. What no
+     * worker took is answered as shutting down: every submission hears exactly once.
+     */
     override fun close() {
         runCatching { pool.close() }
+        while (true) {
+            val left = inbound.tryReceive().getOrNull() ?: break
+            queued.decrementAndGet()
+            intakeBudget?.release(left.weight)
+            left.onOutcome?.let { deliver(it, SHUTTING_DOWN) }
+        }
     }
 
     /**
@@ -992,6 +1010,8 @@ class IngestPipeline(
         private val UNSEATED = IEventStore.InsertOutcome.Failed("error: a newer version in the same batch was not stored")
 
         private const val MAX_INBOUND_QUEUE = 16_384
+
+        private const val DRAIN_POLL_MS = 10L
 
         /** Events a batch must expect to verify before the dedup probe is worth its round trip. */
         private const val PROBE_MIN_VERIFIABLE = 128
