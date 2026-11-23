@@ -545,7 +545,10 @@ internal class VisitPool(
         val covered = bands.band(key, url, ask.filter)
         val eventsBefore = ongoingVisit.events.get()
         val floor = ask.filter.bandFloor(bandSince)
-        for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
+        // A kind walked past the edge before it rose has nothing older owed in this band: settled
+        // here, or it waits out the band's whole re-fetch period (see `settleAtFloor`).
+        if (bandSince != null) bands.settleAtFloor(key, url, ask.filter, bandSince)
+        for (leg in bands.legs(key, url, ask.filter, floor = bandSince).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
             // A refused permit skips the leg: it stays outstanding for the next visit.
@@ -988,15 +991,19 @@ internal class VisitPool(
             bands.clearCannotReconcile(stream.name, url, ask.filter, band)
         }
         if (outcome.complete && storedAll(acks, stream.name, url, ongoingVisit) == IngestAcks.Verdicts.Stored) {
+            // A catch-up band with this window is reconciled whole, to its own floor; with none,
+            // only an audit reaching the stream's floor claims anything, under the bare name.
+            val coverageKey = SyncBands.coverageKeyFor(stream, olderEdge, newerEdge)
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
             bands.recordAudit(
                 stream.name,
                 url,
                 ask.filter,
                 window,
-                reachesFloor = olderEdge == null,
+                reachesFloor = coverageKey != null || olderEdge == null,
                 verifiedAt = auditStarted - pager.slackSeconds,
                 band = band,
+                coverageKey = coverageKey ?: stream.name,
             )
         }
         System.err.println(
