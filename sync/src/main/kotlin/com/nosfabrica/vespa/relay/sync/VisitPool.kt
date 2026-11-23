@@ -545,6 +545,8 @@ internal class VisitPool(
         val covered = bands.band(key, url, ask.filter)
         val eventsBefore = ongoingVisit.events.get()
         val floor = ask.filter.bandFloor(bandSince)
+        // The edge rises daily: a walk that passed yesterday's is owed nothing older, so settle it now.
+        floor.since?.let { edge -> bands.settleAtFloor(key, url, ask.filter, edge, covered) }
         for (leg in bands.legs(key, url, ask.filter).mapNotNull { it.clampedTo(bandSince, bandUntil) }) {
             val stage = if (rewalksCovered(leg, covered)) REFETCHING else CATCHING_UP
             // Only a re-fetch pays a cap; a catch-up is already bounded by the dial width.
@@ -989,15 +991,7 @@ internal class VisitPool(
         }
         if (outcome.complete && storedAll(acks, stream.name, url, ongoingVisit) == IngestAcks.Verdicts.Stored) {
             // The sweep stops `slackSeconds` short of its start, so the claim does too.
-            bands.recordAudit(
-                stream.name,
-                url,
-                ask.filter,
-                window,
-                reachesFloor = olderEdge == null,
-                verifiedAt = auditStarted - pager.slackSeconds,
-                band = band,
-            )
+            bands.recordStreamAudit(stream, url, ask.filter, window, olderEdge, newerEdge, verifiedAt = auditStarted - pager.slackSeconds, band = band)
         }
         System.err.println(
             "router: audit ${stream.name}${if (band.isEmpty()) "" else " [$band]"} ${url.url} — $received event(s) recovered, " +
