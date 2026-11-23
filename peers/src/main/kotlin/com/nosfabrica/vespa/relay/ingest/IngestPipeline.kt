@@ -382,7 +382,8 @@ class IngestPipeline(
         val contests = dropSuperseded(batch, placed, answers)
         if (contests.isEmpty()) return emptyList()
         val winners = ArrayList<Int>(contests.size)
-        val superseded = ArrayList<List<Int>>()
+        // Each winner's beaten versions, answered once the winner's own write is judged.
+        val superseded = ArrayList<Pair<Int, List<Int>>>()
         var badSigs = 0
         var duplicates = 0
         IngestStats.timed("verify") {
@@ -392,12 +393,12 @@ class IngestPipeline(
                 // by it. A contest still verifies, since only a verified candidate may beat another.
                 val unchecked = writer.checksSignatures && versions.size == 1 && versions[0].size == 1
                 var won = false
+                var winner = -1
                 for (copies in versions) {
                     if (won) {
-                        superseded.add(copies)
+                        superseded.add(winner to copies)
                         continue
                     }
-                    var winner = -1
                     for ((n, i) in copies.withIndex()) {
                         val msg = batch[i]
                         when {
@@ -428,7 +429,7 @@ class IngestPipeline(
         if (duplicates > 0) {
             reject(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
         }
-        if (superseded.isNotEmpty()) reportSuperseded(batch, superseded, answers)
+        for ((winner, copies) in superseded) answers.supersede(winner, copies)
         winners.sort()
         return winners
     }
@@ -697,6 +698,20 @@ class IngestPipeline(
         }
     }
 
+    /** Versions beaten in the batch by one that was not stored: nothing replaced them, so each may be offered again. */
+    private fun unseated(
+        versions: List<List<Int>>,
+        answers: Answers,
+    ) {
+        for (copies in versions) copies.forEach { answers.answer(it, UNSEATED) }
+        reject(UNSEATED.reason.take(48), versions.sumOf { it.size }.toLong())
+    }
+
+    /** A verdict that leaves a version at or above this one stored, so everything it beat is replaced. */
+    private fun IEventStore.InsertOutcome.storesTheAddress(): Boolean =
+        this is IEventStore.InsertOutcome.Accepted ||
+            (this is IEventStore.InsertOutcome.Rejected && (reason.startsWith(RejectionReason.PREFIX_DUPLICATE) || reason.startsWith(RejectionReason.PREFIX_REPLACED)))
+
     /** One query per kind per chunk of authors; null if the probe failed. */
     private suspend fun readNewestVersions(
         probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
@@ -917,6 +932,15 @@ class IngestPipeline(
     ) {
         private val answered = BooleanArray(batch.size)
         private var followers: HashMap<Int, MutableList<Int>>? = null
+        private var beaten: HashMap<Int, MutableList<List<Int>>>? = null
+
+        /** [copies] lost to [winner]'s version in this batch; they hear `replaced:` only if [winner] is stored. */
+        fun supersede(
+            winner: Int,
+            copies: List<Int>,
+        ) {
+            (beaten ?: HashMap<Int, MutableList<List<Int>>>().also { beaten = it }).getOrPut(winner) { ArrayList(1) }.add(copies)
+        }
 
         fun follow(
             copy: Int,
@@ -933,9 +957,12 @@ class IngestPipeline(
             answered[i] = true
             batch[i].onOutcome?.let { deliver(it, outcome) }
             followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome) }
+            beaten?.remove(i)?.let { versions -> if (outcome.storesTheAddress()) reportSuperseded(batch, versions, this) else unseated(versions, this) }
         }
 
+        /** Winners first, so a version beaten in the batch is judged by its winner's answer, not by this one. */
         fun rest(outcome: IEventStore.InsertOutcome) {
+            beaten?.keys?.toList()?.forEach { answer(it, outcome) }
             for (i in batch.indices) answer(i, outcome)
         }
     }
@@ -962,6 +989,7 @@ class IngestPipeline(
         private val BAD_SIGNATURE = IEventStore.InsertOutcome.Rejected("invalid: bad signature or id")
         private val SUPPRESSED = IEventStore.InsertOutcome.Rejected("blocked: refused twice before")
         private val SHUTTING_DOWN = IEventStore.InsertOutcome.Failed("error: relay shutting down")
+        private val UNSEATED = IEventStore.InsertOutcome.Failed("error: a newer version in the same batch was not stored")
 
         private const val MAX_INBOUND_QUEUE = 16_384
 

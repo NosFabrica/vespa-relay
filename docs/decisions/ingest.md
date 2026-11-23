@@ -142,6 +142,19 @@ fetch, and two of those suppress that id permanently. `verifyId` closes it for
 ~1.5µs against the 48-95µs a signature costs, and the signature is not needed
 for this class because supersession is decided inside the hashed content.
 
+**A version beaten in the batch hears `replaced:` only once its winner is
+stored.** The in-batch contest answered the older versions `replaced:` inside
+`admit`, before the newest version's own write was judged. When that write was
+refused (unstorable text, expired, deleted, or on the sync the relay's frame
+limit, which the newest follow list is likeliest to exceed) no version was
+stored, yet every older copy had been told it was replaced, and the sync's
+refusal sink records `replaced:` as permanent, so those versions were dropped
+for good. The older versions now wait on the winner's answer: stored (accepted,
+a duplicate, or itself replaced by a stored version) and they hear `replaced:`
+as before; anything else and they hear a retryable `Failed`, reported to no
+sink. A winner the relay refuses twice is suppressed at submit, so the next
+offer's contest is won by the newest version that can be stored.
+
 **The bisecting insert has a fixed write budget.** A bulk write fails as a
 unit, so one bad event cost the whole batch: 999 good events lost per bad one
 at the default size, with no retry. Isolating k bad events out of n costs
