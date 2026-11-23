@@ -172,6 +172,17 @@ subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
 more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
 the screened replay, and fails if `openSubscription` forwards past the gate.
 
+**A search queued for its turn holds at most 1,000 live events, then is
+CLOSED.** Live events wait in `HeldLive` until the subscription's live gate is
+built, and a ranked REQ builds it only once it has the connection's
+`SearchGate` permit. Quartz forwards its own hold (1,000) ahead of EOSE, so
+while the REQ queued behind a slow search, every live match beyond that grew
+the list with no bound, and nothing bounds how long the search ahead runs.
+Sending them ungated would stream authors the lens drops, and dropping them
+silently would break the REQ, so past `MAX_HELD_LIVE` the queued REQ ends with a
+`CLOSED` that says so. Only a read that queues races the bound; the rest run
+as before.
+
 **A REQ's stored rows are served partial while a Vespa node is down.** With one
 content node offline every engine answer is `non-ideal-state` below 100%, and
 the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL
