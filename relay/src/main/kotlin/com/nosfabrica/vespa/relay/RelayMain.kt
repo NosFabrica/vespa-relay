@@ -541,7 +541,10 @@ private fun exitOnStoppedWorker(lane: String): (Int, Throwable) -> Unit =
     { worker, cause ->
         System.err.println("relay: $lane ingest worker $worker stopped on ${cause.javaClass.simpleName}; exiting so the relay restarts")
         cause.printStackTrace()
-        exitProcess(1)
+        // From a thread of its own: exitProcess blocks its caller while the shutdown hook runs, and that hook
+        // waits for every worker loop to end (shutDownIngest) — this one included, whose loop ends only once
+        // the hook returns. Called inline, every worker death cost the whole drain bound before the exit.
+        Thread({ exitProcess(1) }, "relay-exit").start()
     }
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
