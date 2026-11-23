@@ -735,10 +735,9 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-a2bd95d155bb = vespa-eventstore NosFabrica/vespa-eventstore#215's head (branch claude/inspiring-bardeen-yv936f,
-NOT yet on the store's main), which descends from 4c73195f7d3d (below). Re-pin to the store's merge of #215 once it
-lands.
-  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:a2bd95d155bb and
+4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
+the PR head's (a2bd95d), byte for byte (`git diff --quiet a2bd95d 4c2128d`), and which descends from 4c73195f7d3d.
+  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:4c2128d258bf and
     quartz:2.22.1 with no `->`. This is the only change of substance: the branch's other commits (078c9de,
     a020089, 6a37117) stored unstorable text exactly, and a2bd95d reverts all three.
   UNSTORABLE TEXT STILL REFUSED, BY DESIGN. An event whose content or tags hold a code point a Vespa string field
@@ -747,13 +746,15 @@ lands.
     why, and docs/decisions/ingest.md ("Text a Vespa string field cannot hold is refused, by design").
   No engine/app, bundle or schema change, no deploy-time migration; the only source change is VespaText's KDoc.
 
-GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on a2bd95d against
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on a2bd95d, this tree, against
   vespaengine/vespa 8.763.13: 30 IT classes, 56 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
-  Here, ./gradlew build against the JitPack jars: 1,748 tests, 0 failures, 2 skipped; every module resolves
-  store:a2bd95d155bb and quartz:2.22.1 with no `->`.
+  Here, ./gradlew build against a2bd95d's JitPack jars: 1,748 tests, 0 failures, 2 skipped. On 4c2128d's every test
+  task was UP-TO-DATE (Gradle fingerprints the classpath by content: the same classes), and every module resolves
+  store:4c2128d258bf and quartz:2.22.1 with no `->`.
 
-Prev 6ba412e9671d and 078c9de5c484 (on this branch only, never on the store's main): #215 while it stored such
-text exactly; withdrawn.
+Prev a2bd95d155bb = #215's head, this tree, pinned until the merge.
+Prev 6ba412e9671d and 078c9de5c484 = #215 while it stored such text exactly; withdrawn before the merge (the store's main
+holds them only as history, reverted by a2bd95d).
 
 Prev 4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
 the PR head's (0dd7136), byte for byte: four commits over d002f5920024, which it descends from. JitPack builds it
