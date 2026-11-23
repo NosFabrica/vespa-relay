@@ -7,7 +7,7 @@ app = "0.1.0"
 # --configuration runtimeClasspath`: one quartz module, any `com.github.vitorpamplona.quartz` line arrowed onto it.
 quartz = "2.22.1"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "4c2128d258bf"
+vespaEventStore = "f5a026d9903a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
