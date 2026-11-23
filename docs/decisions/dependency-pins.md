@@ -55,7 +55,23 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.21.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge d0effdd1a), over 2.21.0 (below), which it descends
+from; 2.21.1 and 2.22.0 between them were never pinned.
+
+  UNPARSABLE AUTH / EVENT (quartz#139), the reason for this bump. RelaySession answers a frame it cannot parse
+    but whose event id it can read with ["OK", id, false, "invalid: could not parse message"] instead of a NOTICE:
+    NIP-42 owes every AUTH an OK, and an AUTH whose event is not kind 22242 fails to parse before any policy sees
+    it. relay-tester's required "Auth event kind is verified" errored on this relay with "Could not get AUTH to
+    work". Both websocket paths (NativeWebSocket.kt, RelayWebSocket.kt) hand frames to session.receive, so both get it.
+  PUBLISH THROUGH AUTH (2.22.0, quartz#138). publishAwaitingOkThroughAuth / warmUpAuth, and the pool waiting
+    IN_FLIGHT_OK_GRACE_MS for the OK of a copy still being applied. New client API this relay does not call yet.
+  Also in the range, nothing this relay calls: Concord channel/role fields, Buzz pinned messages, the build on JDK
+    25 for JVM 21, and two racy relay-client tests (quartz#141) that held the 2.22.1 release.
+  RUNTIME CLASSPATH (:relay, :sync): quartz-jvm 2.21.0 -> 2.22.1, the release the store pin (below) names, so no
+    quartz line is arrowed. gradle/magpie.lock gains 2.22.1's files under the release key it already trusts.
+
+Prev 2.21.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge 0cfd8bdd5), over 2.20.2 (below), which it descends from.
 
   STREAMED NEGENTROPY SNAPSHOTS (quartz#134), the reason for this bump with the store's (below). IEventStore gains
@@ -719,7 +735,28 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
+4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
+the PR head's (a2bd95d), byte for byte (`git diff --quiet a2bd95d 4c2128d`), and which descends from 4c73195f7d3d.
+  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:4c2128d258bf and
+    quartz:2.22.1 with no `->`. This is the only change of substance: the branch's other commits (078c9de,
+    a020089, 6a37117) stored unstorable text exactly, and a2bd95d reverts all three.
+  UNSTORABLE TEXT STILL REFUSED, BY DESIGN. An event whose content or tags hold a code point a Vespa string field
+    refuses (C0 controls such as NIP-01's \b and \f, U+FDD0-FDDF, U+xFFFE/F, lone surrogates) hears `OK false
+    blocked: text carries a code point the engine cannot store`, as on 4c73195f7d3d. The store's VespaText says
+    why, and docs/decisions/ingest.md ("Text a Vespa string field cannot hold is refused, by design").
+  No engine/app, bundle or schema change, no deploy-time migration; the only source change is VespaText's KDoc.
+
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on a2bd95d, this tree, against
+  vespaengine/vespa 8.763.13: 30 IT classes, 56 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
+  Here, ./gradlew build against a2bd95d's JitPack jars: 1,748 tests, 0 failures, 2 skipped. On 4c2128d's every test
+  task was UP-TO-DATE (Gradle fingerprints the classpath by content: the same classes), and every module resolves
+  store:4c2128d258bf and quartz:2.22.1 with no `->`.
+
+Prev a2bd95d155bb = #215's head, this tree, pinned until the merge.
+Prev 6ba412e9671d and 078c9de5c484 = #215 while it stored such text exactly; withdrawn before the merge (the store's main
+holds them only as history, reverted by a2bd95d).
+
+Prev 4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
 the PR head's (0dd7136), byte for byte: four commits over d002f5920024, which it descends from. JitPack builds it
 on JDK 25 (store pom and jar).
   STREAMED SNAPSHOTS. NostrSemanticsStore overrides quartz 2.21.0's sealedNegentropyStorage and inserts each
