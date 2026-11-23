@@ -48,8 +48,13 @@ class SettleAtFloorTest {
         record(key, url, notes, byKind.values.minOf { it.min }, byKind.values.maxOf { it.max }, paged = true, observedByKind = byKind)
     }
 
-    /** Whether a visit would still ask this band for anything below [edge]. */
-    private fun SyncBands.owesBelow(edge: Long) = legs(key, url, notes, floor = edge).any { (it.since ?: Long.MIN_VALUE) < edge || it.until?.let { u -> u <= edge } == true }
+    /** Whether a visit would still walk an older leg in this band: one with a top, left non-empty by the band's [edge]. */
+    private fun SyncBands.owesOlder(edge: Long) = legs(key, url, notes).any { leg -> leg.until?.let { maxOf(leg.since ?: Long.MIN_VALUE, edge) <= it } == true }
+
+    private fun SyncBands.settle(
+        edge: Long,
+        now: Long = now(),
+    ) = settleAtFloor(key, url, notes, edge, band(key, url, notes), now)
 
     @Test
     fun `the stuck state owes nothing and settles nothing without it`() {
@@ -57,7 +62,7 @@ class SettleAtFloorTest {
         val edge = SyncTier.windowAt(now(), 10 * day, null).first!!
         bands.held(1 to SyncCoverage.Span(edge - 3_600, now() - day), 7 to SyncCoverage.Span(edge - 60, now() - day))
 
-        assertFalse(bands.owesBelow(edge), "quartz owes no older leg past the floor")
+        assertFalse(bands.owesOlder(edge), "quartz owes no older leg past the floor")
         assertFalse(bands.band(key, url, notes)!!.complete, "and nothing else ever marks it complete")
     }
 
@@ -67,10 +72,10 @@ class SettleAtFloorTest {
         val edge = SyncTier.windowAt(now(), 10 * day, null).first!!
         bands.held(1 to SyncCoverage.Span(edge - 3_600, now() - day), 7 to SyncCoverage.Span(edge - 60, now() - day))
 
-        assertTrue(bands.settleAtFloor(key, url, notes, edge))
+        assertTrue(bands.settle(edge))
 
         assertTrue(bands.band(key, url, notes)!!.complete)
-        assertFalse(bands.owesBelow(edge))
+        assertFalse(bands.owesOlder(edge))
     }
 
     @Test
@@ -79,12 +84,23 @@ class SettleAtFloorTest {
         val edge = SyncTier.windowAt(now(), 10 * day, null).first!!
         bands.held(1 to SyncCoverage.Span(edge - 3_600, now() - day), 7 to SyncCoverage.Span(edge + day, now() - day))
 
-        assertTrue(bands.settleAtFloor(key, url, notes, edge), "kind 1 settles")
+        assertTrue(bands.settle(edge), "kind 1 settles")
 
         val band = bands.band(key, url, notes)!!
         assertTrue(band.spans.getValue(1).complete)
         assertFalse(band.spans.getValue(7).complete, "kind 7 stopped a day above the edge; that day is still owed")
-        assertTrue(bands.legs(key, url, notes, floor = edge).any { 7 in it.kinds.orEmpty() && it.until == edge + day }, "and asked for")
+        assertTrue(bands.legs(key, url, notes).any { 7 in it.kinds.orEmpty() && it.until == edge + day }, "and asked for")
+    }
+
+    @Test
+    fun `a complete span above the edge is not reopened`() {
+        val bands = bands()
+        val edge = SyncTier.windowAt(now(), 10 * day, null).first!!
+        // A drained walk of an open band starts at its oldest event, not at the edge.
+        bands.record(key, url, notes, edge + day, now() - day, paged = true, observedByKind = mapOf(1 to SyncCoverage.Span(edge + day, now() - day), 7 to SyncCoverage.Span(edge + day, now() - day)), drained = true)
+
+        assertFalse(bands.settle(edge))
+        assertFalse(bands.owesOlder(edge), "the drain already proved the ground below it empty")
     }
 
     @Test
@@ -93,7 +109,7 @@ class SettleAtFloorTest {
         val edge = SyncTier.windowAt(now(), 10 * day, null).first!!
         bands.held(1 to SyncCoverage.Span(edge - 3_600, now() - day))
 
-        assertFalse(bands.settleAtFloor(key, url, notes, edge, now = now() + 200))
+        assertFalse(bands.settle(edge, now = now() + 200))
 
         assertFalse(bands.band(key, url, notes)!!.complete)
     }

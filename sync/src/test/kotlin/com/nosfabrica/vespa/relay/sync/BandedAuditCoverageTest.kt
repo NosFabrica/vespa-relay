@@ -79,17 +79,7 @@ class BandedAuditCoverageTest {
         now: Long,
     ) {
         val (tier, olderEdge, newerEdge) = tiles[index]
-        val coverageKey = SyncBands.coverageKeyFor(stream, olderEdge, newerEdge)
-        recordAudit(
-            stream.name,
-            url,
-            filter,
-            SyncTier.windowedFilter(filter, now, olderEdge, newerEdge),
-            reachesFloor = coverageKey != null || olderEdge == null,
-            verifiedAt = now - 60,
-            band = SyncTier.bandIdOf(stream.negentropySchedule, tier),
-            coverageKey = coverageKey ?: stream.name,
-        )
+        recordStreamAudit(stream, url, filter, SyncTier.windowedFilter(filter, now, olderEdge, newerEdge), olderEdge, newerEdge, now - 60, SyncTier.bandIdOf(stream.negentropySchedule, tier), now)
     }
 
     @Test
@@ -105,16 +95,37 @@ class BandedAuditCoverageTest {
         // A walk cut a hundred days down: the rest of the band is still owed.
         val cut = SyncCoverage.Span(until!! - 100 * day, until)
         bands.record(middle, url, filter, cut.min, cut.max, paged = true, observedByKind = mapOf(1 to cut))
-        assertTrue(bands.legs(middle, url, filter, floor = since).any { it.until == cut.min }, "the state before the audit")
+        assertTrue(bands.legs(middle, url, filter).any { it.until == cut.min }, "the state before the audit")
 
         bands.audited(1, now)
 
         val band = bands.band(middle, url, filter)!!
         assertTrue(band.complete, "the audit compared the band's whole window")
         assertEquals(since, band.minCreatedAt, "claimed from the window's floor, not from where the reconcile ended")
-        assertFalse(bands.legs(middle, url, filter, floor = since).any { (it.since ?: Long.MIN_VALUE) < cut.min }, "and nothing below the cut is owed")
+        assertFalse(bands.legs(middle, url, filter).any { (it.since ?: Long.MIN_VALUE) < cut.min }, "and nothing below the cut is owed")
         assertNull(bands.band(stream.name, url, filter), "nothing is filed under the bare name")
         assertNotNull(bands.verifiedAt(stream.name, url, filter, tiles[1].first.id), "the clock stays where the schedule reads it")
+    }
+
+    @Test
+    fun `an audit never restarts the clock of a band owed its re-walk`() {
+        val bands = bands()
+        val (_, until) = SyncTier.windowAt(now(), 31_536_000, 2_592_000)
+        val cut = SyncCoverage.Span(until!! - 100 * day, until)
+        bands.record(middle, url, filter, cut.min, cut.max, paged = true, observedByKind = mapOf(1 to cut))
+        val fullAt = bands.band(middle, url, filter)!!.fullAt
+        // A hundred days on, past the band's ninety-day re-fetch period.
+        val later = now() + 100 * day
+
+        bands.audited(1, later)
+
+        assertEquals(fullAt, bands.band(middle, url, filter)!!.fullAt, "the re-walk stays due")
+        assertNotNull(bands.verifiedAt(stream.name, url, filter, tiles[1].first.id), "the audit's own clock still moves")
+    }
+
+    @Test
+    fun `an audit with no band of its window files under the bare name only at the floor`() {
+        assertNull(SyncBands.auditKey(stream), "every audit band here has a catch-up band")
     }
 
     @Test

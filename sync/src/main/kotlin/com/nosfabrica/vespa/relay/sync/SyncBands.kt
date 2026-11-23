@@ -396,9 +396,7 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-        /** The band's older edge, for a filter carrying no `since`: no older leg is owed past it. */
-        floor: Long? = null,
-    ): List<Filter> = coverage(stream).legs(url, filter, floor)
+    ): List<Filter> = coverage(stream).legs(url, filter)
 
     fun record(
         stream: String,
@@ -473,40 +471,44 @@ class SyncBands(
     }
 
     /**
-     * Settles each kind of the band at [stream] whose walk already reaches [bandSince], the band's
-     * older edge today. Returns whether any kind was settled.
-     *
-     * The edge rises a day at a time, so a walk that passed it yesterday and ended short of a
-     * drain sits below it today, and quartz then owes that kind no older leg: what is left of one
-     * clamps to nothing. A drain was the only other way to settle it, and only an older leg can
-     * drain to the floor, so the kind stayed open until the band went stale and was walked whole
-     * again. The span is one contiguous walk from its top down past the edge, which is all
-     * "nothing older is owed in this band" needs; quartz's own [legs] relies on the same contiguity.
-     * A stale band is left alone: the next record replaces it, and the visit re-walks it whole.
+     * Marks complete each kind of [held] whose walk already passed [edge], which quartz then owes no older leg.
+     * Remove when quartz's `SyncCoverage.windows()` settles an incomplete span reaching its floor itself.
      */
     fun settleAtFloor(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-        bandSince: Long,
+        edge: Long,
+        held: SyncCoverage.Band?,
         now: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
-        val held = band(stream, url, filter)?.takeUnless { isStale(stream, it, now) } ?: return false
-        // Only kinds quartz will record against [filter]: a legacy all-kinds span under a filter naming kinds is dropped there.
+        if (held == null || held.complete || isStale(stream, held, now)) return false
+        // Only kinds quartz records against [filter]: it drops a legacy all-kinds span under a filter naming kinds.
         val named = filter.kinds?.takeIf { it.isNotEmpty() }?.toSet()
-        val reached = held.spans.filter { (kind, span) -> !span.complete && span.min <= bandSince && (named == null || kind in named) }
+        val reached = held.spans.filter { (kind, span) -> !span.complete && span.min <= edge && (named == null || kind in named) }
         if (reached.isEmpty()) return false
-        coverage(stream).record(
-            url,
-            filter,
-            reached.values.minOf { it.min },
-            reached.values.maxOf { it.max },
-            paged = true,
-            reconciledThrough = null,
-            observedByKind = reached,
-            drained = true,
-        )
+        // Drained without [drainSettlesThePast]: the walk is already below the floor, which is what that gate asks.
+        record(stream, url, filter, reached.values.minOf { it.min }, reached.values.maxOf { it.max }, paged = true, observedByKind = reached, drained = true, now = now)
         return true
+    }
+
+    /**
+     * A completed audit of the window between [olderEdge] and [newerEdge]: its clock under [stream], and
+     * its reconcile under the catch-up band with that window, else under [stream] when it reaches the floor.
+     */
+    fun recordStreamAudit(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        window: Filter,
+        olderEdge: Long?,
+        newerEdge: Long?,
+        verifiedAt: Long,
+        band: String,
+        now: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val coverageKey = coverageKeyFor(stream, olderEdge, newerEdge)
+        recordAudit(stream.name, url, filter, window, coverageKey != null || olderEdge == null, verifiedAt, band, now, coverageKey ?: stream.name)
     }
 
     /**
@@ -524,17 +526,17 @@ class SyncBands(
         verifiedAt: Long,
         band: String = "",
         now: Long = System.currentTimeMillis() / 1000,
-        /**
-         * Where the reconcile is claimed: the catch-up band with this audit's window ([coverageKeyFor]),
-         * or [stream]. The clock stays under [stream] either way, where the schedule reads it.
-         */
+        /** Where the reconcile is claimed; the clock stays under [stream], where the schedule reads it. */
         coverageKey: String = stream,
     ) {
         val through = minOf(window.until ?: verifiedAt, verifiedAt)
-        val held = band(coverageKey, url, filter)?.takeUnless { isStale(coverageKey, it, now) }
+        val stored = band(coverageKey, url, filter)
+        val held = stored?.takeUnless { isStale(coverageKey, it, now) }
         // A held span starting above `through` would be joined to it across ground nobody walked.
         val bridges = held != null && held.spans.values.any { it.min > through }
-        if (reachesFloor && !bridges) {
+        // A stale catch-up band is owed its re-walk; a reconcile there would replace it and restart that clock.
+        val dueRewalk = coverageKey != stream && stored != null && held == null
+        if (reachesFloor && !bridges && !dueRewalk) {
             // From the window's own floor: a span starting at `through` would leave the band's
             // floor below it, and a caller passing that floor to [legs] would re-walk the window.
             coverage(coverageKey).record(url, filter, window.since?.takeIf { it <= through }, null, paged = false, reconciledThrough = through, observedByKind = null, drained = false)
@@ -992,12 +994,13 @@ class SyncBands(
         /** Every key [stream]'s catch-up coverage is filed under, one per band; the report joins on these. */
         internal fun coverageKeys(stream: SyncStream): List<String> = catchUpBands(stream).let { tiers -> tiers.map { SyncTier.keyFor(stream.name, tiers, it) } }
 
-        /**
-         * The catch-up band an audit of the window between [olderEdge] and [newerEdge] reconciles:
-         * the one with the same edges, so it shares the audit's window at every `now`. Null where
-         * none has, as when the re-fetch is unbanded and the audit is not; such an audit claims
-         * coverage only under the bare stream name, and only when it reaches the floor.
-         */
+        /** Where an audit reaching the floor with no catch-up band of its window files its reconcile; null when every audit has one. */
+        internal fun auditKey(stream: SyncStream): String? =
+            stream.name.takeIf {
+                SyncTier.tile(stream.negentropySchedule).any { (_, older, newer) -> older == null && coverageKeyFor(stream, older, newer) == null }
+            }
+
+        /** The catch-up band with the same edges as this audit window, so the same window at every `now`; null when none. */
         internal fun coverageKeyFor(
             stream: SyncStream,
             olderEdge: Long?,

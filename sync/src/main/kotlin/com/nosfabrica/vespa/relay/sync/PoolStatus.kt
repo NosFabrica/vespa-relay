@@ -177,8 +177,8 @@ internal class PoolStatus(
         val unreadable = bands.unreadableByUnit()
         val coverageKeys = streams.associate { it.name to SyncBands.coverageKeys(it) }
 
-        // A banded stream's audit files its reconcile under the bare name, which no band key is.
-        val auditKeys = streams.associate { it.name to it.name.takeIf { name -> name !in coverageKeys.getValue(name) } }
+        // Only an audit with no catch-up band of its own window still files under the bare name.
+        val auditKeys = streams.associate { it.name to SyncBands.auditKey(it)?.takeIf { key -> key !in coverageKeys.getValue(it.name) } }
     }
 
     private fun unitOf(
