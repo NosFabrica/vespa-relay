@@ -735,28 +735,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-6ba412e9671d = vespa-eventstore NosFabrica/vespa-eventstore#215's head (branch claude/inspiring-bardeen-yv936f,
-NOT yet on the store's main): four commits over 4c73195f7d3d (below), which it descends from. Re-pin to the
-store's merge of #215 once it lands.
-  UNSTORABLE TEXT, STORED EXACTLY (078c9de). An event whose content or tags hold a code point a Vespa string
-    field refuses (NIP-01's own \b and \f, other C0 controls, noncharacters) was refused with "blocked: text
-    carries a code point the engine cannot store"; it is now stored and served byte for byte. Content goes to a
-    new summary-only field, content_json, as an escaped JSON literal; tags escape such code points in their
-    stored JSON; such a tag value is left out of tag_index and unmatchable. relay-tester's required "Accepts
-    NIP-01 JSON escape sequences" and "Accepts UTF-8 non-characters" failed on this relay because of it.
-  WHAT IT STILL REFUSES (a020089, 6a37117), as UNSTORABLE_TEXT: an addressable whose `d` holds such a code point
-    (its versions are found by #d, which tag_index cannot hold), an owner it refuses (a gift wrap's `p`), an
-    unpaired surrogate anywhere (no exact way to serve it), and such content while the deployed schema predates
-    content_json (EventIndex.storesContent, flipped by the first refusal naming the field).
-  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:6ba412e9671d and
-    quartz:2.22.1 with no `->`.
-  SCHEMA: event.sd gains content_json (summary-only); AUTO_DEPLOY deploys it at boot, nothing is re-indexed. An
-    operator-owned package keeps working without it: only events with such content are refused.
+a2bd95d155bb = vespa-eventstore NosFabrica/vespa-eventstore#215's head (branch claude/inspiring-bardeen-yv936f,
+NOT yet on the store's main), which descends from 4c73195f7d3d (below). Re-pin to the store's merge of #215 once it
+lands.
+  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:a2bd95d155bb and
+    quartz:2.22.1 with no `->`. This is the only change of substance: the branch's other commits (078c9de,
+    a020089, 6a37117) stored unstorable text exactly, and a2bd95d reverts all three.
+  UNSTORABLE TEXT STILL REFUSED, BY DESIGN. An event whose content or tags hold a code point a Vespa string field
+    refuses (C0 controls such as NIP-01's \b and \f, U+FDD0-FDDF, U+xFFFE/F, lone surrogates) hears `OK false
+    blocked: text carries a code point the engine cannot store`, as on 4c73195f7d3d. The store's VespaText says
+    why, and docs/decisions/ingest.md ("Text a Vespa string field cannot hold is refused, by design").
+  No engine/app, bundle or schema change, no deploy-time migration; the only source change is VespaText's KDoc.
 
-GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on 6ba412e against
-  vespaengine/vespa 8.763.13 (31 IT classes, 57 tests; StagingCorpusIT needs an export).
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on a2bd95d against
+  vespaengine/vespa 8.763.13: 30 IT classes, 56 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
+  Here, ./gradlew build against the JitPack jars: 1,748 tests, 0 failures, 2 skipped; every module resolves
+  store:a2bd95d155bb and quartz:2.22.1 with no `->`.
 
-Prev 078c9de5c484 (on this branch only, never documented here): #215's first commit, before 6a37117's fixes.
+Prev 6ba412e9671d and 078c9de5c484 (on this branch only, never on the store's main): #215 while it stored such
+text exactly; withdrawn.
 
 Prev 4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
 the PR head's (0dd7136), byte for byte: four commits over d002f5920024, which it descends from. JitPack builds it
