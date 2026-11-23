@@ -342,6 +342,7 @@ private class NativeWebSocketSession(
     private lateinit var reader: Job
 
     private val outbox = ConcurrentLinkedQueue<Any>()
+    private val maxFrames = outboundFrameCap(relay.limits)
     private val queuedFrames = AtomicInteger()
     private val queuedChars = AtomicLong()
     private val drainScheduled = AtomicBoolean()
@@ -461,7 +462,7 @@ private class NativeWebSocketSession(
         chars: Int,
     ) {
         if (closing) return
-        if (queuedFrames.incrementAndGet() > MAX_OUTGOING_BUFFER || stalled()) {
+        if (queuedFrames.incrementAndGet() > maxFrames || stalled()) {
             queuedFrames.decrementAndGet()
             disconnectSlowConsumer()
             return

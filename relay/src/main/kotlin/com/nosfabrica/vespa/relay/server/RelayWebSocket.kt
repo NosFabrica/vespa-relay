@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
@@ -34,8 +36,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-/** Outbound frames queued for one connection before it is treated as a slow consumer. */
+/** Outbound frames a connection may queue on top of one whole stored page before it is treated as a slow consumer. */
 internal const val MAX_OUTGOING_BUFFER = 8192
+
+/**
+ * One connection's frame bound: the largest stored page [limits] let one REQ ask for, plus [MAX_OUTGOING_BUFFER].
+ * The store builds a page whole before a row is sent, so a page the relay agreed to serve never trips it.
+ */
+internal fun outboundFrameCap(limits: RelayLimits?): Int {
+    val filters = (limits?.maxFilters ?: defaultRelayLimits().maxFilters ?: 1).toLong()
+    val perFilter = (limits?.maxLimit ?: defaultRelayLimits().maxLimit ?: 0).toLong()
+    return (filters * perFilter + MAX_OUTGOING_BUFFER).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+}
 
 /** Outbound characters a connection may hold queued without question; past it, only a stalled writer is a slow consumer. */
 internal const val MAX_OUTGOING_CHARS = 16L * 1024 * 1024
@@ -70,7 +82,7 @@ fun Route.nostrRelay(server: NostrRelayServer) {
     webSocket("/") {
         // One writer drains a bounded queue; a slow consumer is disconnected rather than having frames
         // dropped, which would break NIP-01.
-        val outQueue = OutboundQueue()
+        val outQueue = OutboundQueue(maxFrames = outboundFrameCap(server.limits))
         val writer = launch { outQueue.drain { text -> outgoing.send(textFrame(text)) } }
         val disconnecting = AtomicBoolean()
 
@@ -112,7 +124,7 @@ fun Route.nostrRelay(server: NostrRelayServer) {
 }
 
 /**
- * One connection's outbound frames. Past [maxFrames], or past [maxChars] while the writer has waited
+ * One connection's outbound frames. Past [maxFrames] (see [outboundFrameCap]), or past [maxChars] while the writer has waited
  * on one frame for [stallMs], the client is a slow consumer: characters alone never close one still reading.
  */
 internal class OutboundQueue(

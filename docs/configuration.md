@@ -180,7 +180,7 @@ events.
 
 | var | meaning | default |
 |---|---|---|
-| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block | sane defaults |
+| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block. `MAX_FILTERS` x `MAX_LIMIT` also sizes a websocket's outbound queue (one whole stored page plus 8,192 frames), so a page the limits allow never closes its client as a slow consumer | sane defaults |
 | `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning. `NEG_MAX_SYNC_EVENTS` is the ONE bound on a reconciliation: how many ids it walks before answering NEG-ERR `blocked: too many query results`. `DEFAULT_LIMIT` / `MAX_LIMIT` size a REQ's page and never reach a NEG-OPEN, so keep this far above them | strfry-parity (1,000,000) |
 
 ## Access control
@@ -320,7 +320,7 @@ relay and is ignored.
 **Limits.** The per-connection search gate (`SEARCH_CONCURRENCY_PER_CONNECTION`)
 cannot hold here, because every request is its own connection; the total cap
 above stands in for it. A reader slower than the network holds the relay's
-writes, not its memory; one more than the websocket's bound (8,192 frames)
+writes, not its memory; one more than quartz's bound (8,192 frames)
 behind the store is cut off with a `CLOSED` line, and one that stops reading
 altogether is dropped five seconds past the deadline. Browsers may call it from
 any origin; the CORS rules are the ones every route on this port shares. Behind

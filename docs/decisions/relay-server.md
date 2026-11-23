@@ -287,6 +287,15 @@ when the writer has waited 30s on one frame, checked on every offer and once a
 second; a non-reader holds at most what arrives in that window, still under the
 8192-frame bound, and the frame bound is unchanged.
 
+**The frame bound is one whole stored page plus 8192.** A fixed 8192 closed a
+client asking one REQ the limits allow (8 filters of 5,000 rows: closed 1013
+after 3,845 events, no EOSE), because the store builds the page whole and
+emits every row into the queue at once. The bound is now `MAX_FILTERS` x
+`MAX_LIMIT` plus 8192 for live traffic (`outboundFrameCap`, on both
+transports). The page's rows are on the heap already when they are queued, so
+the bound adds no memory a REQ could not already cost; the character budget and
+the 30s stall still close a client that stopped reading.
+
 **The websocket's frame cap is the engine's message length, in bytes.** Ktor's
 default is unbounded, and it judges a frame from its header, so an anonymous
 client could declare a gigabyte and have the server try to hold it before
