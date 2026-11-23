@@ -329,7 +329,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
-        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: false,
+        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: true,
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,

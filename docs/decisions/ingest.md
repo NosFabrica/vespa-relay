@@ -437,6 +437,27 @@ limit each, and a publisher's own window already buffers what it sends; the
 mirror's depth rides out download bursts the relay does not have. At the
 defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.
 
+## Text a Vespa string field cannot hold is refused, by design
+
+An event whose `content` or a tag value carries a code point Vespa's string
+fields refuse (C0 controls other than tab, LF and CR, including the `\b` and
+`\f` NIP-01 names as escapes; U+FDD0-U+FDDF; U+xFFFE/U+xFFFF; lone
+surrogates) hears `OK false blocked: text carries a code point the engine
+cannot store`. The store decides it (`VespaText` in vespa-eventstore); this
+relay only relays the answer, and the sync's refusal filter suppresses such an
+id like any other refusal.
+
+**This is a policy, not a gap.** Storing these events byte for byte was built
+and withdrawn (NosFabrica/vespa-eventstore#215): a second content field,
+escaped tag JSON, and still a list of shapes it had to refuse. Against that
+cost, the events are vanishingly rare: 0 of 36,000+ sampled from the live relay
+(notes and profiles, 2023-2026) and 0 of 10,961 in the staging corpus. NIP-01
+lets a relay answer any event `OK false` with its reason. What it gives up is
+relay-tester's "Accepts NIP-01 JSON escape sequences" and "Accepts UTF-8
+non-characters", whose payloads are exactly these code points. Revisit only
+with evidence that real clients send them: the store's `UNSTORABLE_TEXT`
+rejection count says.
+
 ## One writer: the sync forwards to the relay
 
 **The relay is the only writer, and the sync reaches it as a client.** With both processes

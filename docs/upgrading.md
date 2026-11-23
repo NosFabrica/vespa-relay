@@ -4,6 +4,19 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The websocket is served on Netty directly (November 2026)
+
+`NATIVE_WEBSOCKET` is now on by default: a websocket upgrade on `/` is answered
+by `NativeWebSocket.kt` on Netty instead of by Ktor's websocket plugin. Pages,
+HTTP commands, NIP-86 and an upgrade on any other path are Ktor's as before.
+Clients see the same relay: the same frames, limits, ping period and silence
+timeout, and neither path negotiates compression. What changes is cost: live
+delivery measured 3–4× faster and a third less CPU per frame at 12,000 feeds
+([live-feeds.md](live-feeds.md)).
+
+Nothing to do. `NATIVE_WEBSOCKET=false` restores the Ktor path, and the boot
+stops on a value that is not a switch.
+
 ## The build needs JDK 25 (November 2026)
 
 Building from source now needs a JDK 25 for Gradle's toolchain: every module compiles to Java 25. The image is
