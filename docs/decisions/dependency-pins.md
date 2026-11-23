@@ -55,7 +55,23 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-2.21.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge d0effdd1a), over 2.21.0 (below), which it descends
+from; 2.21.1 and 2.22.0 between them were never pinned.
+
+  UNPARSABLE AUTH / EVENT (quartz#139), the reason for this bump. RelaySession answers a frame it cannot parse
+    but whose event id it can read with ["OK", id, false, "invalid: could not parse message"] instead of a NOTICE:
+    NIP-42 owes every AUTH an OK, and an AUTH whose event is not kind 22242 fails to parse before any policy sees
+    it. relay-tester's required "Auth event kind is verified" errored on this relay with "Could not get AUTH to
+    work". Both websocket paths (NativeWebSocket.kt, RelayWebSocket.kt) hand frames to session.receive, so both get it.
+  PUBLISH THROUGH AUTH (2.22.0, quartz#138). publishAwaitingOkThroughAuth / warmUpAuth, and the pool waiting
+    IN_FLIGHT_OK_GRACE_MS for the OK of a copy still being applied. New client API this relay does not call yet.
+  Also in the range, nothing this relay calls: Concord channel/role fields, Buzz pinned messages, the build on JDK
+    25 for JVM 21, and two racy relay-client tests (quartz#141) that held the 2.22.1 release.
+  RUNTIME CLASSPATH (:relay, :sync): quartz-jvm 2.21.0 -> 2.22.1, the release the store pin (below) names, so no
+    quartz line is arrowed. gradle/magpie.lock gains 2.22.1's files under the release key it already trusts.
+
+Prev 2.21.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.21.0 (the v2.21.0 tag bc98eb406 over the quartz#131 merge 0cfd8bdd5), over 2.20.2 (below), which it descends from.
 
   STREAMED NEGENTROPY SNAPSHOTS (quartz#134), the reason for this bump with the store's (below). IEventStore gains
@@ -719,7 +735,30 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
+6ba412e9671d = vespa-eventstore NosFabrica/vespa-eventstore#215's head (branch claude/inspiring-bardeen-yv936f,
+NOT yet on the store's main): four commits over 4c73195f7d3d (below), which it descends from. Re-pin to the
+store's merge of #215 once it lands.
+  UNSTORABLE TEXT, STORED EXACTLY (078c9de). An event whose content or tags hold a code point a Vespa string
+    field refuses (NIP-01's own \b and \f, other C0 controls, noncharacters) was refused with "blocked: text
+    carries a code point the engine cannot store"; it is now stored and served byte for byte. Content goes to a
+    new summary-only field, content_json, as an escaped JSON literal; tags escape such code points in their
+    stored JSON; such a tag value is left out of tag_index and unmatchable. relay-tester's required "Accepts
+    NIP-01 JSON escape sequences" and "Accepts UTF-8 non-characters" failed on this relay because of it.
+  WHAT IT STILL REFUSES (a020089, 6a37117), as UNSTORABLE_TEXT: an addressable whose `d` holds such a code point
+    (its versions are found by #d, which tag_index cannot hold), an owner it refuses (a gift wrap's `p`), an
+    unpaired surrogate anywhere (no exact way to serve it), and such content while the deployed schema predates
+    content_json (EventIndex.storesContent, flipped by the first refusal naming the field).
+  QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:6ba412e9671d and
+    quartz:2.22.1 with no `->`.
+  SCHEMA: event.sd gains content_json (summary-only); AUTO_DEPLOY deploys it at boot, nothing is re-indexed. An
+    operator-owned package keeps working without it: only events with such content are refused.
+
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on 6ba412e against
+  vespaengine/vespa 8.763.13 (31 IT classes, 57 tests; StagingCorpusIT needs an export).
+
+Prev 078c9de5c484 (on this branch only, never documented here): #215's first commit, before 6a37117's fixes.
+
+Prev 4c73195f7d3d = vespa-eventstore main @ 2026-11-20, the merge of PR #214 (over d002f5920024, below), whose tree is
 the PR head's (0dd7136), byte for byte: four commits over d002f5920024, which it descends from. JitPack builds it
 on JDK 25 (store pom and jar).
   STREAMED SNAPSHOTS. NostrSemanticsStore overrides quartz 2.21.0's sealedNegentropyStorage and inserts each
