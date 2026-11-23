@@ -24,7 +24,8 @@ dependencies {
 
 application {
     // Netty loads its native libraries itself; JDK 24+ warns at every boot unless native access is granted.
-    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
+    // An OutOfMemoryError ends the process, which compose restarts, instead of leaving it half-alive.
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "-XX:+ExitOnOutOfMemoryError")
     mainClass = "com.nosfabrica.vespa.relay.RelayMainKt"
     applicationName = "vespa-relay"
 }
