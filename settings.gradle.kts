@@ -8,17 +8,17 @@ pluginManagement {
     }
 }
 
-// Quartz (com.vitorpamplona.quartz) and its crypto-kmp (com.vitorpamplona.crypto),
-// libschnorr256k1-kotlin (com.vitorpamplona.schnorr256k1) and negentropy-kmp
-// (com.vitorpamplona.negentropy) are released on Nostr + Blossom only: Magpie serves those groups,
-// trusting only the release key vitorpamplona.com names as `releases`, and gradle/magpie.lock pins
-// that key and every resolved version's files, as in quartz and the store.
+// Quartz's crypto-kmp (com.vitorpamplona.crypto), libschnorr256k1-kotlin
+// (com.vitorpamplona.schnorr256k1) and negentropy-kmp (com.vitorpamplona.negentropy) are released on
+// Nostr + Blossom only: Magpie serves those groups, trusting only the release key vitorpamplona.com
+// names as `releases`, and gradle/magpie.lock pins that key and every resolved version's files.
+// Quartz itself is a JitPack commit (below, and build-logic), so Magpie no longer serves its group;
+// the lock keeps its old quartz lines, inert, as it keeps every release it once pinned.
 plugins {
     id("com.vitorpamplona.magpie") version "0.2.3"
 }
 
 magpie {
-    group("com.vitorpamplona.quartz")
     group("com.vitorpamplona.crypto")
     group("com.vitorpamplona.schnorr256k1")
     group("com.vitorpamplona.negentropy")

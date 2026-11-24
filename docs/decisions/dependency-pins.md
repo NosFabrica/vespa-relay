@@ -62,6 +62,14 @@ release group (com.vitorpamplona.quartz, what the store's POM still names at 2.2
 JitPack serve quartz's group. Magpie keeps serving the crypto, schnorr256k1 and negentropy groups quartz depends on.
 Every module resolves one quartz, quartz:4456c57f0640, with each com.vitorpamplona.quartz line arrowed onto it.
 
+  TRUST, traded down. A Magpie release was signed by the key vitorpamplona.com names as `releases`, and
+    gradle/magpie.lock pinned that key and each release's files by hash: a changed artifact failed the build.
+    A JitPack build is unsigned, built by JitPack from the commit, and pinned only by a 12-character commit
+    prefix in the catalog; nothing here checks the jar's bytes. That is the trust the store pin (below) has
+    always had, taken for quartz because the fixes this relay needs are on quartz main before any release.
+    Back to a release when one carries them. settings.gradle.kts no longer hands the quartz group to Magpie
+    (2026-11-24); gradle/magpie.lock keeps its quartz lines, unused, as it keeps every release it once pinned.
+
   COUNT AND REQ ON AN ID (quartz#146 and the relay-server commits before it), the reason for this bump. A COUNT runs off the connection's command
     loop, so a slow ranked COUNT no longer stalls the EVENT, REQ and CLOSE behind it (it waited inline before). A
     CLOSE, a replacement (re-COUNT or re-REQ) and a refusal on an id end whatever runs there at once, COUNT and
