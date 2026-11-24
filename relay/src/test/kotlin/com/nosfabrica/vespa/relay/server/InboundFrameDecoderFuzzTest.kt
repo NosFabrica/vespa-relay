@@ -40,6 +40,7 @@ import java.io.ByteArrayOutputStream
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.fail
 
 /**
  * [InboundFrameDecoder] against Netty's decoder and aggregator, which it replaces: random valid and broken
@@ -63,11 +64,28 @@ class InboundFrameDecoderFuzzTest {
             WebSocketFrameAggregator(cap),
         )
 
+    /** Netty's decoder with extensions allowed, its aggregator, then upstream's whole-message inflate of an RSV1 message. */
+    private fun nettyDeflate(): List<ChannelHandler> =
+        listOf(
+            WebSocket13FrameDecoder(
+                WebSocketDecoderConfig
+                    .newBuilder()
+                    .maxFramePayloadLength(cap)
+                    .allowExtensions(true)
+                    .closeOnProtocolViolation(false)
+                    .build(),
+            ),
+            WebSocketFrameAggregator(cap),
+        )
+
+    private fun oursDeflate(): List<ChannelHandler> = listOf(InboundFrameDecoder(InboundLimits(cap.toLong(), streamPastBytes = null), InflaterPool()))
+
     /** What a pipeline made of [wire] fed in [reads]: one line per message, control frame or error. */
     private fun run(
         handlers: List<ChannelHandler>,
         wire: ByteArray,
         reads: List<Int>,
+        inflateRsv1: Boolean = false,
     ): List<String> {
         val channel = EmbeddedChannel(*handlers.toTypedArray())
         val seen = mutableListOf<String>()
@@ -79,26 +97,35 @@ class InboundFrameDecoderFuzzTest {
                 channel.writeInbound(Unpooled.wrappedBuffer(wire, at, take))
             } catch (e: Exception) {
                 // What the read produced before the error came first.
-                drain(channel, seen)
+                drain(channel, seen, inflateRsv1)
                 seen += error(e)
                 break
             }
             at += take
-            drain(channel, seen)
+            drain(channel, seen, inflateRsv1)
+            if (seen.lastOrNull()?.startsWith("error") == true) break
         }
         // Netty's aggregator throws on a close mid-message: teardown, not a reading.
         runCatching { channel.finishAndReleaseAll() }
         return seen
     }
 
+    private val inflater = MessageInflater()
+
     private fun drain(
         channel: EmbeddedChannel,
         seen: MutableList<String>,
+        inflateRsv1: Boolean = false,
     ) {
         while (true) {
             val m = channel.readInbound<Any>() ?: return
+            // A refusal ends the connection: what the same read decoded after it is never handled.
+            if (seen.lastOrNull()?.startsWith("error") == true) {
+                ReferenceCountUtil.release(m)
+                continue
+            }
             when (m) {
-                is TextWebSocketFrame -> seen += "text ${m.text()}"
+                is TextWebSocketFrame -> seen += if (inflateRsv1 && m.rsv() and 0x4 != 0) inflater.inflateText(m.content(), cap)?.let { "text $it" } ?: "error 1009" else "text ${m.text()}"
                 is PingWebSocketFrame -> seen += "ping ${hex(m.content())}"
                 is PongWebSocketFrame -> seen += "pong ${hex(m.content())}"
                 is CloseWebSocketFrame -> seen += "close ${hex(m.content())}"
@@ -285,6 +312,54 @@ class InboundFrameDecoderFuzzTest {
         for (cut in 0..wire.size) {
             val reads = listOf(cut, wire.size - cut).filter { it > 0 }
             assertEquals(run(netty(), wire, reads), run(ours(), wire, reads), "cut at $cut of ${wire.size}")
+        }
+    }
+
+    /** A stream of plain and compressed messages, some fragmented with pings between, some inflating past the cap. */
+    private fun compressedStream(r: Random): ByteArray {
+        val out = ByteArrayOutputStream()
+        repeat(r.nextInt(1, 6)) {
+            val plain =
+                if (r.nextInt(6) == 0) {
+                    ByteArray(r.nextInt(cap - 20_000, cap + 60_000)) { '0'.code.toByte() }
+                } else {
+                    text(r, size(r).coerceAtMost(cap - 1))
+                }
+            val compressed = r.nextInt(3) > 0
+            val payload = if (compressed) deflateMessage(plain) else plain
+            if (payload.size > cap) return@repeat
+            val parts = if (r.nextBoolean()) 1 else r.nextInt(2, 5)
+            val step = (payload.size + parts - 1) / parts.coerceAtLeast(1)
+            var at = 0
+            var first = true
+            do {
+                val end = if (step == 0) payload.size else minOf(at + step, payload.size)
+                val frameStart = out.size()
+                frame(r, out, if (first) 0x1 else 0x0, end == payload.size, payload.copyOfRange(at, end))
+                if (first && compressed) {
+                    val bytes = out.toByteArray()
+                    bytes[frameStart] = (bytes[frameStart].toInt() or 0x40).toByte()
+                    out.reset()
+                    out.write(bytes)
+                }
+                if (end < payload.size && r.nextInt(3) == 0) control(r, out)
+                first = false
+                at = end
+            } while (at < payload.size)
+        }
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `compressed messages read as Netty's decoder, aggregator and whole-message inflate read them`() {
+        for (seed in 1..300) {
+            val r = Random(seed)
+            val wire = compressedStream(r)
+            val reads = reads(r, wire.size)
+            val netty = run(nettyDeflate(), wire, reads, inflateRsv1 = true)
+            val ours = run(oursDeflate(), wire, reads)
+            val at = (0 until maxOf(netty.size, ours.size)).firstOrNull { netty.getOrNull(it) != ours.getOrNull(it) } ?: continue
+            fail("seed $seed (${wire.size} bytes), item $at: Netty ${netty.getOrNull(at)?.take(160)} / ours ${ours.getOrNull(at)?.take(160)}")
         }
     }
 }

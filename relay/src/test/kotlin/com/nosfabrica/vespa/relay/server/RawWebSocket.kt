@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.OutputStream
@@ -41,6 +42,8 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.Deflater
+import java.util.zip.Inflater
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -62,6 +65,9 @@ internal class RawWebSocket(
     val socket: Socket,
     val port: Int,
 ) {
+    /** Reads the relay's compressed answers: one inflater kept, since the relay may refer back across them. */
+    private val inflater = Inflater(true)
+
     private val out: OutputStream = socket.getOutputStream()
     private val input = DataInputStream(socket.getInputStream())
 
@@ -105,6 +111,16 @@ internal class RawWebSocket(
 
     fun text(text: String) = send(text.toByteArray(Charsets.UTF_8))
 
+    /** [text] compressed as permessage-deflate sends it (RFC 7692 7.2.1), in frames of at most [chunk] bytes, RSV1 on the first. */
+    fun compressed(
+        text: String,
+        chunk: Int = Int.MAX_VALUE,
+    ) {
+        val payload = deflateMessage(text.toByteArray(Charsets.UTF_8))
+        val parts = (payload.indices step chunk.coerceAtMost(payload.size.coerceAtLeast(1))).map { payload.copyOfRange(it, minOf(it + chunk, payload.size)) }
+        parts.forEachIndexed { i, part -> send(part, opcode = if (i == 0) 0x1 else 0x0, fin = i == parts.lastIndex, rsv = if (i == 0) 0b100 else 0) }
+    }
+
     /** [payload] as one text message split into frames of at most [chunk] bytes. */
     fun fragmented(
         payload: ByteArray,
@@ -117,19 +133,33 @@ internal class RawWebSocket(
     /** The next frame from the server, or null when the connection ended (EOF or reset). */
     fun next(): ServerFrame? =
         try {
-            val opcode = input.readUnsignedByte() and 0x0F
+            val first = input.readUnsignedByte()
+            val opcode = first and 0x0F
             val len =
                 when (val short = input.readUnsignedByte() and 0x7F) {
                     126 -> input.readUnsignedShort().toLong()
                     127 -> input.readLong()
                     else -> short.toLong()
                 }
-            ServerFrame(opcode, ByteArray(len.toInt()).also { input.readFully(it) })
+            val payload = ByteArray(len.toInt()).also { input.readFully(it) }
+            ServerFrame(opcode, if (first and 0x40 != 0) inflate(payload) else payload)
         } catch (_: EOFException) {
             null
         } catch (_: SocketException) {
             null
         }
+
+    private fun inflate(payload: ByteArray): ByteArray {
+        inflater.setInput(payload + byteArrayOf(0, 0, -1, -1))
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(65_536)
+        while (true) {
+            val n = inflater.inflate(buf)
+            out.write(buf, 0, n)
+            if (n == 0 && (inflater.needsInput() || inflater.finished())) break
+        }
+        return out.toByteArray()
+    }
 
     /** Frames up to and including the server's close; fails past [withinMs], or on EOF before a close. */
     fun untilClose(withinMs: Long = 15_000): List<ServerFrame> {
@@ -198,6 +228,7 @@ internal fun <T> withRawRelay(
     keepalive: Keepalive = Keepalive(),
     soTimeoutMs: Int = 5_000,
     receiveBufferBytes: Int? = null,
+    extensions: String? = null,
     block: (RawWebSocket) -> T,
 ): T {
     val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl, limits = limits, ingest = ingest)
@@ -225,7 +256,7 @@ internal fun <T> withRawRelay(
             receiveBufferBytes?.let { socket.receiveBufferSize = it }
             socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
             socket.soTimeout = soTimeoutMs
-            upgrade(socket, port)
+            upgrade(socket, port, extensions)
             block(RawWebSocket(socket, port))
         }
     } finally {
@@ -246,12 +277,14 @@ internal fun bothTransports(
 internal fun upgrade(
     socket: Socket,
     port: Int,
+    extensions: String? = null,
 ) {
     socket.getOutputStream().apply {
         write(
             (
                 "GET / HTTP/1.1\r\nHost: localhost:$port\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n" +
+                    (extensions?.let { "Sec-WebSocket-Extensions: $it\r\n" } ?: "") + "\r\n"
             ).toByteArray(),
         )
         flush()
@@ -301,4 +334,20 @@ internal class LateIngest(
     override fun hasBacklog() = false
 
     override fun close() = timer.shutdown()
+}
+
+/** [bytes] as one permessage-deflate message: raw deflate, sync-flushed, its trailing 00 00 FF FF left off. */
+internal fun deflateMessage(bytes: ByteArray): ByteArray {
+    val deflater = Deflater(Deflater.DEFAULT_COMPRESSION, true)
+    deflater.setInput(bytes)
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(65_536)
+    while (true) {
+        val n = deflater.deflate(buf, 0, buf.size, Deflater.SYNC_FLUSH)
+        out.write(buf, 0, n)
+        if (n < buf.size) break
+    }
+    deflater.end()
+    val all = out.toByteArray()
+    return all.copyOf(all.size - 4)
 }

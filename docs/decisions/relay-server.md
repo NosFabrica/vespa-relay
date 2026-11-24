@@ -426,11 +426,36 @@ one a median 4 ms first, at most 15 ms later at p99). What did change is the
 load generator's share: its Node clients inflate every frame for thousands of
 feeds at once ([live-feeds.md](../live-feeds.md#compression)).
 
-**`client_no_context_takeover` is imposed, so one inflater per loop reads every
-socket.** RFC 7692 lets a server require it, and what clients send is REQs and
-EVENTs, small and rarely alike. An offer that asks for a server window under 15
-bits is declined, because the JDK's deflater cannot shrink its window; a client
-that has a fallback lists it next, and is answered on that.
+**`client_no_context_takeover` is imposed, so a socket needs an inflater only
+while a compressed message is open.** RFC 7692 lets a server require it, and
+what clients send is REQs and EVENTs, small and rarely alike. An offer that asks
+for a server window under 15 bits is declined, because the JDK's deflater cannot
+shrink its window; a client that has a fallback lists it next, and is answered
+on that.
+
+**A compressed message is inflated as it arrives, and judged by its inflated
+size.** Upstream's first cut inflated a message whole once Netty had aggregated
+it, through one inflater per loop; with `InboundFrameDecoder` reading frames
+itself, a compressed message is inflated frame by frame, so a frame spanning
+reads leaves the inflater mid-stream and one inflater cannot be shared across
+sockets. Each loop keeps a few raw inflaters and lends one to a socket from a
+compressed message's first frame to its last, given back reset (four kept idle
+per loop, the rest ended); buffering the compressed bytes to inflate at the end
+would have held up to `MAX_FRAME_BYTES` of them instead. The inflated bytes go
+where a plain message's go: held up to the engine's length in bytes, then
+scanned for the event id and dropped, so a kilobyte that inflates to megabytes
+is answered `OK false` by id like any oversized EVENT; past `MAX_FRAME_BYTES`
+on the wire or inflated, the connection closes 1009 after a NOTICE, and
+inflating stops there, so a bomb costs at most `MAX_FRAME_BYTES` of inflating
+(16 MiB against a 64 MiB bomb in the test). RSV1 is accepted only on a
+message's first data frame and only when deflate was agreed; on a continuation
+or a control frame, and RSV2 or RSV3, it is 1002. A connection's input then
+holds its inbox, one message of at most the engine's length (bytes, then its
+string), and while a compressed message is open one inflater (about 44 KB of
+zlib state); its output holds a 256 KiB window while it is being answered, 512
+at most across the process, given back when the connection ends whichever way
+it ends. A streamed compressed message keeps its inflater without a deadline,
+as a streamed plain one keeps its 64 KiB head.
 
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a

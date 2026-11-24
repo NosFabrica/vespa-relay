@@ -68,7 +68,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import java.util.zip.DataFormatException
 
 /** Ktor's HTTP/1.1 handlers, in the order its channel initializer adds them; an upgraded socket keeps none. */
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
@@ -76,9 +75,6 @@ private const val KTOR_HTTP1 = "http1"
 
 /** Where the handshake puts its frame decoder, which [InboundFrameDecoder] replaces. */
 private const val WS_DECODER = "wsdecoder"
-
-/** The frame bit permessage-deflate marks a compressed message with, as Netty reports a frame's RSV bits. */
-private const val RSV1 = 0x4
 
 /** Live bodies up to this size are copied into a socket's batch; larger ones are written as a shared duplicate. */
 private const val LIVE_COPY_MAX_BYTES = 4_096
@@ -148,7 +144,7 @@ private class NativeWebSocketUpgrade(
         // Every check the handshake makes is behind us before the pipeline changes or a session connects.
         val pipeline = ctx.pipeline()
         for (name in KTOR_HTTP1_HANDLERS) if (pipeline.get(name) != null) pipeline.remove(name)
-        val decoder = InboundFrameDecoder(inbound.frames, compressed = deflate != null)
+        val decoder = InboundFrameDecoder(inbound.frames, if (deflate != null) EventLoopSessions.of(ctx.channel().eventLoop()).deflate.inflaters else null)
         pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker, decoder, inbound, deflate))
         val headers = DefaultHttpHeaders()
         deflate?.let { headers.set(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS, it.response) }
@@ -556,12 +552,8 @@ private class NativeWebSocketSession(
         lastHeard = System.nanoTime()
         when (msg) {
             is TextWebSocketFrame -> {
-                val text =
-                    try {
-                        if (msg.rsv() and RSV1 == 0) msg.text() else inflate(msg.content()) ?: return
-                    } finally {
-                        msg.release()
-                    }
+                val text = msg.text()
+                msg.release()
                 queue(text)
             }
 
@@ -635,26 +627,6 @@ private class NativeWebSocketSession(
      * and reads the id or sub id off the head, so the answer is quartz's own. Remove with [FrameIdScanner].
      */
     private fun refusable(message: OversizedMessage): String = message.head + inbound.padding
-
-    /** A compressed client message as text, or null when it was refused and this connection is closing. */
-    private fun inflate(payload: ByteBuf): String? {
-        val maxBytes = inbound.frames.maxMessageBytes.toInt()
-        val text =
-            try {
-                loop.deflate.inflater.inflateText(payload, maxBytes)
-            } catch (_: DataFormatException) {
-                stopInput()
-                sendClose(CloseWebSocketFrame(WebSocketCloseStatus.INVALID_PAYLOAD_DATA, "malformed compressed frame"))
-                return null
-            }
-        if (text == null) {
-            endInput(
-                NoticeMessage("error: a message inflating past $maxBytes bytes is past this relay's websocket limit; closing").toJson(),
-                CloseWebSocketFrame(WebSocketCloseStatus.MESSAGE_TOO_BIG, "message inflates past $maxBytes bytes"),
-            )
-        }
-        return text
-    }
 
     /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
     private val resumeReads =

@@ -462,6 +462,11 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   the ping timeout closed healthy publishers 1011 "Ping timeout". The Ktor route
   is raw (`webSocketRaw`): it reads every frame as it comes and keeps its own
   keepalive, counting a connection whose reads it paused as heard from.
+- **A limit on a compressed message is a limit on what it inflates to.**
+  permessage-deflate lets a kilobyte on the wire become megabytes, so every
+  bound `InboundFrameDecoder` applies (held, scanned, refused) counts inflated
+  bytes, and inflating stops at `MAX_FRAME_BYTES`; the wire size is only checked
+  as well. A frame-cap check before inflation is no bound at all.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import io.netty.buffer.ByteBuf
+import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame
@@ -34,6 +35,8 @@ import java.lang.invoke.VarHandle
 import java.nio.ByteOrder
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
+import java.util.zip.DataFormatException
+import java.util.zip.Inflater
 
 /**
  * What the native transport reads of one message: a text message up to [streamPastBytes] is held and
@@ -65,9 +68,18 @@ internal class OversizedMessage(
  */
 internal class InboundFrameDecoder(
     private val limits: InboundLimits,
-    // permessage-deflate was agreed: RSV1 marks a compressed message on its first frame (RFC 7692 6.1).
-    private val compressed: Boolean = false,
+    // Set when permessage-deflate was agreed: RSV1 marks a compressed message on its first frame (RFC 7692 6.1).
+    private val inflaters: InflaterPool? = null,
 ) : ChannelInboundHandlerAdapter() {
+    private val compressed = inflaters != null
+
+    /** Bytes inflated for the compressed message being read, or the last one. */
+    var inflatedBytes = 0L
+        private set
+
+    /** Borrowed from [inflaters] while a compressed message is open, given back at its end. */
+    private var inflater: Inflater? = null
+
     private val header = ByteArray(MAX_HEADER)
     private var headerLength = 0
 
@@ -245,8 +257,9 @@ internal class InboundFrameDecoder(
             sink =
                 when {
                     !messageIsText -> Sink.SKIP
+                    messageCompressed -> Sink.INFLATE
                     scanner != null -> Sink.SCAN
-                    limits.streamPastBytes != null && total > limits.streamPastBytes && !messageCompressed -> startScanning()
+                    limits.streamPastBytes != null && total > limits.streamPastBytes -> startScanning()
                     else -> hold(ctx, length)
                 }
             message?.let {
@@ -265,7 +278,11 @@ internal class InboundFrameDecoder(
     ) {
         messageBytes = 0
         messageIsText = text
-        messageCompressed = deflated
+        messageCompressed = deflated && text
+        if (messageCompressed) {
+            inflatedBytes = 0
+            inflater = inflaters!!.borrow()
+        }
         if (text) holdingSince = System.nanoTime()
     }
 
@@ -277,8 +294,7 @@ internal class InboundFrameDecoder(
         // A whole message's buffer is its exact size; a fragmented one grows, never past streamPastBytes. On the heap,
         // so its string is decoded from the array itself, without the copy a direct buffer needs first.
         if (held == null) {
-            val most = if (messageCompressed) limits.maxMessageBytes else limits.streamPastBytes ?: limits.maxMessageBytes
-            message = ctx.alloc().heapBuffer(length.toInt(), most.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            message = ctx.alloc().heapBuffer(length.toInt(), heldAtMost())
         } else {
             held.ensureWritable(length.toInt())
         }
@@ -318,6 +334,12 @@ internal class InboundFrameDecoder(
                 buf.skipBytes(n)
             }
 
+            Sink.INFLATE -> {
+                inflateFrom(ctx, buf, n, offset)
+                buf.skipBytes(n)
+                if (state == State.DISCARD) return
+            }
+
             Sink.SKIP -> {
                 buf.skipBytes(n)
             }
@@ -352,19 +374,102 @@ internal class InboundFrameDecoder(
         unmaskedTo = end
     }
 
+    private fun heldAtMost(): Int = (limits.streamPastBytes ?: limits.maxMessageBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+    /** [n] compressed bytes of [buf], unmasked a slice at a time into the loop's scratch, through the message's inflater. */
+    private fun inflateFrom(
+        ctx: ChannelHandlerContext,
+        buf: ByteBuf,
+        n: Int,
+        offset: Int,
+    ) {
+        val input = inflaters!!.input
+        var k = 0
+        while (k < n && state != State.DISCARD) {
+            val c = minOf(input.size, n - k)
+            buf.getBytes(buf.readerIndex() + k, input, 0, c)
+            unmaskArray(input, 0, c, mask, (offset + k) and 3)
+            inflate(ctx, input, 0, c)
+            k += c
+        }
+    }
+
+    /**
+     * Inflates [length] bytes of [input] to the end, each slice of output held, scanned or refused as it comes: the
+     * message is judged by its inflated size, and inflating stops once that passes the cap.
+     */
+    private fun inflate(
+        ctx: ChannelHandlerContext,
+        input: ByteArray,
+        from: Int,
+        length: Int,
+    ) {
+        val inflater = inflater ?: return
+        val output = inflaters!!.output
+        inflater.setInput(input, from, length)
+        try {
+            while (true) {
+                val n = inflater.inflate(output)
+                if (n > 0 && !takeInflated(ctx, output, n)) return
+                if (n == 0) {
+                    if (inflater.needsDictionary()) return violation(ctx, "malformed compressed frame", WebSocketCloseStatus.INVALID_PAYLOAD_DATA)
+                    if (inflater.needsInput() || inflater.finished()) return
+                }
+            }
+        } catch (_: DataFormatException) {
+            violation(ctx, "malformed compressed frame", WebSocketCloseStatus.INVALID_PAYLOAD_DATA)
+        }
+    }
+
+    /** False once the message inflates past the cap, which refuses it. */
+    private fun takeInflated(
+        ctx: ChannelHandlerContext,
+        bytes: ByteArray,
+        n: Int,
+    ): Boolean {
+        inflatedBytes += n
+        if (inflatedBytes > limits.maxMessageBytes) {
+            violation(ctx, "message inflates past ${limits.maxMessageBytes} bytes", WebSocketCloseStatus.MESSAGE_TOO_BIG)
+            return false
+        }
+        val past = limits.streamPastBytes
+        if (scanner == null && past != null && inflatedBytes > past) startScanning()
+        val scanning = scanner
+        if (scanning != null) {
+            scanning.feed(bytes, 0, n)
+        } else {
+            val held = message ?: ctx.alloc().heapBuffer(n, heldAtMost()).also { message = it }
+            held.writeBytes(bytes, 0, n)
+        }
+        return true
+    }
+
+    private fun giveBackInflater() {
+        inflater?.let { inflaters?.giveBack(it) }
+        inflater = null
+    }
+
     private fun endFrame(ctx: ChannelHandlerContext) {
         state = State.HEADER
         if (sink == Sink.CONTROL) return endControlFrame(ctx)
         if (sink == Sink.HOLD) finishUnmask()
         if (!fin) return
+        if (messageCompressed) {
+            // The four bytes a sender leaves off each message's sync flush (RFC 7692 7.2.2).
+            inflate(ctx, SYNC_FLUSH_TAIL, 0, SYNC_FLUSH_TAIL.size)
+            if (state == State.DISCARD) return
+            giveBackInflater()
+        }
         val held = message
         val scanned = scanner
         message = null
         scanner = null
         holdingSince = IDLE
         messageBytes = 0
-        if (held != null) ctx.fireChannelRead(TextWebSocketFrame(true, if (messageCompressed) RSV1 else 0, held))
+        if (held != null) ctx.fireChannelRead(TextWebSocketFrame(held))
         if (scanned != null) ctx.fireChannelRead(OversizedMessage(scanned.head()))
+        // A compressed message that inflated to nothing is still a message, as a plain empty one is.
+        if (held == null && scanned == null && messageCompressed) ctx.fireChannelRead(TextWebSocketFrame(Unpooled.EMPTY_BUFFER))
     }
 
     private fun endControlFrame(ctx: ChannelHandlerContext) {
@@ -421,6 +526,7 @@ internal class InboundFrameDecoder(
     }
 
     private fun release() {
+        giveBackInflater()
         message?.release()
         message = null
         control?.release()
@@ -438,12 +544,15 @@ internal class InboundFrameDecoder(
 
     private enum class State { HEADER, PAYLOAD, DISCARD }
 
-    /** Where a frame's payload goes: a control frame's body, the held message, the scanner, or nowhere. */
-    private enum class Sink { CONTROL, HOLD, SCAN, SKIP }
+    /** Where a frame's payload goes: a control frame's body, the held message, the scanner, the inflater, or nowhere. */
+    private enum class Sink { CONTROL, HOLD, SCAN, INFLATE, SKIP }
 
     companion object {
         const val IDLE = Long.MIN_VALUE
         private const val RSV1 = 0x4
+
+        /** The four bytes each message's sync flush ends with, which its sender leaves off. */
+        private val SYNC_FLUSH_TAIL = byteArrayOf(0, 0, -1, -1)
         private const val MAX_HEADER = 14
         private const val OPCODE_CONT = 0x0
         private const val OPCODE_TEXT = 0x1
@@ -477,6 +586,20 @@ internal fun unmaskWords(
         i += 8
     }
     return i - base
+}
+
+/** XORs [length] bytes of [array] from [from] with [mask], the first of them being byte [phase] of the payload mod 4. */
+internal fun unmaskArray(
+    array: ByteArray,
+    from: Int,
+    length: Int,
+    mask: Int,
+    phase: Int,
+) {
+    if (mask == 0) return
+    val m = Integer.rotateLeft(mask, 8 * phase)
+    val words = unmaskWords(array, 0, from, from + length, m)
+    for (i in words until from + length) array[i] = (array[i].toInt() xor (m ushr (24 - 8 * ((i - from) and 3)))).toByte()
 }
 
 /** XORs [length] bytes of [buf] from [start] with [mask], the first of them being byte [offset] of the frame's payload mod 4. */
@@ -547,6 +670,21 @@ internal class FrameIdScanner(
                 val at = offset + k
                 for (i in 0 until n) scratch[i] = (scratch[i].toInt() xor maskBytes[(at + i) and 3]).toByte()
             }
+            consume(n)
+            k += n
+        }
+    }
+
+    /** [length] bytes of [bytes] from [from], already plain. */
+    fun feed(
+        bytes: ByteArray,
+        from: Int,
+        length: Int,
+    ) {
+        var k = 0
+        while (k < length && wantsBytes) {
+            val n = minOf(scratch.size, length - k)
+            System.arraycopy(bytes, from + k, scratch, 0, n)
             consume(n)
             k += n
         }
