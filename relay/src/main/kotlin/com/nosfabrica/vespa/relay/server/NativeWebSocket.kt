@@ -449,9 +449,15 @@ private class NativeWebSocketSession(
             is TextWebSocketFrame -> {
                 val text = msg.text()
                 msg.release()
-                inbox.trySend(text)
+                // Counted before it is queued: the reader may take it, and count it out, at once.
                 val chars = inboxChars.addAndGet(text.length.toLong())
-                if (inboxDepth.incrementAndGet() >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) channel.config().isAutoRead = false
+                val depth = inboxDepth.incrementAndGet()
+                if (inbox.trySend(text).isFailure) {
+                    inboxChars.addAndGet(-text.length.toLong())
+                    inboxDepth.decrementAndGet()
+                } else if (depth >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) {
+                    channel.config().isAutoRead = false
+                }
             }
 
             is PingWebSocketFrame -> {
