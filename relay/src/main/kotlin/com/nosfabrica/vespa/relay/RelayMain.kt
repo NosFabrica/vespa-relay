@@ -212,6 +212,7 @@ private class Boot(
     val openRanking: OpenRankingConfig?,
     val httpRelay: HttpRelay?,
     val nativeWebSocket: Boolean,
+    val websocketCompression: Boolean,
     val searchExpansion: SearchExpansionLimits,
     val nip11: Nip11Info,
     val adminPubkeys: Set<String>,
@@ -278,6 +279,9 @@ private fun readSettings(env: Map<String, String>): Boot {
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
     }
+    val nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: true
+    val websocketCompression = env.strictFlag("WEBSOCKET_COMPRESSION")
+    if (!nativeWebSocket && websocketCompression != null) System.err.println("relay: NATIVE_WEBSOCKET=false — WEBSOCKET_COMPRESSION does nothing")
     env
         .removedSettingsNote("relay", REMOVED_HTTP_RELAY_SETTINGS, "HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
         ?.let(System.err::println)
@@ -330,7 +334,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
-        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: true,
+        nativeWebSocket = nativeWebSocket,
+        websocketCompression = nativeWebSocket && websocketCompression != false,
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,
@@ -605,6 +610,7 @@ private fun serve(
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
         nativeWebSocket = boot.nativeWebSocket,
+        websocketCompression = boot.websocketCompression,
         // Once the port is bound: printed before the server started, this line claimed a port that
         // refused connections for another second or more.
         onReady = {

@@ -68,6 +68,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.DataFormatException
 
 /** Ktor's HTTP/1.1 handlers, in the order its channel initializer adds them; an upgraded socket keeps none. */
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
@@ -75,6 +76,9 @@ private const val KTOR_HTTP1 = "http1"
 
 /** Where the handshake puts its frame decoder, which [InboundFrameDecoder] replaces. */
 private const val WS_DECODER = "wsdecoder"
+
+/** The frame bit permessage-deflate marks a compressed message with, as Netty reports a frame's RSV bits. */
+private const val RSV1 = 0x4
 
 /** Live bodies up to this size are copied into a socket's batch; larger ones are written as a shared duplicate. */
 private const val LIVE_COPY_MAX_BYTES = 4_096
@@ -92,14 +96,16 @@ private val inboundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 /**
  * Serves the relay's websocket on Netty directly, ahead of Ktor's HTTP/1.1 handler: an upgrade on `/` is
- * taken here and every other request goes on to Ktor. HTTP/2 connections are left to Ktor entirely.
+ * taken here and every other request goes on to Ktor. HTTP/2 connections are left to Ktor entirely. With
+ * [compression], a client that offers permessage-deflate (RFC 7692) is answered compressed.
  */
 internal fun ChannelPipeline.installNativeWebSocket(
     relay: NostrRelayServer,
     inbound: NativeInbound,
     onionLocation: () -> String?,
+    compression: Boolean = true,
 ) {
-    if (get(KTOR_HTTP1) != null) addBefore(KTOR_HTTP1, "nostrUpgrade", NativeWebSocketUpgrade(relay, inbound, onionLocation))
+    if (get(KTOR_HTTP1) != null) addBefore(KTOR_HTTP1, "nostrUpgrade", NativeWebSocketUpgrade(relay, inbound, onionLocation, compression))
 }
 
 /**
@@ -120,6 +126,7 @@ private class NativeWebSocketUpgrade(
     private val relay: NostrRelayServer,
     private val inbound: NativeInbound,
     private val onionLocation: () -> String?,
+    private val compression: Boolean,
 ) : ChannelInboundHandlerAdapter() {
     override fun channelRead(
         ctx: ChannelHandlerContext,
@@ -133,15 +140,18 @@ private class NativeWebSocketUpgrade(
         val request = DefaultFullHttpRequest(msg.protocolVersion(), msg.method(), msg.uri(), Unpooled.EMPTY_BUFFER, msg.headers(), EmptyHttpHeaders.INSTANCE)
         ReferenceCountUtil.release(msg)
         val host = msg.headers()[HttpHeaderNames.HOST].orEmpty()
+        val deflate = if (compression) negotiateDeflate(msg.headers().getAll(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS)) else null
+        // RSV bits are a protocol error on a socket that agreed no extension, so the decoder allows them only here.
         val handshaker =
-            WebSocketServerHandshakerFactory("ws://$host/", null, false).newHandshaker(request)
+            WebSocketServerHandshakerFactory("ws://$host/", null, deflate != null).newHandshaker(request)
                 ?: return WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel()).let { }
         // Every check the handshake makes is behind us before the pipeline changes or a session connects.
         val pipeline = ctx.pipeline()
         for (name in KTOR_HTTP1_HANDLERS) if (pipeline.get(name) != null) pipeline.remove(name)
-        val decoder = InboundFrameDecoder(inbound.frames)
-        pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker, decoder, inbound))
+        val decoder = InboundFrameDecoder(inbound.frames, compressed = deflate != null)
+        pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker, decoder, inbound, deflate))
         val headers = DefaultHttpHeaders()
+        deflate?.let { headers.set(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS, it.response) }
         if (!host.substringBefore(':').endsWith(".onion", ignoreCase = true)) onionLocation()?.let { headers.set("Onion-Location", it) }
         handshaker.handshake(ctx.channel(), request, headers, ctx.channel().newPromise()).addListener { if (!it.isSuccess) ctx.close() }
         // The handshake installs Netty's decoder before it returns, on this loop, so no frame has been read by it.
@@ -241,6 +251,34 @@ private class EventLoopSessions(
         return lastBodyBytes!!
     }
 
+    /** This loop's compression, made the first time a socket on it agrees to permessage-deflate. */
+    val deflate by lazy(LazyThreadSafetyMode.NONE) { LoopDeflate() }
+
+    private var lastDeflatedBody: String? = null
+    private var lastDeflatedBytes: ByteBuf? = null
+
+    /** [sharedBody] deflated on an empty window, once per event for every compressed socket here; held as it is. */
+    fun sharedDeflatedBody(
+        body: String,
+        alloc: ByteBufAllocator,
+    ): ByteBuf {
+        if (body !== lastDeflatedBody) {
+            lastDeflatedBytes?.release()
+            lastDeflatedBytes = null
+            val plain = sharedBody(body, alloc)
+            val bytes = alloc.directBuffer(plain.readableBytes() / 2 + 64)
+            try {
+                deflate.fresh.deflate(plain, bytes, keepContext = false)
+            } catch (e: Throwable) {
+                bytes.release()
+                throw e
+            }
+            lastDeflatedBody = body
+            lastDeflatedBytes = bytes
+        }
+        return lastDeflatedBytes!!
+    }
+
     // A copy, since a tick can close a connection and so leave this set mid-walk.
     private fun tick() = sessions.toTypedArray().forEach { isolated(it) { tick() } }
 
@@ -281,30 +319,35 @@ internal fun encodeTextFrame(
 /**
  * A live frame appended to [out]: its header, [prefix], and a copy of [body], the event's shared bytes with the
  * closing `]`. One buffer whole, so a frame costs the socket one write, not a head and a body to track and release.
+ * [deflated] when [body] is that compressed once for every socket ([encodeLiveFrameHead] says how the two join).
  */
 internal fun appendLiveFrame(
     out: ByteBuf,
     prefix: String,
     body: ByteBuf,
+    deflated: Boolean = false,
 ) {
-    val length = ByteBufUtil.utf8Bytes(prefix) + body.readableBytes()
+    val prefixBytes = ByteBufUtil.utf8Bytes(prefix)
+    val length = liveFrameLength(prefixBytes, body.readableBytes(), deflated)
     out.ensureWritable(frameHeaderSize(length) + length)
-    writeFrameHeader(out, length)
-    ByteBufUtil.writeUtf8(out, prefix)
+    writeLiveFrameHead(out, prefix, prefixBytes, length, deflated)
     out.writeBytes(body, body.readerIndex(), body.readableBytes())
 }
 
-/** The header and [prefix] of a live frame whose body, `]` included, is [bodyBytes] long and written after it. */
+/**
+ * The header and [prefix] of a live frame whose body, `]` included, is [bodyBytes] long and written after it. A
+ * [deflated] prefix rides uncompressed as a stored block, so the body after it can be deflated once per event.
+ */
 internal fun encodeLiveFrameHead(
     alloc: ByteBufAllocator,
     prefix: String,
     bodyBytes: Int,
+    deflated: Boolean = false,
 ): ByteBuf {
     val prefixBytes = ByteBufUtil.utf8Bytes(prefix)
-    val length = prefixBytes + bodyBytes
-    val head = alloc.ioBuffer(frameHeaderSize(length) + prefixBytes)
-    writeFrameHeader(head, length)
-    ByteBufUtil.writeUtf8(head, prefix)
+    val length = liveFrameLength(prefixBytes, bodyBytes, deflated)
+    val head = alloc.ioBuffer(frameHeaderSize(length) + length - bodyBytes)
+    writeLiveFrameHead(head, prefix, prefixBytes, length, deflated)
     return head
 }
 
@@ -313,9 +356,31 @@ internal fun encodeLiveFrame(
     alloc: ByteBufAllocator,
     prefix: String,
     body: ByteBuf,
-): ByteBuf = alloc.ioBuffer(prefix.length + body.readableBytes() + 10).also { appendLiveFrame(it, prefix, body) }
+    deflated: Boolean = false,
+): ByteBuf = alloc.ioBuffer(prefix.length + body.readableBytes() + 16).also { appendLiveFrame(it, prefix, body, deflated) }
 
-private fun frameHeaderSize(length: Int): Int =
+private fun liveFrameLength(
+    prefixBytes: Int,
+    bodyBytes: Int,
+    deflated: Boolean,
+): Int = prefixBytes + bodyBytes + if (deflated) STORED_BLOCK_HEADER else 0
+
+private fun writeLiveFrameHead(
+    frame: ByteBuf,
+    prefix: String,
+    prefixBytes: Int,
+    length: Int,
+    deflated: Boolean,
+) {
+    writeFrameHeader(frame, length, deflated)
+    if (deflated) writeStoredBlockHeader(frame, prefixBytes)
+    ByteBufUtil.writeUtf8(frame, prefix)
+}
+
+/** The longest header RFC 6455 §5.2 gives a server's frame: the 64-bit length form. */
+internal const val MAX_FRAME_HEADER = 10
+
+internal fun frameHeaderSize(length: Int): Int =
     when {
         length < 126 -> 2
         length <= 0xFFFF -> 4
@@ -325,23 +390,38 @@ private fun frameHeaderSize(length: Int): Int =
 private fun writeFrameHeader(
     frame: ByteBuf,
     length: Int,
+    compressed: Boolean = false,
 ) {
-    frame.writeByte(0x81)
-    when (frameHeaderSize(length)) {
+    val at = frame.writerIndex()
+    frame.ensureWritable(frameHeaderSize(length))
+    frame.writerIndex(at + setFrameHeader(frame, at, length, compressed))
+}
+
+/** A final text frame's header at [at], RSV1 set when [compressed] (RFC 7692 §6); its size in bytes. */
+internal fun setFrameHeader(
+    frame: ByteBuf,
+    at: Int,
+    length: Int,
+    compressed: Boolean,
+): Int {
+    frame.setByte(at, if (compressed) 0xC1 else 0x81)
+    val size = frameHeaderSize(length)
+    when (size) {
         2 -> {
-            frame.writeByte(length)
+            frame.setByte(at + 1, length)
         }
 
         4 -> {
-            frame.writeByte(126)
-            frame.writeShort(length)
+            frame.setByte(at + 1, 126)
+            frame.setShort(at + 2, length)
         }
 
         else -> {
-            frame.writeByte(127)
-            frame.writeLong(length.toLong())
+            frame.setByte(at + 1, 127)
+            frame.setLong(at + 2, length.toLong())
         }
     }
+    return size
 }
 
 /** A live `EVENT` frame queued in its two parts; [body] is shared by every subscription it reaches. */
@@ -360,6 +440,7 @@ private class NativeWebSocketSession(
     private val handshaker: WebSocketServerHandshaker,
     private val decoder: InboundFrameDecoder,
     private val inbound: NativeInbound,
+    private val deflateTerms: DeflateTerms?,
 ) : ChannelInboundHandlerAdapter() {
     private lateinit var context: ChannelHandlerContext
     private lateinit var channel: io.netty.channel.Channel
@@ -371,6 +452,9 @@ private class NativeWebSocketSession(
     private val queuedChars = AtomicLong()
     private val drainScheduled = AtomicBoolean()
     private lateinit var loop: EventLoopSessions
+
+    /** Set when the handshake agreed permessage-deflate; the event loop's alone. */
+    private var deflate: SocketDeflate? = null
 
     @Volatile
     private var unwritableSince = IDLE
@@ -400,6 +484,7 @@ private class NativeWebSocketSession(
         context = ctx
         channel = ctx.channel()
         loop = EventLoopSessions.of(channel.eventLoop())
+        deflate = deflateTerms?.let { SocketDeflate(it, loop.deflate) }
         batchLimit = channel.config().writeBufferHighWaterMark
         session =
             relay.connect(
@@ -471,8 +556,12 @@ private class NativeWebSocketSession(
         lastHeard = System.nanoTime()
         when (msg) {
             is TextWebSocketFrame -> {
-                val text = msg.text()
-                msg.release()
+                val text =
+                    try {
+                        if (msg.rsv() and RSV1 == 0) msg.text() else inflate(msg.content()) ?: return
+                    } finally {
+                        msg.release()
+                    }
                 queue(text)
             }
 
@@ -547,6 +636,26 @@ private class NativeWebSocketSession(
      */
     private fun refusable(message: OversizedMessage): String = message.head + inbound.padding
 
+    /** A compressed client message as text, or null when it was refused and this connection is closing. */
+    private fun inflate(payload: ByteBuf): String? {
+        val maxBytes = inbound.frames.maxMessageBytes.toInt()
+        val text =
+            try {
+                loop.deflate.inflater.inflateText(payload, maxBytes)
+            } catch (_: DataFormatException) {
+                stopInput()
+                sendClose(CloseWebSocketFrame(WebSocketCloseStatus.INVALID_PAYLOAD_DATA, "malformed compressed frame"))
+                return null
+            }
+        if (text == null) {
+            endInput(
+                NoticeMessage("error: a message inflating past $maxBytes bytes is past this relay's websocket limit; closing").toJson(),
+                CloseWebSocketFrame(WebSocketCloseStatus.MESSAGE_TOO_BIG, "message inflates past $maxBytes bytes"),
+            )
+        }
+        return text
+    }
+
     /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
     private val resumeReads =
         Runnable {
@@ -593,16 +702,17 @@ private class NativeWebSocketSession(
         prefix: String,
         body: String,
     ) {
-        val shared = loop.sharedBody(body, context.alloc())
+        val deflated = deflatesLive(prefix)
+        val shared = liveBody(body, deflated)
         if (shared.readableBytes() > LIVE_COPY_MAX_BYTES) {
             writePendingLive()
-            writeLiveFrame(prefix, shared)
+            writeLiveFrame(prefix, shared, deflated)
         } else {
             val pending = pendingLive
             if (pending == null) {
-                pendingLive = encodeLiveFrame(context.alloc(), prefix, shared)
+                pendingLive = encodeLiveFrame(context.alloc(), prefix, shared, deflated)
             } else {
-                appendLiveFrame(pending, prefix, shared)
+                appendLiveFrame(pending, prefix, shared, deflated)
                 if (pending.readableBytes() >= batchLimit) writePendingLive()
             }
         }
@@ -625,13 +735,27 @@ private class NativeWebSocketSession(
     private fun writeLiveFrame(
         prefix: String,
         shared: ByteBuf,
+        deflated: Boolean,
     ) {
         if (shared.readableBytes() > LIVE_COPY_MAX_BYTES) {
-            context.write(encodeLiveFrameHead(context.alloc(), prefix, shared.readableBytes()), context.voidPromise())
+            context.write(encodeLiveFrameHead(context.alloc(), prefix, shared.readableBytes(), deflated), context.voidPromise())
             context.write(shared.retainedDuplicate(), context.voidPromise())
         } else {
-            context.write(encodeLiveFrame(context.alloc(), prefix, shared), context.voidPromise())
+            context.write(encodeLiveFrame(context.alloc(), prefix, shared, deflated), context.voidPromise())
         }
+    }
+
+    /** Whether a live frame for [prefix] goes out compressed: its prefix must fit the stored block it rides in. */
+    private fun deflatesLive(prefix: String): Boolean = deflate != null && prefix.length <= MAX_STORED_PREFIX_CHARS
+
+    /** The event's bytes as this socket sends them, shared with every other socket on the loop. */
+    private fun liveBody(
+        body: String,
+        deflated: Boolean,
+    ): ByteBuf {
+        if (!deflated) return loop.sharedBody(body, context.alloc())
+        deflate?.bypassed()
+        return loop.sharedDeflatedBody(body, context.alloc())
     }
 
     /** Hands the socket the live frames held for the loop's flush, ahead of anything queued after them; false if none. */
@@ -652,11 +776,12 @@ private class NativeWebSocketSession(
             // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
             if (frame is LiveFrame) {
                 queuedChars.addAndGet(-(frame.prefix.length + frame.body.length + 1).toLong())
-                writeLiveFrame(frame.prefix, loop.sharedBody(frame.body, context.alloc()))
+                val deflated = deflatesLive(frame.prefix)
+                writeLiveFrame(frame.prefix, liveBody(frame.body, deflated), deflated)
             } else {
                 val text = frame as String
                 queuedChars.addAndGet(-text.length.toLong())
-                context.write(encodeTextFrame(context.alloc(), text), context.voidPromise())
+                context.write(deflate?.encodeText(context.alloc(), text) ?: encodeTextFrame(context.alloc(), text), context.voidPromise())
             }
             wrote = true
         }
@@ -706,6 +831,7 @@ private class NativeWebSocketSession(
     fun tick() {
         if (closing) return
         if (stalled()) return disconnectSlowConsumer()
+        deflate?.tick()
         if (endingSince != IDLE) return closeWhenAnswered()
         if (heldTooLong()) {
             val seconds = inbound.openMessageDeadlineMs / 1_000
@@ -813,6 +939,7 @@ private class NativeWebSocketSession(
         releasePendingLive()
         endingClose?.release()
         endingClose = null
+        deflate?.end()
         inbox.close()
         reader.cancel()
     }

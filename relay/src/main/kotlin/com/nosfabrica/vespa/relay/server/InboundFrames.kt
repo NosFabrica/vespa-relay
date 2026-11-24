@@ -65,6 +65,8 @@ internal class OversizedMessage(
  */
 internal class InboundFrameDecoder(
     private val limits: InboundLimits,
+    // permessage-deflate was agreed: RSV1 marks a compressed message on its first frame (RFC 7692 6.1).
+    private val compressed: Boolean = false,
 ) : ChannelInboundHandlerAdapter() {
     private val header = ByteArray(MAX_HEADER)
     private var headerLength = 0
@@ -89,6 +91,8 @@ internal class InboundFrameDecoder(
     // The data message the frame belongs to.
     private var fragmented = false
     private var messageIsText = false
+    private var messageCompressed = false
+    private var frameRsv = 0
     private var messageBytes = 0L
     private var message: ByteBuf? = null
     private var scanner: FrameIdScanner? = null
@@ -197,10 +201,12 @@ internal class InboundFrameDecoder(
         fin = b0 and 0x80 != 0
         opcode = b0 and 0x0F
         val rsv = (b0 and 0x70) shr 4
+        frameRsv = rsv
         val len7 = b1 and 0x7F
         val problem =
             when {
-                rsv != 0 -> "RSV != 0 and no extension negotiated, RSV:$rsv"
+                rsv != 0 && !compressed -> "RSV != 0 and no extension negotiated, RSV:$rsv"
+                rsv != 0 && (rsv != RSV1 || opcode !in 1..2) -> "RSV1 only on a message's first data frame, RSV:$rsv"
                 b1 and 0x80 == 0 -> "received a frame that is not masked as expected"
                 opcode > 7 && !fin -> "fragmented control frame"
                 opcode > 7 && len7 > 125 -> "control frame with payload length > 125 octets"
@@ -232,7 +238,7 @@ internal class InboundFrameDecoder(
             control = ctx.alloc().buffer(length.toInt())
             sink = Sink.CONTROL
         } else {
-            if (opcode != OPCODE_CONT) startMessage(opcode == OPCODE_TEXT)
+            if (opcode != OPCODE_CONT) startMessage(opcode == OPCODE_TEXT, frameRsv == RSV1)
             val total = messageBytes + length
             messageBytes = total
             fragmented = !fin
@@ -240,7 +246,7 @@ internal class InboundFrameDecoder(
                 when {
                     !messageIsText -> Sink.SKIP
                     scanner != null -> Sink.SCAN
-                    limits.streamPastBytes != null && total > limits.streamPastBytes -> startScanning()
+                    limits.streamPastBytes != null && total > limits.streamPastBytes && !messageCompressed -> startScanning()
                     else -> hold(ctx, length)
                 }
             message?.let {
@@ -253,9 +259,13 @@ internal class InboundFrameDecoder(
     }
 
     /** A binary message is read and dropped, as the relay has no use for one. */
-    private fun startMessage(text: Boolean) {
+    private fun startMessage(
+        text: Boolean,
+        deflated: Boolean,
+    ) {
         messageBytes = 0
         messageIsText = text
+        messageCompressed = deflated
         if (text) holdingSince = System.nanoTime()
     }
 
@@ -267,7 +277,8 @@ internal class InboundFrameDecoder(
         // A whole message's buffer is its exact size; a fragmented one grows, never past streamPastBytes. On the heap,
         // so its string is decoded from the array itself, without the copy a direct buffer needs first.
         if (held == null) {
-            message = ctx.alloc().heapBuffer(length.toInt(), (limits.streamPastBytes ?: limits.maxMessageBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            val most = if (messageCompressed) limits.maxMessageBytes else limits.streamPastBytes ?: limits.maxMessageBytes
+            message = ctx.alloc().heapBuffer(length.toInt(), most.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         } else {
             held.ensureWritable(length.toInt())
         }
@@ -352,7 +363,7 @@ internal class InboundFrameDecoder(
         scanner = null
         holdingSince = IDLE
         messageBytes = 0
-        if (held != null) ctx.fireChannelRead(TextWebSocketFrame(held))
+        if (held != null) ctx.fireChannelRead(TextWebSocketFrame(true, if (messageCompressed) RSV1 else 0, held))
         if (scanned != null) ctx.fireChannelRead(OversizedMessage(scanned.head()))
     }
 
@@ -432,6 +443,7 @@ internal class InboundFrameDecoder(
 
     companion object {
         const val IDLE = Long.MIN_VALUE
+        private const val RSV1 = 0x4
         private const val MAX_HEADER = 14
         private const val OPCODE_CONT = 0x0
         private const val OPCODE_TEXT = 0x1
