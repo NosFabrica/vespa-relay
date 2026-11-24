@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
@@ -114,6 +115,38 @@ class OutboundQueueTest {
             queue.close()
             writer.join()
         }
+
+    /**
+     * A page no single connection is cut for, held by many slow readers at once, is what exhausts a heap: past the
+     * process budget, a connection over its own character budget is a slow consumer even while still reading, and
+     * what a closed connection held leaves the budget.
+     */
+    @Test
+    fun `past the process budget a connection over its own budget is a slow consumer`() {
+        val budget = OutboundBudget(limitChars = 150)
+        val first = OutboundQueue(maxFrames = 1_000, maxChars = 100, budget = budget)
+        val second = OutboundQueue(maxFrames = 1_000, maxChars = 100, budget = budget)
+
+        assertTrue(first.offer("x".repeat(120)), "over its own budget, the process under its: still served")
+        assertFalse(first.slowConsumer())
+        assertTrue(second.offer("x".repeat(60)), "under its own budget: served even with the process over")
+        assertTrue(budget.exhausted())
+        assertTrue(first.slowConsumer(), "the process is over: the connection holding most gives it back")
+        assertFalse(first.offer("x"), "and is refused, which ends it")
+        assertFalse(second.slowConsumer(), "one under its own budget is not cut for the process")
+
+        first.close()
+        assertEquals(60, budget.queued(), "what the closed connection held left the budget")
+        assertFalse(budget.exhausted())
+        second.close()
+        assertEquals(0, budget.queued())
+    }
+
+    @Test
+    fun `raised limits do not unbound the frame count`() {
+        assertEquals(MAX_OUTGOING_FRAMES, outboundFrameCap(RelayLimits(maxFilters = 1_000, maxLimit = Int.MAX_VALUE)))
+        assertEquals(10 * 5_000 + MAX_OUTGOING_BUFFER, outboundFrameCap(RelayLimits(maxFilters = 10, maxLimit = 5_000)))
+    }
 
     @Test
     fun `many small frames still trip the frame count`() {

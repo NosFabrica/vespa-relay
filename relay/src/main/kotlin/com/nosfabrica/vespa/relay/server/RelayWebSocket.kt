@@ -46,7 +46,67 @@ internal const val MAX_OUTGOING_BUFFER = 8192
 internal fun outboundFrameCap(limits: RelayLimits?): Int {
     val filters = (limits?.maxFilters ?: defaultRelayLimits().maxFilters ?: 1).toLong()
     val perFilter = (limits?.maxLimit ?: defaultRelayLimits().maxLimit ?: 0).toLong()
-    return (filters * perFilter + MAX_OUTGOING_BUFFER).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    return (filters * perFilter + MAX_OUTGOING_BUFFER).coerceAtMost(MAX_OUTGOING_FRAMES.toLong()).toInt()
+}
+
+/** The most frames any connection may queue, whatever the limits allow one REQ: raised limits do not unbound it. */
+internal const val MAX_OUTGOING_FRAMES = 1 shl 20
+
+/**
+ * Characters queued to EVERY connection of the process, against one budget. No one page the relay agreed to
+ * serve is cut for its size ([outboundFrameCap]), but many slow readers each holding a large page would
+ * together exhaust the heap: while the process holds more than [limitChars] queued, a connection holding more
+ * than [MAX_OUTGOING_CHARS] of it is a slow consumer ([QueuedChars.overBudget]).
+ */
+internal class OutboundBudget(
+    val limitChars: Long,
+) {
+    private val queued = AtomicLong()
+
+    fun add(chars: Long) {
+        queued.addAndGet(chars)
+    }
+
+    fun queued(): Long = queued.get()
+
+    fun exhausted(): Boolean = queued.get() > limitChars
+}
+
+/** The process's [OutboundBudget]: an eighth of the heap in characters, a quarter of it in bytes at worst (UTF-16). */
+internal val PROCESS_OUTBOUND = OutboundBudget(Runtime.getRuntime().maxMemory() / 8)
+
+/**
+ * One connection's queued characters, counted into [budget] as well. Locked, not atomic, so that [release] at
+ * close hands back exactly what the connection still held while a writer may be subtracting: a leak here would
+ * count against every connection for the life of the process.
+ */
+internal class QueuedChars(
+    private val budget: OutboundBudget,
+) {
+    private var held = 0L
+    private var released = false
+
+    @Synchronized
+    fun add(chars: Long) {
+        if (released) return
+        held += chars
+        budget.add(chars)
+    }
+
+    @Synchronized
+    fun held(): Long = held
+
+    /** Over [own] while the process is over its [budget]: the share of the shortage this connection must give back. */
+    fun overBudget(own: Long): Boolean = held() > own && budget.exhausted()
+
+    /** At close: whatever is still queued leaves the process budget, once. */
+    @Synchronized
+    fun release() {
+        if (released) return
+        released = true
+        budget.add(-held)
+        held = 0
+    }
 }
 
 /** Outbound characters a connection may hold queued without question; past it, only a stalled writer is a slow consumer. */
@@ -103,7 +163,7 @@ fun Route.nostrRelay(server: NostrRelayServer) {
         // A client that stops reading may send nothing more, so the stall is also looked for between offers.
         val watchdog =
             launch {
-                while (isActive && !outQueue.stalled()) delay(STALL_CHECK_MS)
+                while (isActive && !outQueue.slowConsumer()) delay(STALL_CHECK_MS)
                 if (isActive) disconnectSlowConsumer()
             }
         try {
@@ -125,16 +185,18 @@ fun Route.nostrRelay(server: NostrRelayServer) {
 
 /**
  * One connection's outbound frames. Past [maxFrames] (see [outboundFrameCap]), or past [maxChars] while the writer has waited
- * on one frame for [stallMs], the client is a slow consumer: characters alone never close one still reading.
+ * on one frame for [stallMs], the client is a slow consumer: characters alone never close one still reading, unless the
+ * process as a whole is over its [OutboundBudget].
  */
 internal class OutboundQueue(
     maxFrames: Int = MAX_OUTGOING_BUFFER,
     private val maxChars: Long = MAX_OUTGOING_CHARS,
     private val stallMs: Long = WRITER_STALL_MS,
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    budget: OutboundBudget = PROCESS_OUTBOUND,
 ) {
     private val frames = Channel<String>(maxFrames)
-    private val queuedChars = AtomicLong()
+    private val queuedChars = QueuedChars(budget)
 
     /** When the writer began waiting on the frame it holds, or [IDLE] while it holds none. */
     private val writingSince = AtomicLong(IDLE)
@@ -146,17 +208,20 @@ internal class OutboundQueue(
     fun offer(text: String): Boolean {
         if (closed) return true
         val chars = text.length.toLong()
-        queuedChars.addAndGet(chars)
-        if (stalled() || !frames.trySend(text).isSuccess) {
-            queuedChars.addAndGet(-chars)
+        queuedChars.add(chars)
+        if (slowConsumer() || !frames.trySend(text).isSuccess) {
+            queuedChars.add(-chars)
             return closed
         }
         return true
     }
 
+    /** [stalled], or holding more than its character budget while the process is over its own ([OutboundBudget]). */
+    fun slowConsumer(): Boolean = !closed && (stalled() || queuedChars.overBudget(maxChars))
+
     /** True when the queue holds more than its character budget and the writer has made no progress for the stall window. */
     fun stalled(): Boolean {
-        if (closed || queuedChars.get() <= maxChars) return false
+        if (closed || queuedChars.held() <= maxChars) return false
         val since = writingSince.get()
         return since != IDLE && nowMs() - since >= stallMs
     }
@@ -167,13 +232,14 @@ internal class OutboundQueue(
             writingSince.set(nowMs())
             write(text)
             writingSince.set(IDLE)
-            queuedChars.addAndGet(-text.length.toLong())
+            queuedChars.add(-text.length.toLong())
         }
     }
 
     fun close() {
         closed = true
         frames.close()
+        queuedChars.release()
     }
 
     private companion object {

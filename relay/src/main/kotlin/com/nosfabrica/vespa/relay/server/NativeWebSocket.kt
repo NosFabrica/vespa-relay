@@ -64,7 +64,6 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /** Ktor's HTTP/1.1 handlers, in the order its channel initializer adds them; an upgraded socket keeps none. */
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
@@ -344,7 +343,7 @@ private class NativeWebSocketSession(
     private val outbox = ConcurrentLinkedQueue<Any>()
     private val maxFrames = outboundFrameCap(relay.limits)
     private val queuedFrames = AtomicInteger()
-    private val queuedChars = AtomicLong()
+    private val queuedChars = QueuedChars(PROCESS_OUTBOUND)
     private val drainScheduled = AtomicBoolean()
     private lateinit var loop: EventLoopSessions
 
@@ -462,12 +461,12 @@ private class NativeWebSocketSession(
         chars: Int,
     ) {
         if (closing) return
-        if (queuedFrames.incrementAndGet() > maxFrames || stalled()) {
+        if (queuedFrames.incrementAndGet() > maxFrames || stalled() || queuedChars.overBudget(MAX_OUTGOING_CHARS)) {
             queuedFrames.decrementAndGet()
             disconnectSlowConsumer()
             return
         }
-        queuedChars.addAndGet(chars.toLong())
+        queuedChars.add(chars.toLong())
         outbox.add(frame)
         if (drainScheduled.compareAndSet(false, true)) loop.mark(this)
     }
@@ -548,11 +547,11 @@ private class NativeWebSocketSession(
             queuedFrames.decrementAndGet()
             // From this handler's place in the pipeline: past the tail, and past the frame encoder a buffer skips.
             if (frame is LiveFrame) {
-                queuedChars.addAndGet(-(frame.prefix.length + frame.body.length + 1).toLong())
+                queuedChars.add(-(frame.prefix.length + frame.body.length + 1).toLong())
                 writeLiveFrame(frame.prefix, loop.sharedBody(frame.body, context.alloc()))
             } else {
                 val text = frame as String
-                queuedChars.addAndGet(-text.length.toLong())
+                queuedChars.add(-text.length.toLong())
                 context.write(encodeTextFrame(context.alloc(), text), context.voidPromise())
             }
             wrote = true
@@ -576,7 +575,7 @@ private class NativeWebSocketSession(
     }
 
     private fun stalled(): Boolean {
-        if (queuedChars.get() <= MAX_OUTGOING_CHARS) return false
+        if (queuedChars.held() <= MAX_OUTGOING_CHARS) return false
         val since = unwritableSince
         return since != IDLE && nowMs() - since >= WRITER_STALL_MS
     }
@@ -595,7 +594,7 @@ private class NativeWebSocketSession(
     /** Once a second on the event loop: catches a queue a writability change missed, a stall, paused reads and a silent peer. */
     fun tick() {
         if (closing) return
-        if (stalled()) return disconnectSlowConsumer()
+        if (stalled() || queuedChars.overBudget(MAX_OUTGOING_CHARS)) return disconnectSlowConsumer()
         if (!outbox.isEmpty() && channel.isWritable) drain()
         // Paused reads are our backlog, not the peer's silence: its pongs wait unread behind its commands.
         if (!channel.config().isAutoRead) {
@@ -625,6 +624,7 @@ private class NativeWebSocketSession(
         closing = true
         loop.leave(this)
         outbox.clear()
+        queuedChars.release()
         releasePendingLive()
         inbox.close()
         reader.cancel()
