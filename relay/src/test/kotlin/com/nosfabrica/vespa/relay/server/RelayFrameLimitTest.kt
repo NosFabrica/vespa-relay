@@ -152,4 +152,14 @@ class RelayFrameLimitTest {
             assertTrue(worst.toByteArray(Charsets.UTF_8).size <= messageBytes(limits), "${worst.take(1)}: ${worst.length} chars")
         }
     }
+
+    @Test
+    fun `MAX_MESSAGE_LENGTH stops where its frame floor would pass a whole number`() {
+        // Three bytes a character must still fit MAX_FRAME_BYTES, so the engine's length has a ceiling, said at boot.
+        val refusal = assertFailsWith<IllegalStateException> { relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to "800000000")) }.message!!
+        assertTrue("MAX_MESSAGE_LENGTH" in refusal && "715827882" in refusal, refusal)
+        val top = relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to "715827882"))
+        assertEquals(2_147_483_646, maxFrameBytesFromEnv(emptyMap(), top))
+        assertEquals(2_147_483_646, maxFrameBytesFromEnv(mapOf("MAX_FRAME_BYTES" to "2147483646"), top))
+    }
 }

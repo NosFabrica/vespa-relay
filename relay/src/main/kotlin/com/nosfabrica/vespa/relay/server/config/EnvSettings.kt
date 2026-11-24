@@ -70,7 +70,7 @@ fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     }
     val limits =
         RelayLimits(
-            maxMessageLength = env.intOr("MAX_MESSAGE_LENGTH", d.maxMessageLength, MIN_MESSAGE_LENGTH..Int.MAX_VALUE),
+            maxMessageLength = maxMessageLengthFromEnv(env) ?: d.maxMessageLength,
             maxSubscriptions = env.intOr("MAX_SUBSCRIPTIONS", d.maxSubscriptions, positive),
             maxFilters = env.intOr("MAX_FILTERS", d.maxFilters, positive),
             maxLimit = maxLimit,
@@ -123,6 +123,17 @@ fun maxFrameBytesFromEnv(
  * the native transport streams a message without holding it, Ktor holds it whole (docs/decisions/relay-server.md).
  */
 const val DEFAULT_MAX_FRAME_BYTES = 16 * 1_048_576
+
+/** `MAX_MESSAGE_LENGTH`, at most a third of the largest frame cap, since a message of it may take three bytes a character. */
+private fun maxMessageLengthFromEnv(env: Map<String, String>): Int? {
+    val set = env.strictInt("MAX_MESSAGE_LENGTH", MIN_MESSAGE_LENGTH..Int.MAX_VALUE) ?: return null
+    if (set > MAX_MESSAGE_LENGTH) {
+        error("MAX_MESSAGE_LENGTH=$set is above $MAX_MESSAGE_LENGTH: at three bytes a character its messages would pass the largest MAX_FRAME_BYTES, ${Int.MAX_VALUE}.")
+    }
+    return set
+}
+
+private const val MAX_MESSAGE_LENGTH = Int.MAX_VALUE / 3
 
 /** Room for the smallest EVENT frame: an event's id, pubkey and signature alone are 256 characters. */
 private const val MIN_MESSAGE_LENGTH = 512

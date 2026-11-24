@@ -111,7 +111,10 @@ internal class NativeInbound(
     val maxMessageLength: Int?,
     val openMessageDeadlineMs: Long,
     val keepalive: Keepalive = Keepalive(),
-)
+) {
+    /** Spaces past the engine's length, built once: a streamed message's head plus these is one string to build. */
+    val padding: String by lazy { " ".repeat((maxMessageLength ?: 0) + 1) }
+}
 
 private class NativeWebSocketUpgrade(
     private val relay: NostrRelayServer,
@@ -542,7 +545,7 @@ private class NativeWebSocketSession(
      * The head of a message too long for the engine, padded past its length: quartz refuses it on length
      * and reads the id or sub id off the head, so the answer is quartz's own. Remove with [FrameIdScanner].
      */
-    private fun refusable(message: OversizedMessage): String = message.head.padEnd((inbound.maxMessageLength ?: message.head.length) + 1)
+    private fun refusable(message: OversizedMessage): String = message.head + inbound.padding
 
     /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
     private val resumeReads =
