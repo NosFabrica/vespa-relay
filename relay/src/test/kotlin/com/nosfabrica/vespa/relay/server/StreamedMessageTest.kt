@@ -27,8 +27,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Messages past what the engine could accept, larger than any frame the relay once buffered:
- * each is answered the way quartz answers an oversized frame, and the connection carries on.
+ * Messages past what the engine could accept, larger than any frame the relay once buffered: on the native
+ * transport each is answered the way quartz answers an oversized frame, and the connection carries on.
+ * Ktor refuses them instead (KtorTransportTest).
  */
 class StreamedMessageTest {
     private val signer = NostrSignerSync()
@@ -47,7 +48,7 @@ class StreamedMessageTest {
         val id = "1".repeat(64)
         val frame = """["EVENT",{"content":"$big","tags":[["p","${"2".repeat(64)}"]],"id":"$id","kind":1}]"""
         val after = signer.sign<Event>(1_700_000_000L, 1, emptyArray(), "after")
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             ws.text(frame)
             ws.text("""["EVENT",${after.toJson()}]""")
             val texts = ws.textsUntil { ok(it, id) != null && ok(it, after.id) != null }
@@ -62,7 +63,7 @@ class StreamedMessageTest {
         val id = "3".repeat(64)
         // The id lies past the point where the relay stops holding the message.
         val frame = """["EVENT",{"content":"${"b".repeat(1_500_000)}","id":"$id"}]""".toByteArray()
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             ws.fragmented(frame, chunk = 100_000)
             val texts = ws.textsUntil { ok(it, id) != null }
             assertEquals("""["OK","$id",false,"$tooLarge"]""", ok(texts, id))
@@ -72,7 +73,7 @@ class StreamedMessageTest {
 
     @Test
     fun `an oversized REQ is closed on its sub id and an unreadable message gets a NOTICE`() {
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             ws.text("""["REQ","huge",{"search":"$big"}]""")
             ws.text("""["HELLO","$big"]""")
             val texts = ws.textsUntil { seen -> seen.any { it.startsWith("[\"CLOSED\"") } && seen.any { it.startsWith("[\"NOTICE\"") } }
@@ -85,7 +86,7 @@ class StreamedMessageTest {
     @Test
     fun `an AUTH too large to read is answered OK false by its event id`() {
         val id = "4".repeat(64)
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             ws.text("""["AUTH",{"id":"$id","content":"$big"}]""")
             val texts = ws.textsUntil { ok(it, id) != null }
             assertEquals("""["OK","$id",false,"$tooLarge"]""", ok(texts, id))

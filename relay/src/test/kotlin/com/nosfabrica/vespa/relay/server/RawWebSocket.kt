@@ -159,8 +159,11 @@ internal class RawWebSocket(
         }
     }
 
-    /** Reads text frames until [done] holds over the ones seen; a close or EOF first fails. */
-    fun textsUntil(done: (List<String>) -> Boolean): List<String> {
+    /** Reads text frames until [done] holds over the ones seen, a pong for each ping if [answerPings]; a close or EOF first fails. */
+    fun textsUntil(
+        answerPings: Boolean = false,
+        done: (List<String>) -> Boolean,
+    ): List<String> {
         val texts = mutableListOf<String>()
         while (!done(texts)) {
             val frame =
@@ -171,6 +174,7 @@ internal class RawWebSocket(
                 } ?: fail("the connection ended; got ${texts.map { it.take(120) }}")
             if (frame.opcode == 0x8) fail("closed ${frame.closeCode} ${frame.closeReason}; got ${texts.map { it.take(120) }}")
             if (frame.opcode == 0x1) texts += frame.text
+            if (frame.opcode == 0x9 && answerPings) send(frame.payload, opcode = 0xA)
         }
         return texts
     }

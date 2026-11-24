@@ -455,6 +455,13 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   holding (`InboundFrameDecoder`). **A
   limit enforced by closing the transport costs everything multiplexed on it;
   refuse inside the protocol wherever the protocol can say no.**
+- **Ktor's websocket session hears a pong only behind the frames ahead of
+  it.** `DefaultWebSocketSession` hands pongs to its pinger from the same loop
+  that hands data frames to the route, so once the route's queue is bounded
+  and full, a client's pong waits on the command running; a backlog longer than
+  the ping timeout closed healthy publishers 1011 "Ping timeout". The Ktor route
+  is raw (`webSocketRaw`): it reads every frame as it comes and keeps its own
+  keepalive, counting a connection whose reads it paused as heard from.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

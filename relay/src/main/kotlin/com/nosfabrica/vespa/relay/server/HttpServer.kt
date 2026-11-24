@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultMaxFrameBytes
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
+import com.nosfabrica.vespa.relay.server.config.messageBytes
 import com.nosfabrica.vespa.relay.web.IconedPage
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.favicon
@@ -160,14 +161,16 @@ fun serveRelay(
         )
 
         install(WebSockets) {
-            pingPeriodMillis = keepalive.pingPeriodMs
-            timeoutMillis = keepalive.silenceTimeoutMs
-            maxFrameSize = maxFrameBytes.toLong()
-            // Ktor's default reads frames ahead without bound; this holds a socket's reads behind its commands.
+            // The route keeps the connection alive itself (nostrRelay): Ktor's pinger hears pongs only behind commands.
+            pingPeriodMillis = 0
+            // Ktor's reader allocates a frame's declared length from its header and cannot stream a message, so
+            // past the engine's length it refuses (1009) instead of answering by id, as the native transport does.
+            maxFrameSize = messageBytes(limits)
+            // Ktor's default reads frames ahead without bound; this holds a socket's reads behind the route's.
             channels { incoming = bounded(KTOR_FRAMES_AHEAD, ChannelOverflow.SUSPEND) }
         }
         routing {
-            nostrRelay(relay)
+            nostrRelay(relay, keepalive)
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
@@ -214,8 +217,10 @@ fun serveRelay(
 }
 
 /**
- * Frames Ktor may read ahead of the command running, in each of its two queues: with the one being read and the
- * one in hand, a Ktor connection holds at most four messages of up to `MAX_FRAME_BYTES` each.
+ * Frames Ktor may queue in each of its two raw incoming channels. With the frame its reader is collecting (a
+ * buffer of the largest declared length, kept for the connection), the one its forwarding coroutine holds and
+ * the message the route is joining, a Ktor connection holds about five messages of up to the engine's length
+ * in bytes, on top of its inbox.
  */
 private const val KTOR_FRAMES_AHEAD = 1
 

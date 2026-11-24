@@ -63,7 +63,7 @@ class RelayFrameLimitTest {
         val big = followList(14_000)
         val after = note("after")
         assertTrue(eventFrame(big).size in 1_000_000..2_000_000, "a 1 MB follow list: ${eventFrame(big).size}")
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             for (e in listOf(before, big, after)) ws.send(eventFrame(e))
             val oks = ws.oks(setOf(before.id, big.id, after.id))
             assertTrue(",true," in oks.getValue(before.id), oks.getValue(before.id))
@@ -77,7 +77,7 @@ class RelayFrameLimitTest {
     fun `a fragmented EVENT over the engine's length is answered by id like a whole one`() {
         val big = followList(14_000)
         val after = note("after")
-        bothTransports { ws, _ ->
+        withRawRelay(native = true) { ws ->
             ws.fragmented(eventFrame(big), chunk = 200_000)
             ws.send(eventFrame(after))
             val oks = ws.oks(setOf(big.id, after.id))
@@ -91,14 +91,13 @@ class RelayFrameLimitTest {
     fun `a fragmented message past the frame cap closes with 1009 after a NOTICE`() {
         val limits = relayLimitsFromEnv(emptyMap())
         val cap = messageBytes(limits).toInt() * 2
-        bothTransports(limits, maxFrameBytes = cap) { ws, native ->
+        withRawRelay(native = true, limits = limits, maxFrameBytes = cap) { ws ->
             // Fragments each under the cap, together over it: the message is bounded, not just each frame.
             ws.send("[\"EVENT\",{\"content\":\"".toByteArray(), fin = false)
             repeat(cap / 100_000 + 1) { ws.send(ByteArray(100_000) { 'a'.code.toByte() }, opcode = 0x0, fin = false) }
             val frames = ws.untilClose()
             assertEquals(1009, frames.last().closeCode, "closed as too big")
-            // Ktor closes from inside its session, with no hook for a NOTICE.
-            if (native) assertTrue(frames.any { it.opcode == 0x1 && it.text.startsWith("[\"NOTICE\"") }, "a NOTICE before the close")
+            assertTrue(frames.any { it.opcode == 0x1 && it.text.startsWith("[\"NOTICE\"") }, "a NOTICE before the close")
         }
     }
 

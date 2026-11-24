@@ -82,14 +82,6 @@ private const val LIVE_COPY_MAX_BYTES = 4_096
 /** The keepalive tick, and the ping period in ticks; the slow-consumer and silence rules are the Ktor path's (RelayWebSocket.kt). */
 private const val TICK_MS = 1_000L
 
-/** Commands queued from one connection before its reads pause, and the depth at which they resume. */
-private const val PAUSE_READS_AT = 64
-private const val RESUME_READS_AT = 16
-
-/** The same bound in characters, since one frame may be megabytes: 64 messages at the engine's default length. */
-private const val PAUSE_READS_AT_CHARS = 16L * 1024 * 1024
-private const val RESUME_READS_AT_CHARS = PAUSE_READS_AT_CHARS / 4
-
 /** The least a closing connection waits for answers to the commands it already read. */
 private const val ANSWER_SETTLE_MS = 1_000L
 
@@ -517,14 +509,20 @@ private class NativeWebSocketSession(
 
     private fun pauseReads() {
         channel.config().isAutoRead = false
-        if (pausedSince == IDLE) pausedSince = System.nanoTime()
+        if (pausedSince == IDLE) {
+            pausedSince = System.nanoTime()
+            InboundReads.pauses.incrementAndGet()
+        }
     }
 
     /** Reads on again, and the time they were paused taken off the held message's clock: it was ours, not the client's. */
     private fun resumeReadsNow() {
         channel.config().isAutoRead = true
         val since = pausedSince
-        if (since != IDLE) decoder.resumedAfter(since)
+        if (since != IDLE) {
+            decoder.resumedAfter(since)
+            InboundReads.resumes.incrementAndGet()
+        }
         pausedSince = IDLE
     }
 

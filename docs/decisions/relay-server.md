@@ -354,16 +354,27 @@ pauses at 16M queued characters (64 messages at the default engine length) and
 resumes under a quarter of that, so ordinary traffic still meets the count
 first and a run of large frames holds at most the budget and one frame.
 
-**Ktor reads at most one frame ahead per queue.** Ktor 3's websocket queues
-incoming frames without bound by default (`WebSocketChannelsConfig.UNLIMITED`),
-so a client publishing faster than its commands ran had all of its frames read
-into memory: 60 EVENTs of 600 KB were all taken within two seconds while one
-ran every 100 ms. The Ktor path cannot stream or count characters (its reader
-is Ktor's), so it is bounded by count: one frame in each of its two queues, so
-a connection holds at most four messages of up to `MAX_FRAME_BYTES`, against
-the native transport's inbox budget and one message of the engine's length.
-Ktor is the fallback transport (`NATIVE_WEBSOCKET=false`); an operator who
-runs it and raises `MAX_FRAME_BYTES` raises that bound four times over.
+**On Ktor, a message is bounded by the engine's length, and the route reads
+its own frames.** Ktor 3 queues incoming frames without bound by default, so a
+publisher outrunning its commands had every frame read into memory (60 EVENTs
+of 600 KB all taken within two seconds while one ran every 100 ms). Bounding
+Ktor's queues to one frame fixed that and starved pongs: its session hands a
+pong to its pinger only after the frames ahead of it, which wait on the
+command running, so a backlog longer than the 60 s timeout closed a healthy
+publisher 1011 "Ping timeout" (130 EVENTs at 1 s each: closed at 90 s, 89
+answered). So the Ktor route is raw: one coroutine reads every frame as it
+comes, answers pings, hears pongs and joins messages into an inbox with the
+native transport's budgets, suspending while over them; the route pings and
+reaps silence itself, a paused connection counting as heard from, and Ktor's
+pinger is off. Ktor's reader allocates a frame's declared length from its
+header and keeps that buffer for the connection, and it cannot stream, so its
+`maxFrameSize` stays the engine's length in bytes: a message past it closes
+the connection with 1009, as before 2026-11-24, and its in-flight EVENTs go
+unanswered; the native transport, the default, answers it by id. A Ktor
+connection then holds its inbox and about five messages of up to the engine's
+length (one in each of Ktor's two raw queues, the frame its reader collects,
+the one its forwarder holds, the one the route joins). Ktor is the fallback
+transport (`NATIVE_WEBSOCKET=false`); it has no held-message deadline.
 
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a

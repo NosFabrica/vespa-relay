@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -38,23 +37,16 @@ class ReadBackpressureTest {
     @Test
     fun `a publisher that outruns its commands is held back, then read to the end`() {
         for (native in listOf(true, false)) {
-            val ingest = SlowIngest(100)
-            withRawRelay(native, limits, ingest = ingest, soTimeoutMs = 30_000) { ws ->
-                val written = AtomicInteger()
-                val writer =
-                    Thread {
-                        for (e in events) {
-                            ws.text("""["EVENT",${e.toJson()}]""")
-                            written.incrementAndGet()
-                        }
-                    }.apply { start() }
-                Thread.sleep(2_000)
-                // Twenty commands run by now; a relay reading ahead would have taken all sixty.
-                val heldBack = writer.isAlive
+            val pauses = InboundReads.pauses.get()
+            val resumes = InboundReads.resumes.get()
+            withRawRelay(native, limits, ingest = SlowIngest(100), soTimeoutMs = 30_000) { ws ->
+                val writer = Thread { for (e in events) ws.text("""["EVENT",${e.toJson()}]""") }.apply { start() }
                 val texts = ws.textsUntil { seen -> seen.count { it.startsWith("[\"OK\"") } == events.size }
                 writer.join(5_000)
                 val transport = if (native) "native" else "ktor"
-                assertTrue(heldBack, "$transport: all ${written.get()} EVENTs were taken in 2 s with ${ingest.taken.get()} run")
+                // 36M characters against a 16M-character budget: reads paused at least once, and were resumed, whatever the kernel buffered.
+                assertTrue(InboundReads.pauses.get() > pauses, "$transport: reads never paused")
+                assertTrue(InboundReads.resumes.get() > resumes, "$transport: reads never resumed")
                 assertTrue(texts.count { it.startsWith("[\"OK\"") && ",true," in it } == events.size, "$transport: every EVENT answered")
             }
         }
