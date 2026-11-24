@@ -325,10 +325,21 @@ holds bytes that deflater never saw, so a live frame resets it.
 
 **Level 1, as strfry runs it.** Answers are compressed on the event loop, between
 other sockets' frames. On the corpus level 6 bought 2.5 points for half the
-speed (30 MB/s against 64), so a 500-event answer costs the loop about 9 ms
-instead of 19. The cost under 12,000 live feeds has not been measured with
-`live-bench`: per socket a live frame is a 5-byte block header and a copy of a
-body half its plain size.
+speed (30 MB/s against 64). Through the relay's own encoder an answer frame
+costs 31 µs compressed against 5.5 µs plain, so a 500-event answer holds the
+loop about 13 ms longer; on loopback, where bytes are free, four reads reached
+their EOSE in 266 ms against 222. Behind a proxy held to 10 Mbit/s (bandwidth
+only, no added latency) the same reads took 0.88 s against 1.71, and at 2 Mbit/s
+3.4 s against 7.4.
+
+**Compression leaves the live fan-out's cost where it was.** The body is
+deflated once per event per loop (about 32 µs), and a socket's copy of half the
+bytes costs less than the plain one (1.2 µs against 1.7). Under `live-bench` the
+relay's CPU matched plain at 2,000, 6,000 and 12,000 feeds, and two raw sockets
+on one feed, one compressed, saw the same events within noise (the compressed
+one a median 4 ms first, at most 15 ms later at p99). What did change is the
+load generator's share: its Node clients inflate every frame for thousands of
+feeds at once ([live-feeds.md](../live-feeds.md#compression)).
 
 **`client_no_context_takeover` is imposed, so one inflater per loop reads every
 socket.** RFC 7692 lets a server require it, and what clients send is REQs and

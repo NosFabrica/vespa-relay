@@ -53,3 +53,8 @@ relay/tools/live-bench/compare.sh /tmp/variants 2
   machine, not the relay, is the bound: spread the load (`URLS`, other machines).
 - Gradle downloads in parallel and Maven Central rate-limits that with 429s. `--max-workers=1` gets past it.
 - Docker's default seccomp profile blocks io_uring, which matters only to transports that use it.
+- Node's `WebSocket` negotiates permessage-deflate, so every feed is compressed unless the relay runs with
+  `WEBSOCKET_COMPRESSION=false`. Inflating thousands of feeds in four processes is then the load generator's own
+  bottleneck: past about 6,000 feeds here it adds the latency and, at 12,000, drops sockets
+  ([live-feeds.md](../../../docs/live-feeds.md#compression)). Pass `WEBSOCKET_COMPRESSION=false` to compare with
+  earlier readings or to find the relay's own ceiling.
