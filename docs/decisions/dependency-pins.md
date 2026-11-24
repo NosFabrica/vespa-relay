@@ -55,6 +55,26 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+4456c57f0640 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-24 (the
+quartz#151 merge), over 2.22.1 (below), which it descends from: 53 commits, through the 2.23.0 and 2.24.0 releases.
+Back on JitPack, the reverse of dd3d292: the catalog names the JitPack group, build-logic forces it and arrows the
+release group (com.vitorpamplona.quartz, what the store's POM still names at 2.22.1) onto it, and settings lets
+JitPack serve quartz's group. Magpie keeps serving the crypto, schnorr256k1 and negentropy groups quartz depends on.
+Every module resolves one quartz, quartz:4456c57f0640, with each com.vitorpamplona.quartz line arrowed onto it.
+
+  COUNT AND REQ ON AN ID (quartz#146 and the relay-server commits before it), the reason for this bump. A COUNT runs off the connection's command
+    loop, so a slow ranked COUNT no longer stalls the EVENT, REQ and CLOSE behind it (it waited inline before). A
+    CLOSE, a replacement (re-COUNT or re-REQ) and a refusal on an id end whatever runs there at once, COUNT and
+    REQ alike, and nothing stale follows on that id: a cancelled COUNT never answers, even from a store that
+    ignores the cancellation; a closed REQ sends no further rows, EOSE or live event. Per-id ordering is a FIFO
+    (no stack cost under a burst of CLOSEs). A failed REQ gives its max_subscriptions slot back. An unparsable
+    REQ, COUNT or CLOSE is answered with CLOSED on its sub id instead of a NOTICE. A backend Throwable (a TODO(),
+    a timeout of its own) answers CLOSED error: instead of escaping. The subscription cap runs before the policy,
+    so a refused REQ spends no rate-limit token. Concurrency stays the backend's to bound (SearchGate here).
+  NIP-85 TRUST UPDATES (up to the quartz#151 merge): the hourly catch-up is one paged REQ, REQ before negentropy, windows
+    cut by count; RelayReqStats keeps the 1,000 most recently active subscriptions.
+  Gated: ./gradlew build here is green (all modules, archTest and jsTest) against the JitPack jars.
+
 2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge d0effdd1a), over 2.21.0 (below), which it descends
 from; 2.21.1 and 2.22.0 between them were never pinned.
@@ -735,6 +755,21 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+23843fca9b9c = vespa-eventstore main @ 2026-11-24, the merge of PR #218, over f5a026d9903a (the merge of PR #217),
+over 4c2128d258bf (below); each descends from the one before. No bundle, schema or deploy-time change.
+  WRITE PATH (#218 and the commits before it): every batch wider than one event takes the bulk path (it was 16+, so
+    a small batch paid a GET and a put per event under the writer lock); supersession versions and a replaceable's
+    winner are read without their documents, off one grouping; the write path's independent locked reads run
+    together; NIP-09 guard probes count instead of reading a document; the mixed preload reads stubs; one write
+    for a mixed batch's records and guards when nothing is erased. Supersession fixes for address-keyed stores.
+  READ PATH: less transport and decode overhead per query, and the recency tie slack is learned per read shape.
+  #217: live NIP-50 subscriptions share one read of each event's words (13-17x less fan-out work at 100-500 open
+    search feeds), and the NIP-40 expiry sweep walks due ids once and holds the writer locks 1,000 ids at a time
+    instead of for the whole sweep (VESPA_EXPIRY_SWEEP_PAGE, new).
+  QUARTZ: the store still names quartz 2.22.1; this relay arrows it onto its quartz pin (above).
+  Gated: the store's integration gate passed on 23843fc against vespaengine/vespa:latest (38 IT classes, 57
+    tests: 56 passed, 1 skipped, 0 failed); ./gradlew build here is green against the JitPack jars.
+
 4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
 the PR head's (a2bd95d), byte for byte (`git diff --quiet a2bd95d 4c2128d`), and which descends from 4c73195f7d3d.
   QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:4c2128d258bf and

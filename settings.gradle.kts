@@ -28,14 +28,17 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // JitPack serves the store and nothing else, so a coordinate missing upstream cannot be
-        // substituted from it; the store's group is spelled both ways because JitPack caches per
-        // spelling. A store whose POM names quartz's JitPack group is mapped onto Magpie's quartz
-        // (build-logic), so JitPack never serves quartz.
+        // JitPack serves the store and quartz and nothing else, so a coordinate missing upstream
+        // cannot be substituted from it; the store's group is spelled both ways because JitPack
+        // caches per spelling. Quartz is a JitPack commit: build-logic maps the release group
+        // (com.vitorpamplona.quartz, what a store pinned to a quartz release names) onto it, so
+        // Magpie never serves quartz itself, only the crypto, schnorr256k1 and negentropy groups
+        // quartz depends on.
         exclusiveContent {
             forRepository { maven { url = uri("https://jitpack.io") } }
             filter {
                 includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
+                includeGroup("com.github.vitorpamplona.quartz")
             }
         }
     }
