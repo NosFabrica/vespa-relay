@@ -172,7 +172,10 @@ class NostrRelayServer(
     }
 }
 
-/** Live events one subscription holds before its live gate is built; past it the REQ is CLOSED, never sent ungated. */
+/**
+ * Live events a subscription holds while its ranked read waits behind another search on the connection; past it the
+ * REQ is CLOSED, never sent ungated. A read that does not queue holds what arrives in its brief setup, unbounded as before.
+ */
 internal const val MAX_HELD_LIVE = 1_000
 
 /** A subscription that matched more live events than [MAX_HELD_LIVE] while its ranked read waited its turn. */
@@ -271,8 +274,12 @@ internal class ObserverBackend(
         private var waiting: ArrayList<Pair<Event, String>>? = ArrayList()
         private var checks: CoroutineScope? = null
 
-        /** Completed when more than [MAX_HELD_LIVE] events arrived before [open]; nothing is held after it. */
+        /** Completed when more than [MAX_HELD_LIVE] events arrived before [open] on a [bounded] read; nothing is held after it. */
         private val overflowed = CompletableDeferred<Unit>()
+
+        /** Set by [endingOnOverflow] for a read that queues for its turn: only such a read is held to [MAX_HELD_LIVE]. */
+        @Volatile
+        private var bounded = false
 
         @Volatile
         private var admit: ((Event, String) -> Unit)? = null
@@ -287,7 +294,7 @@ internal class ObserverBackend(
             val decide =
                 admit ?: synchronized(lock) {
                     waiting?.let { held ->
-                        if (held.size < MAX_HELD_LIVE) {
+                        if (!bounded || held.size < MAX_HELD_LIVE) {
                             held.add(event to body)
                         } else {
                             waiting = null
@@ -302,13 +309,15 @@ internal class ObserverBackend(
 
         /**
          * Runs [replay], ended by [HeldLiveOverflow] if the bound is passed before [open]: a read that [queues] for
-         * its turn could otherwise hold every live match until then. Only such a read races, so the rest pay nothing.
+         * its turn could otherwise hold every live match until then. Only such a read is bounded and races, so the
+         * rest pay nothing and are never closed for it.
          */
         suspend fun <T> endingOnOverflow(
             queues: Boolean,
             replay: suspend () -> T,
         ): T {
             if (!queues) return replay()
+            bounded = true
             return coroutineScope {
                 val work = async(start = CoroutineStart.UNDISPATCHED) { replay() }
                 select {
