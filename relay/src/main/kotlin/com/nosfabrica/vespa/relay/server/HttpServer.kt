@@ -110,6 +110,8 @@ fun serveRelay(
     // Serves the websocket on Netty directly instead of through Ktor (NativeWebSocket.kt): the default,
     // as it ships, so a test that does not ask for a path runs the one operators run.
     nativeWebSocket: Boolean = true,
+    // permessage-deflate (RFC 7692) on the native websocket, for a client that offers it.
+    websocketCompression: Boolean = true,
     // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
     onReady: () -> Unit = {},
     wait: Boolean = true,
@@ -132,7 +134,7 @@ fun serveRelay(
 
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
-        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation) }
+        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation, websocketCompression) }
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }

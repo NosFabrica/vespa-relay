@@ -4,6 +4,16 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The websocket compresses for clients that ask (November 2026)
+
+The native websocket now answers a client's `permessage-deflate` offer, which
+browsers and most Nostr clients make, so their sockets carry about half the
+bytes they did. A client that does not offer it is served as before. The relay
+holds up to 128 MiB of compression windows while sockets are being answered.
+
+Nothing to do. `WEBSOCKET_COMPRESSION=false` turns it off; it does nothing with
+`NATIVE_WEBSOCKET=false`, and the boot says so.
+
 ## The websocket is served on Netty directly (November 2026)
 
 `NATIVE_WEBSOCKET` is now on by default: a websocket upgrade on `/` is answered

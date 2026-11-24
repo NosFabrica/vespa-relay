@@ -292,7 +292,49 @@ default is unbounded, and it judges a frame from its header, so an anonymous
 client could declare a gigabyte and have the server try to hold it before
 quartz's character limit ever saw a message. The cap is three bytes per
 character, the same bound the HTTP body cap uses, and a refused frame closes
-with 1009.
+with 1009. A compressed message is held to the same cap once inflated.
+
+**The native websocket answers permessage-deflate.** Browsers, OkHttp and most
+Nostr clients offer it (RFC 7692), and a Nostr frame is hex ids, keys,
+signatures and repeated field names that zlib halves. On 8,000 events read off
+`search.brainstorm.world` (`DeflateSavingsBench`), one client's session of four
+reads and a live feed went from 2,241 KiB on the wire to 1,070 KiB, 52% less:
+the reads 50–64%, the live feed 39%. Chromium, run once through the same
+session, measured 52.4% and read every frame byte for byte as the uncompressed
+relay sent it. Only the native path serves it: Ktor's
+extension holds a deflater per socket from the handshake on, and
+`WEBSOCKET_COMPRESSION` with `NATIVE_WEBSOCKET=false` says at boot that it does
+nothing.
+
+**Answers share a window per socket, held only while it is busy.** A sliding
+window lets a frame point back at the ones before it, the same author and the
+same keys, worth 55% on the corpus against 43% for a fresh window per frame.
+zlib keeps about 256 KiB per window; held by every open socket that is 3 GB at
+12,000 feeds, so a socket takes one at its first compressed answer and gives it
+back after five quiet seconds, and the process holds at most 512. Past that, or
+when the client asked for `server_no_context_takeover`, answers are compressed
+a frame at a time on the event loop's shared deflater.
+
+**A live event is deflated once per event loop, and its prefix rides as a
+stored block.** The fan-out still encodes an event once: the body is compressed
+on an empty window, and each subscription's `["EVENT","<id>",` goes ahead of it
+as an uncompressed deflate block, which any inflater reads as the start of the
+same message. A server may always decline to refer back, so this holds whatever
+the client agreed. What it costs is the socket's window: the client's window now
+holds bytes that deflater never saw, so a live frame resets it.
+
+**Level 1, as strfry runs it.** Answers are compressed on the event loop, between
+other sockets' frames. On the corpus level 6 bought 2.5 points for half the
+speed (30 MB/s against 64), so a 500-event answer costs the loop about 9 ms
+instead of 19. The cost under 12,000 live feeds has not been measured with
+`live-bench`: per socket a live frame is a 5-byte block header and a copy of a
+body half its plain size.
+
+**`client_no_context_takeover` is imposed, so one inflater per loop reads every
+socket.** RFC 7692 lets a server require it, and what clients send is REQs and
+EVENTs, small and rarely alike. An offer that asks for a server window under 15
+bits is declined, because the JDK's deflater cannot shrink its window; a client
+that has a fallback lists it next, and is answered on that.
 
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a
