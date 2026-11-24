@@ -217,7 +217,9 @@ row is from earlier that day, the other four arms ran back to back:
 | after (this fix), two runs | 100,000 (with the 1 MB event) | 1,367 · 1,333 | 231 | **0** |
 | after (this fix) | 99,999 (without it) | 1,376 | 230 | 0 |
 | before (main), re-run beside these | 99,999 (without it) | 1,378 | 230 | 0 |
+| streamed (`InboundFrameDecoder`), later that day | 100,000 (with the 1 MB event) | 1,443 | 231 | 0 |
 
 The extra refusal is the 1 MB event's own `invalid: message too large`. The 99,999 arms read
 lower than the 1,424-1,452 measured earlier the same day, for main's build and this one alike, so
-that is the box, not the fix.
+that is the box, not the fix. The last row is the native transport reading the 1 MB event without holding it (it
+passes the engine's length, so it is scanned for its id, not buffered), with the 16 MiB cap.
