@@ -57,8 +57,9 @@ class KtorTransportTest {
     @Test
     fun `Ktor closes on a message past the engine's length, whole or fragmented`() {
         val big = """["EVENT",{"id":"${"6".repeat(64)}","content":"${"m".repeat(900_000)}"}]""".toByteArray()
+        // Ktor refuses from a header, so the rest of a send may meet a closed socket.
         withRawRelay(native = false) { ws ->
-            ws.send(big)
+            runCatching { ws.send(big) }
             assertEquals(1009, ws.untilClose(withinMs = 5_000).last().closeCode)
         }
         withRawRelay(native = false) { ws ->

@@ -22,7 +22,10 @@ package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -34,18 +37,42 @@ class ReadBackpressureTest {
     /** 36 MB in 60 EVENTs: fewer commands than reads pause at, more characters, more than the socket buffers hold. */
     private val events = (0 until 60).map { signer.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "$it".padEnd(600_000, 'z')) }
 
+    /** Holds every write until [open]: the store a publisher outruns, for as long as a test needs. */
+    private class GatedIngest : EventIngest {
+        private val gate = CompletableDeferred<Unit>()
+
+        fun open() = gate.complete(Unit)
+
+        override suspend fun submit(
+            event: Event,
+            skipVerify: Boolean,
+            onComplete: (IEventStore.InsertOutcome) -> Unit,
+        ) {
+            gate.await()
+            onComplete(IEventStore.InsertOutcome.Accepted)
+        }
+
+        override fun hasBacklog() = false
+
+        override fun close() {}
+    }
+
     @Test
     fun `a publisher that outruns its commands is held back, then read to the end`() {
         for (native in listOf(true, false)) {
+            val transport = if (native) "native" else "ktor"
             val pauses = InboundReads.pauses.get()
             val resumes = InboundReads.resumes.get()
-            withRawRelay(native, limits, ingest = SlowIngest(100), soTimeoutMs = 30_000) { ws ->
-                val writer = Thread { for (e in events) ws.text("""["EVENT",${e.toJson()}]""") }.apply { start() }
-                val texts = ws.textsUntil { seen -> seen.count { it.startsWith("[\"OK\"") } == events.size }
-                writer.join(5_000)
-                val transport = if (native) "native" else "ktor"
-                // 36M characters against a 16M-character budget: reads paused at least once, and were resumed, whatever the kernel buffered.
+            val ingest = GatedIngest()
+            withRawRelay(native, limits, ingest = ingest, soTimeoutMs = 60_000) { ws ->
+                val writer = Thread { runCatching { for (e in events) ws.text("""["EVENT",${e.toJson()}]""") } }.apply { start() }
+                // 36M characters against a 16M-character budget, none run: reads must pause however fast either side is.
+                val until = System.nanoTime() + 60_000_000_000L
+                while (InboundReads.pauses.get() == pauses && System.nanoTime() < until) Thread.sleep(50)
                 assertTrue(InboundReads.pauses.get() > pauses, "$transport: reads never paused")
+                ingest.open()
+                val texts = ws.textsUntil { seen -> seen.count { it.startsWith("[\"OK\"") } == events.size }
+                writer.join(10_000)
                 assertTrue(InboundReads.resumes.get() > resumes, "$transport: reads never resumed")
                 assertTrue(texts.count { it.startsWith("[\"OK\"") && ",true," in it } == events.size, "$transport: every EVENT answered")
             }
