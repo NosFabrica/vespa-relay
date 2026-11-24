@@ -351,6 +351,41 @@ did not: live heap per idle feed was 7.65 KB on 21 and 25, and 6.95 KB with
 compact headers, which JDK 27 turns on by default (6.97 KB with no flag). The
 image runs 27 for that (docs/decisions/build.md).
 
+## Compression
+
+Measured 2026-11-24, the same sandbox, the relay built at the commit that added
+permessage-deflate. Node's own `WebSocket` offers it, so every feed
+`live-feeds.mjs` opens is compressed unless the relay runs with
+`WEBSOCKET_COMPRESSION=false`. One feed a socket, 5 events a second, two rounds
+alternated; the load generator's CPU is `top` over the measured step:
+
+| feeds | compression | relay user | kernel | p50 | p99 | got | load generator |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 2,000 | off | 0.12 cores | 0.11 | 27-28 ms | 46-51 ms | 100% | 0.20 cores |
+| 2,000 | on | 0.13 | 0.11 | 71-77 ms | 101-116 ms | 100% | 0.89-0.98 |
+| 6,000 | off | 0.19 | 0.28 | 50-51 ms | 90-99 ms | 100% | 0.56-0.61 |
+| 6,000 | on | 0.17-0.18 | 0.28-0.29 | 163-164 ms | 366-569 ms | 100% | 2.23-2.24 |
+| 12,000 | off | 0.28 | 0.53-0.56 | 84-89 ms | 159-167 ms | 100% | |
+| 12,000 | on | 0.25-0.29 | 0.50-0.56 | 14-17 s | 33 s | 50-60% | |
+
+- **The relay's cost did not move.** Its user and kernel CPU are the plain
+  readings at every step.
+- **The added latency is the load generator's.** Each event reaches every feed
+  in a Node process at once, and Node inflates each message as a job on a
+  four-thread pool, so the last feed waits behind all the others. Two raw sockets
+  of their own on one feed, one compressed, inflating synchronously, saw 900
+  events arrive within noise of each other: the compressed one a median 4 ms
+  first, at most 15 ms later at p99.
+- **At 12,000 the load generator falls over.** Its event loops ran 0.3 s behind
+  on average and up to 1.8 s, and in the first step 1,751 and 1,931 sockets (two
+  runs) closed with 1006, no close frame. The likeliest closer is the relay's
+  60 s silence rule, which a client that far behind its reads trips by answering
+  pings late; the relay does not log those closes, so that is not proven. A
+  device inflates only its own feed, a few microseconds a frame.
+
+Every other reading in this file was taken before compression; to repeat one,
+run the relay with `WEBSOCKET_COMPRESSION=false`.
+
 ## Capacity
 
 `live-bench/ramp.sh` adds feeds on one relay until a step misses the target:
