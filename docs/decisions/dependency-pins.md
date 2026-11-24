@@ -760,7 +760,23 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-92972456b108 = vespa-eventstore branch claude/inspiring-bardeen-yv936f (NOT yet on the store's main): one commit,
+c427965d54c8 = vespa-eventstore branch claude/inspiring-bardeen-yv936f (NosFabrica/vespa-eventstore#219, NOT yet on
+the store's main): one commit, c427965, over 92972456b108 (below), which it descends from. Re-pin to the store's
+merge of it once it lands.
+  COLD NARROW READS IN ONE QUERY (c427965). A read whose exact shape the store's window memory has never seen
+    (the first #p notification read of every user, a new thread's #e) spent a windowed attempt before falling
+    back unwindowed: two Vespa queries for one REQ. NarrowPrior keeps a vote per FAMILY (the shape with its
+    values counted, not named); once 8 cold reads of a family have voted and 90% ended narrow, a cold read runs
+    the unwindowed query alone. A busy value sent that way pays the match-phase cost once and teaches its exact
+    shape a window. Same switch, VESPA_RECENCY_MEMORY; counted as recency.speculative.prior.narrow / .prior.busy.
+  QUARTZ 4456c57f06, as 92972456b108: every module resolves store:c427965d54c8 and quartz:4456c57f06 with no `->`.
+  No engine/app, bundle or schema change, no deploy-time migration.
+
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on c427965 against
+  vespaengine/vespa 8.763.13: 31 IT classes, 57 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
+  Here, ./gradlew build against the JitPack jars is green, 0 failures.
+
+Prev 92972456b108 = vespa-eventstore branch claude/inspiring-bardeen-yv936f (NOT yet on the store's main): one commit,
 9297245, over the store's main @ 2026-11-24 (23843fc, the merge of PR #218), which descends from 4c2128d258bf
 (below): 46 commits. Re-pin to the store's merge of it once it lands.
   QUARTZ 4456c57f06 (9297245, above): the store takes quartz main from JitPack as this relay does, so every

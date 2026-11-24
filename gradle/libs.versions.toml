@@ -8,7 +8,7 @@ app = "0.1.0"
 # runtimeClasspath`: one quartz module, any line in the other group arrowed onto it.
 quartz = "4456c57f06"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "92972456b108"
+vespaEventStore = "c427965d54c8"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
