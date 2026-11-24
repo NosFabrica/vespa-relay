@@ -318,6 +318,20 @@ event), with a NOTICE and 1009, judged from the header of the frame that
 passes it; before that a message costs a scan, not a buffer. Its floor is the
 engine's length in bytes, so a message the engine may take is never cut short.
 
+**A connection closed for what it sent answers what it already read, then
+half-closes.** Past `MAX_FRAME_BYTES`, or past a held message's deadline, the
+native session used to clear its outbox and close at once: the OKs owed to
+commands read just before were lost (twenty EVENTs written with the oversized
+frame got none), and a close with input still unread sends a reset, which
+discards whatever the relay had queued for the client, the NOTICE and the
+close frame included. Now input stops (reads go on, and the decoder drops what
+they bring in bulk), the NOTICE queues behind the answers, and the close frame
+goes out once the commands already read are answered (a tick at least, since
+an EVENT's OK waits on its write) or five seconds have passed. Then the output
+side shuts, so the client gets a FIN behind the close; the socket closes on its
+EOF, or five seconds later. A client that breaks the protocol gets its close
+code at once, still half-closed. Ktor closes on its own terms.
+
 **The native inbox pauses reads on characters as well as commands.** A
 connection's reads paused at 64 queued commands, which bounded it only while a
 command was small: 64 messages at the engine's length in bytes is 50 MB. It also

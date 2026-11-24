@@ -30,11 +30,11 @@ import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
 import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
-import io.netty.channel.ChannelFutureListener
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.ChannelPipeline
 import io.netty.channel.EventLoop
+import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.codec.http.DefaultFullHttpRequest
 import io.netty.handler.codec.http.DefaultHttpHeaders
 import io.netty.handler.codec.http.EmptyHttpHeaders
@@ -89,6 +89,9 @@ private const val RESUME_READS_AT = 16
 /** The same bound in characters, since one frame may be megabytes: 64 messages at the engine's default length. */
 private const val PAUSE_READS_AT_CHARS = 16L * 1024 * 1024
 private const val RESUME_READS_AT_CHARS = PAUSE_READS_AT_CHARS / 4
+
+/** The least a closing connection waits for answers to the commands it already read. */
+private const val ANSWER_SETTLE_MS = 1_000L
 
 /** How long a message may take to arrive while its bytes are held. */
 internal const val OPEN_MESSAGE_DEADLINE_MS = 120_000L
@@ -378,6 +381,13 @@ private class NativeWebSocketSession(
 
     @Volatile
     private var closing = false
+
+    /** Set on the loop once this connection takes no more input: what it still sends is read and dropped. */
+    private var inputEnded = false
+
+    /** Since when the commands already read have had to be answered, and the close that follows; [IDLE] if not ending. */
+    private var endingSince = IDLE
+    private var endingClose: CloseWebSocketFrame? = null
     private val ended = AtomicBoolean()
 
     /** Commands read and not yet run: a String, or an [OversizedMessage]. */
@@ -449,6 +459,7 @@ private class NativeWebSocketSession(
         ctx: ChannelHandlerContext,
         msg: Any,
     ) {
+        if (inputEnded) return ReferenceCountUtil.release(msg).let { }
         if (msg is OversizedMessage) return queue(msg)
         if (msg !is WebSocketFrame) {
             // The upgrade request's empty trailer, decoded before the codec was swapped out.
@@ -657,10 +668,10 @@ private class NativeWebSocketSession(
     fun tick() {
         if (closing) return
         if (stalled()) return disconnectSlowConsumer()
+        if (endingSince != IDLE) return closeWhenAnswered()
         if (heldTooLong()) {
             val seconds = inbound.openMessageDeadlineMs / 1_000
-            decoder.discard()
-            return closeAfter(
+            return endInput(
                 NoticeMessage("error: a message took over $seconds s to arrive; closing").toJson(),
                 CloseWebSocketFrame(WebSocketCloseStatus.POLICY_VIOLATION, "message not finished within $seconds s"),
             )
@@ -690,14 +701,16 @@ private class NativeWebSocketSession(
         when {
             // A message past the cap, judged from the header of the frame that passes it.
             cause is CorruptedWebSocketFrameException && cause.closeStatus() == WebSocketCloseStatus.MESSAGE_TOO_BIG -> {
-                closeAfter(
+                endInput(
                     NoticeMessage("error: a message over $maxBytes bytes is past this relay's websocket limit; closing").toJson(),
                     CloseWebSocketFrame(WebSocketCloseStatus.MESSAGE_TOO_BIG, "message over $maxBytes bytes"),
                 )
             }
 
+            // A client that breaks the protocol is owed nothing more.
             cause is CorruptedWebSocketFrameException -> {
-                closeAfter(null, CloseWebSocketFrame(cause.closeStatus(), cause.message ?: cause.closeStatus().reasonText()))
+                stopInput()
+                sendClose(CloseWebSocketFrame(cause.closeStatus(), cause.message ?: cause.closeStatus().reasonText()))
             }
 
             else -> {
@@ -706,20 +719,49 @@ private class NativeWebSocketSession(
         }
     }
 
+    /** On the loop: reads go on, so a close never meets unread input (which would reset it), but nothing is decoded. */
+    private fun stopInput() {
+        inputEnded = true
+        decoder.discard()
+        channel.config().isAutoRead = true
+    }
+
     /**
-     * Ends a connection whose decoder now discards everything it reads: [notice] and [close] go ahead of the
-     * outbox, and the socket closes once they are written, or after the slow consumer's grace.
+     * Takes no more input and ends the connection: [notice] goes out behind the answers already queued, and
+     * [close] once the commands already read are answered, or after [CLOSE_GRACE_MS] (checked each tick).
      */
-    private fun closeAfter(
-        notice: String?,
+    private fun endInput(
+        notice: String,
         close: CloseWebSocketFrame,
     ) {
+        if (closing || endingSince != IDLE) return close.release().let { }
+        stopInput()
+        endingSince = nowMs()
+        endingClose = close
+        offer(notice, notice.length)
+    }
+
+    /** Answers can trail their commands (an EVENT's OK waits on its write), so the close waits at least a tick. */
+    private fun closeWhenAnswered() {
+        val waited = nowMs() - endingSince
+        val answered = inboxDepth.get() == 0 && outbox.isEmpty() && pendingLive == null && waited >= ANSWER_SETTLE_MS
+        if (answered || waited >= CLOSE_GRACE_MS) endingClose?.let { sendClose(it) }
+    }
+
+    /**
+     * [close], then the output side shut and input still read and dropped: the client gets a FIN behind the
+     * close rather than a reset that could discard it. The socket closes on the client's EOF, or after the grace.
+     */
+    private fun sendClose(close: CloseWebSocketFrame) {
         if (closing) return close.release().let { }
         closing = true
+        endingClose = null
         outbox.clear()
         releasePendingLive()
-        notice?.let { context.write(encodeTextFrame(context.alloc(), it), context.voidPromise()) }
-        context.writeAndFlush(close).addListener(ChannelFutureListener.CLOSE)
+        context.writeAndFlush(close).addListener {
+            val duplex = channel as? DuplexChannel
+            if (it.isSuccess && duplex != null) duplex.shutdownOutput() else channel.close()
+        }
         channel.eventLoop().schedule({ channel.close() }, CLOSE_GRACE_MS, TimeUnit.MILLISECONDS)
     }
 
@@ -729,6 +771,8 @@ private class NativeWebSocketSession(
         loop.leave(this)
         outbox.clear()
         releasePendingLive()
+        endingClose?.release()
+        endingClose = null
         inbox.close()
         reader.cancel()
     }

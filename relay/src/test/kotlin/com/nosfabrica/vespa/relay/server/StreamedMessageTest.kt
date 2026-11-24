@@ -109,10 +109,10 @@ class StreamedMessageTest {
                     }
                 }.apply { start() }
             try {
-                val close = ws.untilClose(withinMs = 8_000).last()
+                val close = ws.untilClose(withinMs = 10_000).last()
                 val seconds = (System.nanoTime() - started) / 1e9
                 assertEquals(1008, close.closeCode, close.closeReason)
-                assertTrue(seconds in 1.5..6.0, "closed after $seconds s")
+                assertTrue(seconds in 1.5..9.0, "closed after $seconds s")
                 ws.awaitEnd()
             } finally {
                 pinger.interrupt()

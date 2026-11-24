@@ -185,6 +185,7 @@ internal fun <T> withRawRelay(
     ingest: EventIngest? = null,
     openMessageDeadlineMs: Long = OPEN_MESSAGE_DEADLINE_MS,
     soTimeoutMs: Int = 5_000,
+    receiveBufferBytes: Int? = null,
     block: (RawWebSocket) -> T,
 ): T {
     val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl, limits = limits, ingest = ingest)
@@ -208,6 +209,7 @@ internal fun <T> withRawRelay(
                     .port
             }
         Socket().use { socket ->
+            receiveBufferBytes?.let { socket.receiveBufferSize = it }
             socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
             socket.soTimeout = soTimeoutMs
             upgrade(socket, port)
