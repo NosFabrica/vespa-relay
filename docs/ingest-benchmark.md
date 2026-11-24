@@ -196,6 +196,27 @@ flight, the same JSON summary), and the slice was a fresh pull of ditto's newest
   made full-width writes and kept the overlap, and measured no better than one worker on either
   load, so the default became `RELAY_INGEST_CONCURRENCY=1` instead. The mirror lane, always a deep
   queue, keeps two.
-- An event whose frame passes the cap (3 x `max_message_length`, 786,432 bytes) is not refused
-  with `OK false`: the relay closes the socket from the frame header, and everything in flight on
-  it goes unanswered. One 1 MB kind 3 in the first pull ended an arm at event 18,460.
+- An event whose frame passed the cap, then 3 x `max_message_length` (786,432 bytes), was not
+  refused with `OK false`: the relay closed the socket from the frame header, and everything in
+  flight on it went unanswered. One 1 MB kind 3 in the first pull ended an arm at event 18,460.
+  Fixed below; the cap is now `MAX_FRAME_BYTES`.
+
+### A frame over the old cap no longer drops the connection
+
+Until 2026-11-24 the websocket's frame cap was the engine's length in bytes, so one 1,014,148-byte
+kind 3 (line 18,819 of the 100k slice) closed the publisher's socket: it stalled ~30 s and counted
+1,540 EVENTs unanswered, the ones in flight with it. The cap is now `MAX_FRAME_BYTES` (4 MiB),
+and a frame between the engine's length and it reaches quartz, which answers `OK false` by id
+([the decision](decisions/relay-server.md)). Same box and harness as above, `CPUS=0-2`; the first
+row is from earlier that day, the other four arms ran back to back:
+
+| arm | slice | ev/s | refused | unanswered |
+|---|---|---|---|---|
+| before (main) | 100,000 (with the 1 MB event) | 954 | 229 | **1,540** |
+| after (this fix), two runs | 100,000 (with the 1 MB event) | 1,367 · 1,333 | 231 | **0** |
+| after (this fix) | 99,999 (without it) | 1,376 | 230 | 0 |
+| before (main), re-run beside these | 99,999 (without it) | 1,378 | 230 | 0 |
+
+The extra refusal is the 1 MB event's own `invalid: message too large`. The 99,999 arms read
+lower than the 1,424-1,452 measured earlier the same day, for main's build and this one alike, so
+that is the box, not the fix.

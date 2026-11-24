@@ -425,6 +425,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
+- A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.
 - Quartz/amethyst is multiplatform: no commas in backticked test names, no `java.util` in shared code.
 

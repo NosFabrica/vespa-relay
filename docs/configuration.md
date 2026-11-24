@@ -181,6 +181,7 @@ events.
 | var | meaning | default |
 |---|---|---|
 | `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block | sane defaults |
+| `MAX_FRAME_BYTES` | the largest websocket message the relay reads, in bytes, judged from the frame header (fragments count together). A message over `MAX_MESSAGE_LENGTH` but under this is read and refused by id, so an EVENT gets its `OK false` and the connection carries on; one over this closes the connection with 1009 (after a NOTICE on the native transport), and every command in flight on it goes unanswered. It is also what one connection can pin while a frame arrives, since the decoder holds a whole frame: raise it with care. Not advertised in NIP-11, which has no field for it; `max_message_length` is the limit clients see. See [the decision](decisions/relay-server.md) | `4194304` (4 MiB), or 3 x `MAX_MESSAGE_LENGTH` if that is more |
 | `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning. `NEG_MAX_SYNC_EVENTS` is the ONE bound on a reconciliation: how many ids it walks before answering NEG-ERR `blocked: too many query results`. `DEFAULT_LIMIT` / `MAX_LIMIT` size a REQ's page and never reach a NEG-OPEN, so keep this far above them | strfry-parity (1,000,000) |
 
 ## Access control
@@ -756,6 +757,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
 | `MAX_MESSAGE_LENGTH` | relay | `512` or more |
+| `MAX_FRAME_BYTES` | relay | 3 x `MAX_MESSAGE_LENGTH` or more, up to `2147483647` |
 | `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` | relay | `1` or more |
 | `DEFAULT_LIMIT` | relay | `1`–`MAX_LIMIT`; unset, it is lowered to a smaller `MAX_LIMIT` |
 | `MIN_POW_DIFFICULTY` | relay | `0`–`256` |

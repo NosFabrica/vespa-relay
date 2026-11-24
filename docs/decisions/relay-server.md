@@ -287,12 +287,32 @@ when the writer has waited 30s on one frame, checked on every offer and once a
 second; a non-reader holds at most what arrives in that window, still under the
 8192-frame bound, and the frame bound is unchanged.
 
-**The websocket's frame cap is the engine's message length, in bytes.** Ktor's
-default is unbounded, and it judges a frame from its header, so an anonymous
-client could declare a gigabyte and have the server try to hold it before
-quartz's character limit ever saw a message. The cap is three bytes per
-character, the same bound the HTTP body cap uses, and a refused frame closes
-with 1009.
+**The websocket's frame cap is a memory bound, not the engine's message length
+(`MAX_FRAME_BYTES`, 4 MiB).** Ktor's default is unbounded, and both transports
+judge a frame from its header, so an anonymous client could declare a gigabyte
+and have the server try to hold it; a cap is needed. It used to be the engine's
+length at three bytes per character (786,432 with the default 256 KiB), and
+that cap closed the connection: on 2026-11-24 one real 1,014,148-byte kind 3 in
+a bulk publish dropped the socket and the ~1,500 EVENTs in flight on it, which
+NIP-01 owed an OK each, while events between the engine's length and the cap
+were answered `OK false` by id. Netty's decoder buffers a whole frame before
+anything reads it, so the cap is what one connection can pin mid-frame: 4 MiB
+is four times the largest follow list seen in a 100k kind-3 slice, and two of
+them (the decoder's and the decoded string) are less than one connection's
+inbox may already queue. A frame under it reaches `RelaySession`, whose length
+check costs a `String.length` and whose id reader is one scan that stops at the
+top-level `"id"`. The floor is the engine's length in bytes, so the engine
+always decides first. Fragments are bounded by the same cap in aggregate (the
+native aggregator, Ktor's own check). Past it the socket still closes, with
+1009 and a reason; the native transport sends a NOTICE first, Ktor has no hook
+for one.
+
+**The native inbox pauses reads on characters as well as commands.** A
+connection's reads paused at 64 queued commands, which bounded it only while a
+command was small: 64 frames at the 4 MiB cap is 256 MiB of strings. It also
+pauses at 16M queued characters (64 messages at the default engine length) and
+resumes under a quarter of that, so ordinary traffic still meets the count
+first and a run of large frames holds at most the budget and one frame.
 
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a

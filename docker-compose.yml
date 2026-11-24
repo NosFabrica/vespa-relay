@@ -270,6 +270,9 @@ services:
       MAX_EVENT_TAGS: ${MAX_EVENT_TAGS:-}
       MAX_CONTENT_LENGTH: ${MAX_CONTENT_LENGTH:-}
       MAX_MESSAGE_LENGTH: ${MAX_MESSAGE_LENGTH:-}
+      # The websocket frame cap in bytes; past MAX_MESSAGE_LENGTH and under it,
+      # a message is refused by id rather than closing the connection.
+      MAX_FRAME_BYTES: ${MAX_FRAME_BYTES:-}
       # The writer behind published EVENTs: `pipeline` (the mirror's
       # IngestPipeline, the default) or `queue` (quartz's IngestQueue), and its
       # shape. Empty keeps the code defaults (docs/configuration.md).

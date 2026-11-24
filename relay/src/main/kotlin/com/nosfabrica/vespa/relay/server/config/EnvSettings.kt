@@ -90,6 +90,27 @@ fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     return limits
 }
 
+/** The most UTF-8 bytes a message of the engine's length can take: three per character, as the HTTP body cap counts it. */
+fun messageBytes(limits: RelayLimits): Long = (limits.maxMessageLength ?: defaultRelayLimits().maxMessageLength ?: 262_144) * 3L
+
+/**
+ * The websocket's frame cap with `MAX_FRAME_BYTES` unset: [DEFAULT_MAX_FRAME_BYTES], or more when the
+ * engine admits longer messages, so the engine's length always decides first.
+ */
+fun defaultMaxFrameBytes(limits: RelayLimits): Int = maxOf(DEFAULT_MAX_FRAME_BYTES.toLong(), messageBytes(limits)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+/**
+ * `MAX_FRAME_BYTES`: the largest websocket message read, judged from the frame header before its payload is
+ * buffered. One under it but over the engine's length is refused by id; one over it closes the connection.
+ */
+fun maxFrameBytesFromEnv(
+    env: Map<String, String>,
+    limits: RelayLimits,
+): Int = env.strictInt("MAX_FRAME_BYTES", messageBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()..Int.MAX_VALUE) ?: defaultMaxFrameBytes(limits)
+
+/** Several times the largest real follow list, and what one connection's decoder may hold of a frame (docs/decisions/relay-server.md). */
+const val DEFAULT_MAX_FRAME_BYTES = 4 * 1_048_576
+
 /** Room for the smallest EVENT frame: an event's id, pubkey and signature alone are 256 characters. */
 private const val MIN_MESSAGE_LENGTH = 512
 

@@ -77,6 +77,7 @@ import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpFromWs
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.maintenanceSwitchesFromEnv
+import com.nosfabrica.vespa.relay.server.config.maxFrameBytesFromEnv
 import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
@@ -202,6 +203,7 @@ private class Boot(
     val identity: NostrSignerInternal?,
     val addresses: RelayAddresses,
     val limits: RelayLimits,
+    val maxFrameBytes: Int,
     val negentropy: NegentropySettings,
     val rejectFutureSeconds: Int,
     val providerRefreshSeconds: Long,
@@ -305,6 +307,7 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     val files = relayFilesFromEnv(env)
     val adminPubkeys = adminPubkeysFromEnv(env)
+    val limits = relayLimitsFromEnv(env)
     storeTuning.feedBatch?.let { n ->
         System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
     }
@@ -318,7 +321,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         endpoint = endpoint,
         identity = identity,
         addresses = addresses,
-        limits = relayLimitsFromEnv(env),
+        limits = limits,
+        maxFrameBytes = maxFrameBytesFromEnv(env, limits),
         negentropy = negentropySettingsFromEnv(env),
         rejectFutureSeconds = rejectFutureSecondsFromEnv(env),
         providerRefreshSeconds = providerRefreshSeconds(env),
@@ -583,6 +587,7 @@ private fun serve(
         port = boot.port,
         nip11 = boot.nip11,
         limits = boot.limits,
+        maxFrameBytes = boot.maxFrameBytes,
         admin = admin,
         pressure = pressure,
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.

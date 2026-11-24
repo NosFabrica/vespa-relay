@@ -442,6 +442,16 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   and `relay/tools/live-bench/fd-exhaustion.sh` floods a relay past a lowered
   limit and asks whether it still answers. **A lazy load in an error path runs at
   the worst moment: when the process is already out of something.**
+- **A websocket frame over the transport's cap ends the connection, and every
+  command in flight on it.** The cap was the engine's message length in bytes,
+  so one 1 MB follow list in a 100k bulk publish closed the socket from its
+  header: the publisher stalled ~30 s and counted ~1,500 EVENTs "disconnected
+  before OK", while smaller oversized events were refused by id as they should
+  be. Unit tests sent one frame per connection and saw a tidy 1009. The cap
+  (`MAX_FRAME_BYTES`) now sits far above the engine's length, so quartz answers
+  an oversized EVENT `OK false`; only a frame past a memory bound closes. **A
+  limit enforced by closing the transport costs everything multiplexed on it;
+  refuse inside the protocol wherever the protocol can say no.**
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

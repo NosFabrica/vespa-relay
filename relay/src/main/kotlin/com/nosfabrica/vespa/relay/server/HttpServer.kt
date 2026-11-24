@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
+import com.nosfabrica.vespa.relay.server.config.defaultMaxFrameBytes
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.nosfabrica.vespa.relay.web.IconedPage
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
@@ -85,6 +86,8 @@ fun serveRelay(
     port: Int,
     nip11: Nip11Info,
     limits: RelayLimits = defaultRelayLimits(),
+    // The largest websocket message read (MAX_FRAME_BYTES); past the engine's length, under this, one is refused by id.
+    maxFrameBytes: Int = defaultMaxFrameBytes(limits),
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
@@ -132,7 +135,7 @@ fun serveRelay(
 
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
-        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation) }
+        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes, onionLocation) }
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }
@@ -152,7 +155,7 @@ fun serveRelay(
         install(WebSockets) {
             pingPeriodMillis = PING_PERIOD_MS
             timeoutMillis = SILENCE_TIMEOUT_MS
-            maxFrameSize = maxFrameBytes(limits)
+            maxFrameSize = maxFrameBytes.toLong()
         }
         routing {
             nostrRelay(relay)
@@ -200,12 +203,6 @@ fun serveRelay(
         }
     }.start(wait = wait)
 }
-
-/**
- * The largest websocket message read, judged from the frame header before the payload is buffered:
- * the engine's character cap at three UTF-8 bytes per character, as the HTTP body cap counts it.
- */
-internal fun maxFrameBytes(limits: RelayLimits): Long = (limits.maxMessageLength ?: defaultRelayLimits().maxMessageLength ?: 262_144) * 3L
 
 /** Spelled as the Tor Project spells it; readers compare case-insensitively. */
 private const val ONION_LOCATION = "Onion-Location"
