@@ -55,6 +55,21 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+2.24.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.24.0 (the v2.24.0 tag 45d20fe31), over 2.22.1 (below), which it descends from; 2.23.0 between them was never
+pinned. magpie.lock gains the two 2.24.0 release lines under the same publisher key.
+
+  RELAY-SERVER FIXES (quartz#143), the reason for this bump. RelaySession: a REQ whose backend fails gives its
+    max_subscriptions slot back, so a store outage no longer locks a connection out of REQs; an unusable REQ,
+    COUNT or CLOSE (filters that do not parse, no filter, an oversized frame) is answered with CLOSED on its sub
+    id instead of a NOTICE, and ends the REQ open under that id; a COUNT runs off the connection's command loop,
+    so a ranked COUNT waiting on SearchGate's permit no longer holds up the CLOSE that frees it, with no cap on
+    COUNTs in quartz (SearchGate bounds them here); a backend's own CancellationException (a withTimeout inside
+    it) answers the COUNT and fails the REQ instead of leaving both silent; a closed parked REQ sends nothing.
+  NOT IN THIS PIN: quartz main after v2.24.0 reworks COUNT again (aa82e0d40 caps pending COUNTs, dd2fc4545
+    orders repeated ones, dc642b057 cancels a COUNT on CLOSE). Unreleased; compiled here with -PquartzDir for
+    the benchmark only.
+
 2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge d0effdd1a), over 2.21.0 (below), which it descends
 from; 2.21.1 and 2.22.0 between them were never pinned.
@@ -735,6 +750,22 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+23843fca9b9c = vespa-eventstore main @ 2026-11-24, the merge of PR #218, whose tree is the PR head's (afb4155e),
+byte for byte (`git rev-parse 23843fca^{tree} afb4155e^{tree}`: both 9d737695), over c434fc1b (the merge of #216).
+  #216: supersession writes the new version before removing the old (a superseded address never reads empty);
+    the recency tie slack is learned per read shape; batches wider than one event take the bulk write path
+    (BULK_MIN 16 -> 2: 20 publishers each awaiting its OK, 312-413 -> 1,169-1,186 ev/s through this relay);
+    supersession version reads skip documents; the write path's independent locked reads run together.
+  #218, the audit of #216: an address-keyed (VESPA_ADDRESS_KEYED) mixed batch no longer deletes the winner it
+    just wrote; a failed sweep is retried and owed to its address; a stale card's removal no longer retracts the
+    newest card's cell; writes survive a schema without idtime and ask once under the writer lock; one engine-read
+    bound per write commit; small mixed batches read version stubs; one grouping per replaceable's versions.
+  The store resolves quartz 2.22.1, forced to 2.24.0 here (`2.22.1 -> 2.24.0` in :relay:dependencies, one module).
+
+GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed on afb4155e, this tree, against
+  vespaengine/vespa 8.788.13: 57 tests, 0 failures, 1 skipped (StagingCorpusIT, needs an export), including
+  BulkSupersessionIT with address keying off and on and NewestVersionsIT with the version census.
+
 4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
 the PR head's (a2bd95d), byte for byte (`git diff --quiet a2bd95d 4c2128d`), and which descends from 4c73195f7d3d.
   QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:4c2128d258bf and
