@@ -760,9 +760,11 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-c427965d54c8 = vespa-eventstore branch claude/inspiring-bardeen-yv936f (NosFabrica/vespa-eventstore#219, NOT yet on
-the store's main): one commit, c427965, over 92972456b108 (below), which it descends from. Re-pin to the store's
-merge of it once it lands.
+c427965d54c8 = vespa-eventstore main @ 2026-11-24: the head of PR #219, which merged as 9c3426fe552c with this tree
+byte for byte (`git diff --quiet c427965 9c3426f`), so c427965 is on the store's main as the merge's second parent.
+Pinned here rather than the merge because JitPack's build of 9c3426f failed on a transient 502 from Magpie's proxy
+fetching crypto-kmp, and JitPack keeps a failed build; c427965's own build is the same tree. One commit over
+92972456b108 (below), which it descends from.
   COLD NARROW READS IN ONE QUERY (c427965). A read whose exact shape the store's window memory has never seen
     (the first #p notification read of every user, a new thread's #e) spent a windowed attempt before falling
     back unwindowed: two Vespa queries for one REQ. NarrowPrior keeps a vote per FAMILY (the shape with its
@@ -776,9 +778,8 @@ GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed loc
   vespaengine/vespa 8.763.13: 31 IT classes, 57 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
   Here, ./gradlew build against the JitPack jars is green, 0 failures.
 
-Prev 92972456b108 = vespa-eventstore branch claude/inspiring-bardeen-yv936f (NOT yet on the store's main): one commit,
-9297245, over the store's main @ 2026-11-24 (23843fc, the merge of PR #218), which descends from 4c2128d258bf
-(below): 46 commits. Re-pin to the store's merge of it once it lands.
+Prev 92972456b108 = PR #219's first commit, now on the store's main: one commit, 9297245, over the store's main @
+2026-11-24 (23843fc, the merge of PR #218), which descends from 4c2128d258bf (below): 46 commits.
   QUARTZ 4456c57f06 (9297245, above): the store takes quartz main from JitPack as this relay does, so every
     module resolves store:92972456b108 and quartz:4456c57f06 with no `->`.
   STORE MAIN SINCE 4c2128d (PRs #216-#218), reads:
