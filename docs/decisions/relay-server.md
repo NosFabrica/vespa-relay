@@ -299,9 +299,9 @@ Nostr clients offer it (RFC 7692), and a Nostr frame is hex ids, keys,
 signatures and repeated field names that zlib halves. On 8,000 events read off
 `search.brainstorm.world` (`DeflateSavingsBench`), one client's session of four
 reads and a live feed went from 2,241 KiB on the wire to 1,070 KiB, 52% less:
-the reads 50–64%, the live feed 39%. Chromium, run once through the same
-session, measured 52.4% and read every frame byte for byte as the uncompressed
-relay sent it. Only the native path serves it: Ktor's
+the reads 50–64%, the live feed 39%. Chromium and Firefox, run once each
+through the same session, measured 52.4% and read every frame byte for byte as
+the uncompressed relay sent it. Only the native path serves it: Ktor's
 extension holds a deflater per socket from the handshake on, and
 `WEBSOCKET_COMPRESSION` with `NATIVE_WEBSOCKET=false` says at boot that it does
 nothing.
@@ -313,7 +313,10 @@ zlib keeps about 256 KiB per window; held by every open socket that is 3 GB at
 12,000 feeds, so a socket takes one at its first compressed answer and gives it
 back after five quiet seconds, and the process holds at most 512. Past that, or
 when the client asked for `server_no_context_takeover`, answers are compressed
-a frame at a time on the event loop's shared deflater.
+a frame at a time on the event loop's shared deflater. A burst of new sockets
+fills the cap, and glibc keeps the windows' freed memory for reuse rather than
+returning it: with 12,000 feeds opened at once the relay's RSS stayed about
+230 MB above the plain run's, with only the loops' own deflaters still live.
 
 **A live event is deflated once per event loop, and its prefix rides as a
 stored block.** The fan-out still encodes an event once: the body is compressed
