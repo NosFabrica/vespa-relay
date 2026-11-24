@@ -64,6 +64,7 @@ tasks.test {
         .withPathSensitivity(PathSensitivity.RELATIVE)
     // ProbeSwitchesAreForwardedTest checks this list; it runs under `:common:archTest`.
     forwardProbeSwitches(
+        "deflateBench",
         "itCorpus",
         "itRelay",
         "itVespa",
