@@ -411,6 +411,8 @@ internal class InboundFrameDecoder(
             while (true) {
                 val n = inflater.inflate(output)
                 if (n > 0 && !takeInflated(ctx, output, n)) return
+                // Output that did not fill the scratch and an inflater wanting input: nothing more to inflate yet.
+                if (n < output.size && inflater.needsInput()) return
                 if (n == 0) {
                     if (inflater.needsDictionary()) return violation(ctx, "malformed compressed frame", WebSocketCloseStatus.INVALID_PAYLOAD_DATA)
                     if (inflater.needsInput() || inflater.finished()) return
