@@ -307,10 +307,15 @@ length, so the answer (`OK false` by id, `CLOSED` on a sub id, else a NOTICE),
 its reason and its lane are quartz's own; the padding costs no more than one
 message the engine would take. A held message must finish within two minutes
 whatever pings come with it (1008). What one connection holds of its input is
-then the inbox and one message of at most the engine's length, once as bytes
-and once as the decoded string: about 1.6 MB at the defaults, and at the
-shipped `MAX_MESSAGE_LENGTH=15728640` about 45 MiB of bytes and up to 30 MiB of
-string, where Netty's path held three to four times the message.
+then its inbox (paused at 16M characters, below) and the one message being
+read, of at most the engine's length in bytes: those bytes, then the decoded
+string, which is as large again, or twice as large where one character falls
+outside Latin-1 and the JVM stores it in UTF-16. That is up to three times the
+engine's length in bytes, about 2.4 MB at the defaults and about 140 MB at the
+shipped `MAX_MESSAGE_LENGTH=15728640` (45 MiB of bytes), where Netty's path
+held the frame two or three times over (the cumulation, past 4 MiB grown to
+double, and its copy) before the same string: an operator who raises
+`MAX_MESSAGE_LENGTH` buys that per connection.
 
 **`MAX_FRAME_BYTES` is a bound on reading, not on memory.** On the native
 transport it ends a message that passes it (16 MiB by default, past every real
