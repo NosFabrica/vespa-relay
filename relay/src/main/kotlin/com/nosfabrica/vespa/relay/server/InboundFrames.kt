@@ -29,7 +29,7 @@ import io.netty.handler.codec.http.websocketx.PingWebSocketFrame
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus
-import java.nio.charset.CharacterCodingException
+import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 
 /**
@@ -65,6 +65,9 @@ internal class InboundFrameDecoder(
 ) : ChannelInboundHandlerAdapter() {
     private val header = ByteArray(MAX_HEADER)
     private var headerLength = 0
+
+    /** The length of the frame whose header is being read, once read; -1 before. */
+    private var frameLength = -1L
     private var state = State.HEADER
 
     // The frame being read.
@@ -116,25 +119,46 @@ internal class InboundFrameDecoder(
         buf: ByteBuf,
     ) {
         val before = headerLength
-        val needed = if (headerLength < 2) 2 else headerSize()
+        val needed =
+            when {
+                headerLength < 2 -> 2
+                frameLength < 0 -> 2 + lengthBytes()
+                else -> 2 + lengthBytes() + 4
+            }
         val take = minOf(needed - headerLength, buf.readableBytes())
         buf.readBytes(header, headerLength, take)
         headerLength += take
         if (before < 2 && headerLength == 2 && !checkFirstBytes(ctx)) return
-        if (headerLength < 2 || headerLength < headerSize()) return
+        if (headerLength < 2) return
+        // The length is judged as soon as it is read, before the mask, as in Netty's decoder.
+        if (frameLength < 0) {
+            if (headerLength < 2 + lengthBytes()) return
+            frameLength = readLength(ctx) ?: return
+        }
+        if (headerLength < 2 + lengthBytes() + 4) return
+        val m = 2 + lengthBytes()
+        mask = (header[m].toInt() and 0xFF shl 24) or (header[m + 1].toInt() and 0xFF shl 16) or (header[m + 2].toInt() and 0xFF shl 8) or (header[m + 3].toInt() and 0xFF)
+        val length = frameLength
+        headerLength = 0
+        frameLength = -1
+        beginFrame(ctx, length)
+    }
+
+    /** The frame's payload length, or null after refusing it: not minimal, negative, or a message past the cap. */
+    private fun readLength(ctx: ChannelHandlerContext): Long? {
         val length =
             when (val short = header[1].toInt() and 0x7F) {
                 126 -> {
                     ((header[2].toInt() and 0xFF) shl 8 or (header[3].toInt() and 0xFF)).toLong().also {
-                        if (it < 126) return violation(ctx, "invalid data frame length (not using minimal length encoding)")
+                        if (it < 126) return violation(ctx, "invalid data frame length (not using minimal length encoding)").let { null }
                     }
                 }
 
                 127 -> {
                     var l = 0L
                     for (i in 2 until 10) l = (l shl 8) or (header[i].toLong() and 0xFF)
-                    if (l < 0) return violation(ctx, "invalid data frame length (negative length)")
-                    if (l < 65_536) return violation(ctx, "invalid data frame length (not using minimal length encoding)")
+                    if (l < 0) return violation(ctx, "invalid data frame length (negative length)").let { null }
+                    if (l < 65_536) return violation(ctx, "invalid data frame length (not using minimal length encoding)").let { null }
                     l
                 }
 
@@ -142,10 +166,11 @@ internal class InboundFrameDecoder(
                     short.toLong()
                 }
             }
-        val m = headerSize() - 4
-        mask = (header[m].toInt() and 0xFF shl 24) or (header[m + 1].toInt() and 0xFF shl 16) or (header[m + 2].toInt() and 0xFF shl 8) or (header[m + 3].toInt() and 0xFF)
-        headerLength = 0
-        beginFrame(ctx, length)
+        val total = if (opcode == OPCODE_CONT) messageBytes + length else length
+        if (opcode <= 7 && total > limits.maxMessageBytes) {
+            return violation(ctx, "Max frame length of ${limits.maxMessageBytes} has been exceeded.", WebSocketCloseStatus.MESSAGE_TOO_BIG).let { null }
+        }
+        return length
     }
 
     /** The checks Netty's decoder makes once it has a frame's first two bytes, in its order and words. */
@@ -173,13 +198,12 @@ internal class InboundFrameDecoder(
         return problem == null
     }
 
-    private fun headerSize(): Int =
-        2 + 4 +
-            when (header[1].toInt() and 0x7F) {
-                126 -> 2
-                127 -> 8
-                else -> 0
-            }
+    private fun lengthBytes(): Int =
+        when (header[1].toInt() and 0x7F) {
+            126 -> 2
+            127 -> 8
+            else -> 0
+        }
 
     private fun beginFrame(
         ctx: ChannelHandlerContext,
@@ -193,9 +217,6 @@ internal class InboundFrameDecoder(
         } else {
             if (opcode != OPCODE_CONT) startMessage(opcode == OPCODE_TEXT)
             val total = messageBytes + length
-            if (total > limits.maxMessageBytes) {
-                return violation(ctx, "Max frame length of ${limits.maxMessageBytes} has been exceeded.", WebSocketCloseStatus.MESSAGE_TOO_BIG)
-            }
             messageBytes = total
             fragmented = !fin
             sink =
@@ -327,15 +348,15 @@ internal class InboundFrameDecoder(
         val code = body.getShort(body.readerIndex()).toInt()
         if (!WebSocketCloseStatus.isValidStatusCode(code)) return WebSocketCloseStatus.PROTOCOL_ERROR to "Invalid close frame getStatus code: $code"
         if (body.readableBytes() > 2) {
-            try {
+            // Not the end of input: like Netty's check, a reason cut inside a character passes, a wrong byte does not.
+            val reason = body.nioBuffer(body.readerIndex() + 2, body.readableBytes() - 2)
+            val result =
                 Charsets.UTF_8
                     .newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(body.nioBuffer(body.readerIndex() + 2, body.readableBytes() - 2))
-            } catch (_: CharacterCodingException) {
-                return WebSocketCloseStatus.INVALID_PAYLOAD_DATA to "bytes are not UTF-8"
-            }
+                    .decode(reason, CharBuffer.allocate(reason.remaining()), false)
+            if (result.isError) return WebSocketCloseStatus.INVALID_PAYLOAD_DATA to "bytes are not UTF-8"
         }
         return null
     }
