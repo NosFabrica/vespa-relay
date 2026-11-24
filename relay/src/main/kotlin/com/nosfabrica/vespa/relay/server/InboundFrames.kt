@@ -29,6 +29,9 @@ import io.netty.handler.codec.http.websocketx.PingWebSocketFrame
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.VarHandle
+import java.nio.ByteOrder
 import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 
@@ -78,6 +81,10 @@ internal class InboundFrameDecoder(
     private var payloadLength = 0L
     private var sink = Sink.SKIP
     private var control: ByteBuf? = null
+
+    /** Where the frame's bytes begin in the held message, and up to where they are unmasked: whole words as they come. */
+    private var frameStart = 0
+    private var unmaskedTo = 0
 
     // The data message the frame belongs to.
     private var fragmented = false
@@ -236,6 +243,10 @@ internal class InboundFrameDecoder(
                     limits.streamPastBytes != null && total > limits.streamPastBytes -> startScanning()
                     else -> hold(ctx, length)
                 }
+            message?.let {
+                frameStart = it.writerIndex()
+                unmaskedTo = frameStart
+            }
         }
         state = State.PAYLOAD
         if (length == 0L) endFrame(ctx)
@@ -284,11 +295,11 @@ internal class InboundFrameDecoder(
         val offset = (payloadRead and 3).toInt()
         when (sink) {
             Sink.CONTROL -> {
-                control!!.let { copyUnmasked(buf, n, it, offset) }
+                control!!.writeBytes(buf, n)
             }
 
             Sink.HOLD -> {
-                copyUnmasked(buf, n, message!!, offset)
+                holdBytes(buf, n)
             }
 
             Sink.SCAN -> {
@@ -304,20 +315,36 @@ internal class InboundFrameDecoder(
         if (payloadRead == payloadLength) endFrame(ctx)
     }
 
-    private fun copyUnmasked(
+    /** Copied in still masked; every whole 8-byte word from the frame's start is unmasked now, the rest at its end. */
+    private fun holdBytes(
         from: ByteBuf,
         n: Int,
-        to: ByteBuf,
-        offset: Int,
     ) {
-        val start = to.writerIndex()
-        to.writeBytes(from, n)
-        unmask(to, start, n, mask, offset)
+        val to = message!!
+        val at = to.writerIndex()
+        if (!to.hasArray()) {
+            to.writeBytes(from, n)
+            unmask(to, at, n, mask, (at - frameStart) and 3)
+            unmaskedTo = at + n
+            return
+        }
+        from.readBytes(to.array(), to.arrayOffset() + at, n)
+        to.writerIndex(at + n)
+        unmaskedTo = unmaskWords(to.array(), to.arrayOffset(), unmaskedTo, at + n, mask)
+    }
+
+    /** The bytes past the frame's last whole word, once it has all arrived. */
+    private fun finishUnmask() {
+        val to = message ?: return
+        val end = to.writerIndex()
+        if (unmaskedTo < end) unmask(to, unmaskedTo, end - unmaskedTo, mask, (unmaskedTo - frameStart) and 3)
+        unmaskedTo = end
     }
 
     private fun endFrame(ctx: ChannelHandlerContext) {
         state = State.HEADER
         if (sink == Sink.CONTROL) return endControlFrame(ctx)
+        if (sink == Sink.HOLD) finishUnmask()
         if (!fin) return
         val held = message
         val scanned = scanner
@@ -332,6 +359,7 @@ internal class InboundFrameDecoder(
     private fun endControlFrame(ctx: ChannelHandlerContext) {
         val body = control!!
         control = null
+        unmask(body, body.readerIndex(), body.readableBytes(), mask, 0)
         when (opcode) {
             OPCODE_PING -> {
                 ctx.fireChannelRead(PingWebSocketFrame(body))
@@ -411,6 +439,32 @@ internal class InboundFrameDecoder(
         private const val OPCODE_PING = 0x9
         private const val OPCODE_PONG = 0xA
     }
+}
+
+/** Big-endian longs over a byte array, at any index: the JDK's own word access, whatever Netty's is. */
+private val LONGS: VarHandle = MethodHandles.byteArrayViewVarHandle(LongArray::class.java, ByteOrder.BIG_ENDIAN)
+
+/**
+ * XORs whole 8-byte words of [array] (a buffer's backing array, from [base]) with [mask], from buffer index [from], a
+ * multiple of 8 past the frame's first byte, while a whole word lies before [to]; returns where it stopped.
+ */
+internal fun unmaskWords(
+    array: ByteArray,
+    base: Int,
+    from: Int,
+    to: Int,
+    mask: Int,
+): Int {
+    if (to - from < 8) return from
+    if (mask == 0) return from + (to - from) / 8 * 8
+    val wide = (mask.toLong() shl 32) or (mask.toLong() and 0xFFFFFFFFL)
+    var i = base + from
+    val end = base + to
+    while (i + 8 <= end) {
+        LONGS.set(array, i, LONGS.get(array, i) as Long xor wide)
+        i += 8
+    }
+    return i - base
 }
 
 /** XORs [length] bytes of [buf] from [start] with [mask], the first of them being byte [offset] of the frame's payload mod 4. */

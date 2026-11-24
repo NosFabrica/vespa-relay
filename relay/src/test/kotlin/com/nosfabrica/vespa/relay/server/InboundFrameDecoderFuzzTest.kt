@@ -270,4 +270,21 @@ class InboundFrameDecoderFuzzTest {
             assertEquals(netty, run(ours(), header, reads), ByteBufUtil.hexDump(header))
         }
     }
+
+    @Test
+    fun `a stream cut in two at every byte reads as Netty reads it`() {
+        val r = Random(7)
+        val out = ByteArrayOutputStream()
+        // Fragments of 13, 1 and 40 bytes around a ping, then a whole 300-byte frame: words and tails at every phase.
+        frame(r, out, 0x1, false, text(r, 13))
+        frame(r, out, 0x9, true, r.nextBytes(5))
+        frame(r, out, 0x0, false, text(r, 1))
+        frame(r, out, 0x0, true, text(r, 40))
+        frame(r, out, 0x1, true, text(r, 300))
+        val wire = out.toByteArray()
+        for (cut in 0..wire.size) {
+            val reads = listOf(cut, wire.size - cut).filter { it > 0 }
+            assertEquals(run(netty(), wire, reads), run(ours(), wire, reads), "cut at $cut of ${wire.size}")
+        }
+    }
 }
