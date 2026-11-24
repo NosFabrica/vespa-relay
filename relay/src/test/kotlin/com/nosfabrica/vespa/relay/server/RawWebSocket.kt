@@ -38,6 +38,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -276,4 +278,23 @@ internal class SlowIngest(
     override fun hasBacklog() = false
 
     override fun close() {}
+}
+
+/** Takes an event at once and answers it [delayMs] later from another thread, as IngestPipeline answers from a batch. */
+internal class LateIngest(
+    private val delayMs: Long,
+) : EventIngest {
+    private val timer = Executors.newSingleThreadScheduledExecutor()
+
+    override suspend fun submit(
+        event: Event,
+        skipVerify: Boolean,
+        onComplete: (IEventStore.InsertOutcome) -> Unit,
+    ) {
+        timer.schedule({ onComplete(IEventStore.InsertOutcome.Accepted) }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    override fun hasBacklog() = false
+
+    override fun close() = timer.shutdown()
 }

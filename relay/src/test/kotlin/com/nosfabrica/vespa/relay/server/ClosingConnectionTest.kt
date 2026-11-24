@@ -75,6 +75,22 @@ class ClosingConnectionTest {
     }
 
     @Test
+    fun `OKs a store gives after the message past the cap still precede the close`() {
+        val events = (0 until 5).map { signer.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "late $it") }
+        withRawRelay(native = true, maxFrameBytes = cap, ingest = LateIngest(2_500), soTimeoutMs = 15_000) { ws ->
+            for (e in events) ws.text("""["EVENT",${e.toJson()}]""")
+            ws.socket.getOutputStream().apply {
+                write(header(cap + 1L))
+                flush()
+            }
+            val frames = ws.untilClose()
+            val texts = frames.filter { it.opcode == 0x1 }.map { it.text }
+            for (e in events) assertTrue(texts.any { it.startsWith("""["OK","${e.id}",true""") }, "no OK for ${e.id}: ${texts.map { it.take(90) }}")
+            assertEquals(1009, frames.last().closeCode)
+        }
+    }
+
+    @Test
     fun `the NOTICE and the close reach a client still sending`() {
         val events = (0 until 300).map { signer.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "queued $it") }
         // A small window and no reading: the relay's answers wait in its own send queue, ahead of the NOTICE.

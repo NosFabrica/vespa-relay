@@ -338,8 +338,11 @@ frame got none), and a close with input still unread sends a reset, which
 discards whatever the relay had queued for the client, the NOTICE and the
 close frame included. Now input stops (reads go on, and the decoder drops what
 they bring in bulk), the NOTICE queues behind the answers, and the close frame
-goes out once the commands already read are answered (a tick at least, since
-an EVENT's OK waits on its write) or five seconds have passed. Then the output
+goes out once the commands already read are answered or five seconds have
+passed. Answered means counted: every EVENT and AUTH read is owed an OK, paid
+off as the OK passes the session's sink, because the pipeline answers from a
+batch long after the command has run (an inbox merely drained let OKs 2.5 s
+late find the connection closed). Then the output
 side shuts, so the client gets a FIN behind the close; the socket closes on its
 EOF, or five seconds later. A client that breaks the protocol gets its close
 code at once, still half-closed. Ktor closes on its own terms.

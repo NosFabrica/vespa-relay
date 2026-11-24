@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.server
 
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.server.FanoutExecutor
 import com.vitorpamplona.quartz.nip01Core.relay.server.LiveFrameSink
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelaySession
@@ -394,6 +395,9 @@ private class NativeWebSocketSession(
     private val inbox = Channel<Any>(Channel.UNLIMITED)
     private val inboxDepth = AtomicInteger()
     private val inboxChars = AtomicLong()
+
+    /** OKs this connection is owed: an EVENT or AUTH read and not yet answered, which a store may answer late. */
+    private val oksOwed = AtomicInteger()
     private var lastHeard = System.nanoTime()
     private var ticks = 0
 
@@ -407,7 +411,10 @@ private class NativeWebSocketSession(
                 object : SessionSink, LiveFrameSink {
                     override val liveExecutor: FanoutExecutor get() = loop
 
-                    override fun message(message: Message) = raw(message.toJson())
+                    override fun message(message: Message) {
+                        if (message is OkMessage) oksOwed.decrementAndGet()
+                        raw(message.toJson())
+                    }
 
                     override fun raw(json: String) = offer(json, json.length)
 
@@ -492,11 +499,14 @@ private class NativeWebSocketSession(
     private fun queue(item: Any) {
         lastHeard = System.nanoTime()
         val length = charsOf(item)
+        val owesOk = owesOk(if (item is OversizedMessage) item.head else item as String)
         val chars = inboxChars.addAndGet(length.toLong())
         val depth = inboxDepth.incrementAndGet()
+        if (owesOk) oksOwed.incrementAndGet()
         if (inbox.trySend(item).isFailure) {
             inboxChars.addAndGet(-length.toLong())
             inboxDepth.decrementAndGet()
+            if (owesOk) oksOwed.decrementAndGet()
         } else if (depth >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) {
             pauseReads()
         }
@@ -516,6 +526,16 @@ private class NativeWebSocketSession(
         val since = pausedSince
         if (since != IDLE) decoder.resumedAfter(since)
         pausedSince = IDLE
+    }
+
+    /** An EVENT or AUTH, which NIP-01 and NIP-42 owe an OK; one that never gets one is waited for until the grace ends. */
+    private fun owesOk(command: String): Boolean {
+        var i = 0
+        while (i < command.length && command[i].isWhitespace()) i++
+        if (i >= command.length || command[i] != '[') return false
+        i++
+        while (i < command.length && command[i].isWhitespace()) i++
+        return command.startsWith("\"EVENT\"", i) || command.startsWith("\"AUTH\"", i)
     }
 
     private fun charsOf(item: Any): Int = if (item is OversizedMessage) item.head.length else (item as String).length
@@ -763,7 +783,7 @@ private class NativeWebSocketSession(
     /** Answers can trail their commands (an EVENT's OK waits on its write), so the close waits at least a tick. */
     private fun closeWhenAnswered() {
         val waited = nowMs() - endingSince
-        val answered = inboxDepth.get() == 0 && outbox.isEmpty() && pendingLive == null && waited >= ANSWER_SETTLE_MS
+        val answered = inboxDepth.get() == 0 && oksOwed.get() <= 0 && outbox.isEmpty() && pendingLive == null && waited >= ANSWER_SETTLE_MS
         if (answered || waited >= CLOSE_GRACE_MS) endingClose?.let { sendClose(it) }
     }
 
