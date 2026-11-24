@@ -401,6 +401,27 @@ limit each, and a publisher's own window already buffers what it sends; the
 mirror's depth rides out download bursts the relay does not have. At the
 defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.
 
+**A narrow batch of publishes lingers, bounded and only while it is fed** (`BatchFill`,
+`RELAY_INGEST_LINGER_MS`, 20 ms). A worker took what was waiting and wrote it, so a publisher whose
+events arrive slower than the store writes got one narrow write per pass: a compressed resend
+stream (OkHttp deflating every frame on one thread, ~3,500 ev/s) made ~3,300 writes per 100k at
+~31 events each, against ~710 at ~140 uncompressed, and the relay spent ~250 µs an event against
+~130, because every write pays the store's per-batch work and a batch under the probe's 128 also
+checks every resend's signature. Now a batch that already had events queued behind its first, and
+is under half the batch size, waits up to the bound for more; a lone EVENT never waits. Two
+simpler stops were measured and dropped. A fixed silence (2 ms, then 5) ended most waits early,
+because a stream reaches the channel in clumps 3-10 ms apart: 2 ms kept ~1,700 writes. And no
+stop at all cost publishers that each await their OK 22-64%, since they stop sending while the
+batch waits: 20 such clients resending ran at ~600 ev/s against ~1,650. So the fill learns
+instead, as `ProbeGate` does: each wait is scored by how late into it events still arrived (a
+stream ~0.85, waiting publishers ~0.15), an average below one half stops the waiting, and one
+eligible batch in 256 waits anyway, so a stream that starts later is noticed. The average falls
+slowly (weight 1/8, against a stream's clumps) and rises fast from a sample (1/2). 10 ms reached
+~1,160 writes, 20 ms ~740, 50 ms ~470 for little more CPU saved. Only the relay's publishes take
+it: the mirror lane and the sync's own pipeline keep 0, since their queues are deep and the
+sync's writer already sends whole batches; neither was measured with a linger. With more than one
+worker the fill is taken in turns, or an idle worker would take the events a waiting one waits for.
+
 ## Text a Vespa string field cannot hold is refused, by design
 
 An event whose `content` or a tag value carries a code point Vespa's string

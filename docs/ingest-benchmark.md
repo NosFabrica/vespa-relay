@@ -223,3 +223,52 @@ The extra refusal is the 1 MB event's own `invalid: message too large`. The 99,9
 lower than the 1,424-1,452 measured earlier the same day, for main's build and this one alike, so
 that is the box, not the fix. The last row is the native transport reading the 1 MB event without holding it (it
 passes the engine's length, so it is scanned for its id, not buffered), with the 16 MiB cap.
+
+### A narrow batch of publishes lingers
+
+Measured 2026-11-24, the same box and harness, `CPUS=0-2`, the 100k slice (231 refused, 0
+unanswered in every arm); one fill, then the resend arms alternated in three rotated rounds on its
+store, then two fresh arms each. The baseline is `6a3794c`; this change ran its default
+(`RELAY_INGEST_LINGER_MS` unset, 20 ms). "Compression" is the relay's `WEBSOCKET_COMPRESSION`: on,
+the publisher (OkHttp) deflates every frame over 1 KB on its one writer thread, so events arrive at
+~3,500 ev/s instead of ~7,500. Writes and events per write are the relay's last `store-metrics`
+`BatchInsert` line; `amy` is the publisher's own CPU. Means, ± half the range:
+
+| arm | ev/s | relay µs/ev | Vespa µs/ev | OK p50 / p99 ms | writes | events/write | amy CPU s |
+|---|---|---|---|---|---|---|---|
+| resend, compression on, baseline (3) | 3,513 ±85 | 253 ±22 | 189 ±47 | 390 / 770 | 3,275 ±366 | 31 ±4 | 33.6 |
+| resend, compression on, linger (3) | **4,111 ±30** | **196 ±6** | **99 ±4** | 340 / 582 | **743 ±26** | 134 ±5 | 31.9 |
+| resend, compression off, baseline (3) | 7,489 ±279 | 132 ±2 | 71 ±13 | 138 / 358 | 708 ±26 | 141 ±6 | 19.0 |
+| resend, compression off, linger (3) | **8,134 ±177** | **117 ±2** | 58 ±6 | 124 / 305 | **415 ±13** | 240 ±8 | 18.6 |
+| fresh, baseline (2) | 1,287 ±25 | 422 ±0 | 1,329 ±25 | 1,146 / 2,352 | 1,536 ±15 | 163 | 34.8 |
+| fresh, linger (2) | 1,357 ±61 | 395 ±23 | 1,245 ±53 | 1,078 / 2,330 | 1,530 ±4 | 164 | 33.8 |
+
+- **Compressed resends write 4.4x fewer, wider batches**, and the relay's CPU per event falls 23%,
+  Vespa's by half; the rate rises 17%, since the three cores the relay and Vespa stop using are
+  the publisher's too. Batches over 128 also let the id probe drop the resends before their
+  signatures are checked.
+- **The uncompressed fast path improves too** (11% less relay CPU, 9% faster): its ~140-event
+  batches still waited on arrivals. A fresh upload's queue is already deep, so its writes do not
+  change.
+- **The bound was chosen on the same stream**, compressed resends, one arm each: 10 ms made
+  ~1,100-1,160 writes, 20 ms ~740, 50 ms ~470 (relay 234-239, 203, 190 µs/ev). A fixed 2 ms
+  silence ending the wait kept ~1,650-1,730 at any bound from 5 to 40 ms, and with no stop at all, 20 publishers each
+  awaiting their OK lost 22% (fresh notes) to 64% (resends); see the decision in
+  [decisions/ingest.md](decisions/ingest.md).
+
+Publishers awaiting their OK, on the kept store, alternated (`closed-loop.mjs`-style clients: each
+sends one EVENT, awaits its OK, sends the next):
+
+| case | baseline | linger |
+|---|---|---|
+| one EVENT at a time, 100 ms apart, 50 of them, OK p50 / p90 ms (two runs) | 20.8 / 28.6 · 19.3 / 24.2 | 19.9 / 24.6 · 21.1 / 26.2 |
+| two EVENTs at once, 50 pairs, OK p50 / p90 ms | 20.6 / 35.7 · 20.6 / 32.3 | 20.6 / 38.7 · 21.0 / 39.5 |
+| 20 clients, fresh kind 1 notes, ev/s (OK p50 ms) | 656 (27.0) · 708 (26.5) | 699 (26.9) · 655 (27.8) |
+| 20 clients, resends, ev/s (OK p50 ms) | 1,816 (9.3) · 1,828 (9.4) | 1,670 (9.6) · 1,625 (10.3) |
+| 20 clients, resends, 20,000 events, ev/s, sampling 1 batch in 256 | 1,929 · 2,221 | 1,915 · 2,030 |
+
+A lone EVENT is never held, and its OK reads as before (the ~20 ms is the store's write). The rows
+above the last ran with the gate sampling one batch in 64; the waiting publishers' resends then
+lost ~10%, most of it the sampled waits, so the shipped gate samples one in 256 (the last row,
+~4%, inside that load's spread). Two compressed resend arms on that build: 4,049 and 4,285 ev/s,
+184 and 178 µs/ev, 679 and 714 writes.

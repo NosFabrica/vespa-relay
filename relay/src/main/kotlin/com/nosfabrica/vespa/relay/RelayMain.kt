@@ -533,7 +533,7 @@ private fun startIngest(
     val tuning = boot.ingest.tuning
     println(
         "relay: publishes write through " +
-            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
+            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s), a narrow batch waiting up to ${it.lingerMs}ms for more" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
     return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
 }

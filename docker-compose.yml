@@ -287,6 +287,7 @@ services:
       # Mean read latency (ms) above which the mirror lane yields; the sync reads it too.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       RELAY_INGEST_QUEUE_MB: ${RELAY_INGEST_QUEUE_MB:-}
+      RELAY_INGEST_LINGER_MS: ${RELAY_INGEST_LINGER_MS:-}
       # The store's feed transport: none here, where Vespa is a container on
       # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
       # when VESPA_URL is across a WAN.

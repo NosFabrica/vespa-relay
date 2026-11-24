@@ -170,7 +170,7 @@ peers/…/relay/
   fold/                       FoldReading, RelayAliases, ServerIndex, StoredFold: the duplicate-url fold as 30166
                               records state it, read by the mirror's roster and the monitor's passes alike
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
-                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
+                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BatchFill, BisectingInsert, ProbeGate,
                               ProbeTrouble, ParseAudit, refused/, IngestTarget (the relay dial and its NIP-11 key
                               check, for both client processes); Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)

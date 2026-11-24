@@ -52,6 +52,8 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -112,6 +114,11 @@ class IngestPipeline(
 
     private val inbound = Channel<Inbound>(capacity)
 
+    private val fill = BatchFill(batchSize, tuning.lingerMs)
+
+    /** One worker fills at a time while batches linger, or an idle worker would take the events a lingering one waits for. */
+    private val fillTurn = if (workers > 1 && tuning.lingerMs > 0) Mutex() else null
+
     /** Threads the ingest workers own outright, so batch work stays off the shared pool. */
     private val pool =
         Executors
@@ -137,6 +144,9 @@ class IngestPipeline(
      * submit as surely as a full channel does, before it is ever counted as queued.
      */
     fun hasHeadroom(): Boolean = queued.get() <= capacity / 2 && (intakeBudget?.let { it.heldBytes <= it.limit / 2 } ?: true)
+
+    /** Room in the byte budget: while it is spent, submits park and a lingering batch waits for nothing. */
+    private fun budgetOpen(): Boolean = intakeBudget?.let { it.heldBytes < it.limit } ?: true
 
     val accepted = AtomicLong()
     val rejected = AtomicLong()
@@ -298,15 +308,11 @@ class IngestPipeline(
 
     private suspend fun drain(worker: Int) {
         val batch = ArrayList<Inbound>(batchSize)
+        val source = inbound.asBatchSource()
         while (scope.isActive) {
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
-            val first = inbound.receiveCatching().getOrNull() ?: break
-            batch.clear()
-            batch.add(first)
-            while (batch.size < batchSize) {
-                val next = inbound.tryReceive().getOrNull() ?: break
-                batch.add(next)
-            }
+            val open = fillTurn?.withLock { fill.fill(source, batch, ::budgetOpen) } ?: fill.fill(source, batch, ::budgetOpen)
+            if (!open) break
             // Around the whole pass: the only record that a worker is inside a store round trip.
             // Marked before the batch leaves [queued], so hasBacklog() never reads an event that
             // is out of the channel and not yet answered as no backlog at all.
@@ -995,7 +1001,7 @@ data class AddressVersion(
     fun beats(event: Event): Boolean = createdAt > event.createdAt || (createdAt == event.createdAt && id < event.id)
 }
 
-/** `SYNC_INGEST_CONCURRENCY`, `SYNC_INGEST_BATCH` and `VESPA_DEDUP_CHUNK`, read at boot. A type so a caller cannot swap them. */
+/** `SYNC_INGEST_CONCURRENCY`, `SYNC_INGEST_BATCH` and `VESPA_DEDUP_CHUNK` (the relay's `RELAY_*INGEST_*`), read at boot. A type so a caller cannot swap them. */
 data class IngestTuning(
     val concurrency: Int,
     val batch: Int,
@@ -1015,4 +1021,10 @@ data class IngestTuning(
      * a flood of such events take the heap. One event over the budget is still admitted alone.
      */
     val queueBytes: Long? = null,
+    /**
+     * How long a narrow batch may wait for more while events keep arriving ([BatchFill]); 0 writes
+     * whatever is waiting at once. The relay's publishes set it, since a trickle of them otherwise
+     * makes one narrow write each; the mirror's queue is deep enough not to need it.
+     */
+    val lingerMs: Long = 0,
 )

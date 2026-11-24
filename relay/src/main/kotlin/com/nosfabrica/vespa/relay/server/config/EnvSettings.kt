@@ -209,7 +209,8 @@ fun ingestBatchFromEnv(
 /**
  * How publishes reach the store. `RELAY_INGEST=pipeline` (the default) writes them through the
  * mirror's [com.nosfabrica.vespa.relay.ingest.IngestPipeline], `RELAY_INGEST_CONCURRENCY` workers
- * wide, holding at most `RELAY_INGEST_QUEUE_MB` of parsed publishes; `queue` keeps quartz's
+ * wide, holding at most `RELAY_INGEST_QUEUE_MB` of parsed publishes, a narrow batch waiting up to
+ * `RELAY_INGEST_LINGER_MS` for more while publishes keep arriving; `queue` keeps quartz's
  * single-writer [IngestQueue]. Null [tuning] means the queue.
  */
 data class RelayIngest(
@@ -226,6 +227,7 @@ fun relayIngestFromEnv(
             // Read anyway: a malformed value stops the boot in either mode, like every strict setting.
             env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
             env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536)
+            env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS)
             RelayIngest(null, ingestBatchFromEnv(env))
         }
 
@@ -233,12 +235,20 @@ fun relayIngestFromEnv(
             val batch = ingestBatchFromEnv(env, DEFAULT_PIPELINE_BATCH)
             val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PUBLISH_CONCURRENCY
             val queueMb = env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
+            val lingerMs = env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS) ?: DEFAULT_PUBLISH_LINGER_MS
             // One batch per worker waiting: enough to keep every worker fed, and no deeper, since
             // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
             // And a byte bound over waiting plus in-pass events, because a count is no bound on
             // bytes when every publish may be a full frame.
             RelayIngest(
-                IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L),
+                IngestTuning(
+                    concurrency,
+                    batch,
+                    dedupChunk = engine.dedupWidth(),
+                    queue = batch * concurrency,
+                    queueBytes = queueMb * 1_048_576L,
+                    lingerMs = lingerMs.toLong(),
+                ),
                 batch,
             )
         }
@@ -288,6 +298,15 @@ private const val DEFAULT_PUBLISH_CONCURRENCY = 1
  * ~400 MB real; typical kind 3s (~53 KB) stay under the count cap long before this.
  */
 private const val DEFAULT_PIPELINE_QUEUE_MB = 512
+
+/**
+ * How long a narrow batch of publishes may wait for more while they keep arriving: the most the
+ * pipeline adds to any publish's OK. Why 20 and not 10 is measured in docs/ingest-benchmark.md.
+ */
+private const val DEFAULT_PUBLISH_LINGER_MS = 20
+
+/** A linger past this is a latency no publisher would accept for a wider write. */
+private const val MAX_PUBLISH_LINGER_MS = 1_000
 
 /** The largest batch docs/decisions/ingest.md measured through the store (2 x 8192). */
 private const val MAX_INGEST_BATCH = 8_192
