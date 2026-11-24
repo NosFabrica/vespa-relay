@@ -88,6 +88,8 @@ fun serveRelay(
     limits: RelayLimits = defaultRelayLimits(),
     // The largest websocket message read (MAX_FRAME_BYTES); past the engine's length, under this, one is refused by id.
     maxFrameBytes: Int = defaultMaxFrameBytes(limits),
+    // How long the native transport holds a message that has not finished arriving.
+    openMessageDeadlineMs: Long = OPEN_MESSAGE_DEADLINE_MS,
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
@@ -135,7 +137,10 @@ fun serveRelay(
 
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
-        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes, onionLocation) }
+        if (nativeWebSocket) {
+            val inbound = NativeInbound(InboundLimits(maxFrameBytes.toLong(), limits.maxMessageLength?.let { it * 3L }), limits.maxMessageLength, openMessageDeadlineMs)
+            channelPipelineConfig = { installNativeWebSocket(relay, inbound, onionLocation) }
+        }
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }

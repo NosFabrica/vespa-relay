@@ -35,7 +35,6 @@ import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.ChannelPipeline
 import io.netty.channel.EventLoop
-import io.netty.handler.codec.TooLongFrameException
 import io.netty.handler.codec.http.DefaultFullHttpRequest
 import io.netty.handler.codec.http.DefaultHttpHeaders
 import io.netty.handler.codec.http.EmptyHttpHeaders
@@ -50,9 +49,7 @@ import io.netty.handler.codec.http.websocketx.PingWebSocketFrame
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus
-import io.netty.handler.codec.http.websocketx.WebSocketDecoderConfig
 import io.netty.handler.codec.http.websocketx.WebSocketFrame
-import io.netty.handler.codec.http.websocketx.WebSocketFrameAggregator
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory
 import io.netty.util.ReferenceCountUtil
@@ -75,6 +72,9 @@ import java.util.concurrent.atomic.AtomicLong
 private val KTOR_HTTP1_HANDLERS = listOf("readTimeout", "continue", "timeout", "http1")
 private const val KTOR_HTTP1 = "http1"
 
+/** Where the handshake puts its frame decoder, which [InboundFrameDecoder] replaces. */
+private const val WS_DECODER = "wsdecoder"
+
 /** Live bodies up to this size are copied into a socket's batch; larger ones are written as a shared duplicate. */
 private const val LIVE_COPY_MAX_BYTES = 4_096
 
@@ -90,6 +90,9 @@ private const val RESUME_READS_AT = 16
 private const val PAUSE_READS_AT_CHARS = 16L * 1024 * 1024
 private const val RESUME_READS_AT_CHARS = PAUSE_READS_AT_CHARS / 4
 
+/** How long a message may take to arrive while its bytes are held. */
+internal const val OPEN_MESSAGE_DEADLINE_MS = 120_000L
+
 private val inboundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 /**
@@ -98,15 +101,25 @@ private val inboundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
  */
 internal fun ChannelPipeline.installNativeWebSocket(
     relay: NostrRelayServer,
-    maxFrameBytes: Int,
+    inbound: NativeInbound,
     onionLocation: () -> String?,
 ) {
-    if (get(KTOR_HTTP1) != null) addBefore(KTOR_HTTP1, "nostrUpgrade", NativeWebSocketUpgrade(relay, maxFrameBytes, onionLocation))
+    if (get(KTOR_HTTP1) != null) addBefore(KTOR_HTTP1, "nostrUpgrade", NativeWebSocketUpgrade(relay, inbound, onionLocation))
 }
+
+/**
+ * How the native transport reads: [frames] bounds a message, [maxMessageLength] is the engine's, which a
+ * streamed message is padded past so quartz refuses it, and [openMessageDeadlineMs] bounds a held one.
+ */
+internal class NativeInbound(
+    val frames: InboundLimits,
+    val maxMessageLength: Int?,
+    val openMessageDeadlineMs: Long,
+)
 
 private class NativeWebSocketUpgrade(
     private val relay: NostrRelayServer,
-    private val maxFrameBytes: Int,
+    private val inbound: NativeInbound,
     private val onionLocation: () -> String?,
 ) : ChannelInboundHandlerAdapter() {
     override fun channelRead(
@@ -121,25 +134,19 @@ private class NativeWebSocketUpgrade(
         val request = DefaultFullHttpRequest(msg.protocolVersion(), msg.method(), msg.uri(), Unpooled.EMPTY_BUFFER, msg.headers(), EmptyHttpHeaders.INSTANCE)
         ReferenceCountUtil.release(msg)
         val host = msg.headers()[HttpHeaderNames.HOST].orEmpty()
-        // The session closes on a protocol violation itself, so a message past the cap gets a NOTICE first.
-        val decoder =
-            WebSocketDecoderConfig
-                .newBuilder()
-                .maxFramePayloadLength(maxFrameBytes)
-                .allowExtensions(false)
-                .closeOnProtocolViolation(false)
-                .build()
         val handshaker =
-            WebSocketServerHandshakerFactory("ws://$host/", null, decoder).newHandshaker(request)
+            WebSocketServerHandshakerFactory("ws://$host/", null, false).newHandshaker(request)
                 ?: return WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel()).let { }
         // Every check the handshake makes is behind us before the pipeline changes or a session connects.
         val pipeline = ctx.pipeline()
         for (name in KTOR_HTTP1_HANDLERS) if (pipeline.get(name) != null) pipeline.remove(name)
-        pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker, maxFrameBytes))
-        pipeline.addBefore("nostrSocket", "wsAggregator", WebSocketFrameAggregator(maxFrameBytes))
+        val decoder = InboundFrameDecoder(inbound.frames)
+        pipeline.replace(this, "nostrSocket", NativeWebSocketSession(relay, handshaker, decoder, inbound))
         val headers = DefaultHttpHeaders()
         if (!host.substringBefore(':').endsWith(".onion", ignoreCase = true)) onionLocation()?.let { headers.set("Onion-Location", it) }
         handshaker.handshake(ctx.channel(), request, headers, ctx.channel().newPromise()).addListener { if (!it.isSuccess) ctx.close() }
+        // The handshake installs Netty's decoder before it returns, on this loop, so no frame has been read by it.
+        if (pipeline.get(WS_DECODER) != null) pipeline.replace(WS_DECODER, WS_DECODER, decoder)
     }
 
     /** A whole RFC 6455 upgrade on `/`; anything less is Ktor's to answer, as it was before this handler. */
@@ -352,7 +359,8 @@ private class LiveFrame(
 private class NativeWebSocketSession(
     private val relay: NostrRelayServer,
     private val handshaker: WebSocketServerHandshaker,
-    private val maxFrameBytes: Int,
+    private val decoder: InboundFrameDecoder,
+    private val inbound: NativeInbound,
 ) : ChannelInboundHandlerAdapter() {
     private lateinit var context: ChannelHandlerContext
     private lateinit var channel: io.netty.channel.Channel
@@ -372,7 +380,8 @@ private class NativeWebSocketSession(
     private var closing = false
     private val ended = AtomicBoolean()
 
-    private val inbox = Channel<String>(Channel.UNLIMITED)
+    /** Commands read and not yet run: a String, or an [OversizedMessage]. */
+    private val inbox = Channel<Any>(Channel.UNLIMITED)
     private val inboxDepth = AtomicInteger()
     private val inboxChars = AtomicLong()
     private var lastHeard = System.nanoTime()
@@ -413,11 +422,12 @@ private class NativeWebSocketSession(
         reader =
             inboundScope.launch {
                 try {
-                    for (text in inbox) {
-                        val chars = inboxChars.addAndGet(-text.length.toLong())
-                        val crossedChars = chars <= RESUME_READS_AT_CHARS && chars + text.length > RESUME_READS_AT_CHARS
+                    for (item in inbox) {
+                        val length = charsOf(item)
+                        val chars = inboxChars.addAndGet(-length.toLong())
+                        val crossedChars = chars <= RESUME_READS_AT_CHARS && chars + length > RESUME_READS_AT_CHARS
                         if (inboxDepth.decrementAndGet() == RESUME_READS_AT || crossedChars) channel.eventLoop().execute(resumeReads)
-                        session.receive(text)
+                        session.receive(if (item is OversizedMessage) refusable(item) else item as String)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -439,6 +449,7 @@ private class NativeWebSocketSession(
         ctx: ChannelHandlerContext,
         msg: Any,
     ) {
+        if (msg is OversizedMessage) return queue(msg)
         if (msg !is WebSocketFrame) {
             // The upgrade request's empty trailer, decoded before the codec was swapped out.
             ReferenceCountUtil.release(msg)
@@ -449,15 +460,7 @@ private class NativeWebSocketSession(
             is TextWebSocketFrame -> {
                 val text = msg.text()
                 msg.release()
-                // Counted before it is queued: the reader may take it, and count it out, at once.
-                val chars = inboxChars.addAndGet(text.length.toLong())
-                val depth = inboxDepth.incrementAndGet()
-                if (inbox.trySend(text).isFailure) {
-                    inboxChars.addAndGet(-text.length.toLong())
-                    inboxDepth.decrementAndGet()
-                } else if (depth >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) {
-                    channel.config().isAutoRead = false
-                }
+                queue(text)
             }
 
             is PingWebSocketFrame -> {
@@ -473,6 +476,28 @@ private class NativeWebSocketSession(
             }
         }
     }
+
+    /** A command for the reader, counted before it is queued: the reader may take it, and count it out, at once. */
+    private fun queue(item: Any) {
+        lastHeard = System.nanoTime()
+        val length = charsOf(item)
+        val chars = inboxChars.addAndGet(length.toLong())
+        val depth = inboxDepth.incrementAndGet()
+        if (inbox.trySend(item).isFailure) {
+            inboxChars.addAndGet(-length.toLong())
+            inboxDepth.decrementAndGet()
+        } else if (depth >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) {
+            channel.config().isAutoRead = false
+        }
+    }
+
+    private fun charsOf(item: Any): Int = if (item is OversizedMessage) item.head.length else (item as String).length
+
+    /**
+     * The head of a message too long for the engine, padded past its length: quartz refuses it on length
+     * and reads the id or sub id off the head, so the answer is quartz's own. Remove with [FrameIdScanner].
+     */
+    private fun refusable(message: OversizedMessage): String = message.head.padEnd((inbound.maxMessageLength ?: message.head.length) + 1)
 
     /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
     private val resumeReads =
@@ -605,6 +630,12 @@ private class NativeWebSocketSession(
         ctx.fireChannelWritabilityChanged()
     }
 
+    /** A message whose bytes are held has been arriving for longer than the deadline, pings or not. */
+    private fun heldTooLong(): Boolean {
+        val since = decoder.holdingSince
+        return since != InboundFrameDecoder.IDLE && (System.nanoTime() - since) / 1_000_000 >= inbound.openMessageDeadlineMs
+    }
+
     private fun stalled(): Boolean {
         if (queuedChars.get() <= MAX_OUTGOING_CHARS) return false
         val since = unwritableSince
@@ -626,6 +657,14 @@ private class NativeWebSocketSession(
     fun tick() {
         if (closing) return
         if (stalled()) return disconnectSlowConsumer()
+        if (heldTooLong()) {
+            val seconds = inbound.openMessageDeadlineMs / 1_000
+            decoder.discard()
+            return closeAfter(
+                NoticeMessage("error: a message took over $seconds s to arrive; closing").toJson(),
+                CloseWebSocketFrame(WebSocketCloseStatus.POLICY_VIOLATION, "message not finished within $seconds s"),
+            )
+        }
         if (!outbox.isEmpty() && channel.isWritable) drain()
         // Paused reads are our backlog, not the peer's silence: its pongs wait unread behind its commands.
         if (!channel.config().isAutoRead) {
@@ -647,12 +686,13 @@ private class NativeWebSocketSession(
         ctx: ChannelHandlerContext,
         cause: Throwable,
     ) {
+        val maxBytes = inbound.frames.maxMessageBytes
         when {
-            // A frame past the cap from its header, or a fragmented message past it from the aggregator.
-            cause is TooLongFrameException || (cause is CorruptedWebSocketFrameException && cause.closeStatus() == WebSocketCloseStatus.MESSAGE_TOO_BIG) -> {
+            // A message past the cap, judged from the header of the frame that passes it.
+            cause is CorruptedWebSocketFrameException && cause.closeStatus() == WebSocketCloseStatus.MESSAGE_TOO_BIG -> {
                 closeAfter(
-                    NoticeMessage("error: a message over $maxFrameBytes bytes is past this relay's websocket limit; closing").toJson(),
-                    CloseWebSocketFrame(WebSocketCloseStatus.MESSAGE_TOO_BIG, "message over $maxFrameBytes bytes"),
+                    NoticeMessage("error: a message over $maxBytes bytes is past this relay's websocket limit; closing").toJson(),
+                    CloseWebSocketFrame(WebSocketCloseStatus.MESSAGE_TOO_BIG, "message over $maxBytes bytes"),
                 )
             }
 

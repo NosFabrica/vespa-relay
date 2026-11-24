@@ -205,8 +205,9 @@ flight, the same JSON summary), and the slice was a fresh pull of ditto's newest
 
 Until 2026-11-24 the websocket's frame cap was the engine's length in bytes, so one 1,014,148-byte
 kind 3 (line 18,819 of the 100k slice) closed the publisher's socket: it stalled ~30 s and counted
-1,540 EVENTs unanswered, the ones in flight with it. The cap is now `MAX_FRAME_BYTES` (4 MiB),
-and a frame between the engine's length and it reaches quartz, which answers `OK false` by id
+1,540 EVENTs unanswered, the ones in flight with it. The cap is now `MAX_FRAME_BYTES` (4 MiB then,
+16 MiB since the native transport streams such a message), and a message between the engine's
+length and it is answered `OK false` by id
 ([the decision](decisions/relay-server.md)). Same box and harness as above, `CPUS=0-2`; the first
 row is from earlier that day, the other four arms ran back to back:
 

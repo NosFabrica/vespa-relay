@@ -449,7 +449,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   before OK", while smaller oversized events were refused by id as they should
   be. Unit tests sent one frame per connection and saw a tidy 1009. The cap
   (`MAX_FRAME_BYTES`) now sits far above the engine's length, so quartz answers
-  an oversized EVENT `OK false`; only a frame past a memory bound closes. **A
+  an oversized EVENT `OK false`; only a message past that bound closes. Raising
+  a cap that Netty's decoder enforces raises what it holds: it buffers a whole
+  frame, so the native transport reads past the engine's length without
+  holding (`InboundFrameDecoder`). **A
   limit enforced by closing the transport costs everything multiplexed on it;
   refuse inside the protocol wherever the protocol can say no.**
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting

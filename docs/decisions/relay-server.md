@@ -287,29 +287,40 @@ when the writer has waited 30s on one frame, checked on every offer and once a
 second; a non-reader holds at most what arrives in that window, still under the
 8192-frame bound, and the frame bound is unchanged.
 
-**The websocket's frame cap is a memory bound, not the engine's message length
-(`MAX_FRAME_BYTES`, 4 MiB).** Ktor's default is unbounded, and both transports
-judge a frame from its header, so an anonymous client could declare a gigabyte
-and have the server try to hold it; a cap is needed. It used to be the engine's
-length at three bytes per character (786,432 with the default 256 KiB), and
-that cap closed the connection: on 2026-11-24 one real 1,014,148-byte kind 3 in
-a bulk publish dropped the socket and the ~1,500 EVENTs in flight on it, which
-NIP-01 owed an OK each, while events between the engine's length and the cap
-were answered `OK false` by id. Netty's decoder buffers a whole frame before
-anything reads it, so the cap is what one connection can pin mid-frame: 4 MiB
-is four times the largest follow list seen in a 100k kind-3 slice, and two of
-them (the decoder's and the decoded string) are less than one connection's
-inbox may already queue. A frame under it reaches `RelaySession`, whose length
-check costs a `String.length` and whose id reader is one scan that stops at the
-top-level `"id"`. The floor is the engine's length in bytes, so the engine
-always decides first. Fragments are bounded by the same cap in aggregate (the
-native aggregator, Ktor's own check). Past it the socket still closes, with
-1009 and a reason; the native transport sends a NOTICE first, Ktor has no hook
-for one.
+**A message the engine cannot take is answered by id, and on the native
+transport it is read without being held.** The websocket cap was the engine's
+length at three bytes per character (786,432 with the default 256 KiB), and it
+closed the connection: on 2026-11-24 one real 1,014,148-byte kind 3 in a bulk
+publish dropped the socket and the ~1,500 EVENTs in flight on it, which NIP-01
+owed an OK each. Raising the cap to 4 MiB fixed that and cost memory, because
+Netty's decoder holds a whole frame before anything reads it: one 3 MB frame
+peaked at 7.2 MB of buffers (the cumulation, doubled past 4 MiB, plus its copy)
+before the decoded string, and a fragmented message held just under the cap
+with a ping every 30 s stayed pinned for good. So `InboundFrameDecoder`
+replaces Netty's decoder and aggregator: it makes the same checks with the same
+close codes, copies a frame's payload as it arrives into a buffer of its exact
+size, and once a message passes the engine's length in bytes (past which quartz
+would refuse it whatever its characters) it stops holding it and scans it a
+byte at a time for the top-level event id, as quartz's `eventIdOfFrame` reads
+it, keeping only the first 64 KiB. Quartz then gets that head padded past its
+length, so the answer (`OK false` by id, `CLOSED` on a sub id, else a NOTICE),
+its reason and its lane are quartz's own; the padding costs no more than one
+message the engine would take. A held message must finish within two minutes
+whatever pings come with it (1008). What one connection holds of its input is
+then the inbox and one message of at most the engine's length, once as bytes
+and once as the decoded string: about 1.6 MB at the defaults, and at the
+shipped `MAX_MESSAGE_LENGTH=15728640` about 45 MiB of bytes and up to 30 MiB of
+string, where Netty's path held three to four times the message.
+
+**`MAX_FRAME_BYTES` is a bound on reading, not on memory.** On the native
+transport it ends a message that passes it (16 MiB by default, past every real
+event), with a NOTICE and 1009, judged from the header of the frame that
+passes it; before that a message costs a scan, not a buffer. Its floor is the
+engine's length in bytes, so a message the engine may take is never cut short.
 
 **The native inbox pauses reads on characters as well as commands.** A
 connection's reads paused at 64 queued commands, which bounded it only while a
-command was small: 64 frames at the 4 MiB cap is 256 MiB of strings. It also
+command was small: 64 messages at the engine's length in bytes is 50 MB. It also
 pauses at 16M queued characters (64 messages at the default engine length) and
 resumes under a quarter of that, so ordinary traffic still meets the count
 first and a run of large frames holds at most the budget and one frame.

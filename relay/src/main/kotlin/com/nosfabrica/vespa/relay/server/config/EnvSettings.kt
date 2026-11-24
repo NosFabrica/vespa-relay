@@ -108,8 +108,11 @@ fun maxFrameBytesFromEnv(
     limits: RelayLimits,
 ): Int = env.strictInt("MAX_FRAME_BYTES", messageBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()..Int.MAX_VALUE) ?: defaultMaxFrameBytes(limits)
 
-/** Several times the largest real follow list, and what one connection's decoder may hold of a frame (docs/decisions/relay-server.md). */
-const val DEFAULT_MAX_FRAME_BYTES = 4 * 1_048_576
+/**
+ * Past every real event, and a bound on what one message may make the relay read: past the engine's length
+ * the native transport streams a message without holding it, Ktor holds it whole (docs/decisions/relay-server.md).
+ */
+const val DEFAULT_MAX_FRAME_BYTES = 16 * 1_048_576
 
 /** Room for the smallest EVENT frame: an event's id, pubkey and signature alone are 256 characters. */
 private const val MIN_MESSAGE_LENGTH = 512

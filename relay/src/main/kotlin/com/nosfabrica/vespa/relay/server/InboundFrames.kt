@@ -1,0 +1,672 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.server
+
+import io.netty.buffer.ByteBuf
+import io.netty.channel.ChannelHandlerContext
+import io.netty.channel.ChannelInboundHandlerAdapter
+import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame
+import io.netty.handler.codec.http.websocketx.CorruptedWebSocketFrameException
+import io.netty.handler.codec.http.websocketx.PingWebSocketFrame
+import io.netty.handler.codec.http.websocketx.PongWebSocketFrame
+import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
+import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+
+/**
+ * What the native transport reads of one message: a text message up to [streamPastBytes] is held and
+ * handed on whole; past it, it streams through a [FrameIdScanner] and only its head is kept; past
+ * [maxMessageBytes] the connection closes. [streamPastBytes] is null when the engine has no length limit.
+ */
+internal class InboundLimits(
+    val maxMessageBytes: Long,
+    val streamPastBytes: Long?,
+    val headBytes: Int = HEAD_BYTES,
+)
+
+/** Kept of a streamed message: room for a frame's label and sub id, or an event's id read late. */
+internal const val HEAD_BYTES = 65_536
+
+/**
+ * A text message too long for the engine, read without being held: [head] is what quartz needs to
+ * refuse it by id, `["EVENT",{"id":…}]` when the scan found the id, else the message's first bytes.
+ */
+internal class OversizedMessage(
+    val head: String,
+)
+
+/**
+ * RFC 6455 frames in, whole messages out, replacing Netty's decoder and aggregator: each check and
+ * close code is theirs, but a frame's payload is copied as it arrives into a buffer of its exact size,
+ * and a message past [InboundLimits.streamPastBytes] is scanned and dropped instead of held.
+ * One per connection, on its event loop.
+ */
+internal class InboundFrameDecoder(
+    private val limits: InboundLimits,
+) : ChannelInboundHandlerAdapter() {
+    private val header = ByteArray(MAX_HEADER)
+    private var headerLength = 0
+    private var state = State.HEADER
+
+    // The frame being read.
+    private var fin = false
+    private var opcode = 0
+    private var mask = 0
+    private var payloadRead = 0L
+    private var payloadLength = 0L
+    private var sink = Sink.SKIP
+    private var control: ByteBuf? = null
+
+    // The data message the frame belongs to.
+    private var fragmented = false
+    private var messageIsText = false
+    private var messageBytes = 0L
+    private var message: ByteBuf? = null
+    private var scanner: FrameIdScanner? = null
+
+    /** Since when the bytes of an unfinished message have been held, or [IDLE]. */
+    var holdingSince = IDLE
+        private set
+
+    /** Drops everything read from now on: the connection is closing. */
+    fun discard() {
+        state = State.DISCARD
+        release()
+    }
+
+    override fun channelRead(
+        ctx: ChannelHandlerContext,
+        msg: Any,
+    ) {
+        if (msg !is ByteBuf) return ctx.fireChannelRead(msg).let { }
+        try {
+            while (msg.isReadable) {
+                when (state) {
+                    State.HEADER -> readHeader(ctx, msg)
+                    State.PAYLOAD -> readPayload(ctx, msg)
+                    State.DISCARD -> msg.skipBytes(msg.readableBytes())
+                }
+            }
+        } finally {
+            msg.release()
+        }
+    }
+
+    private fun readHeader(
+        ctx: ChannelHandlerContext,
+        buf: ByteBuf,
+    ) {
+        val before = headerLength
+        val needed = if (headerLength < 2) 2 else headerSize()
+        val take = minOf(needed - headerLength, buf.readableBytes())
+        buf.readBytes(header, headerLength, take)
+        headerLength += take
+        if (before < 2 && headerLength == 2 && !checkFirstBytes(ctx)) return
+        if (headerLength < 2 || headerLength < headerSize()) return
+        val length =
+            when (val short = header[1].toInt() and 0x7F) {
+                126 -> {
+                    ((header[2].toInt() and 0xFF) shl 8 or (header[3].toInt() and 0xFF)).toLong().also {
+                        if (it < 126) return violation(ctx, "invalid data frame length (not using minimal length encoding)")
+                    }
+                }
+
+                127 -> {
+                    var l = 0L
+                    for (i in 2 until 10) l = (l shl 8) or (header[i].toLong() and 0xFF)
+                    if (l < 0) return violation(ctx, "invalid data frame length (negative length)")
+                    if (l < 65_536) return violation(ctx, "invalid data frame length (not using minimal length encoding)")
+                    l
+                }
+
+                else -> {
+                    short.toLong()
+                }
+            }
+        val m = headerSize() - 4
+        mask = (header[m].toInt() and 0xFF shl 24) or (header[m + 1].toInt() and 0xFF shl 16) or (header[m + 2].toInt() and 0xFF shl 8) or (header[m + 3].toInt() and 0xFF)
+        headerLength = 0
+        beginFrame(ctx, length)
+    }
+
+    /** The checks Netty's decoder makes once it has a frame's first two bytes, in its order and words. */
+    private fun checkFirstBytes(ctx: ChannelHandlerContext): Boolean {
+        val b0 = header[0].toInt()
+        val b1 = header[1].toInt()
+        fin = b0 and 0x80 != 0
+        opcode = b0 and 0x0F
+        val rsv = (b0 and 0x70) shr 4
+        val len7 = b1 and 0x7F
+        val problem =
+            when {
+                rsv != 0 -> "RSV != 0 and no extension negotiated, RSV:$rsv"
+                b1 and 0x80 == 0 -> "received a frame that is not masked as expected"
+                opcode > 7 && !fin -> "fragmented control frame"
+                opcode > 7 && len7 > 125 -> "control frame with payload length > 125 octets"
+                opcode > 7 && opcode != OPCODE_CLOSE && opcode != OPCODE_PING && opcode != OPCODE_PONG -> "control frame using reserved opcode $opcode"
+                opcode == OPCODE_CLOSE && len7 == 1 -> "received close control frame with payload len 1"
+                opcode in 3..7 -> "data frame using reserved opcode $opcode"
+                opcode == OPCODE_CONT && !fragmented -> "received continuation data frame outside fragmented message"
+                opcode in 1..2 && fragmented -> "received non-continuation data frame while inside fragmented message"
+                else -> null
+            }
+        if (problem != null) violation(ctx, problem)
+        return problem == null
+    }
+
+    private fun headerSize(): Int =
+        2 + 4 +
+            when (header[1].toInt() and 0x7F) {
+                126 -> 2
+                127 -> 8
+                else -> 0
+            }
+
+    private fun beginFrame(
+        ctx: ChannelHandlerContext,
+        length: Long,
+    ) {
+        payloadLength = length
+        payloadRead = 0
+        if (opcode > 7) {
+            control = ctx.alloc().buffer(length.toInt())
+            sink = Sink.CONTROL
+        } else {
+            if (opcode != OPCODE_CONT) startMessage(opcode == OPCODE_TEXT)
+            val total = messageBytes + length
+            if (total > limits.maxMessageBytes) {
+                return violation(ctx, "Max frame length of ${limits.maxMessageBytes} has been exceeded.", WebSocketCloseStatus.MESSAGE_TOO_BIG)
+            }
+            messageBytes = total
+            fragmented = !fin
+            sink =
+                when {
+                    !messageIsText -> Sink.SKIP
+                    scanner != null -> Sink.SCAN
+                    limits.streamPastBytes != null && total > limits.streamPastBytes -> startScanning()
+                    else -> hold(ctx, length)
+                }
+        }
+        state = State.PAYLOAD
+        if (length == 0L) endFrame(ctx)
+    }
+
+    /** A binary message is read and dropped, as the relay has no use for one. */
+    private fun startMessage(text: Boolean) {
+        messageBytes = 0
+        messageIsText = text
+        if (text) holdingSince = System.nanoTime()
+    }
+
+    private fun hold(
+        ctx: ChannelHandlerContext,
+        length: Long,
+    ): Sink {
+        val held = message
+        // A whole message's buffer is its exact size; a fragmented one grows, never past streamPastBytes.
+        if (held == null) {
+            message = ctx.alloc().buffer(length.toInt(), (limits.streamPastBytes ?: limits.maxMessageBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        } else {
+            held.ensureWritable(length.toInt())
+        }
+        return Sink.HOLD
+    }
+
+    /** From here the message is only scanned: what was held goes through the scanner and is let go. */
+    private fun startScanning(): Sink {
+        val s = FrameIdScanner(limits.headBytes)
+        message?.let { held ->
+            s.feed(held, held.readerIndex(), held.readableBytes(), 0, 0)
+            held.release()
+        }
+        message = null
+        scanner = s
+        holdingSince = IDLE
+        return Sink.SCAN
+    }
+
+    private fun readPayload(
+        ctx: ChannelHandlerContext,
+        buf: ByteBuf,
+    ) {
+        val n = minOf(payloadLength - payloadRead, buf.readableBytes().toLong()).toInt()
+        val offset = (payloadRead and 3).toInt()
+        when (sink) {
+            Sink.CONTROL -> {
+                control!!.let { copyUnmasked(buf, n, it, offset) }
+            }
+
+            Sink.HOLD -> {
+                copyUnmasked(buf, n, message!!, offset)
+            }
+
+            Sink.SCAN -> {
+                scanner!!.feed(buf, buf.readerIndex(), n, mask, offset)
+                buf.skipBytes(n)
+            }
+
+            Sink.SKIP -> {
+                buf.skipBytes(n)
+            }
+        }
+        payloadRead += n
+        if (payloadRead == payloadLength) endFrame(ctx)
+    }
+
+    private fun copyUnmasked(
+        from: ByteBuf,
+        n: Int,
+        to: ByteBuf,
+        offset: Int,
+    ) {
+        val start = to.writerIndex()
+        to.writeBytes(from, n)
+        unmask(to, start, n, mask, offset)
+    }
+
+    private fun endFrame(ctx: ChannelHandlerContext) {
+        state = State.HEADER
+        if (sink == Sink.CONTROL) return endControlFrame(ctx)
+        if (!fin) return
+        val held = message
+        val scanned = scanner
+        message = null
+        scanner = null
+        holdingSince = IDLE
+        messageBytes = 0
+        if (held != null) ctx.fireChannelRead(TextWebSocketFrame(held))
+        if (scanned != null) ctx.fireChannelRead(OversizedMessage(scanned.head()))
+    }
+
+    private fun endControlFrame(ctx: ChannelHandlerContext) {
+        val body = control!!
+        control = null
+        when (opcode) {
+            OPCODE_PING -> {
+                ctx.fireChannelRead(PingWebSocketFrame(body))
+            }
+
+            OPCODE_PONG -> {
+                ctx.fireChannelRead(PongWebSocketFrame(body))
+            }
+
+            else -> {
+                closeBodyProblem(body)?.let { (status, reason) ->
+                    body.release()
+                    return violation(ctx, reason, status)
+                }
+                // Nothing after a close is read, as in Netty's decoder.
+                discard()
+                ctx.fireChannelRead(CloseWebSocketFrame(true, 0, body))
+            }
+        }
+    }
+
+    /** Netty's checks on a close frame's body: a valid status code, and a reason in UTF-8. */
+    private fun closeBodyProblem(body: ByteBuf): Pair<WebSocketCloseStatus, String>? {
+        if (!body.isReadable) return null
+        val code = body.getShort(body.readerIndex()).toInt()
+        if (!WebSocketCloseStatus.isValidStatusCode(code)) return WebSocketCloseStatus.PROTOCOL_ERROR to "Invalid close frame getStatus code: $code"
+        if (body.readableBytes() > 2) {
+            try {
+                Charsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(body.nioBuffer(body.readerIndex() + 2, body.readableBytes() - 2))
+            } catch (_: CharacterCodingException) {
+                return WebSocketCloseStatus.INVALID_PAYLOAD_DATA to "bytes are not UTF-8"
+            }
+        }
+        return null
+    }
+
+    private fun violation(
+        ctx: ChannelHandlerContext,
+        reason: String,
+        status: WebSocketCloseStatus = WebSocketCloseStatus.PROTOCOL_ERROR,
+    ) {
+        discard()
+        ctx.fireExceptionCaught(CorruptedWebSocketFrameException(status, reason))
+    }
+
+    private fun release() {
+        message?.release()
+        message = null
+        control?.release()
+        control = null
+        scanner = null
+        holdingSince = IDLE
+    }
+
+    override fun handlerRemoved(ctx: ChannelHandlerContext) = release()
+
+    override fun channelInactive(ctx: ChannelHandlerContext) {
+        release()
+        ctx.fireChannelInactive()
+    }
+
+    private enum class State { HEADER, PAYLOAD, DISCARD }
+
+    /** Where a frame's payload goes: a control frame's body, the held message, the scanner, or nowhere. */
+    private enum class Sink { CONTROL, HOLD, SCAN, SKIP }
+
+    companion object {
+        const val IDLE = Long.MIN_VALUE
+        private const val MAX_HEADER = 14
+        private const val OPCODE_CONT = 0x0
+        private const val OPCODE_TEXT = 0x1
+        private const val OPCODE_CLOSE = 0x8
+        private const val OPCODE_PING = 0x9
+        private const val OPCODE_PONG = 0xA
+    }
+}
+
+/** XORs [length] bytes of [buf] from [start] with [mask], the first of them being byte [offset] of the frame's payload mod 4. */
+internal fun unmask(
+    buf: ByteBuf,
+    start: Int,
+    length: Int,
+    mask: Int,
+    offset: Int,
+) {
+    if (mask == 0) return
+    val m = Integer.rotateLeft(mask, 8 * offset)
+    val wide = (m.toLong() shl 32) or (m.toLong() and 0xFFFFFFFFL)
+    var i = start
+    val end = start + length
+    while (i + 8 <= end) {
+        buf.setLong(i, buf.getLong(i) xor wide)
+        i += 8
+    }
+    while (i < end) {
+        buf.setByte(i, buf.getByte(i).toInt() xor (m ushr (24 - 8 * ((i - start) and 3))))
+        i++
+    }
+}
+
+/**
+ * Reads, a byte at a time, the event id quartz's `eventIdOfFrame` would read off the whole message:
+ * the top-level `"id"` of the event in an `["EVENT",{…}]` or `["AUTH",{…}]`, wherever it comes, and
+ * keeps the first [headBytes] bytes for the rest of quartz's refusal (a sub id, or a NOTICE).
+ * Remove when quartz refuses an oversized frame from a stream (RelaySession takes only a String).
+ */
+internal class FrameIdScanner(
+    headBytes: Int,
+) {
+    private val head = ByteArray(headBytes)
+    private var headLength = 0
+    private var state = PRE_ARRAY
+    private var label = ""
+    private var labelAt = 0
+    private var depth = 0
+    private var expectKey = false
+    private var escaped = false
+    private var keyLength = 0
+    private var keyIsId = false
+    private val id = StringBuilder(64)
+    private var found: String? = null
+
+    private val wantsBytes get() = state != DONE || headLength < head.size
+
+    /** [length] bytes of [buf] from [index], unmasked with [mask] from payload byte [offset] mod 4. */
+    fun feed(
+        buf: ByteBuf,
+        index: Int,
+        length: Int,
+        mask: Int,
+        offset: Int,
+    ) {
+        var k = 0
+        while (k < length && wantsBytes) {
+            val b = (buf.getByte(index + k).toInt() xor (mask ushr (24 - 8 * ((offset + k) and 3)))) and 0xFF
+            if (headLength < head.size) head[headLength++] = b.toByte()
+            if (state != DONE) step(b)
+            k++
+        }
+    }
+
+    /** What quartz is handed: the id found, in the frame's own label, else the message's first bytes. */
+    fun head(): String = found?.let { """["$label",{"id":"$it"}]""" } ?: String(head, 0, headLength, Charsets.UTF_8)
+
+    private fun step(b: Int) {
+        val space = b == ' '.code || b == '\n'.code || b == '\r'.code || b == '\t'.code
+        when (state) {
+            PRE_ARRAY -> {
+                if (!space) {
+                    if (b == '['.code) {
+                        state = PRE_LABEL
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            PRE_LABEL -> {
+                if (!space) {
+                    if (b == '"'.code) {
+                        state = LABEL
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            LABEL -> {
+                stepLabel(b)
+            }
+
+            POST_LABEL -> {
+                if (!space) {
+                    if (b == ','.code) {
+                        state = PRE_OBJECT
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            PRE_OBJECT -> {
+                if (!space) {
+                    if (b == '{'.code) {
+                        state = MEMBERS
+                        depth = 1
+                        expectKey = true
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            MEMBERS -> {
+                stepMember(b)
+            }
+
+            STRING -> {
+                when {
+                    escaped -> {
+                        escaped = false
+                    }
+
+                    b == '\\'.code -> {
+                        escaped = true
+                    }
+
+                    b == '"'.code -> {
+                        expectKey = false
+                        state = MEMBERS
+                    }
+                }
+            }
+
+            KEY -> {
+                stepKey(b)
+            }
+
+            ID_COLON -> {
+                if (!space) {
+                    if (b == ':'.code) {
+                        state = ID_QUOTE
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            ID_QUOTE -> {
+                if (!space) {
+                    if (b == '"'.code) {
+                        state = ID_VALUE
+                    } else {
+                        done(null)
+                    }
+                }
+            }
+
+            ID_VALUE -> {
+                stepId(b)
+            }
+        }
+    }
+
+    /** `"EVENT"` or `"AUTH"`, matched exactly, closing quote included. */
+    private fun stepLabel(b: Int) {
+        if (labelAt == 0) {
+            label =
+                when (b) {
+                    'E'.code -> "EVENT"
+                    'A'.code -> "AUTH"
+                    else -> return done(null)
+                }
+        }
+        val expected = if (labelAt < label.length) label[labelAt].code else '"'.code
+        if (b != expected) return done(null)
+        labelAt++
+        if (labelAt > label.length) state = POST_LABEL
+    }
+
+    private fun stepMember(b: Int) {
+        when (b) {
+            '"'.code -> {
+                if (depth == 1 && expectKey) {
+                    state = KEY
+                    keyLength = 0
+                    keyIsId = true
+                } else {
+                    state = STRING
+                }
+                escaped = false
+            }
+
+            '{'.code, '['.code -> {
+                depth++
+            }
+
+            '}'.code, ']'.code -> {
+                depth--
+                if (depth == 0) done(null)
+            }
+
+            ','.code -> {
+                if (depth == 1) expectKey = true
+            }
+
+            ':'.code -> {
+                if (depth == 1) expectKey = false
+            }
+        }
+    }
+
+    /** A key at the event's top level: only the raw two characters `id` name the id, as in quartz. */
+    private fun stepKey(b: Int) {
+        when {
+            escaped -> {
+                escaped = false
+                keyLength++
+            }
+
+            b == '\\'.code -> {
+                escaped = true
+                keyIsId = false
+                keyLength++
+            }
+
+            b == '"'.code -> {
+                if (keyIsId && keyLength == 2) {
+                    state = ID_COLON
+                } else {
+                    expectKey = false
+                    state = MEMBERS
+                }
+            }
+
+            else -> {
+                keyIsId = keyIsId && ((keyLength == 0 && b == 'i'.code) || (keyLength == 1 && b == 'd'.code))
+                keyLength++
+            }
+        }
+    }
+
+    /** The id's raw characters: 64 of lowercase hex, or no id at all. */
+    private fun stepId(b: Int) {
+        when {
+            escaped -> {
+                escaped = false
+                id.append(b.toChar())
+            }
+
+            b == '\\'.code -> {
+                escaped = true
+                id.append(b.toChar())
+            }
+
+            b == '"'.code -> {
+                return done(id.toString().takeIf { v -> v.length == 64 && v.all { it in '0'..'9' || it in 'a'..'f' } })
+            }
+
+            else -> {
+                id.append(b.toChar())
+            }
+        }
+        if (id.length > 64) done(null)
+    }
+
+    private fun done(value: String?) {
+        found = value
+        state = DONE
+    }
+
+    private companion object {
+        const val PRE_ARRAY = 0
+        const val PRE_LABEL = 1
+        const val LABEL = 2
+        const val POST_LABEL = 3
+        const val PRE_OBJECT = 4
+        const val MEMBERS = 5
+        const val STRING = 6
+        const val KEY = 7
+        const val ID_COLON = 8
+        const val ID_QUOTE = 9
+        const val ID_VALUE = 10
+        const val DONE = 11
+    }
+}
