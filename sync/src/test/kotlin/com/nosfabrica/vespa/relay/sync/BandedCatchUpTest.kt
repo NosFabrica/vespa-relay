@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.config.SyncTier
 import com.nosfabrica.vespa.relay.status.RelayStatusReport
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.runBlocking
@@ -94,6 +95,33 @@ class BandedCatchUpTest {
             val pool = PoolFixture.visitOnce(listOf(stream), bands, PoolFixture.holding(corpus(400_000, 5_000_000)))
 
             assertEquals(RelayStatusReport.COMPLETE, row(bands, pool)["syncStatus"]!!.jsonPrimitive.content)
+        }
+
+    @Test
+    fun `a middle band walked past an edge that has since risen settles on the next visit`(): Unit =
+        runBlocking {
+            // Production's shape: a middle band between the young one and the past.
+            val three =
+                listOf(
+                    SyncTier(maxAgeSeconds = 21_600, everySeconds = 3_600),
+                    SyncTier(maxAgeSeconds = 864_000, everySeconds = 2_592_000),
+                    SyncTier(maxAgeSeconds = null, everySeconds = 2_592_000),
+                )
+            val banded = stream.copy(refetchTiers = three)
+            val bands = SyncBands(null, perStream = three.associate { SyncTier.keyFor(banded.name, three, it) to it.everySeconds })
+            val middle = SyncBands.coverageKeys(banded)[1]
+            val (since, until) = SyncTier.windowAt(now(), 864_000, 21_600)
+            // Yesterday's walk reached past yesterday's edge, a day below today's, and ended short
+            // of a drain: walked, not complete, and below the edge as it stands now.
+            val walked = SyncCoverage.Span(since!! - 3_600, until!!)
+            bands.record(middle, url, notes, walked.min, walked.max, paged = true, observedByKind = mapOf(1 to walked))
+            assertTrue(bands.band(middle, url, notes)!!.complete.not(), "the state production holds")
+
+            val pool = PoolFixture.visitOnce(listOf(banded), bands, PoolFixture.holding(corpus(60, 3_000, 40_000, 200_000, 600_000, 5_000_000)))
+
+            assertTrue(bands.band(middle, url, notes)!!.complete, "the walk already passed today's edge, so nothing older is owed in this band")
+            val row = row(bands, pool)
+            assertEquals(RelayStatusReport.COMPLETE, row["syncStatus"]!!.jsonPrimitive.content, "and the pair stops reading as paging")
         }
 
     @Test

@@ -304,3 +304,19 @@ evicted unit's, takes only a spare permit. A tail our own full ingest queue
 has parked is skipped, since that silence is ours. A merely quiet relay pays
 one extra visit every fifteen minutes; `liveSilenced` counts the closes.
 `TailSilenceTest` pins both sides.
+
+**A band's walk settles once it passes the band's risen edge.** A tier
+band's older edge snaps to a day and rises daily, so a walk that passed
+yesterday's edge without draining sat below today's, where quartz owes no
+older leg and only an older leg can drain. The kind stayed incomplete for
+the band's whole re-fetch period, and 492 of 3,168 production pairs read
+`paging` with the ground already walked. `settleAtFloor` closes such a kind
+on the next visit. The edge is not passed to `legs()` as its floor: a
+drained walk of the open young band starts at its oldest event, so that
+floor re-opened ground the drain had proved empty, on every visit.
+
+**An audit claims its reconcile under the catch-up band with its window.**
+Filed under the bare stream name, a banded audit could never settle a band.
+It records from the window's own floor, and never into a band that is owed
+its re-walk: a reconcile there would replace the band and restart that
+clock. The audit's own clock stays under the stream name.
