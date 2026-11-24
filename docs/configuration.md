@@ -757,7 +757,7 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
 | `MAX_MESSAGE_LENGTH` | relay | `512` or more |
-| `MAX_FRAME_BYTES` | relay | 3 x `MAX_MESSAGE_LENGTH` or more, up to `2147483647` |
+| `MAX_FRAME_BYTES` | relay | 3 x `MAX_MESSAGE_LENGTH` or more (47185920 at the shipped `.env.example`'s 15728640), up to `2147483647`; the refusal names `MAX_MESSAGE_LENGTH` |
 | `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` | relay | `1` or more |
 | `DEFAULT_LIMIT` | relay | `1`–`MAX_LIMIT`; unset, it is lowered to a smaller `MAX_LIMIT` |
 | `MIN_POW_DIFFICULTY` | relay | `0`–`256` |

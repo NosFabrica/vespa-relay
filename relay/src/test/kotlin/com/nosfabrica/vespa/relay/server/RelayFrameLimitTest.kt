@@ -108,6 +108,10 @@ class RelayFrameLimitTest {
         assertEquals(DEFAULT_MAX_FRAME_BYTES, maxFrameBytesFromEnv(emptyMap(), limits))
         assertEquals(8_000_000, maxFrameBytesFromEnv(mapOf("MAX_FRAME_BYTES" to "8000000"), limits))
         assertFailsWith<IllegalStateException> { maxFrameBytesFromEnv(mapOf("MAX_FRAME_BYTES" to (messageBytes(limits) - 1).toString()), limits) }
+        // Below the floor the refusal names the setting that sets it, and the number.
+        val shipped = relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to "15728640"))
+        val refusal = assertFailsWith<IllegalStateException> { maxFrameBytesFromEnv(mapOf("MAX_FRAME_BYTES" to "4194304"), shipped) }.message!!
+        assertTrue("MAX_MESSAGE_LENGTH" in refusal && "47185920" in refusal, refusal)
         // An engine length past the default raises the default with it.
         val long = relayLimitsFromEnv(mapOf("MAX_MESSAGE_LENGTH" to "8000000"))
         assertEquals(24_000_000, maxFrameBytesFromEnv(emptyMap(), long))

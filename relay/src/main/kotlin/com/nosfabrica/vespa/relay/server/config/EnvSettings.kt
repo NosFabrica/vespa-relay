@@ -106,7 +106,17 @@ fun defaultMaxFrameBytes(limits: RelayLimits): Int = maxOf(DEFAULT_MAX_FRAME_BYT
 fun maxFrameBytesFromEnv(
     env: Map<String, String>,
     limits: RelayLimits,
-): Int = env.strictInt("MAX_FRAME_BYTES", messageBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()..Int.MAX_VALUE) ?: defaultMaxFrameBytes(limits)
+): Int {
+    val set = env.strictInt("MAX_FRAME_BYTES", 1..Int.MAX_VALUE) ?: return defaultMaxFrameBytes(limits)
+    val floor = messageBytes(limits)
+    if (set < floor) {
+        error(
+            "MAX_FRAME_BYTES=$set is below $floor, three bytes for each of MAX_MESSAGE_LENGTH's ${floor / 3} characters: " +
+                "a message the engine may accept would close the connection. Raise it to $floor or more, or lower MAX_MESSAGE_LENGTH.",
+        )
+    }
+    return set
+}
 
 /**
  * Past every real event, and a bound on what one message may make the relay read: past the engine's length
