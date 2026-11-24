@@ -24,9 +24,12 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.server.config.defaultMaxFrameBytes
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.DataInputStream
 import java.io.EOFException
@@ -35,6 +38,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -44,8 +48,8 @@ internal class ServerFrame(
     val payload: ByteArray,
 ) {
     val text: String get() = payload.toString(Charsets.UTF_8)
-    val closeCode: Int get() = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
-    val closeReason: String get() = payload.copyOfRange(2, payload.size).toString(Charsets.UTF_8)
+    val closeCode: Int get() = if (payload.size < 2) 1005 else ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+    val closeReason: String get() = if (payload.size < 2) "" else payload.copyOfRange(2, payload.size).toString(Charsets.UTF_8)
 }
 
 /**
@@ -59,7 +63,8 @@ internal class RawWebSocket(
     private val out: OutputStream = socket.getOutputStream()
     private val input = DataInputStream(socket.getInputStream())
 
-    /** A masked frame whose header declares [declared] bytes; only [payload] follows it. */
+    /** A masked frame whose header declares [declared] bytes; only [payload] follows it. Whole, whichever thread sends. */
+    @Synchronized
     fun send(
         payload: ByteArray,
         opcode: Int = 0x1,
@@ -162,7 +167,7 @@ internal class RawWebSocket(
                 } catch (_: SocketTimeoutException) {
                     fail("timed out; got ${texts.map { it.take(120) }}")
                 } ?: fail("the connection ended; got ${texts.map { it.take(120) }}")
-            assertTrue(frame.opcode != 0x8, "closed ${frame.closeCode} ${frame.closeReason}; got ${texts.map { it.take(120) }}")
+            if (frame.opcode == 0x8) fail("closed ${frame.closeCode} ${frame.closeReason}; got ${texts.map { it.take(120) }}")
             if (frame.opcode == 0x1) texts += frame.text
         }
         return texts
@@ -184,6 +189,7 @@ internal fun <T> withRawRelay(
     maxFrameBytes: Int = defaultMaxFrameBytes(limits),
     ingest: EventIngest? = null,
     openMessageDeadlineMs: Long = OPEN_MESSAGE_DEADLINE_MS,
+    keepalive: Keepalive = Keepalive(),
     soTimeoutMs: Int = 5_000,
     receiveBufferBytes: Int? = null,
     block: (RawWebSocket) -> T,
@@ -197,6 +203,7 @@ internal fun <T> withRawRelay(
             limits = limits,
             maxFrameBytes = maxFrameBytes,
             openMessageDeadlineMs = openMessageDeadlineMs,
+            keepalive = keepalive,
             nativeWebSocket = native,
             wait = false,
         )
@@ -248,4 +255,25 @@ internal fun upgrade(
     val head = StringBuilder()
     while (!head.endsWith("\r\n\r\n")) head.append(input.read().takeIf { it >= 0 }?.toChar() ?: fail("closed during the upgrade"))
     assertTrue(head.startsWith("HTTP/1.1 101"), "upgraded: $head")
+}
+
+/** Takes an event every [delayMs] and answers it as written: the store a publisher outruns. */
+internal class SlowIngest(
+    private val delayMs: Long,
+) : EventIngest {
+    val taken = AtomicInteger()
+
+    override suspend fun submit(
+        event: Event,
+        skipVerify: Boolean,
+        onComplete: (IEventStore.InsertOutcome) -> Unit,
+    ) {
+        delay(delayMs)
+        taken.incrementAndGet()
+        onComplete(IEventStore.InsertOutcome.Accepted)
+    }
+
+    override fun hasBacklog() = false
+
+    override fun close() {}
 }

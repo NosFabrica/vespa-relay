@@ -306,7 +306,14 @@ it, keeping only the first 64 KiB. Quartz then gets that head padded past its
 length, so the answer (`OK false` by id, `CLOSED` on a sub id, else a NOTICE),
 its reason and its lane are quartz's own; the padding costs no more than one
 message the engine would take. A held message must finish within two minutes
-whatever pings come with it (1008). What one connection holds of its input is
+whatever pings come with it (1008), on a clock that stops while the relay has
+paused the connection's reads for its own backlog: a deadline that ran through
+the relay's pause closed publishers for the relay's slowness (150 pipelined
+EVENTs against a 300 ms store closed 1008 with 33 answered). A streamed
+message has no deadline: it holds 64 KiB, so a client trickling one costs a
+connection, as an idle one with pings does. Bytes arriving count as hearing
+from the client, so one large frame on a slow link is not reaped by the 60 s
+silence timeout, which used to wait for a whole frame. What one connection holds of its input is
 then its inbox (paused at 16M characters, below) and the one message being
 read, of at most the engine's length in bytes: those bytes, then the decoded
 string, which is as large again, or twice as large where one character falls

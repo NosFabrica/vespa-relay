@@ -86,9 +86,18 @@ internal class InboundFrameDecoder(
     private var message: ByteBuf? = null
     private var scanner: FrameIdScanner? = null
 
-    /** Since when the bytes of an unfinished message have been held, or [IDLE]. */
+    /** Since when the bytes of an unfinished message have been held, less any time reads were paused, or [IDLE]. */
     var holdingSince = IDLE
         private set
+
+    /** When bytes last arrived, as `System.nanoTime()`. */
+    var lastRead = System.nanoTime()
+        private set
+
+    /** Takes the time the relay's reads were paused, from [pausedAt] to now, off the held message's clock. */
+    fun resumedAfter(pausedAt: Long) {
+        if (holdingSince != IDLE) holdingSince += System.nanoTime() - maxOf(pausedAt, holdingSince)
+    }
 
     /** Drops everything read from now on: the connection is closing. */
     fun discard() {
@@ -101,6 +110,7 @@ internal class InboundFrameDecoder(
         msg: Any,
     ) {
         if (msg !is ByteBuf) return ctx.fireChannelRead(msg).let { }
+        lastRead = System.nanoTime()
         try {
             while (msg.isReadable) {
                 when (state) {

@@ -22,10 +22,7 @@ package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
-import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -38,29 +35,10 @@ class ReadBackpressureTest {
     /** 36 MB in 60 EVENTs: fewer commands than reads pause at, more characters, more than the socket buffers hold. */
     private val events = (0 until 60).map { signer.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "$it".padEnd(600_000, 'z')) }
 
-    /** Takes an event every 100 ms: the store a publisher outruns. */
-    private class SlowIngest : EventIngest {
-        val taken = AtomicInteger()
-
-        override suspend fun submit(
-            event: Event,
-            skipVerify: Boolean,
-            onComplete: (IEventStore.InsertOutcome) -> Unit,
-        ) {
-            delay(100)
-            taken.incrementAndGet()
-            onComplete(IEventStore.InsertOutcome.Accepted)
-        }
-
-        override fun hasBacklog() = false
-
-        override fun close() {}
-    }
-
     @Test
     fun `a publisher that outruns its commands is held back, then read to the end`() {
         for (native in listOf(true, false)) {
-            val ingest = SlowIngest()
+            val ingest = SlowIngest(100)
             withRawRelay(native, limits, ingest = ingest, soTimeoutMs = 30_000) { ws ->
                 val written = AtomicInteger()
                 val writer =

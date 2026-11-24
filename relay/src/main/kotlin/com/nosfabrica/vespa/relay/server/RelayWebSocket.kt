@@ -53,6 +53,12 @@ internal const val CLOSE_GRACE_MS = 5_000L
 internal const val PING_PERIOD_MS = 30_000L
 internal const val SILENCE_TIMEOUT_MS = 60_000L
 
+/** How often a connection is pinged, and how long it may say nothing before it is reaped; tests shorten both. */
+data class Keepalive(
+    val pingPeriodMs: Long = PING_PERIOD_MS,
+    val silenceTimeoutMs: Long = SILENCE_TIMEOUT_MS,
+)
+
 /**
  * [Frame.Text]'s text as Ktor's `readText` reads it, malformed bytes replaced, without its copy
  * into a packet and its growing builder: one decode into an exact-size string.

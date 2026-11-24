@@ -80,7 +80,6 @@ private const val LIVE_COPY_MAX_BYTES = 4_096
 
 /** The keepalive tick, and the ping period in ticks; the slow-consumer and silence rules are the Ktor path's (RelayWebSocket.kt). */
 private const val TICK_MS = 1_000L
-private const val PING_EVERY_TICKS = (PING_PERIOD_MS / TICK_MS).toInt()
 
 /** Commands queued from one connection before its reads pause, and the depth at which they resume. */
 private const val PAUSE_READS_AT = 64
@@ -118,6 +117,7 @@ internal class NativeInbound(
     val frames: InboundLimits,
     val maxMessageLength: Int?,
     val openMessageDeadlineMs: Long,
+    val keepalive: Keepalive = Keepalive(),
 )
 
 private class NativeWebSocketUpgrade(
@@ -498,8 +498,24 @@ private class NativeWebSocketSession(
             inboxChars.addAndGet(-length.toLong())
             inboxDepth.decrementAndGet()
         } else if (depth >= PAUSE_READS_AT || chars >= PAUSE_READS_AT_CHARS) {
-            channel.config().isAutoRead = false
+            pauseReads()
         }
+    }
+
+    /** Since when this connection's reads have been paused for its own backlog, or [IDLE]; the loop's own. */
+    private var pausedSince = IDLE
+
+    private fun pauseReads() {
+        channel.config().isAutoRead = false
+        if (pausedSince == IDLE) pausedSince = System.nanoTime()
+    }
+
+    /** Reads on again, and the time they were paused taken off the held message's clock: it was ours, not the client's. */
+    private fun resumeReadsNow() {
+        channel.config().isAutoRead = true
+        val since = pausedSince
+        if (since != IDLE) decoder.resumedAfter(since)
+        pausedSince = IDLE
     }
 
     private fun charsOf(item: Any): Int = if (item is OversizedMessage) item.head.length else (item as String).length
@@ -513,7 +529,7 @@ private class NativeWebSocketSession(
     /** On the event loop, where reads are also paused, so the two never cross: reads resume once the backlog is short. */
     private val resumeReads =
         Runnable {
-            if (!closing && inboxDepth.get() <= RESUME_READS_AT && inboxChars.get() <= RESUME_READS_AT_CHARS) channel.config().isAutoRead = true
+            if (!closing && inboxDepth.get() <= RESUME_READS_AT && inboxChars.get() <= RESUME_READS_AT_CHARS) resumeReadsNow()
         }
 
     /** Ends this connection after an unexpected failure in its own work. */
@@ -644,7 +660,8 @@ private class NativeWebSocketSession(
     /** A message whose bytes are held has been arriving for longer than the deadline, pings or not. */
     private fun heldTooLong(): Boolean {
         val since = decoder.holdingSince
-        return since != InboundFrameDecoder.IDLE && (System.nanoTime() - since) / 1_000_000 >= inbound.openMessageDeadlineMs
+        if (since == InboundFrameDecoder.IDLE || pausedSince != IDLE) return false
+        return (System.nanoTime() - since) / 1_000_000 >= inbound.openMessageDeadlineMs
     }
 
     private fun stalled(): Boolean {
@@ -682,8 +699,10 @@ private class NativeWebSocketSession(
             lastHeard = System.nanoTime()
             resumeReads.run()
         }
-        if ((System.nanoTime() - lastHeard) / 1_000_000 >= SILENCE_TIMEOUT_MS) return channel.close().let { }
-        if (++ticks % PING_EVERY_TICKS == 0) channel.writeAndFlush(PingWebSocketFrame())
+        // Bytes of a message still arriving are the client heard from, as much as a whole frame.
+        val heard = maxOf(lastHeard, decoder.lastRead)
+        if ((System.nanoTime() - heard) / 1_000_000 >= inbound.keepalive.silenceTimeoutMs) return channel.close().let { }
+        if (++ticks % (inbound.keepalive.pingPeriodMs / TICK_MS).coerceAtLeast(1) == 0L) channel.writeAndFlush(PingWebSocketFrame())
     }
 
     override fun channelInactive(ctx: ChannelHandlerContext) {
@@ -723,7 +742,7 @@ private class NativeWebSocketSession(
     private fun stopInput() {
         inputEnded = true
         decoder.discard()
-        channel.config().isAutoRead = true
+        resumeReadsNow()
     }
 
     /**

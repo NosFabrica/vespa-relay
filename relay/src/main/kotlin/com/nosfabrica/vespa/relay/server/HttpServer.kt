@@ -91,6 +91,7 @@ fun serveRelay(
     maxFrameBytes: Int = defaultMaxFrameBytes(limits),
     // How long the native transport holds a message that has not finished arriving.
     openMessageDeadlineMs: Long = OPEN_MESSAGE_DEADLINE_MS,
+    keepalive: Keepalive = Keepalive(),
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
@@ -139,7 +140,7 @@ fun serveRelay(
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
         if (nativeWebSocket) {
-            val inbound = NativeInbound(InboundLimits(maxFrameBytes.toLong(), limits.maxMessageLength?.let { it * 3L }), limits.maxMessageLength, openMessageDeadlineMs)
+            val inbound = NativeInbound(InboundLimits(maxFrameBytes.toLong(), limits.maxMessageLength?.let { it * 3L }), limits.maxMessageLength, openMessageDeadlineMs, keepalive)
             channelPipelineConfig = { installNativeWebSocket(relay, inbound, onionLocation) }
         }
     }
@@ -159,8 +160,8 @@ fun serveRelay(
         )
 
         install(WebSockets) {
-            pingPeriodMillis = PING_PERIOD_MS
-            timeoutMillis = SILENCE_TIMEOUT_MS
+            pingPeriodMillis = keepalive.pingPeriodMs
+            timeoutMillis = keepalive.silenceTimeoutMs
             maxFrameSize = maxFrameBytes.toLong()
             // Ktor's default reads frames ahead without bound; this holds a socket's reads behind its commands.
             channels { incoming = bounded(KTOR_FRAMES_AHEAD, ChannelOverflow.SUSPEND) }
