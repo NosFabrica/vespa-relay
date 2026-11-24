@@ -53,6 +53,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import io.ktor.websocket.ChannelOverflow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -161,6 +162,8 @@ fun serveRelay(
             pingPeriodMillis = PING_PERIOD_MS
             timeoutMillis = SILENCE_TIMEOUT_MS
             maxFrameSize = maxFrameBytes.toLong()
+            // Ktor's default reads frames ahead without bound; this holds a socket's reads behind its commands.
+            channels { incoming = bounded(KTOR_FRAMES_AHEAD, ChannelOverflow.SUSPEND) }
         }
         routing {
             nostrRelay(relay)
@@ -208,6 +211,12 @@ fun serveRelay(
         }
     }.start(wait = wait)
 }
+
+/**
+ * Frames Ktor may read ahead of the command running, in each of its two queues: with the one being read and the
+ * one in hand, a Ktor connection holds at most four messages of up to `MAX_FRAME_BYTES` each.
+ */
+private const val KTOR_FRAMES_AHEAD = 1
 
 /** Spelled as the Tor Project spells it; readers compare case-insensitively. */
 private const val ONION_LOCATION = "Onion-Location"

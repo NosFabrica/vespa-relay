@@ -339,6 +339,17 @@ pauses at 16M queued characters (64 messages at the default engine length) and
 resumes under a quarter of that, so ordinary traffic still meets the count
 first and a run of large frames holds at most the budget and one frame.
 
+**Ktor reads at most one frame ahead per queue.** Ktor 3's websocket queues
+incoming frames without bound by default (`WebSocketChannelsConfig.UNLIMITED`),
+so a client publishing faster than its commands ran had all of its frames read
+into memory: 60 EVENTs of 600 KB were all taken within two seconds while one
+ran every 100 ms. The Ktor path cannot stream or count characters (its reader
+is Ktor's), so it is bounded by count: one frame in each of its two queues, so
+a connection holds at most four messages of up to `MAX_FRAME_BYTES`, against
+the native transport's inbox budget and one message of the engine's length.
+Ktor is the fallback transport (`NATIVE_WEBSOCKET=false`); an operator who
+runs it and raises `MAX_FRAME_BYTES` raises that bound four times over.
+
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a
 burst of keys was a burst of walks. The notice is a courtesy, so a saturated
