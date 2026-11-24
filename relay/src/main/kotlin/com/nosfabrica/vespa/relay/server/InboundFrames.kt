@@ -253,9 +253,10 @@ internal class InboundFrameDecoder(
         length: Long,
     ): Sink {
         val held = message
-        // A whole message's buffer is its exact size; a fragmented one grows, never past streamPastBytes.
+        // A whole message's buffer is its exact size; a fragmented one grows, never past streamPastBytes. On the heap,
+        // so its string is decoded from the array itself, without the copy a direct buffer needs first.
         if (held == null) {
-            message = ctx.alloc().buffer(length.toInt(), (limits.streamPastBytes ?: limits.maxMessageBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            message = ctx.alloc().heapBuffer(length.toInt(), (limits.streamPastBytes ?: limits.maxMessageBytes).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         } else {
             held.ensureWritable(length.toInt())
         }
@@ -459,6 +460,10 @@ internal class FrameIdScanner(
 
     private val wantsBytes get() = state != DONE || headLength < head.size
 
+    /** Bytes copied out of the buffer and unmasked in bulk, then read from an array. */
+    private val scratch = ByteArray(SCRATCH_BYTES)
+    private val maskBytes = IntArray(4)
+
     /** [length] bytes of [buf] from [index], unmasked with [mask] from payload byte [offset] mod 4. */
     fun feed(
         buf: ByteBuf,
@@ -467,12 +472,35 @@ internal class FrameIdScanner(
         mask: Int,
         offset: Int,
     ) {
+        for (j in 0..3) maskBytes[j] = (mask ushr (24 - 8 * j)) and 0xFF
         var k = 0
         while (k < length && wantsBytes) {
-            val b = (buf.getByte(index + k).toInt() xor (mask ushr (24 - 8 * ((offset + k) and 3)))) and 0xFF
-            if (headLength < head.size) head[headLength++] = b.toByte()
-            if (state != DONE) step(b)
-            k++
+            val n = minOf(scratch.size, length - k)
+            buf.getBytes(index + k, scratch, 0, n)
+            if (mask != 0) {
+                val at = offset + k
+                for (i in 0 until n) scratch[i] = (scratch[i].toInt() xor maskBytes[(at + i) and 3]).toByte()
+            }
+            consume(n)
+            k += n
+        }
+    }
+
+    private fun consume(n: Int) {
+        if (headLength < head.size) {
+            val c = minOf(n, head.size - headLength)
+            System.arraycopy(scratch, 0, head, headLength, c)
+            headLength += c
+        }
+        var i = 0
+        while (i < n && state != DONE) {
+            // Inside a string only a quote or a backslash means anything: skip to the next one.
+            if (state == STRING && !escaped) {
+                while (i < n && scratch[i] != QUOTE && scratch[i] != BACKSLASH) i++
+                if (i == n) return
+            }
+            step(scratch[i].toInt() and 0xFF)
+            i++
         }
     }
 
@@ -699,5 +727,8 @@ internal class FrameIdScanner(
         const val ID_QUOTE = 9
         const val ID_VALUE = 10
         const val DONE = 11
+        const val SCRATCH_BYTES = 8_192
+        const val QUOTE = '"'.code.toByte()
+        const val BACKSLASH = '\\'.code.toByte()
     }
 }
