@@ -272,6 +272,9 @@ services:
       # every store must agree, so the same two lines are in the sync below.
       VESPA_AUTHOR_SHARDS: ${VESPA_AUTHOR_SHARDS:-}
       VESPA_AUTHOR_BUCKETS: ${VESPA_AUTHOR_BUCKETS:-}
+      # The topical intent (docs/upgrading.md): `false` ranks every search as
+      # before it and skips its probe. The relay's alone: only it serves ranked pages.
+      VESPA_INTENT_PROBE: ${VESPA_INTENT_PROBE:-}
       # Write limits on every published event, the mirror's included: a
       # refusal is final, so at the defaults a follow list over 2,000 follows
       # is never stored (.env.example). Empty keeps quartz's defaults.
