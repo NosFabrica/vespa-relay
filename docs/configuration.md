@@ -243,9 +243,12 @@ caller's identity and caches it per caller); `include:spam` waives the floor on
 both. Before that store a signed-in reconcile is answered the whole set. A
 reconcile whose filters read the same set for every caller shares one cached
 snapshot, taken as no caller: one naming an `observer:<64-hex>` (it wins over the
-connection), or `include:spam` with no words and no other extension. Words, or any
-extension besides `include` (`sort:`, `filter:rank:`, `language:`, `nsfw:`, …),
-are taken as the caller, since a caller's lens might act on them.
+connection), or `include:spam` with no words, no `sort:` the store recognises and
+no `filter:rank:` floor. Which tokens those are is the store's call
+(`ReadShape.answersEveryConnectionAlike`): one it compiles to nothing (an unknown
+`sort:`, `language:` with no words, `nsfw:`, `domain:`) leaves the reconcile
+shared. Words, a recognised `sort:` or a floor are taken as the caller, since a
+caller's lens might act on them.
 
 A cached snapshot (quartz keeps several, for up to 30 seconds each) survives an
 ordinary publish: a note, a reaction or a profile drops only the snapshots whose

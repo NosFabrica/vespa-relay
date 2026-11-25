@@ -36,8 +36,6 @@ import java.util.Collections
 import kotlin.coroutines.coroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 /**
  * A NEG-OPEN's snapshot is taken as the caller, as its REQ is: the store sees the connection's
@@ -128,25 +126,57 @@ class NegentropyAsCallerTest {
             }
         }
 
+    /**
+     * Which reconciles share the snapshot taken as no caller is the store's call (`ReadShape.answersEveryConnectionAlike`):
+     * a token its walk compiles to nothing (an unknown `sort:`, `language:` with no text, an ignored extension) leaves a
+     * waived reconcile shared; text, a recognised `sort:` or an explicit floor is taken as each caller.
+     */
     @Test
-    fun `which searches read the same set for every caller`() {
-        val hex = "c".repeat(64)
-        val shared = listOf("include:spam", "include:spam -word", "observer:$hex", "observer:${hex.uppercase()}", "observer:$hex include:spam")
-        val perCaller =
-            listOf(
-                null,
-                "INCLUDE:spam",
-                "include:SPAM",
-                "include:spam include:nsfw",
-                "observer:npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
-                "include:spam bitcoin",
-                "include:spam sort:hot",
-                "include:spam sort:rank",
-                "include:spam filter:rank:gte:50",
-                "include:spam language:en",
-                "include:spam nsfw:true",
-            )
-        for (search in shared) assertTrue(answersEveryCallerAlike(Filter(kinds = listOf(1), search = search)), "shared: $search")
-        for (search in perCaller) assertFalse(answersEveryCallerAlike(Filter(kinds = listOf(1), search = search)), "per caller: $search")
-    }
+    fun `which reconciles share one snapshot across callers`(): Unit =
+        runBlocking {
+            val hex = "c".repeat(64)
+            val shared =
+                listOf(
+                    "include:spam",
+                    "include:spam -word",
+                    "observer:$hex",
+                    "observer:${hex.uppercase()}",
+                    "observer:$hex include:spam",
+                    "observer:$hex sort:rank",
+                    "include:spam sort:hot",
+                    "include:spam language:en",
+                    "include:spam nsfw:true",
+                    "include:spam domain:example.com",
+                    "include:spam sort:links",
+                )
+            val perCaller =
+                listOf(
+                    null,
+                    "INCLUDE:spam",
+                    "include:SPAM",
+                    "include:spam include:nsfw",
+                    "observer:npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+                    "include:spam bitcoin",
+                    "include:spam \"a phrase\"",
+                    "include:spam sort:rank",
+                    "include:spam sort:recent",
+                    "include:spam filter:rank:gte:50",
+                )
+            val ingest = IngestQueue(probe, SupervisorJob())
+            val backend = ObserverBackend(LiveEventStore(probe, ingest))
+            val alice = "a".repeat(64)
+            val bob = "b".repeat(64)
+            try {
+                for (search in shared + perCaller) {
+                    takenAs.clear()
+                    val filters = listOf(Filter(kinds = listOf(1), search = search))
+                    backend.sealedNegentropyStorage(caller(1, alice), filters, 1_000)
+                    backend.sealedNegentropyStorage(caller(2, bob), filters, 1_000)
+                    val expected = if (search in shared) listOf<String?>(null) else listOf(alice, bob)
+                    assertEquals(expected, takenAs.toList(), "\"$search\"")
+                }
+            } finally {
+                ingest.close()
+            }
+        }
 }

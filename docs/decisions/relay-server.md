@@ -773,13 +773,16 @@ signed-in mirrors sending the same waived heartbeat each paid a full walk and
 seal and evicted each other, for a set that was every caller's anyway.
 `ObserverBackend` sends a filter that reads the same set for every caller
 through the context-free overload, the one slot quartz caches for all: one that
-names an `observer:` (it wins over the connection), or `include:spam` with no
-words and no extension besides `include`. Anything else is taken as the caller.
-`answersEveryCallerAlike` is a conservative bridge over today's `ReadShape` and
-quartz's extension tokenizer; it goes when the pin carries
-`ReadShape.answersEveryConnectionAlike` (vespa-eventstore 0111d9c), which the
-store asserts against its own compiled queries. `NegentropyAsCallerTest` holds
-its table.
+names an `observer:` (it wins over the connection), or `include:spam` with
+nothing a caller's lens could act on. Anything else is taken as the caller. The
+store answers which those are (`ReadShape.answersEveryConnectionAlike`, held
+against its own compiled queries). The relay's interim bridge also counted every
+extension besides `include` as one a lens might act on, so a waived reconcile
+carrying an unknown `sort:`, `language:` without words, `nsfw:`, `domain:` or
+`sort:links` was walked once per caller; the store compiles each to the same walk,
+and since the store pin carries the answer the bridge is gone. `sort:links`
+reranks a REQ by the caller's links, but the NEG-OPEN walk never applies it.
+`NegentropyAsCallerTest` drives the boundary cases through `ObserverBackend`.
 
 **An ordinary write keeps the NEG-OPEN snapshots it cannot change.** Quartz
 keeps several snapshots and drops on a write only those the write can change

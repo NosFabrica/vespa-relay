@@ -55,7 +55,6 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
-import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
@@ -445,14 +444,15 @@ internal class ObserverBackend(
 
     /**
      * The NEG-OPEN path: the snapshot is taken as the caller, so a reconcile answers the set its REQ
-     * serves; filters whose set is every caller's share one snapshot, the one quartz caches for all.
+     * serves; filters whose set is every caller's, by the store's [ReadShape], share one snapshot, the
+     * one quartz caches for all.
      */
     override suspend fun sealedNegentropyStorage(
         ctx: RequestContext,
         filters: List<Filter>,
         maxEntries: Int,
     ): IStorage? =
-        if (filters.all(::answersEveryCallerAlike)) {
+        if (filters.all { ReadShape.of(it).answersEveryConnectionAlike }) {
             inner.sealedNegentropyStorage(filters, maxEntries)
         } else {
             ranked(ctx) { inner.sealedNegentropyStorage(ctx, filters, maxEntries) }
@@ -661,14 +661,4 @@ internal class ColdAuthorChecks(
 
         private const val SAY_EVERY_MS = 60_000L
     }
-}
-
-/**
- * Whether [filter] reads the same set for every caller: it names its own lens, or it waives the floor
- * with nothing a caller's lens could act on. Any extension beyond `include` counts as one it might.
- * Remove when the store pin carries `ReadShape.answersEveryConnectionAlike` (vespa-eventstore 0111d9c).
- */
-internal fun answersEveryCallerAlike(filter: Filter): Boolean {
-    val shape = ReadShape.of(filter)
-    return shape.observer != null || (shape.includeSpam && !shape.ranked && SearchQuery.parse(filter.search).extensions.keys == setOf(SearchQuery.INCLUDE))
 }
