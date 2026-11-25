@@ -36,14 +36,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
-/** What one connection may ask for. The engine enforces these and NIP-11 `limitation` is rendered from them. */
+/**
+ * What one connection may ask for. The engine enforces these and NIP-11 `limitation` is rendered from them.
+ * A REQ naming no `limit` is served 500 events, strfry's default, not the 5,000 `max_limit` allows: a client
+ * that reconnects and catches up with open filters otherwise pulls ten times the history it shows.
+ */
 fun defaultRelayLimits(): RelayLimits =
     RelayLimits(
         maxMessageLength = 262_144,
         maxSubscriptions = 50,
         maxFilters = 20,
         maxLimit = 5_000,
-        defaultLimit = 5_000,
+        defaultLimit = 500,
         maxSubidLength = 256,
         maxEventTags = 2_000,
         maxContentLength = 131_072,

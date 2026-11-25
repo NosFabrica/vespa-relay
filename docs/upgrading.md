@@ -4,6 +4,21 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## A REQ with no limit is served 500 events (November 2026)
+
+`DEFAULT_LIMIT` now defaults to 500, strfry's default, instead of 5,000. A
+filter naming no `limit` gets the newest 500 matches; one that names a limit
+still gets up to `MAX_LIMIT` (5,000, unchanged). COUNT counts every match and a
+NIP-77 reconcile is bounded by `NEG_MAX_SYNC_EVENTS`, so neither moves. NIP-11 `limitation.default_limit` says 500.
+
+The reason is catch-up cost. A client that reconnects and asks with open
+filters was served 5,000 events each: in a two-hour soak, 150 subscribers
+reconnecting at once were sent 750,000 events and took 35–39 s to reach EOSE,
+against 0.4 s for one alone.
+
+Nothing to do unless a client of yours pages with open filters and expects the
+old window: set `DEFAULT_LIMIT=5000` to keep it.
+
 ## The websocket compresses for clients that ask (November 2026)
 
 The native websocket now answers a client's `permessage-deflate` offer, which

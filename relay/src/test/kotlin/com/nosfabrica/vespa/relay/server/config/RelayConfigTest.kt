@@ -40,8 +40,8 @@ class RelayConfigTest {
         assertEquals(20, d.maxFilters)
         assertEquals(50, d.maxSubscriptions)
         assertEquals(5_000, d.maxLimit)
-        // A REQ naming no `limit` gets the same window as one asking for the ceiling.
-        assertEquals(5_000, d.defaultLimit)
+        // A REQ naming no `limit` gets a tenth of the ceiling; one that wants more asks for it.
+        assertEquals(500, d.defaultLimit)
         assertEquals(false, d.authRequired)
     }
 
