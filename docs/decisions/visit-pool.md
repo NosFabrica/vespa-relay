@@ -353,3 +353,9 @@ first push spread over passes by the budget its next answer (5 of our 200) was
 under a tenth of ours and the backfill was withheld for good. A write's sign-in
 says nothing of how the relay reads; the shrink against its own last answer
 still guards it.
+
+**The waiver never joins a filter that names its own lens.** It was appended to
+every filter to a waived relay, so a stream reading through `observer:<hex>`
+went out with `include:spam` too and lost the trust floor it asked for, from a
+gate that had never refused it. A filter the store reads as naming an observer
+(`ReadShape.observer`) goes out as written.

@@ -260,7 +260,9 @@ challenge only once a refusal asks for AUTH without naming a waiver (a paid or
 whitelisted relay), and a refusal that names `include:spam` — this relay's
 `auth-required:` sentence does — teaches the waiver instead. From then on every
 read the router makes of that relay carries `include:spam`, merged into any
-`search` the stream's filter already holds, signed in or not: the catch-up's
+`search` the stream's filter already holds, signed in or not (a filter that names
+its own lens, `observer:<hex>`, is sent as it is: its floor is the stream's
+choice, and the gate does not refuse it): the catch-up's
 paged REQs (re-asked at once), the live tail, every NEG-OPEN, the by-id fetches
 after a reconcile, the retraction audit and the upstream push's reconciles. Every
 other relay is asked exactly what the stream says: a relay without NIP-50 refuses

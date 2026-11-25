@@ -87,7 +87,7 @@ class LensWaiversTest {
 
     @Test
     fun `the waiver joins whatever the stream already searches for`() {
-        for (search in listOf("bitcoin", "\"exact phrase\" -spam", "observer:$hex", "pizza sort:rank filter:rank:gte:50")) {
+        for (search in listOf("bitcoin", "\"exact phrase\" -spam", "pizza sort:rank filter:rank:gte:50")) {
             val before = SearchQuery.parse(search)
             val after = parsed(LensWaivers.waived(Filter(kinds = listOf(1), search = search)))
             assertTrue(after.includeSpam, search)
@@ -97,6 +97,19 @@ class LensWaiversTest {
             assertEquals(before.extensions, after.extensions - SearchQuery.INCLUDE, search)
         }
         assertEquals("bitcoin include:spam", LensWaivers.waived(Filter(search = "bitcoin")).search, "appended as written")
+    }
+
+    /** A stream that names whose trust reads it chose that floor; the gate never refused it, and the waiver would drop it. */
+    @Test
+    fun `a filter that names its own lens is never waived`() {
+        val waivers = LensWaivers(log = {}).also { it.learn(gated, lensRefusal) }
+        for (search in listOf("observer:$hex", "observer:${hex.uppercase()}", "bitcoin observer:$hex", "observer:$hex sort:rank")) {
+            val own = Filter(kinds = listOf(1), search = search)
+            assertSame(own, waivers.onWire(gated, own), search)
+            assertSame(own, waivers.onWire(gated, listOf(own)).single(), search)
+        }
+        val npub = Filter(kinds = listOf(1), search = "observer:npub1notalens")
+        assertTrue(parsed(waivers.onWire(gated, npub)).includeSpam, "a token the store does not read as a lens declares none")
     }
 
     @Test

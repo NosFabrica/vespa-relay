@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.eventstore.ReadShape
 import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -142,7 +143,7 @@ internal class LensWaivers(
 
         /**
          * [filter] with `include:spam` among its search extensions, every term, phrase and other
-         * extension kept. Appended to the stream's own string where that reads back the same; a
+         * extension kept; unchanged when it names its own lens (`observer:<hex>`, as the store reads it). Appended to the stream's own string where that reads back the same; a
          * string the append would change (an unclosed quote swallows it) is rebuilt canonically.
          * `include` holds one value in quartz's grammar, the last written, so a stream's own
          * `include:<other>` gives way to the waiver.
@@ -150,6 +151,8 @@ internal class LensWaivers(
         internal fun waived(filter: Filter): Filter {
             val search = filter.search
             if (search.isNullOrBlank()) return filter.copy(search = TOKEN)
+            // A stream naming its own lens chose its floor, and a gate does not refuse it.
+            if (ReadShape.of(search).observer != null) return filter
             val parsed = SearchQuery.parse(search)
             if (parsed.includeSpam) return filter
             val appended = "$search $TOKEN"
