@@ -36,6 +36,8 @@ import java.util.Collections
 import kotlin.coroutines.coroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * A NEG-OPEN's snapshot is taken as the caller, as its REQ is: the store sees the connection's
@@ -108,4 +110,43 @@ class NegentropyAsCallerTest {
                 ingest.close()
             }
         }
+
+    /** A named observer wins over the connection's identity, so every caller of it reads one set. */
+    @Test
+    fun `callers naming one observer share one snapshot`(): Unit =
+        runBlocking {
+            val ingest = IngestQueue(probe, SupervisorJob())
+            val backend = ObserverBackend(LiveEventStore(probe, ingest))
+            try {
+                val named = listOf(Filter(kinds = listOf(1), search = "observer:${"c".repeat(64)}"))
+                backend.sealedNegentropyStorage(caller(1, "a".repeat(64)), named, 1_000)
+                backend.sealedNegentropyStorage(caller(2, "b".repeat(64)), named, 1_000)
+                backend.sealedNegentropyStorage(caller(3), named, 1_000)
+                assertEquals(listOf<String?>(null), takenAs.toList(), "one walk, taken as no caller")
+            } finally {
+                ingest.close()
+            }
+        }
+
+    @Test
+    fun `which searches read the same set for every caller`() {
+        val hex = "c".repeat(64)
+        val shared = listOf("include:spam", "include:spam -word", "observer:$hex", "observer:${hex.uppercase()}", "observer:$hex include:spam")
+        val perCaller =
+            listOf(
+                null,
+                "INCLUDE:spam",
+                "include:SPAM",
+                "include:spam include:nsfw",
+                "observer:npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+                "include:spam bitcoin",
+                "include:spam sort:hot",
+                "include:spam sort:rank",
+                "include:spam filter:rank:gte:50",
+                "include:spam language:en",
+                "include:spam nsfw:true",
+            )
+        for (search in shared) assertTrue(answersEveryCallerAlike(Filter(kinds = listOf(1), search = search)), "shared: $search")
+        for (search in perCaller) assertFalse(answersEveryCallerAlike(Filter(kinds = listOf(1), search = search)), "per caller: $search")
+    }
 }

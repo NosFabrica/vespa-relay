@@ -767,3 +767,16 @@ an anonymous caller and shared one cached snapshot across callers. It now
 delegates the caller's overload; the store reads the identity off
 `StoreQueryContext` as it does for a REQ.
 
+**A NEG-OPEN every caller reads alike shares one snapshot.** Taking each
+reconcile as its caller made quartz key its one cached snapshot by caller, so
+signed-in mirrors sending the same waived heartbeat each paid a full walk and
+seal and evicted each other, for a set that was every caller's anyway.
+`ObserverBackend` sends a filter that reads the same set for every caller
+through the context-free overload, the one slot quartz caches for all: one that
+names an `observer:` (it wins over the connection), or `include:spam` with no
+words and no extension besides `include`. Anything else is taken as the caller.
+`answersEveryCallerAlike` is a conservative bridge over today's `ReadShape` and
+quartz's extension tokenizer; it goes when the pin carries
+`ReadShape.answersEveryConnectionAlike` (vespa-eventstore 0111d9c), which the
+store asserts against its own compiled queries. `NegentropyAsCallerTest` holds
+its table.
