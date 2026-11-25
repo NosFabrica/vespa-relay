@@ -124,13 +124,15 @@ internal class PoolFixture(
         roster: RosterSource = RosterBuilder(store = store, streams = streams, bands = bands),
         workers: Int = 1,
         complaints: RelayComplaints = RelayComplaints.DEAF,
+        /** Which relays the pool reads with `include:spam`; [asked] records the filters as they reach the wire. */
+        waivers: LensWaivers = LensWaivers.NONE,
     ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)
         val ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null)
         ingest.start()
         return VisitPool(
-            reads = this,
+            reads = WaivedReads(this, waivers),
             complaints = complaints,
             bands = bands,
             ingest = ingest,
@@ -150,6 +152,7 @@ internal class PoolFixture(
             workers = workers,
             limits = limits,
             quietGiveUpMs = quietGiveUpMs,
+            waivers = waivers,
         )
     }
 

@@ -48,9 +48,14 @@ internal class UpstreamPush(
     /** The engine-wide one-id-snapshot-at-a-time gate, held for the snapshot and released before any push. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
+    /**
+     * Which upstreams take the lens waiver: a web-of-trust upstream reconciles its whole corpus
+     * against ours with it, and only its gated subset without, which would push the rest every pass.
+     */
+    private val waivers: LensWaivers = LensWaivers.NONE,
     /** One url's push against the pass's snapshot; quartz's group unless a test stands in. */
     private val pushGroup: suspend (SyncUpstream, List<IdAndTime>) -> NegentropyStoreSync.GroupResult = { up, local ->
-        NegentropyStoreSync(client, BookedReads(store), upOnly(intervalSec)).syncGroup(up.url, up.filter, local)
+        NegentropyStoreSync(client, BookedReads(store), upOnly(intervalSec)).syncGroup(up.url, waivers.onWire(up.url, up.filter), local)
     },
 ) {
     /** Events an upstream accepted, its `OK` true. */

@@ -99,3 +99,25 @@ internal class ClientRelayReads(
         runCatching { client.unsubscribe(subId) }
     }
 }
+
+/** [inner] with every filter carrying the lens waiver where [waivers] says the relay takes it. */
+internal class WaivedReads(
+    private val inner: RelayReads,
+    private val waivers: LensWaivers,
+) : RelayReads {
+    override suspend fun page(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        idleTimeoutMs: Long,
+        onEvent: suspend (Event) -> Unit,
+    ): PagedFetchResult = inner.page(url, waivers.onWire(url, filter), idleTimeoutMs, onEvent)
+
+    override suspend fun tail(
+        subId: String,
+        url: NormalizedRelayUrl,
+        filters: List<Filter>,
+        onEvent: suspend (Event) -> Unit,
+    ) = inner.tail(subId, url, waivers.onWire(url, filters), onEvent)
+
+    override fun untail(subId: String) = inner.untail(subId)
+}

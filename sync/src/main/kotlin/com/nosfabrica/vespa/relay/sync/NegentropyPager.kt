@@ -138,8 +138,10 @@ internal class ClientWindowSync(
     private val idleTimeoutMs: Long = NEG_IDLE_MS,
     /** The twice-refused ids, declined before the REQ that would fetch them. */
     private val refused: RefusedIds = RefusedIds.disabled(),
+    /** Which relays take the lens waiver; the same instance the pool learns into. */
+    private val waivers: LensWaivers = LensWaivers.NONE,
     /** How a window is paged; quartz's own pager unless a test stands in for the relay. */
-    private val reads: RelayReads = ClientRelayReads(client),
+    private val reads: RelayReads = WaivedReads(ClientRelayReads(client), waivers),
 ) : WindowSync {
     /**
      * The predicate quartz consults for every id the reconcile names. Null when suppression is
@@ -163,7 +165,8 @@ internal class ClientWindowSync(
     ): NegentropySyncResult =
         client.negentropySync(
             relay = url,
-            filter = window,
+            // The NEG-OPEN, the by-id fetches and the truncation probe all read through this filter.
+            filter = waivers.onWire(url, window),
             idleTimeoutMs = idleTimeoutMs,
             localIndex = local,
             targetWindow = targetWindow,

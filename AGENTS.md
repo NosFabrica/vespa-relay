@@ -188,6 +188,7 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              LensWaivers (which relays are read with `include:spam`: NIP-11 `nip50`, or a refusal naming it),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
@@ -424,6 +425,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - An idle window bounds one ask and a visit is a sequence of them; `LEG_QUIET_GIVE_UP_MS` fires on silence between asks.
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
+- strfry refuses any filter carrying `search` (`unrecognised filter item`), so `include:spam` goes only to a relay that takes it (`LensWaivers`), added at the wire and never to the ask, or every band re-keys.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
 - A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.

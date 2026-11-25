@@ -64,12 +64,13 @@ internal interface RetractionReads {
 /** Quartz, unchanged: a by-id answer reports how it ended, so a stall never reads as an empty answer. */
 internal class ClientRetractionReads(
     private val client: NostrClient,
+    private val waivers: LensWaivers = LensWaivers.NONE,
 ) : RetractionReads {
     override suspend fun reconcileIds(
         url: NormalizedRelayUrl,
         filter: Filter,
         local: List<IdAndTime>,
-    ): NegentropyIdDiff = client.negentropyReconcileIds(url, filter, local, idleTimeoutMs = NEG_IDLE_MS)
+    ): NegentropyIdDiff = client.negentropyReconcileIds(url, waivers.onWire(url, filter), local, idleTimeoutMs = NEG_IDLE_MS)
 
     override suspend fun fetchIds(
         url: NormalizedRelayUrl,
@@ -77,7 +78,7 @@ internal class ClientRetractionReads(
         onEvent: suspend (Event) -> Unit,
     ): Boolean {
         val result =
-            client.fetchAllWithHooks(filters = mapOf(url to listOf(Filter(ids = ids))), idleTimeoutMs = NEG_IDLE_MS) { relay, event ->
+            client.fetchAllWithHooks(filters = mapOf(url to listOf(waivers.onWire(url, Filter(ids = ids)))), idleTimeoutMs = NEG_IDLE_MS) { relay, event ->
                 if (relay == url) onEvent(event)
                 // Handed on above; true would have quartz keep every event in a result list no one reads.
                 false

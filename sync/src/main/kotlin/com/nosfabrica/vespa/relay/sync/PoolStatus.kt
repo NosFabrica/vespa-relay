@@ -89,6 +89,7 @@ internal class PoolStatus(
     private val bands: SyncBands,
     private val limits: PoolLimits,
     private val widths: FilterWidths,
+    private val waivers: LensWaivers = LensWaivers.NONE,
     private val schedule: AuditSchedule,
     private val retraction: RetractionAudit?,
     private val queue: VisitQueue<VisitKey>,
@@ -355,6 +356,7 @@ internal class PoolStatus(
             Processors.Count("liveSilenced", tails.silenced.get()),
             Processors.Count("poolReceived", counters.poolReceived.get()),
             Processors.Count("narrowedRelays", widths.narrowed.toLong()),
+            Processors.Count("waivedRelays", waivers.waived.toLong()),
             // A gauge, like `narrowedRelays`: a verdict lapses, so a count since boot would only grow.
             Processors.Count("unreadableUnits", bands.unreadableByUnit().size.toLong()),
         ) + aborts.counts()

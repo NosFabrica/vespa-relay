@@ -997,6 +997,14 @@ internal val MIRROR_TERMS: JsonObject =
                 "everybody's. Zero means no relay on this roster has ever complained about filter width.",
         )
         term(
+            "waivedRelays",
+            "Relays read with NIP-50's `include:spam`, the waiver a web-of-trust relay (another vespa-relay) " +
+                "answers with its whole corpus instead of its trust-gated share: those whose NIP-11 `nip50` " +
+                "list names it, and those that refused us naming it. Every other relay is asked exactly what " +
+                "the stream says, because a relay without NIP-50 refuses any filter carrying `search`. Zero " +
+                "means no relay on this roster gates its reads by trust.",
+        )
+        term(
             "unreadableUnits",
             "(relay, stream) pairs holding an ask the relay refused as POLICY twice since it last served it — " +
                 "`restricted:`, `blocked:`, `invalid:`, a kind it says it will not serve, or an identity its " +

@@ -323,6 +323,7 @@ class StatusVocabularyTest {
                         "liveSilenced" to 1,
                         "poolReceived" to 4_000,
                         "narrowedRelays" to 9,
+                        "waivedRelays" to 1,
                         "unreadableUnits" to 2,
                         "abortedVisits" to 2,
                         // Listed rather than derived from the enum, so a name that moved is noticed.

@@ -417,6 +417,15 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   what a silent one already cost. Do not pass the flag by hand — it was removed
   from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
   you get it wrong when the client changes.
+- **A trust-gated peer answered a signed-in mirror with nothing, and only on REQ.**
+  Another vespa-relay with `REQUIRE_READ_LENS` reads a NIP-42-authenticated
+  connection through that key's lens; the mirror's key has no 10040 and no
+  scores, so every REQ, by-id fetches included, came back EMPTY with no refusal
+  to read, while the NEG-OPEN of the same filter answered the whole set. Every
+  reconcile named the same below-floor ids missing, every pass. The router now
+  reads such a relay with `include:spam` (`LensWaivers`), and the store answers
+  a NEG-OPEN through the same lens as a REQ. It cannot send the token everywhere:
+  strfry refuses any filter carrying `search` with `unrecognised filter item`.
 - **A TTL on a tag is not a TTL on the event carrying it — unless you own every
   writer.** Kind 30166 used to have a writer we did not control: quartz's
   `RelayMonitor`, rewriting the record for every relay the client connected to,

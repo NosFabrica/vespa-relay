@@ -86,6 +86,11 @@ internal class VisitPool(
      * Shared with the pager so the audit's fallback REQs are chunked the same way.
      */
     private val widths: FilterWidths = FilterWidths(),
+    /**
+     * Which relays take the lens waiver, learned here from their refusals and read by the same
+     * reads that carry it to the wire.
+     */
+    private val waivers: LensWaivers = LensWaivers.NONE,
     /** Silence between asks that ends a visit; a seam for tests. */
     private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
     /** How long, in all, one walk our ingest queue stalled may wait for it to drain; a seam for tests. */
@@ -151,6 +156,7 @@ internal class VisitPool(
             bands = bands,
             limits = limits,
             widths = widths,
+            waivers = waivers,
             schedule = schedule,
             retraction = retraction,
             queue = queue,
@@ -563,11 +569,9 @@ internal class VisitPool(
                 var narrowings = 0
                 while (true) {
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
-                    // A refusal of ours has no width to learn.
-                    if (!refusal.reason.ours &&
-                        narrowings < MAX_NARROWINGS &&
-                        widths.learn(url, saidAbout(refusal, url), refusal.filter.kinds?.size ?: 0)
-                    ) {
+                    // A refusal of ours has no width or waiver to learn.
+                    val said = if (refusal.reason.ours) null else saidAbout(refusal, url)
+                    if (narrowings < MAX_NARROWINGS && widths.learn(url, said, refusal.filter.kinds?.size ?: 0)) {
                         narrowings++
                         System.err.println(
                             "router: visit ${stream.name} ${url.url} — the relay refused a " +
@@ -575,6 +579,8 @@ internal class VisitPool(
                         )
                         continue
                     }
+                    // Learned once per relay, so this re-walks a leg at most once.
+                    if (waivers.learn(url, said)) continue
                     return refusal
                 }
             } finally {

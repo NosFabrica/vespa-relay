@@ -44,6 +44,7 @@ import com.nosfabrica.vespa.relay.sync.ClientRelayPages
 import com.nosfabrica.vespa.relay.sync.ClientRelayReads
 import com.nosfabrica.vespa.relay.sync.ClientWindowSync
 import com.nosfabrica.vespa.relay.sync.FilterWidths
+import com.nosfabrica.vespa.relay.sync.LensWaivers
 import com.nosfabrica.vespa.relay.sync.NegPageTuning
 import com.nosfabrica.vespa.relay.sync.NegentropyPager
 import com.nosfabrica.vespa.relay.sync.PROGRESS_INTERVAL_MS
@@ -55,6 +56,7 @@ import com.nosfabrica.vespa.relay.sync.SweepState
 import com.nosfabrica.vespa.relay.sync.SyncBands
 import com.nosfabrica.vespa.relay.sync.UpstreamPush
 import com.nosfabrica.vespa.relay.sync.VisitPool
+import com.nosfabrica.vespa.relay.sync.WaivedReads
 import com.nosfabrica.vespa.relay.sync.heal.HealQueue
 import com.nosfabrica.vespa.relay.sync.heal.Healer
 import com.nosfabrica.vespa.relay.sync.heal.WriteCapability
@@ -66,6 +68,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip11RelayInfo.CachedNip11Fetcher
+import com.vitorpamplona.quartz.nip11RelayInfo.OkHttpNip11Fetcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -163,6 +167,12 @@ class SyncEngine(
     /** Per-relay kind caps, one instance for the pool and the pager alike. */
     private val widths = FilterWidths()
 
+    /** Which relays take `include:spam`, one instance for every read this router makes of a relay. */
+    private val waivers = LensWaivers(LensWaivers.nip50Off(CachedNip11Fetcher(OkHttpNip11Fetcher(peers::httpFor), errorTtlSeconds = NIP11_ERROR_TTL_SECONDS)))
+
+    /** The pool's reads, carrying the waiver where a relay takes it. */
+    private val reads = WaivedReads(ClientRelayReads(client), waivers)
+
     /** Why negentropy windows failed, off quartz's typed failure and the socket end it carries. */
     private val negentropyDrops = NegentropyDrops()
 
@@ -170,7 +180,7 @@ class SyncEngine(
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
-            ClientWindowSync(client, widths, refused = refusedIds),
+            ClientWindowSync(client, widths, refused = refusedIds, waivers = waivers, reads = reads),
             sweepState,
             NegPageTuning(
                 target = config.negPageTarget,
@@ -186,7 +196,7 @@ class SyncEngine(
     private val sockets = RelaySockets(client, pinnedUrls)
 
     /** The deleteMissing comparison for the pool's retracting asks. */
-    private val retraction = RetractionAudit(ClientRetractionReads(client), store, bands, ingest, refusedIds, writer)
+    private val retraction = RetractionAudit(ClientRetractionReads(client, waivers), store, bands, ingest, refusedIds, writer)
 
     /** Whose 30166 records the roster reads: `verdictsFrom`, or this router's own key when that is unset. */
     private val verdictSigners = config.verdictSigners(signer?.pubKey)
@@ -200,7 +210,7 @@ class SyncEngine(
     /** The rotating pool, inert when no stream rides it. */
     private val visitPool =
         VisitPool(
-            reads = ClientRelayReads(client),
+            reads = reads,
             complaints = complaints,
             pages = pages,
             bands = bands,
@@ -237,9 +247,10 @@ class SyncEngine(
             workers = VisitPool.workersFor(visitStreams),
             limits = PoolLimits.of(visitStreams),
             widths = widths,
+            waivers = waivers,
         )
 
-    private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
+    private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope, waivers)
     private val pressure = servingPressure
 
     /** Starts ingest, the client, the pool and the progress document; a push-only router still needs each. */
@@ -506,6 +517,9 @@ class SyncEngine(
     ): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnitsFor(author, relays, kinds)
 
     companion object {
+        /** A relay whose NIP-11 could not be read is asked again after this, not on every visit. */
+        const val NIP11_ERROR_TTL_SECONDS = 3_600L
+
         // Published names in the progress document; a rename breaks readers charting them.
         const val VISITS_PROCESSOR = "visits"
         const val INGEST_PROCESSOR = "ingest"

@@ -232,24 +232,32 @@ hook as a REQ, so a reconcile declares a lens exactly as a read does and a
 refusal comes back as `NEG-ERR <subid> "auth-required: …"`. That is the right
 default — a reconcile hands over the ids and timestamps of everything matching
 the filter, the corpus's whole shape — but it means **an anonymous peer cannot
-mirror from this relay.** A peer has three ways in: put `include:spam` in the
-NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH, or ask the operator
-for `REQUIRE_READ_LENS=false`.
+mirror from this relay without declaring one.** A peer has three ways in: put
+`include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
+or ask the operator for `REQUIRE_READ_LENS=false`.
 
 **Turn it off** where there is nothing to gate on: a relay whose readers are
 all mirrors, or a store with no NIP-85 trust data behind it, would only be
 refusing every client for a lens it cannot apply. The boot log says so when you
 do.
 
-**Peering with another vespa-relay.** Its router declares nothing — neither on
-its paged REQ fetches nor in its NEG-OPEN filters — so a gated peer refuses
-both. The refusal is at least LOUD: the router reads `auth-required` as a
-refusal outright (`VisitPool.refusedOutright`) and records it, rather than
-mirroring nothing quietly. With `RELAY_NSEC` set the client answers the NIP-42
-challenge instead and is then read through *the relay key's* lens, which on a
-key nobody has scored is an empty answer rather than an error — the quieter
-failure of the two. Until the router learns to declare, peer a gated relay by
-turning the gate off there, or by giving the mirroring key a real lens.
+**Peering with another vespa-relay.** The router reads such a peer whole: every
+read it makes of a relay that takes the waiver — the catch-up's paged REQs, the
+live tail, every NEG-OPEN, the by-id fetches after a reconcile, the retraction
+audit and the upstream push's reconcile — carries `include:spam`, merged into
+any `search` the stream's filter already holds. It does that for a relay whose
+NIP-11 `nip50` list names `ext include:spam` (this relay's does), read once a day
+per relay through the router's own transport (Tor for an `.onion`), and for one
+that refused us with an `auth-required:` or `restricted:` sentence naming
+`include:spam`, which it then re-asks at once. Every other relay is asked
+exactly what the stream says: a relay without NIP-50 refuses any filter carrying
+`search` (strfry answers `unrecognised filter item: search`), and one with
+NIP-50 but not the extension may read the token as words to search for. The
+count is `waivedRelays` on the mirror's progress document. A gate that offers no
+waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
+`abortedAuthRequired`). With `RELAY_NSEC` set the router also answers the
+NIP-42 challenge; without the waiver that signed-in read would be answered
+through the relay key's lens, which on a key nobody has scored is empty.
 
 ## Commands over HTTP (NIP-FE)
 
