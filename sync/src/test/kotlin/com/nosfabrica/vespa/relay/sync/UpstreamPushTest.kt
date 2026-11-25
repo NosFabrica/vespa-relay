@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -227,6 +228,97 @@ class UpstreamPushTest {
                 repeat(5) { push.pass(listOf(up)) }
                 assertEquals(25, held, "every pass pushed")
                 assertEquals(0L, push.withheld.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    private fun pushOver(
+        scope: CoroutineScope,
+        store: NostrSemanticsStore,
+        waivers: LensWaivers,
+        sized: AtomicInteger,
+        heldBySizing: Int,
+        group: (SyncUpstream) -> NegentropyStoreSync.GroupResult,
+    ) = UpstreamPush(
+        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+        store = store,
+        intervalSec = 60,
+        streamGate = Semaphore(1),
+        scope = scope,
+        waivers = waivers,
+        peerHeld = { _, _ ->
+            sized.incrementAndGet()
+            heldBySizing
+        },
+        pushGroup = { target, _ -> group(target) },
+    )
+
+    private suspend fun holdingNotes(n: Int) = NostrSemanticsStore(InMemoryEventIndex()).also { s -> (1..n).forEach { s.insert(note(it, kind = 1)) } }
+
+    /** The group's reconcile already says what the upstream holds, so a second one per pass only to size it is waste. */
+    @Test
+    fun `an upstream is sized by a reconcile of its own only on the first pass`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                val groups = AtomicInteger()
+                val push =
+                    pushOver(scope, holdingNotes(20), LensWaivers(log = {}), sized, heldBySizing = 20) { target ->
+                        groups.incrementAndGet()
+                        pushed(target, uploaded = 0)
+                    }
+                repeat(3) { push.pass(listOf(up)) }
+                assertEquals(3, groups.get(), "every pass pushed")
+                assertEquals(1, sized.get(), "one reconcile per pass after the first")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** Read off the pass before, a collapse is held back one pass late, and the next pass sizes it afresh. */
+    @Test
+    fun `a collapse the group's own reconcile shows withholds the next pass`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                var collapsed = false
+                val push =
+                    pushOver(scope, holdingNotes(200), LensWaivers(log = {}), sized, heldBySizing = 200) { target ->
+                        // The upstream answers as if it held none of our 200, and the budget let none up.
+                        if (collapsed) pushed(target, uploaded = 0, left = 200) else pushed(target, uploaded = 0)
+                    }
+                push.pass(listOf(up))
+                collapsed = true
+                push.pass(listOf(up))
+                assertEquals(0L, push.withheld.get(), "the collapse is first seen in this pass's own reconcile")
+                assertTrue(push.pass(listOf(up)).isEmpty(), "and the pass after it pushes nothing")
+                assertEquals(1L, push.withheld.get())
+                assertEquals(1, sized.get())
+                push.pass(listOf(up))
+                assertEquals(2, sized.get(), "a withheld pass leaves nothing to read off, so the next is sized")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** An answer stands for the next pass only while the gate reads the upstream as it did. */
+    @Test
+    fun `an upstream the gate reads differently since is sized again`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                val waivers = LensWaivers(log = {})
+                val push = pushOver(scope, holdingNotes(20), waivers, sized, heldBySizing = 20) { target -> pushed(target, uploaded = 0) }
+                push.pass(listOf(up))
+                waivers.heard(up.url, AuthGate.refusalIn(ClosedMessage("sub", "auth-required: members only"))!!)
+                push.pass(listOf(up))
+                assertEquals(2, sized.get(), "signed in since: its next answer is measured, not assumed")
+                push.pass(listOf(up))
+                assertEquals(2, sized.get())
             } finally {
                 scope.cancel()
             }

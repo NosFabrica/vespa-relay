@@ -379,3 +379,15 @@ a pace of its own, and returned normally whatever came back: a relay that named
 ids and served none had its window claimed, the `refusedOutright` trap again.
 It now runs eight batches at once over one `DownloadPace` and throws quartz's
 `DOWNLOADS_FAILED` once the pace gives up, as the pipeline does.
+
+**The push sizes an upstream off its last pass.** The guard needs the
+upstream's count before anything goes up, and `NegentropyStoreSync` offers no
+hook between its reconcile and its uploads (quartz 2.25.2), so the guard ran a
+reconcile of its own and then the group ran the same one again: two per
+upstream per pass. The group's result already says what the upstream holds
+(ours, less what it lacks, plus what it has that we do not and what it took),
+so the next pass reads that, and sizes afresh only on the first pass, after a
+withheld or failed pass, or when `LensWaivers.stance` changed since (signed in,
+or a waiver learned), which is how a lens would arrive. What it gives up is a
+collapse that arrives between passes unannounced: that pass pushes into it, and
+the next is held back. The first pass still fails closed.

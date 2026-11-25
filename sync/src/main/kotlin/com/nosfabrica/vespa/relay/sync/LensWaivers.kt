@@ -63,6 +63,16 @@ internal class LensWaivers(
      */
     fun mayBeLensed(url: NormalizedRelayUrl): Boolean = signingIn[url] == SignIn.TO_READ && url !in waiving
 
+    /** How [url] is read now; an answer from it stands for a later decision only while this does. */
+    fun stance(url: NormalizedRelayUrl): Stance = Stance(waives(url), mayAuthenticate(url), mayBeLensed(url))
+
+    /** Whether reads carry the waiver, whether we sign in, and whether a refused read made us. */
+    data class Stance(
+        val waived: Boolean,
+        val signedIn: Boolean,
+        val lensed: Boolean,
+    )
+
     /** [filter] as it goes to [url]. */
     fun onWire(
         url: NormalizedRelayUrl,

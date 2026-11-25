@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -56,7 +57,8 @@ internal class UpstreamPush(
     private val waivers: LensWaivers = LensWaivers.none(),
     /**
      * How many of the filter's events the upstream holds, by a reconcile against our snapshot, before
-     * anything is pushed; null when it could not be reconciled. A test stands in for the relay.
+     * anything is pushed; null when it could not be reconciled. Asked only when the pass before left no
+     * answer to read it off. A test stands in for the relay.
      */
     private val peerHeld: suspend (SyncUpstream, List<IdAndTime>) -> Int? = { up, local ->
         try {
@@ -75,6 +77,14 @@ internal class UpstreamPush(
 ) {
     /** Holds back a push to an upstream whose set shrank too far to believe. */
     private val shrink = ShrinkGuard()
+
+    /** What each upstream held after the last pass pushed to it, and how the gate read it then. */
+    private val heldAfter = ConcurrentHashMap<ShrinkGuard.Key, Held>()
+
+    private class Held(
+        val count: Int,
+        val stance: LensWaivers.Stance,
+    )
 
     /** Push rounds held back because the upstream's set shrank too far to believe. */
     val withheld = AtomicLong()
@@ -114,7 +124,9 @@ internal class UpstreamPush(
         for (up in urls) {
             if (!scope.isActive) break
             try {
-                if (!mayPush(up, local)) continue
+                val key = ShrinkGuard.Key(up.streamName, up.url, up.filter)
+                if (!mayPush(up, key, local)) continue
+                val stance = waivers.stance(up.url)
                 val result = pushGroup(up, local)
                 pushed.addAndGet(result.uploaded.toLong())
                 // A group reports a failed reconcile rather than throwing it.
@@ -123,6 +135,8 @@ internal class UpstreamPush(
                     System.err.println("router: up ${up.url.url} failed: $failure")
                     continue
                 }
+                // The group's reconcile sized the upstream already; the next pass reads it off this.
+                heldAfter[key] = Held(local.size - result.have + result.need + result.uploaded, stance)
                 outcomes[up] = result
                 val left = if (result.uploadsLeft > 0) ", ${result.uploadsLeft} left for the next pass" else ""
                 System.err.println("router: up ${up.url.url} pushed ${result.uploaded} event(s) upstream (${result.have} it lacked$left)")
@@ -138,14 +152,17 @@ internal class UpstreamPush(
 
     /**
      * Fail closed: an upstream reading our signed-in key through a trust lens answers empty and
-     * refuses nothing, and pushing on that answer would push it everything we hold.
+     * refuses nothing, and pushing on that answer would push it everything we hold. Judged on the
+     * last pass's answer while the gate reads the upstream as it did then; else sized afresh.
      */
     private suspend fun mayPush(
         up: SyncUpstream,
+        key: ShrinkGuard.Key,
         local: List<IdAndTime>,
     ): Boolean {
-        val held = peerHeld(up, local) ?: return false
-        if (shrink.mayPush(ShrinkGuard.Key(up.streamName, up.url, up.filter), local.size, held, waivers.mayBeLensed(up.url))) return true
+        val lastPass = heldAfter.remove(key)?.takeIf { it.stance == waivers.stance(up.url) }
+        val held = lastPass?.count ?: peerHeld(up, local) ?: return false
+        if (shrink.mayPush(key, local.size, held, waivers.mayBeLensed(up.url))) return true
         withheld.incrementAndGet()
         System.err.println(
             "router: up ${up.url.url} holds $held of the ${local.size} event(s) we hold — too few to believe from a relay " +
