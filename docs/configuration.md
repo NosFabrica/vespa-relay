@@ -236,7 +236,7 @@ the filter, the corpus's whole shape — but it means **an anonymous peer cannot
 mirror from this relay without declaring one.** A peer has three ways in: put
 `include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
 or ask the operator for `REQUIRE_READ_LENS=false`. From store
-59d541d (NosFabrica/vespa-eventstore, pinned once that PR merges) a signed-in
+59d541d (NosFabrica/vespa-eventstore, pinned from b19d76c) a signed-in
 reconcile is answered through the signer's lens, the same set that connection's
 REQ of the same filter serves (quartz takes the NEG-OPEN snapshot under the
 caller's identity and caches it per caller); `include:spam` waives the floor on
@@ -264,7 +264,7 @@ A snapshot is never served partial, because a peer acts on what a reconcile
 leaves out. On a cluster missing part of its content every NEG-OPEN is a
 `NEG-ERR`, anonymous ones included, where the same REQ is served from what the
 cluster can still search: the snapshot walk never takes a partial answer. And
-from store 604fede (likewise pinned once that PR merges), while a degraded
+from store 604fede (likewise pinned from b19d76c), while a degraded
 cluster leaves the provider map cold, a NEG-OPEN read through a lens is a
 `NEG-ERR` as well: a signed-in caller's on its own snapshot, and a named
 `observer:`'s on the shared path, which still resolves that observer's lens. A

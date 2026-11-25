@@ -814,6 +814,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+b19d76c60e30 = vespa-eventstore main @ 2026-11-25, the merge of PR #223, over 03bc72e8e459 (below), which it descends
+from (`git merge-base --is-ancestor 03bc72e8e459 b19d76c60e30`); its tree is the PR head's (827a1c0d), byte for byte
+(`git diff --quiet 827a1c0d b19d76c6`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, and the store's own request is 2.28.0 now, so the runtime classpath carries no `->` on quartz.
+  GATED NEG-OPEN SNAPSHOTS (59d541d), the reason for this bump. A NEG-OPEN snapshot reads through the connection's
+    lens (StoreQueryContext), so a signed-in reconcile answers the set that connection's REQ of the same filter serves;
+    before, a signed-in reconcile was answered the whole corpus. 604fede: while a degraded cluster leaves the provider
+    map cold, a NEG-OPEN read through a lens is a NEG-ERR, not a set read through an empty lens. 5e048a1: a connection's
+    lens is resolved only for a query that can read it, so a waived read never fails on the lookup.
+  READSHAPE.answersEveryConnectionAlike (0111d9c): the store's own statement of which filters read the same set for
+    every caller, held against its compiled queries; the relay's answersEveryCallerAlike bridge goes (its own commit).
+  FILTERLOCALITY (c3261450): writeIsFilterLocal and searchIsFilterLocal, the NEG-OPEN snapshot predicates quartz 2.28.0's
+    LiveEventStore takes; the relay's copy of the write half goes (its own commit). Termless include:spam and
+    observer: reconciles keep their snapshot across unrelated writes; text never does.
+  QUARTZ 2.28.0 (597fb289): the store now builds against the quartz this relay already forces.
+  #225's topical ranking reaches the store through 03bc72e8e459 (below); nothing of it changes here.
+  ROLLOUT: docs/upgrading.md, "Mirrors read gated peers whole": upgrade every router before any peer it mirrors takes
+    this store, or an old router reads a peer's lens-gated reconcile as a peer holding nothing.
+  Gated: the store's integration gate passed on 934c91d4 (827a1c0d after it is one README line): 43 IT classes, 65
+    tests, 0 failed, 1 skipped (StagingCorpusIT); VespaParityIT 156/156. ./gradlew build here is green.
+
 03bc72e8e459 = vespa-eventstore main @ 2026-11-25, the merge of PR #225, over e2acf591fb13 (below), which it descends
 from (`git merge-base --is-ancestor e2acf591fb13 03bc72e8e459`), through #224 and #221; its tree is the PR head's
 (539f90d), byte for byte (`git diff --quiet 539f90d 03bc72e`). Through JitPack's lowercase spelling, as the pins below;
