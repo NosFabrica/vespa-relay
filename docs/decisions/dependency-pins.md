@@ -789,6 +789,16 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+51fa05e44fae = vespa-eventstore main @ 2026-11-25, the merge of PR #222, over 9c3426fe552c (below), which it descends
+from; its tree is the PR head's (80e26de), byte for byte (`git diff --quiet 80e26de 51fa05e`). Through JitPack's
+lowercase spelling, as the pin below. No bundle, schema or deploy-time change, and no store source change.
+  QUARTZ (#222): the store pins quartz's 2.25.2 release through Magpie again, instead of the JitPack commit
+    4456c57f06, so its POM names com.vitorpamplona.quartz:quartz-jvm:2.25.2, the same release this relay pins.
+    Every module resolves quartz 2.25.2 with no com.github.vitorpamplona.quartz line at all: build-logic's
+    JitPack-to-release arrow has nothing to map now, and stays for a future commit pin.
+  Gated: the store's integration gate runs on 80e26de, whose tree this merge is (the 9c3426f gate above passed on
+    the same store code, 38 IT classes, 57 tests); its result is recorded on NosFabrica/vespa-relay#337.
+
 9c3426fe552c = vespa-eventstore main @ 2026-11-24, the merge of PR #219, over 23843fca9b9c (below), which it descends
 from. Through JitPack's lowercase spelling (com.github.nosfabrica.vespa-eventstore): the NosFabrica spelling's
 first build failed on JitPack's side (a 502 from Magpie fetching crypto-kmp 2.1.1) and JitPack caches that per
