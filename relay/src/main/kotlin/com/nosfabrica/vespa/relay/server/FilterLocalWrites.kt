@@ -36,10 +36,7 @@ import com.vitorpamplona.quartz.nip85TrustedAssertions.users.UserAssertionEvent
 internal fun liveEventStore(
     store: IEventStore,
     ingest: EventIngest,
-) = LiveEventStore(store, ingest, HELD_BEFORE_EOSE, ::isFilterLocalWrite)
-
-/** Quartz's two-argument `LiveEventStore` default, which it keeps private. */
-private const val HELD_BEFORE_EOSE = 1_000
+) = LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE, ::isFilterLocalWrite)
 
 /**
  * Quartz's `writeIsFilterLocal` for this store: false for a write that can change what the trust gate

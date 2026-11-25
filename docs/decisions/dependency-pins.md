@@ -55,6 +55,21 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+2.28.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.28.0 (the v2.28.0 tag 0756eabe7), over 2.26.0 (below), which it descends from: 8 commits, through 2.27.0
+(v2.27.0, 762cf50d8).
+  2.27.0 (quartz#158): EsploraClient moves to common code behind an EsploraHttpTransport, OkHttp's on the JVM. NIP-BC
+    on-chain zaps only; nothing here calls it.
+  2.28.0 (quartz#160): LiveEventStore gains a five-argument primary constructor whose last parameter is
+    searchIsFilterLocal, for a store to say which NEG-OPEN search filters it judges by their other fields; the
+    four-argument constructor this relay calls stays, passing null, which for any store but quartz's SQLite one keeps
+    2.26.0's rule (every write drops a search snapshot). DEFAULT_MAX_HELD_BEFORE_EOSE is public, so the relay's
+    copied 1,000 goes. Quartz's SQLite EventStore keeps search snapshots by default; this relay runs none.
+    IEventStore changes only in KDoc.
+gradle/magpie.lock gains 2.28.0's quartz and quartz-jvm files under the release key it already trusts (2.27.0 is never
+resolved, so it has no lines). Every module resolves one quartz, 2.28.0.
+  Gated: ./gradlew build here is green (the pre-push check).
+
 2.26.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.26.0 (the v2.26.0 tag a84b9b161), over 2.25.2 (below), which it descends from: 7 commits, the last two the
 release's own (VERSION_NAME, Package.swift). The NIP-77 snapshot cache (quartz#154): several slots, bounded by count and by the ids they hold, one walk shared by opens of
