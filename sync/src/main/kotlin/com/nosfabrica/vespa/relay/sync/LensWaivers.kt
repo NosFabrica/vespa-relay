@@ -42,7 +42,11 @@ internal class LensWaivers(
     private val log: (String) -> Unit = System.err::println,
 ) : AuthGate {
     private val waiving = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val signingIn = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /** Where we answer NIP-42, and whether a refused read asked for it: only that says the relay gates how it reads us. */
+    private val signingIn = ConcurrentHashMap<NormalizedRelayUrl, SignIn>()
+
+    private enum class SignIn { TO_WRITE, TO_READ }
 
     /** How many relays are read with the waiver; published as `waivedRelays`. */
     val waived: Int get() = waiving.size
@@ -51,10 +55,11 @@ internal class LensWaivers(
     fun waives(url: NormalizedRelayUrl): Boolean = url in waiving
 
     /**
-     * Signed in on [url] and no waiver learned there: a relay that gates by trust would answer our
-     * key through its lens, empty and unrefused. What its absences imply is not to be acted on.
+     * Signed in on [url] because it refused a read, and no waiver learned there: a relay that gates by
+     * trust would answer our key through its lens, empty and unrefused. Its absences are not to be acted
+     * on. A sign-in an EVENT's refusal asked for says nothing of how the relay reads.
      */
-    fun mayBeLensed(url: NormalizedRelayUrl): Boolean = url in signingIn && url !in waiving
+    fun mayBeLensed(url: NormalizedRelayUrl): Boolean = signingIn[url] == SignIn.TO_READ && url !in waiving
 
     /** [filter] as it goes to [url]. */
     fun onWire(
@@ -70,15 +75,22 @@ internal class LensWaivers(
 
     override fun heard(
         url: NormalizedRelayUrl,
-        said: String,
+        refusal: AuthGate.Refusal,
     ) {
+        val said = refusal.said
         if (learn(url, said)) return
-        if (MachineReadablePrefix.parse(said) == MachineReadablePrefix.AUTH_REQUIRED && signingIn.add(url)) {
-            log("router: ${url.url} asks us to sign in (${said.take(120)}); answering its NIP-42 challenge from here")
+        if (MachineReadablePrefix.parse(said) != MachineReadablePrefix.AUTH_REQUIRED) return
+        val why = if (refusal.ofRead) SignIn.TO_READ else SignIn.TO_WRITE
+        var changed = false
+        // A read's reason outranks a write's: the relay then gates reads too.
+        signingIn.compute(url) { _, before -> if (before != null && before >= why) before else why.also { changed = true } }
+        if (changed) {
+            val what = if (refusal.ofRead) "read" else "write"
+            log("router: ${url.url} asks us to sign in to $what (${said.take(120)}); answering its NIP-42 challenge from here")
         }
     }
 
-    override fun mayAuthenticate(url: NormalizedRelayUrl): Boolean = url in signingIn
+    override fun mayAuthenticate(url: NormalizedRelayUrl): Boolean = signingIn.containsKey(url)
 
     /**
      * Reads a refusal. True when it names the waiver as the way in (an `auth-required:` or
@@ -109,7 +121,7 @@ internal class LensWaivers(
     /** Forgets relays off [urls] and [pinned]. */
     fun retain(urls: Set<NormalizedRelayUrl>) {
         waiving.removeIf { it !in urls && it !in pinned }
-        signingIn.removeIf { it !in urls && it !in pinned }
+        signingIn.keys.removeIf { it !in urls && it !in pinned }
     }
 
     companion object {

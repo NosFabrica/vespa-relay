@@ -23,9 +23,11 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.SyncUpstream
+import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
@@ -186,6 +188,44 @@ class UpstreamPushTest {
                 push.pass(listOf(notes))
                 push.pass(listOf(profiles))
                 assertEquals(listOf("notes", "profiles"), pushedFor, "a 5-profile set is not a collapsed 200-note one")
+                assertEquals(0L, push.withheld.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /**
+     * An upstream that wants NIP-42 to take events signs us in on the push's first EVENT, a pass in;
+     * after that its answers are believed as before, so a backfill the budget spreads over passes goes on.
+     */
+    @Test
+    fun `an upstream that asked us to sign in to write still gets its backfill`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex())
+                (1..200).forEach { store.insert(note(it, kind = 1)) }
+                val waivers = LensWaivers(log = {})
+                val writeRefusal = AuthGate.refusalIn(OkMessage("a".repeat(64), false, "auth-required: this relay takes events from its members only"))!!
+                var held = 0
+                val push =
+                    UpstreamPush(
+                        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+                        store = store,
+                        intervalSec = 60,
+                        streamGate = Semaphore(1),
+                        scope = scope,
+                        waivers = waivers,
+                        peerHeld = { _, _ -> held },
+                        // Each pass's budget takes 5 events up; the relay asks for AUTH on the first EVENT.
+                        pushGroup = { target, _ ->
+                            waivers.heard(target.url, writeRefusal)
+                            held += 5
+                            pushed(target, uploaded = 5)
+                        },
+                    )
+                repeat(5) { push.pass(listOf(up)) }
+                assertEquals(25, held, "every pass pushed")
                 assertEquals(0L, push.withheld.get())
             } finally {
                 scope.cancel()

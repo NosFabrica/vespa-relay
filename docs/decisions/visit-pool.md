@@ -344,3 +344,12 @@ of ours or of what the peer held before, and a real mass retraction is left to
 the operator. A baseline is one stream's filter at one peer: one `UpstreamPush`
 serves every up stream, and keyed by url alone a 200-note stream's baseline made
 a 5-profile stream to the same upstream read as collapsed on every pass.
+
+**Only a refused read makes a sign-in a possible lens.** `AuthGate` hears
+whether an `auth-required:` refused a read (CLOSED, NEG-ERR, a NOTICE) or an
+EVENT (`OK false`). An upstream that wants NIP-42 to take events signed us in
+on the push's first EVENT, and from then on read as possibly lensed, so on a
+first push spread over passes by the budget its next answer (5 of our 200) was
+under a tenth of ours and the backfill was withheld for good. A write's sign-in
+says nothing of how the relay reads; the shrink against its own last answer
+still guards it.

@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * A scripted vespa-relay with `REQUIRE_READ_LENS`, over quartz's socket seam: it challenges every
  * connection, refuses an anonymous read that waives nothing naming `include:spam`, and answers a
  * signed-in one through that key's lens, which trusts nobody, so empty. With [membersOnly] it first
- * refuses every unsigned read for a reason that names no waiver. NEG-OPEN runs quartz's own server
+ * refuses every unsigned read for a reason that names no waiver; with [membersWrite], every unsigned EVENT. NEG-OPEN runs quartz's own server
  * session over the set the read would serve.
  */
 internal class GatedPeer(
@@ -54,6 +54,8 @@ internal class GatedPeer(
     private val corpus: List<Event>,
     private val membersOnly: Boolean = false,
     private val gated: Boolean = true,
+    /** Refuses an EVENT from an unsigned connection `auth-required:`, as a members-only write relay does. */
+    private val membersWrite: Boolean = false,
 ) : WebsocketBuilder {
     /** AUTH frames received, over every connection. */
     val auths = AtomicInteger()
@@ -163,6 +165,10 @@ internal class GatedPeer(
                             .jsonObject
                             .getValue("id")
                             .jsonPrimitive.content
+                    if (membersWrite && !signedIn) {
+                        reply("""["OK","$id",false,"auth-required: this relay takes events from its members only"]""")
+                        return true
+                    }
                     published += id
                     reply("""["OK","$id",true,""]""")
                 }

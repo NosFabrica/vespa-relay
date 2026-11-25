@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.event
 import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.stream
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -164,7 +165,7 @@ class VisitPoolWaiverTest {
                 val relay = gated(long)
                 val fixture =
                     PoolFixture(scope, streams, { filter, onEvent ->
-                        relay(filter, onEvent).also { if (it.message != null) waivers.heard(url, it.message!!) }
+                        relay(filter, onEvent).also { if (it.message != null) waivers.heard(url, AuthGate.Refusal(it.message!!, ofRead = true)) }
                     })
                 visit(fixture, waivers)
                 assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")

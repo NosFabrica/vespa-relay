@@ -272,8 +272,10 @@ only when the relay refuses the `search` field itself. A gate that offers no
 waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
 `abortedAuthRequired`).
 
-**And it never acts on an answer it cannot believe.** A relay we are signed in to
-and hold no waiver for may be reading us through a lens. So a retraction audit
+**And it never acts on an answer it cannot believe.** A relay that signed us in
+because it refused a read, and that we hold no waiver for, may be reading us
+through a lens; one that signed us in only to take our EVENTs (an `OK false
+"auth-required: …"`) said nothing of how it reads, and is believed as before. So a retraction audit
 deletes nothing when the relay's reconciled set holds none of ours, under a
 tenth of ours, or under a tenth of what it held at the last audit
 (`retractionsWithheld`), and an upstream push sends nothing when the upstream's

@@ -192,6 +192,24 @@ class GatedPeerTest {
         }
 
     /**
+     * A relay that wants NIP-42 to take events, and reads to anyone: the push's own EVENT is what signs
+     * us in, and that says nothing about how the relay reads us, so its next reconcile is believed.
+     */
+    @Test
+    fun `an upstream that signed us in to write is still pushed its backfill`() =
+        withRouter({ GatedPeer(it, emptyList(), gated = false, membersWrite = true) }) { router, peer, scope ->
+            val store = holding(cards)
+            val push = UpstreamPush(router.client, store, 60, Semaphore(1), scope, router.waivers)
+            val target = SyncUpstream(stream.name, url, ask, trusted = true)
+            push.pass(listOf(target))
+            assertTrue(peer.auths.get() >= 1, "the premise: the EVENT's refusal signed us in")
+            assertTrue(!router.waivers.mayBeLensed(url), "a write refusal says nothing of how the relay reads us")
+            push.pass(listOf(target))
+            assertEquals(0L, push.withheld.get(), "the backfill is not held back")
+            assertEquals(cards.size, peer.published.distinct().size, "every card reached the upstream")
+        }
+
+    /**
      * A stream whose search has words: quartz fetches a reconcile's ids with its search only when that
      * search has none, and a signed-in, un-waived ids REQ to a gated peer is answered empty.
      */

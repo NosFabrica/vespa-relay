@@ -39,10 +39,17 @@ import kotlinx.coroutines.CoroutineScope
  * it refused us. Without one the client answers every challenge, as the monitor's does.
  */
 interface AuthGate {
-    /** An `auth-required:` or `restricted:` sentence from [url], heard before the responder acts on it. */
+    /** A refusal the gate reads: the relay's sentence, and whether what it refused was a read or an EVENT. */
+    class Refusal(
+        val said: String,
+        /** A REQ, COUNT or NEG-OPEN was refused; a NOTICE, which names nothing, is taken as one. False for an EVENT's `OK`. */
+        val ofRead: Boolean,
+    )
+
+    /** An `auth-required:` or `restricted:` refusal from [url], heard before the responder acts on it. */
     fun heard(
         url: NormalizedRelayUrl,
-        said: String,
+        refusal: Refusal,
     )
 
     /** Whether to sign [url]'s challenge. */
@@ -50,7 +57,7 @@ interface AuthGate {
 
     companion object {
         /** The refusal a message carries, when it is one an [AuthGate] reads. */
-        fun refusalIn(msg: Message): String? {
+        fun refusalIn(msg: Message): Refusal? {
             val said =
                 when (msg) {
                     is ClosedMessage -> msg.message
@@ -60,7 +67,8 @@ interface AuthGate {
                     else -> null
                 } ?: return null
             val prefix = MachineReadablePrefix.parse(said)
-            return said.takeIf { prefix == MachineReadablePrefix.AUTH_REQUIRED || prefix == MachineReadablePrefix.RESTRICTED }
+            if (prefix != MachineReadablePrefix.AUTH_REQUIRED && prefix != MachineReadablePrefix.RESTRICTED) return null
+            return Refusal(said, ofRead = msg !is OkMessage)
         }
     }
 }
@@ -79,9 +87,9 @@ internal class AuthGateListener(
         msgStr: String,
         msg: Message,
     ) {
-        val said = AuthGate.refusalIn(msg) ?: return
+        val refusal = AuthGate.refusalIn(msg) ?: return
         val before = gate.mayAuthenticate(relay.url)
-        gate.heard(relay.url, said)
+        gate.heard(relay.url, refusal)
         if (!before && msg !is ClosedMessage && gate.mayAuthenticate(relay.url)) reauthenticate(relay.url)
     }
 }

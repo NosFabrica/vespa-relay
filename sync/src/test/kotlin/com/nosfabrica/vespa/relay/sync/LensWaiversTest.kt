@@ -20,6 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.peers.AuthGate
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
@@ -44,7 +47,7 @@ class LensWaiversTest {
         val waivers = LensWaivers(log = {})
         val ask = Filter(kinds = listOf(1), since = 10)
         assertSame(ask, waivers.onWire(strfry, ask), "a relay without NIP-50 refuses any filter carrying search")
-        waivers.heard(gated, lensRefusal)
+        waivers.heard(gated, AuthGate.Refusal(lensRefusal, ofRead = true))
         assertEquals("include:spam", waivers.onWire(gated, ask).search)
         assertSame(ask, waivers.onWire(strfry, ask))
         assertEquals(1, waivers.waived)
@@ -54,22 +57,32 @@ class LensWaiversTest {
     fun `only a refusal that names no waiver signs us in`() {
         val waivers = LensWaivers(log = {})
         assertFalse(waivers.mayAuthenticate(gated), "anonymous until asked")
-        waivers.heard(gated, lensRefusal)
+        waivers.heard(gated, AuthGate.Refusal(lensRefusal, ofRead = true))
         assertFalse(waivers.mayAuthenticate(gated), "the waiver is the way in, not our key")
-        waivers.heard(paid, "auth-required: members only")
+        waivers.heard(paid, AuthGate.Refusal("auth-required: members only", ofRead = true))
         assertTrue(waivers.mayAuthenticate(paid))
-        waivers.heard(strfry, "restricted: not on the whitelist")
+        waivers.heard(strfry, AuthGate.Refusal("restricted: not on the whitelist", ofRead = true))
         assertFalse(waivers.mayAuthenticate(strfry), "restricted asks for no AUTH")
     }
 
     @Test
     fun `a signed-in relay with no waiver may be answering through a lens`() {
         val waivers = LensWaivers(log = {})
-        waivers.heard(paid, "auth-required: members only")
+        waivers.heard(paid, AuthGate.Refusal("auth-required: members only", ofRead = true))
         assertTrue(waivers.mayBeLensed(paid))
-        waivers.heard(paid, lensRefusal)
+        waivers.heard(paid, AuthGate.Refusal(lensRefusal, ofRead = true))
         assertFalse(waivers.mayBeLensed(paid), "once its reads carry the waiver")
         assertFalse(waivers.mayBeLensed(strfry), "never signed in")
+    }
+
+    @Test
+    fun `a sign-in a write refusal asked for does not make reads possibly lensed`() {
+        val waivers = LensWaivers(log = {})
+        waivers.heard(paid, AuthGate.refusalIn(OkMessage("a".repeat(64), false, "auth-required: members only"))!!)
+        assertTrue(waivers.mayAuthenticate(paid), "signed in to write")
+        assertFalse(waivers.mayBeLensed(paid), "a write refusal says nothing of how the relay reads us")
+        waivers.heard(paid, AuthGate.refusalIn(ClosedMessage("sub", "auth-required: members only"))!!)
+        assertTrue(waivers.mayBeLensed(paid), "a read refused for want of AUTH does")
     }
 
     @Test
