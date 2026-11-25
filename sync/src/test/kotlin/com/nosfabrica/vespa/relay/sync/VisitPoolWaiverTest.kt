@@ -52,6 +52,12 @@ class VisitPoolWaiverTest {
 
     private val lensRefusal = "auth-required: this relay answers through a web of trust. Sign in, name an observer, or ask with `include:spam`."
 
+    /** vespa-relay's own sentence, which names the waiver past its 200th character. */
+    private val longRefusal =
+        "auth-required: this relay answers through a web of trust and has no house observer to lend you. " +
+            "Sign in (NIP-42 on the socket, NIP-98 over HTTP), or name whose trust ranks this read with the NIP-50 " +
+            "`observer:<64-hex pubkey>` token, or ask for the whole corpus unranked with `include:spam`."
+
     private fun waives(filter: Filter) = SearchQuery.parse(filter.search).includeSpam
 
     /** A relay that serves [corpus] only to a waiving ask and refuses the rest with [says]. */
@@ -148,6 +154,22 @@ class VisitPoolWaiverTest {
             }
         }
 
+    /** The walk's own sentence, whole: a refusal naming the waiver past what a visit's log keeps still teaches it. */
+    @Test
+    fun `a waiver named past the kept head of a refusal is learned from the walk itself`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val fixture = PoolFixture(scope, streams, gated(longRefusal))
+                visit(fixture, LensWaivers(log = {}))
+                assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")
+                assertTrue(fixture.tails.isNotEmpty(), "the visit finished")
+                assertEquals(0L, fixture.counts()["abortedAuthRequired"] ?: 0L)
+            } finally {
+                scope.cancel()
+            }
+        }
+
     /**
      * vespa-relay's own refusal names the waiver at its end, past the 200 characters a visit keeps
      * of a relay's sentence; the gate's listener hears the whole frame, and the visit must re-ask on
@@ -159,11 +181,7 @@ class VisitPoolWaiverTest {
             val scope = CoroutineScope(SupervisorJob())
             try {
                 val waivers = LensWaivers(log = {})
-                val long =
-                    "auth-required: this relay answers through a web of trust and has no house observer to lend you. " +
-                        "Sign in (NIP-42 on the socket, NIP-98 over HTTP), or name whose trust ranks this read with the NIP-50 " +
-                        "`observer:<64-hex pubkey>` token, or ask for the whole corpus unranked with `include:spam`."
-                val relay = gated(long)
+                val relay = gated(longRefusal)
                 val fixture =
                     PoolFixture(scope, streams, { filter, onEvent ->
                         relay(filter, onEvent).also { if (it.message != null) AuthGate.refusalIn(ClosedMessage("sub", it.message!!))?.let { r -> waivers.heard(url, r) } }

@@ -421,7 +421,7 @@ internal class VisitPool(
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
                     resumeAt[key] = at + 1
-                    val said = saidAbout(refusal, url)
+                    val said = saidAbout(refusal, url)?.let(RelayComplaints::kept)
                     aborts
                         .record(
                             key.stream,
@@ -501,7 +501,7 @@ internal class VisitPool(
         val ours: Boolean = false,
         /** The walk was read, and the store had not answered all of its events within the quiet give-up. */
         val unstored: Boolean = false,
-        /** The relay's own sentence, when the walk's result carried one. */
+        /** The relay's own sentence, whole, when the walk's result carried one. */
         val said: String? = null,
     ) {
         val reason: VisitAborts.Reason
@@ -582,7 +582,7 @@ internal class VisitPool(
                         )
                         continue
                     }
-                    // The gate's listener hears the whole refusal, `said` only its head, so a waiver it learned counts too.
+                    // A NOTICE-only refusal reaches `said` only as its head; the gate's listener heard it whole.
                     val learned = waivers.learn(url, said) || (!askedWaived && waivers.waives(url))
                     // The waiver changes at most twice per leg, so a relay alternating the two refusals cannot loop it.
                     if (waiverFlips < MAX_WAIVER_FLIPS && (learned || waivers.unlearn(url, said))) {
@@ -709,7 +709,7 @@ internal class VisitPool(
                     askedAtMs,
                     pages.render(sampling, walked.downloaded),
                     ours = paged.ours,
-                    said = RelayComplaints.saidIn(walked),
+                    said = RelayComplaints.wordsIn(walked),
                 )
             }
             val verdicts = storedAll(acks, stream.name, url, ongoingVisit)
