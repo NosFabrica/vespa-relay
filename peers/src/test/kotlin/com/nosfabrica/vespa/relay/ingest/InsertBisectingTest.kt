@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.nosfabrica.vespa.eventstore.engine.client.EngineRefusesWrites
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
@@ -60,6 +61,37 @@ class InsertBisectingTest {
     }
 
     private val gaveUp = mutableListOf<Int>()
+
+    /**
+     * A store whose engine refuses EVERY write (a feed block) has no bad event to find: the batch is given
+     * up whole after its one write, not split into ~2N refused writes before anyone is answered. Wrapped
+     * or not, the store's [EngineRefusesWrites] is what says so; any other failure still bisects.
+     */
+    @Test
+    fun `an engine refusing every write is not bisected`() {
+        for (wrap in listOf(false, true)) {
+            val calls = mutableListOf<Int>()
+            val given = mutableListOf<Int>()
+            val poisoned = mutableListOf<Event>()
+            runBlocking {
+                insertBisecting(
+                    events = (1..500).map(::event),
+                    write = { batch ->
+                        calls.add(batch.size)
+                        val refused = EngineRefusesWrites("the engine is refusing writes (INSUFFICIENT_STORAGE)")
+                        throw if (wrap) IllegalStateException("batch insert failed", refused) else refused
+                    },
+                    onOutcomes = { _, _ -> throw AssertionError("nothing is written") },
+                    onOutcomesFailed = { _, t -> throw AssertionError("no bookkeeping failure expected", t) },
+                    onPoison = { e, _ -> poisoned.add(e) },
+                    onGaveUp = { batch, _ -> given.add(batch.size) },
+                )
+            }
+            assertEquals(listOf(500), calls, "one write, wrapped=$wrap")
+            assertEquals(listOf(500), given, "the whole batch given up, wrapped=$wrap")
+            assertTrue(poisoned.isEmpty(), "no event blamed, wrapped=$wrap")
+        }
+    }
 
     private fun run(
         events: List<Event>,

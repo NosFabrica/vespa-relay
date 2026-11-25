@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.ingest
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.client.EngineRefusesWrites
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
@@ -129,6 +130,35 @@ class IngestOutcomesTest {
     ) {
         assertIs<IEventStore.InsertOutcome.Rejected>(outcome)
         assertTrue(outcome.reason.startsWith(prefix), "expected $prefix, got ${outcome.reason}")
+    }
+
+    /**
+     * A FEED BLOCK THAT BEGINS MID-WRITE. The engine took the first half of the batch, then refused
+     * every write: the half it holds is answered stored (which is also what hands it to live
+     * subscriptions), and only the rest hears that the relay's storage is refusing writes.
+     */
+    @Test
+    fun `a write refused whole answers what landed before the block as stored`() {
+        val offer = (0 until 40).map { note(it) }
+        val landed = Collections.synchronizedSet(HashSet<String>())
+        val heard =
+            outcomes(emptyList(), offer, store = { index ->
+                val real = NostrSemanticsStore(index, relay = relayUrl)
+                object : IEventStore by real {
+                    override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> {
+                        val half = events.take(events.size / 2)
+                        real.batchInsert(half)
+                        half.forEach { landed += it.id }
+                        throw IllegalStateException("batch insert failed", EngineRefusesWrites("the engine is refusing writes (INSUFFICIENT_STORAGE)"))
+                    }
+                }
+            })
+        assertEquals(offer.size / 2, landed.size)
+        assertEquals(offer.indices.toSet(), heard.keys)
+        offer.indices.forEach { i ->
+            val expected = if (offer[i].id in landed) IEventStore.InsertOutcome.Accepted else IngestPipeline.STORE_REFUSING_WRITES
+            assertEquals(listOf(expected), heard[i], "event $i")
+        }
     }
 
     @Test
