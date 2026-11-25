@@ -145,4 +145,33 @@ class VisitPoolWaiverTest {
                 scope.cancel()
             }
         }
+
+    /**
+     * vespa-relay's own refusal names the waiver at its end, past the 200 characters a visit keeps
+     * of a relay's sentence; the gate's listener hears the whole frame, and the visit must re-ask on
+     * what it learned.
+     */
+    @Test
+    fun `a waiver the gate learned from a long refusal is re-asked with in the same visit`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val waivers = LensWaivers(log = {})
+                val long =
+                    "auth-required: this relay answers through a web of trust and has no house observer to lend you. " +
+                        "Sign in (NIP-42 on the socket, NIP-98 over HTTP), or name whose trust ranks this read with the NIP-50 " +
+                        "`observer:<64-hex pubkey>` token, or ask for the whole corpus unranked with `include:spam`."
+                val relay = gated(long)
+                val fixture =
+                    PoolFixture(scope, streams, { filter, onEvent ->
+                        relay(filter, onEvent).also { if (it.message != null) waivers.heard(url, it.message!!) }
+                    })
+                visit(fixture, waivers)
+                assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")
+                assertTrue(fixture.tails.isNotEmpty(), "the visit finished")
+                assertEquals(0L, fixture.counts()["abortedAuthRequired"] ?: 0L)
+            } finally {
+                scope.cancel()
+            }
+        }
 }

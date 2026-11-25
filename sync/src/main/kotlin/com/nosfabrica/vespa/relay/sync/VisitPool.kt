@@ -570,6 +570,7 @@ internal class VisitPool(
                 var narrowings = 0
                 var waiverFlips = 0
                 while (true) {
+                    val askedWaived = waivers.waives(url)
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
                     // A refusal of ours has no width or waiver to learn.
                     val said = if (refusal.reason.ours) null else saidAbout(refusal, url)
@@ -581,8 +582,10 @@ internal class VisitPool(
                         )
                         continue
                     }
+                    // The gate's listener hears the whole refusal, `said` only its head, so a waiver it learned counts too.
+                    val learned = waivers.learn(url, said) || (!askedWaived && waivers.waives(url))
                     // The waiver changes at most twice per leg, so a relay alternating the two refusals cannot loop it.
-                    if (waiverFlips < MAX_WAIVER_FLIPS && (waivers.learn(url, said) || waivers.unlearn(url, said))) {
+                    if (waiverFlips < MAX_WAIVER_FLIPS && (learned || waivers.unlearn(url, said))) {
                         waiverFlips++
                         continue
                     }
