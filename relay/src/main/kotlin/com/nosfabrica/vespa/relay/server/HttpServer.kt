@@ -21,7 +21,9 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
+import com.nosfabrica.vespa.relay.server.config.defaultMaxFrameBytes
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
+import com.nosfabrica.vespa.relay.server.config.messageBytes
 import com.nosfabrica.vespa.relay.web.IconedPage
 import com.nosfabrica.vespa.relay.web.StatsSnapshot
 import com.nosfabrica.vespa.relay.web.favicon
@@ -52,6 +54,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import io.ktor.websocket.ChannelOverflow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -85,6 +88,11 @@ fun serveRelay(
     port: Int,
     nip11: Nip11Info,
     limits: RelayLimits = defaultRelayLimits(),
+    // The largest websocket message read (MAX_FRAME_BYTES); past the engine's length, under this, one is refused by id.
+    maxFrameBytes: Int = defaultMaxFrameBytes(limits),
+    // How long the native transport holds a message that has not finished arriving.
+    openMessageDeadlineMs: Long = OPEN_MESSAGE_DEADLINE_MS,
+    keepalive: Keepalive = Keepalive(),
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
@@ -134,7 +142,10 @@ fun serveRelay(
 
     val engine: NettyApplicationEngine.Configuration.() -> Unit = {
         connector { this.port = port }
-        if (nativeWebSocket) channelPipelineConfig = { installNativeWebSocket(relay, maxFrameBytes(limits).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), onionLocation, websocketCompression) }
+        if (nativeWebSocket) {
+            val inbound = NativeInbound(InboundLimits(maxFrameBytes.toLong(), limits.maxMessageLength?.let { it * 3L }), limits.maxMessageLength, openMessageDeadlineMs, keepalive)
+            channelPipelineConfig = { installNativeWebSocket(relay, inbound, onionLocation, websocketCompression) }
+        }
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }
@@ -152,12 +163,16 @@ fun serveRelay(
         )
 
         install(WebSockets) {
-            pingPeriodMillis = PING_PERIOD_MS
-            timeoutMillis = SILENCE_TIMEOUT_MS
-            maxFrameSize = maxFrameBytes(limits)
+            // The route keeps the connection alive itself (nostrRelay): Ktor's pinger hears pongs only behind commands.
+            pingPeriodMillis = 0
+            // Ktor's reader allocates a frame's declared length from its header and cannot stream a message, so
+            // past the engine's length it refuses (1009) instead of answering by id, as the native transport does.
+            maxFrameSize = messageBytes(limits)
+            // Ktor's default reads frames ahead without bound; this holds a socket's reads behind the route's.
+            channels { incoming = bounded(KTOR_FRAMES_AHEAD, ChannelOverflow.SUSPEND) }
         }
         routing {
-            nostrRelay(relay)
+            nostrRelay(relay, keepalive)
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
@@ -204,10 +219,12 @@ fun serveRelay(
 }
 
 /**
- * The largest websocket message read, judged from the frame header before the payload is buffered:
- * the engine's character cap at three UTF-8 bytes per character, as the HTTP body cap counts it.
+ * Frames Ktor may queue in each of its two raw incoming channels. With the frame its reader is collecting (a
+ * buffer of the largest declared length, kept for the connection), the one its forwarding coroutine holds and
+ * the message the route is joining, a Ktor connection holds about five messages of up to the engine's length
+ * in bytes, on top of its inbox.
  */
-internal fun maxFrameBytes(limits: RelayLimits): Long = (limits.maxMessageLength ?: defaultRelayLimits().maxMessageLength ?: 262_144) * 3L
+private const val KTOR_FRAMES_AHEAD = 1
 
 /** Spelled as the Tor Project spells it; readers compare case-insensitively. */
 private const val ONION_LOCATION = "Onion-Location"

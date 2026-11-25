@@ -14,6 +14,13 @@ holds up to 128 MiB of compression windows while sockets are being answered.
 Nothing to do. `WEBSOCKET_COMPRESSION=false` turns it off; it does nothing with
 `NATIVE_WEBSOCKET=false`, and the boot says so.
 
+A message past the engine's length (3 x `MAX_MESSAGE_LENGTH` bytes, compressed
+or not, judged inflated) is now answered `OK false` by id on the native
+websocket and the connection carries on; only one past `MAX_FRAME_BYTES`
+(16 MiB by default, new) closes it, after a NOTICE. On `NATIVE_WEBSOCKET=false`
+a message past the engine's length still closes the connection (1009), as it
+always did there.
+
 ## The websocket is served on Netty directly (November 2026)
 
 `NATIVE_WEBSOCKET` is now on by default: a websocket upgrade on `/` is answered

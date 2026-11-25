@@ -170,7 +170,7 @@ peers/…/relay/
   fold/                       FoldReading, RelayAliases, ServerIndex, StoredFold: the duplicate-url fold as 30166
                               records state it, read by the mirror's roster and the monitor's passes alike
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
-                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
+                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BatchFill, BisectingInsert, ProbeGate,
                               ProbeTrouble, ParseAudit, refused/, IngestTarget (the relay dial and its NIP-11 key
                               check, for both client processes); Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
@@ -426,6 +426,8 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
+- A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.
+- Ktor's websocket session hears a pong only behind the frames ahead of it: bounding its queues reaped backlogged publishers with "Ping timeout"; the Ktor route is raw and keeps its own keepalive.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.
 - Quartz/amethyst is multiplatform: no commas in backticked test names, no `java.util` in shared code.
 

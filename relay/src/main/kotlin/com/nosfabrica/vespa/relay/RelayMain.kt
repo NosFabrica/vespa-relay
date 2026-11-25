@@ -77,6 +77,7 @@ import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpFromWs
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.maintenanceSwitchesFromEnv
+import com.nosfabrica.vespa.relay.server.config.maxFrameBytesFromEnv
 import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
@@ -202,6 +203,7 @@ private class Boot(
     val identity: NostrSignerInternal?,
     val addresses: RelayAddresses,
     val limits: RelayLimits,
+    val maxFrameBytes: Int,
     val negentropy: NegentropySettings,
     val rejectFutureSeconds: Int,
     val providerRefreshSeconds: Long,
@@ -309,6 +311,7 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     val files = relayFilesFromEnv(env)
     val adminPubkeys = adminPubkeysFromEnv(env)
+    val limits = relayLimitsFromEnv(env)
     storeTuning.feedBatch?.let { n ->
         System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
     }
@@ -322,7 +325,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         endpoint = endpoint,
         identity = identity,
         addresses = addresses,
-        limits = relayLimitsFromEnv(env),
+        limits = limits,
+        maxFrameBytes = maxFrameBytesFromEnv(env, limits),
         negentropy = negentropySettingsFromEnv(env),
         rejectFutureSeconds = rejectFutureSecondsFromEnv(env),
         providerRefreshSeconds = providerRefreshSeconds(env),
@@ -529,7 +533,7 @@ private fun startIngest(
     val tuning = boot.ingest.tuning
     println(
         "relay: publishes write through " +
-            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
+            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s), a narrow batch waiting up to ${it.lingerMs}ms for more" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
     return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
 }
@@ -588,6 +592,7 @@ private fun serve(
         port = boot.port,
         nip11 = boot.nip11,
         limits = boot.limits,
+        maxFrameBytes = boot.maxFrameBytes,
         admin = admin,
         pressure = pressure,
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.

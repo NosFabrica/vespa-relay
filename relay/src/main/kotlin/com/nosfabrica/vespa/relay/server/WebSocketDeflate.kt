@@ -24,7 +24,6 @@ import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
 import io.netty.buffer.ByteBufUtil
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.zip.DataFormatException
 import java.util.zip.Deflater
 import java.util.zip.Inflater
 
@@ -136,57 +135,40 @@ internal class MessageDeflater {
     fun end() = deflater.end()
 }
 
-/** Inflates client messages, each on an empty window: client_no_context_takeover is part of every agreement. */
-internal class MessageInflater {
-    private val inflater = Inflater(true)
-    private var scratch = ByteArray(INFLATE_SCRATCH_BYTES)
+/** An event loop's share of compression: a deflater for frames that keep no context, and the inflaters its sockets borrow. */
+internal class LoopDeflate {
+    val fresh = MessageDeflater()
+    val inflaters = InflaterPool()
+}
 
-    /** [payload] inflated and read as UTF-8, or null once it inflates past [maxBytes]; a malformed stream throws. */
-    fun inflateText(
-        payload: ByteBuf,
-        maxBytes: Int,
-    ): String? {
-        val length = payload.readableBytes()
-        val input = ByteArray(length + SYNC_FLUSH_TAIL.size)
-        payload.getBytes(payload.readerIndex(), input, 0, length)
-        SYNC_FLUSH_TAIL.copyInto(input, length)
-        try {
-            inflater.setInput(input)
-            var size = 0
-            while (true) {
-                if (size == scratch.size) {
-                    if (size > maxBytes) return null
-                    scratch = scratch.copyOf(minOf(size.toLong() * 2, maxBytes.toLong() + 1).toInt())
-                }
-                val inflated = inflater.inflate(scratch, size, scratch.size - size)
-                size += inflated
-                if (size > maxBytes) return null
-                if (inflated == 0) {
-                    if (inflater.needsDictionary()) throw DataFormatException("a compressed message asked for a preset dictionary")
-                    if (inflater.needsInput() || inflater.finished()) break
-                }
-            }
-            return String(scratch, 0, size, Charsets.UTF_8)
-        } finally {
-            inflater.reset()
-            if (scratch.size > INFLATE_KEEP_BYTES) scratch = ByteArray(INFLATE_SCRATCH_BYTES)
-        }
+/**
+ * Raw inflaters an event loop lends its sockets, one for each compressed message while it is open, and the scratch
+ * its decoders inflate through: a decoder fills and empties both within one read, on the loop, so one pair serves all.
+ */
+internal class InflaterPool {
+    private val idle = ArrayDeque<Inflater>()
+    val input = ByteArray(SCRATCH_BYTES)
+    val output = ByteArray(SCRATCH_BYTES)
+
+    fun borrow(): Inflater = idle.removeLastOrNull() ?: Inflater(true)
+
+    /** Reset for its next message; past [KEEP_IDLE] it is ended, so a loop keeps only what its sockets use at once. */
+    fun giveBack(inflater: Inflater) {
+        inflater.reset()
+        if (idle.size < KEEP_IDLE) idle.addLast(inflater) else inflater.end()
     }
 
     private companion object {
-        const val INFLATE_SCRATCH_BYTES = 4_096
-        const val INFLATE_KEEP_BYTES = 1 shl 20
+        const val SCRATCH_BYTES = 16_384
+        const val KEEP_IDLE = 4
     }
-}
-
-/** An event loop's share of compression: a deflater for frames that keep no context, and the loop's one inflater. */
-internal class LoopDeflate {
-    val fresh = MessageDeflater()
-    val inflater = MessageInflater()
 }
 
 /** The sliding windows held across the process, against [MAX_DEFLATE_WINDOWS]. */
 private val heldWindows = AtomicInteger()
+
+/** The windows held now, for a test that a closed connection gave its window back. */
+internal fun heldDeflateWindows(): Int = heldWindows.get()
 
 private fun tryHoldWindow(): Boolean {
     if (heldWindows.incrementAndGet() <= MAX_DEFLATE_WINDOWS) return true
