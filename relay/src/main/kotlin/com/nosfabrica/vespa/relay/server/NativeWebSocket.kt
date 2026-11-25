@@ -238,8 +238,9 @@ private class EventLoopSessions(
     ): ByteBuf {
         if (body !== lastBody) {
             lastBodyBytes?.release()
-            val bytes = alloc.directBuffer(ByteBufUtil.utf8Bytes(body) + 1)
-            ByteBufUtil.writeUtf8(bytes, body)
+            val utf8 = utf8(body)
+            val bytes = alloc.directBuffer(utf8.size + 1)
+            bytes.writeBytes(utf8)
             bytes.writeByte(']'.code)
             lastBody = body
             lastBodyBytes = bytes
@@ -304,13 +305,28 @@ private class EventLoopSessions(
 internal fun encodeTextFrame(
     alloc: ByteBufAllocator,
     text: CharSequence,
+): ByteBuf = encodeTextFrame(alloc, utf8(text))
+
+/** A text frame of [bytes], already UTF-8. */
+internal fun encodeTextFrame(
+    alloc: ByteBufAllocator,
+    bytes: ByteArray,
 ): ByteBuf {
-    val length = ByteBufUtil.utf8Bytes(text)
-    val frame = alloc.ioBuffer(frameHeaderSize(length) + length)
-    writeFrameHeader(frame, length)
-    ByteBufUtil.writeUtf8(frame, text)
+    val frame = alloc.ioBuffer(frameHeaderSize(bytes.size) + bytes.size)
+    writeFrameHeader(frame, bytes.size)
+    frame.writeBytes(bytes)
     return frame
 }
+
+/**
+ * [text] as UTF-8 in one pass, the JDK's: an all-ASCII string, which nearly every Nostr frame is, encodes as a
+ * near-copy of its bytes. Netty's `utf8Bytes` + `writeUtf8` walked it twice a char at a time into the frame,
+ * and under read load that walk was the relay's largest single method (5% of its CPU, JFR, 2026-11-25).
+ * Measured on one core: a 600-byte EVENT frame 650 -> 220 ns, a 64 KB page 177 -> 12 us, a 600-byte
+ * non-ASCII one 1.5 -> 1.1 us. The bytes are the same for every input, an unpaired surrogate included: both
+ * write it as `?` (WebSocketProtocolTest). What it costs is one short-lived array per frame.
+ */
+internal fun utf8(text: CharSequence): ByteArray = text.toString().toByteArray(Charsets.UTF_8)
 
 /**
  * A live frame appended to [out]: its header, [prefix], and a copy of [body], the event's shared bytes with the
