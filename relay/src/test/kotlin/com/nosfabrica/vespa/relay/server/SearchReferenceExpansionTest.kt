@@ -828,7 +828,14 @@ class SearchReferenceExpansionTest {
                     page(session, out, "external", """{"kinds":[30395],"search":"bookshelf $lens"}"""),
                     "the list is served; it just has nothing to unpack",
                 )
-                val cost = index.queries.drop(before)
+                val spent = index.queries.drop(before)
+                // One query ahead of the recall: the store's topical-intent probe (vespa-eventstore
+                // search/QueryIntent), asking whether a notable profile or app is named the words, as
+                // one quoted phrase over kinds 0 and 31990. It is the only extra, and it is one.
+                val probe = spent.filter { it.kinds == listOf(0, 31990) }
+                assertEquals(1, probe.size, "exactly one topical-intent probe: $spent")
+                assertEquals(listOf("bookshelf"), probe.single().phrases, "the probe asks for the words as one phrase")
+                val cost = spent - probe.toSet()
                 assertEquals(
                     setOf(listOf(30395), listOf(1985), listOf(30383, 30384), listOf(30393, 30394)),
                     cost.map { it.kinds }.toSet(),
