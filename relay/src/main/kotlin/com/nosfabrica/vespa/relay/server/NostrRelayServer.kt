@@ -21,9 +21,11 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.AcceptPartial
+import com.nosfabrica.vespa.eventstore.FilterLocality
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.eventstore.PartialServed
+import com.nosfabrica.vespa.eventstore.ReadShape
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -156,7 +158,7 @@ class NostrRelayServer(
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
+        ObserverBackend(liveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
@@ -189,6 +191,15 @@ internal class HeldLiveOverflow :
  * queue, so the default batch keeps the default capacity.
  */
 internal fun ingestCapacity(batch: Int): Int = (batch * 4).coerceAtLeast(IngestQueue.DEFAULT_CAPACITY)
+
+/**
+ * The relay's [LiveEventStore]: a cached NEG-OPEN snapshot survives every write and search the store
+ * says cannot change its set ([FilterLocality]), for this store gates on what some writes feed.
+ */
+internal fun liveEventStore(
+    store: IEventStore,
+    ingest: EventIngest,
+) = LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE, FilterLocality::writeIsFilterLocal, FilterLocality::searchIsFilterLocal)
 
 /**
  * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [openSubscription],
@@ -430,6 +441,22 @@ internal class ObserverBackend(
         filters: List<Filter>,
         maxEntries: Int,
     ): IStorage? = inner.sealedNegentropyStorage(filters, maxEntries)
+
+    /**
+     * The NEG-OPEN path: the snapshot is taken as the caller, so a reconcile answers the set its REQ
+     * serves; filters whose set is every caller's, by the store's [ReadShape], share one snapshot, the
+     * one quartz caches for all.
+     */
+    override suspend fun sealedNegentropyStorage(
+        ctx: RequestContext,
+        filters: List<Filter>,
+        maxEntries: Int,
+    ): IStorage? =
+        if (filters.all { ReadShape.of(it).answersEveryConnectionAlike }) {
+            inner.sealedNegentropyStorage(filters, maxEntries)
+        } else {
+            ranked(ctx) { inner.sealedNegentropyStorage(ctx, filters, maxEntries) }
+        }
 
     private suspend fun <T> ranked(
         ctx: RequestContext,

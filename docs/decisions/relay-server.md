@@ -759,3 +759,48 @@ relay builds that session only after the NEG-OPEN's snapshot: such a value boote
 spent a full id walk on every NEG-OPEN and answered none of them, outside the handler that would
 have sent NEG-ERR. It now stops the boot and names the setting, as every other out-of-range
 setting does.
+
+**A NEG-OPEN's snapshot is taken as the caller.** Quartz 2.25.2 added a
+`sealedNegentropyStorage(ctx, …)` overload whose default drops the context, and
+`ObserverBackend` overrode only the old one, so every reconcile was answered as
+an anonymous caller and shared one cached snapshot across callers. It now
+delegates the caller's overload; the store reads the identity off
+`StoreQueryContext` as it does for a REQ.
+
+**A NEG-OPEN every caller reads alike shares one snapshot.** Taking each
+reconcile as its caller made quartz key its one cached snapshot by caller, so
+signed-in mirrors sending the same waived heartbeat each paid a full walk and
+seal and evicted each other, for a set that was every caller's anyway.
+`ObserverBackend` sends a filter that reads the same set for every caller
+through the context-free overload, the one slot quartz caches for all: one that
+names an `observer:` (it wins over the connection), or `include:spam` with
+nothing a caller's lens could act on. Anything else is taken as the caller. The
+store answers which those are (`ReadShape.answersEveryConnectionAlike`, held
+against its own compiled queries). The relay's interim bridge also counted every
+extension besides `include` as one a lens might act on, so a waived reconcile
+carrying an unknown `sort:`, `language:` without words, `nsfw:`, `domain:` or
+`sort:links` was walked once per caller; the store compiles each to the same walk,
+and since the store pin carries the answer the bridge is gone. `sort:links`
+reranks a REQ by the caller's links, but the NEG-OPEN walk never applies it.
+`NegentropyAsCallerTest` drives the boundary cases through `ObserverBackend`.
+
+**An ordinary write keeps the NEG-OPEN snapshots it cannot change.** Quartz
+keeps several snapshots and drops on a write only those the write can change
+under the store rules, but for a store other than its own SQLite one it treats
+every write as able to change every snapshot, and every search as the text
+engine's, unless told otherwise, since such a store may gate. Ours gates on
+reputation cells and lenses, which a 30382 card, a 10040 provider list, and a
+kind 5 or 62 that removes one change for authors the write never names. The relay
+first carried its own copy of that write predicate; it now passes the store's
+`FilterLocality.writeIsFilterLocal` and `searchIsFilterLocal` as they are, since
+only the store knows what its answers read (`liveEventStore` in
+`NostrRelayServer.kt`). The search half is what lets a mirror peer reuse a
+snapshot: a termless `include:spam` or `observer:` reconcile, the shape peers
+send, read nothing a write outside its filter can move. Text cannot be made
+local: the store drops hits under a score floor built from bm25, whose IDF moves
+with every document in the corpus, so a write the filter does not match can still
+move its set. Store changes made outside a publish (expiry, purges, the trust
+drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
+TTL; while every write dropped every snapshot, the next publish usually hid
+that. `NegentropySnapshotReuseTest` drives the signed-in, waived, named-observer
+and text shapes through NEG-OPEN; the store's `FilterLocalityTest` holds the sets.
