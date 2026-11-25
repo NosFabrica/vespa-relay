@@ -43,6 +43,14 @@ internal class ShrinkGuard {
     /** What each peer held at the last answer acted on. */
     private val held = ConcurrentHashMap<Key, Int>()
 
+    /** How many baselines are held. */
+    val baselines: Int get() = held.size
+
+    /** Forgets the baselines not [wanted], as the roster drops their units. */
+    fun retain(wanted: (Key) -> Boolean) {
+        held.keys.removeIf { !wanted(it) }
+    }
+
     /** Deletes on [peerHeld]: not when the peer holds none of our [mine], under a tenth of it, or under a tenth of what it held before. */
     fun mayDelete(
         key: Key,

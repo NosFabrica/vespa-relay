@@ -110,6 +110,9 @@ internal class RetractionAudit(
     /** Audits whose deletes were held back because the peer's answer shrank too far to believe. */
     val withheld = AtomicLong()
 
+    /** Forgets the shrink baselines of (stream, relay) units not [wanted]. */
+    fun retain(wanted: (String, NormalizedRelayUrl) -> Boolean) = shrink.retain { wanted(it.stream, it.url) }
+
     /**
      * The ask's owned-kind projection, the one filter the audit clock, the reconcile and the
      * deletes all run on. Null when the ask carries no owned kind.

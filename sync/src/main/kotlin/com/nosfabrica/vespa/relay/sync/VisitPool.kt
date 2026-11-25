@@ -313,6 +313,7 @@ internal class VisitPool(
             bands.retain(ownedState(built))
             pager.retain(next.keys.mapTo(HashSet()) { it.url })
             waivers.retain(next.keys)
+            retraction?.retain { stream, url -> wantedBy(built, VisitKey(url, stream)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
