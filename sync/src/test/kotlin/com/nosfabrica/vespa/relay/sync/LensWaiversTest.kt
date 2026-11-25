@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EoseMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -29,6 +30,7 @@ import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -42,12 +44,15 @@ class LensWaiversTest {
 
     private fun parsed(filter: Filter) = SearchQuery.parse(filter.search)
 
+    /** [said] as a REQ's `CLOSED` brings it to the gate. */
+    private fun closed(said: String) = assertNotNull(AuthGate.refusalIn(ClosedMessage("sub", said)))
+
     @Test
     fun `a relay is asked verbatim until a refusal names the waiver`() {
         val waivers = LensWaivers(log = {})
         val ask = Filter(kinds = listOf(1), since = 10)
         assertSame(ask, waivers.onWire(strfry, ask), "a relay without NIP-50 refuses any filter carrying search")
-        waivers.heard(gated, AuthGate.Refusal(lensRefusal, ofRead = true))
+        waivers.heard(gated, closed(lensRefusal))
         assertEquals("include:spam", waivers.onWire(gated, ask).search)
         assertSame(ask, waivers.onWire(strfry, ask))
         assertEquals(1, waivers.waived)
@@ -57,20 +62,20 @@ class LensWaiversTest {
     fun `only a refusal that names no waiver signs us in`() {
         val waivers = LensWaivers(log = {})
         assertFalse(waivers.mayAuthenticate(gated), "anonymous until asked")
-        waivers.heard(gated, AuthGate.Refusal(lensRefusal, ofRead = true))
+        waivers.heard(gated, closed(lensRefusal))
         assertFalse(waivers.mayAuthenticate(gated), "the waiver is the way in, not our key")
-        waivers.heard(paid, AuthGate.Refusal("auth-required: members only", ofRead = true))
+        waivers.heard(paid, closed("auth-required: members only"))
         assertTrue(waivers.mayAuthenticate(paid))
-        waivers.heard(strfry, AuthGate.Refusal("restricted: not on the whitelist", ofRead = true))
+        waivers.heard(strfry, closed("restricted: not on the whitelist"))
         assertFalse(waivers.mayAuthenticate(strfry), "restricted asks for no AUTH")
     }
 
     @Test
     fun `a signed-in relay with no waiver may be answering through a lens`() {
         val waivers = LensWaivers(log = {})
-        waivers.heard(paid, AuthGate.Refusal("auth-required: members only", ofRead = true))
+        waivers.heard(paid, closed("auth-required: members only"))
         assertTrue(waivers.mayBeLensed(paid))
-        waivers.heard(paid, AuthGate.Refusal(lensRefusal, ofRead = true))
+        waivers.heard(paid, closed(lensRefusal))
         assertFalse(waivers.mayBeLensed(paid), "once its reads carry the waiver")
         assertFalse(waivers.mayBeLensed(strfry), "never signed in")
     }
@@ -83,6 +88,17 @@ class LensWaiversTest {
         assertFalse(waivers.mayBeLensed(paid), "a write refusal says nothing of how the relay reads us")
         waivers.heard(paid, AuthGate.refusalIn(ClosedMessage("sub", "auth-required: members only"))!!)
         assertTrue(waivers.mayBeLensed(paid), "a read refused for want of AUTH does")
+    }
+
+    @Test
+    fun `an EOSE auth hint asks for AUTH on a read and names no waiver`() {
+        val waivers = LensWaivers(log = {})
+        val hint = assertNotNull(AuthGate.refusalIn(EoseMessage("sub", listOf(EoseMessage.HINT_AUTH))), "the hint is a refusal the gate reads")
+        waivers.heard(paid, hint)
+        assertTrue(waivers.mayAuthenticate(paid))
+        assertTrue(waivers.mayBeLensed(paid), "a read held back for want of AUTH")
+        assertFalse(waivers.waives(paid))
+        assertEquals(null, AuthGate.refusalIn(EoseMessage("sub", listOf(EoseMessage.HINT_FINISH))), "only the auth hint")
     }
 
     @Test

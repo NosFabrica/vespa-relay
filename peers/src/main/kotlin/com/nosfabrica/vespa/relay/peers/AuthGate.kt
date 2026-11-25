@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.client.listeners.RelayConnectionListener
 import com.vitorpamplona.quartz.nip01Core.relay.client.single.IRelayClient
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EoseMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
@@ -39,14 +40,17 @@ import kotlinx.coroutines.CoroutineScope
  * it refused us. Without one the client answers every challenge, as the monitor's does.
  */
 interface AuthGate {
-    /** A refusal the gate reads: the relay's sentence, and whether what it refused was a read or an EVENT. */
+    /** A refusal the gate reads: the relay's sentence, whether it asks for NIP-42, and whether it refused a read or an EVENT. */
     class Refusal(
-        val said: String,
+        /** The relay's words; null for a NIP-67 EOSE `auth` hint, which has none. */
+        val said: String?,
         /** A REQ, COUNT or NEG-OPEN was refused; a NOTICE, which names nothing, is taken as one. False for an EVENT's `OK`. */
         val ofRead: Boolean,
+        /** An `auth-required:` sentence, or an EOSE `auth` hint: more is served to a signed-in reader. */
+        val asksAuth: Boolean,
     )
 
-    /** An `auth-required:` or `restricted:` refusal from [url], heard before the responder acts on it. */
+    /** An `auth-required:` or `restricted:` refusal, or an EOSE `auth` hint, from [url], heard before the responder acts on it. */
     fun heard(
         url: NormalizedRelayUrl,
         refusal: Refusal,
@@ -58,6 +62,7 @@ interface AuthGate {
     companion object {
         /** The refusal a message carries, when it is one an [AuthGate] reads. */
         fun refusalIn(msg: Message): Refusal? {
+            if (msg is EoseMessage) return if (msg.needsAuth()) Refusal(null, ofRead = true, asksAuth = true) else null
             val said =
                 when (msg) {
                     is ClosedMessage -> msg.message
@@ -68,15 +73,15 @@ interface AuthGate {
                 } ?: return null
             val prefix = MachineReadablePrefix.parse(said)
             if (prefix != MachineReadablePrefix.AUTH_REQUIRED && prefix != MachineReadablePrefix.RESTRICTED) return null
-            return Refusal(said, ofRead = msg !is OkMessage)
+            return Refusal(said, ofRead = msg !is OkMessage, asksAuth = prefix == MachineReadablePrefix.AUTH_REQUIRED)
         }
     }
 }
 
 /**
  * Hands [gate] every refusal, and signs in at once where one opened the gate on a refusal quartz's
- * responder does not re-authenticate on by itself (it does on a CLOSED). Registered on the client
- * before the responder, so the gate has decided by the time the responder asks it.
+ * responder does not re-authenticate on by itself (it does on a CLOSED and on an EOSE `auth` hint).
+ * Registered on the client before the responder, so the gate has decided by the time the responder asks it.
  */
 internal class AuthGateListener(
     private val gate: AuthGate,
@@ -90,7 +95,7 @@ internal class AuthGateListener(
         val refusal = AuthGate.refusalIn(msg) ?: return
         val before = gate.mayAuthenticate(relay.url)
         gate.heard(relay.url, refusal)
-        if (!before && msg !is ClosedMessage && gate.mayAuthenticate(relay.url)) reauthenticate(relay.url)
+        if (!before && msg !is ClosedMessage && msg !is EoseMessage && gate.mayAuthenticate(relay.url)) reauthenticate(relay.url)
     }
 }
 

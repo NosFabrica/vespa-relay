@@ -31,7 +31,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * How this mirror reads each relay: anonymously, verbatim, until a refusal says otherwise. A
  * refusal naming NIP-50's `include:spam` (a web-of-trust relay's lens gate) teaches the waiver,
- * which then rides every read of that relay; any other `auth-required:` refusal signs us in there.
+ * which then rides every read of that relay; any other `auth-required:` refusal, or a NIP-67 EOSE
+ * `auth` hint, signs us in there.
  * Anonymous first because a gated relay answers a signed-in key through that key's lens, empty for
  * ours and never refused, so only an anonymous read hears the gate. Never the waiver unasked: a
  * relay without NIP-50 refuses any filter carrying `search` (strfry: `unrecognised filter item`).
@@ -79,15 +80,14 @@ internal class LensWaivers(
         refusal: AuthGate.Refusal,
     ) {
         val said = refusal.said
-        if (learn(url, said)) return
-        if (MachineReadablePrefix.parse(said) != MachineReadablePrefix.AUTH_REQUIRED) return
+        if (learn(url, said) || !refusal.asksAuth) return
         val why = if (refusal.ofRead) SignIn.TO_READ else SignIn.TO_WRITE
         var changed = false
         // A read's reason outranks a write's: the relay then gates reads too.
         signingIn.compute(url) { _, before -> if (before != null && before >= why) before else why.also { changed = true } }
         if (changed) {
             val what = if (refusal.ofRead) "read" else "write"
-            log("router: ${url.url} asks us to sign in to $what (${said.take(120)}); answering its NIP-42 challenge from here")
+            log("router: ${url.url} asks us to sign in to $what (${said?.take(120) ?: "an EOSE `auth` hint"}); answering its NIP-42 challenge from here")
         }
     }
 

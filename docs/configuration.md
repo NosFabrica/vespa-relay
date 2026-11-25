@@ -257,7 +257,8 @@ first, even with `RELAY_NSEC` set: a gated relay reads a signed-in key through
 that key's lens, which on a key nobody has scored is an EMPTY answer and never a
 refusal, so only an anonymous read can hear the gate. It answers a relay's NIP-42
 challenge only once a refusal asks for AUTH without naming a waiver (a paid or
-whitelisted relay), and a refusal that names `include:spam` — this relay's
+whitelisted relay) or an EOSE carries NIP-67's `auth` hint (served, with more
+held back for a signed-in reader), and a refusal that names `include:spam` — this relay's
 `auth-required:` sentence does — teaches the waiver instead. From then on every
 read the router makes of that relay carries `include:spam`, merged into any
 `search` the stream's filter already holds, signed in or not (a filter that names

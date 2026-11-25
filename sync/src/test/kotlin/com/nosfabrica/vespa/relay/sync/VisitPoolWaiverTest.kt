@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.event
 import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.stream
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
@@ -165,7 +166,7 @@ class VisitPoolWaiverTest {
                 val relay = gated(long)
                 val fixture =
                     PoolFixture(scope, streams, { filter, onEvent ->
-                        relay(filter, onEvent).also { if (it.message != null) waivers.heard(url, AuthGate.Refusal(it.message!!, ofRead = true)) }
+                        relay(filter, onEvent).also { if (it.message != null) AuthGate.refusalIn(ClosedMessage("sub", it.message!!))?.let { r -> waivers.heard(url, r) } }
                     })
                 visit(fixture, waivers)
                 assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")

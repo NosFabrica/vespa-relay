@@ -56,6 +56,8 @@ internal class GatedPeer(
     private val gated: Boolean = true,
     /** Refuses an EVENT from an unsigned connection `auth-required:`, as a members-only write relay does. */
     private val membersWrite: Boolean = false,
+    /** Answers an unsigned REQ with nothing and a NIP-67 `["EOSE",sub,["auth"]]`, the whole set once signed in. */
+    private val authHint: Boolean = false,
 ) : WebsocketBuilder {
     /** AUTH frames received, over every connection. */
     val auths = AtomicInteger()
@@ -105,6 +107,7 @@ internal class GatedPeer(
         /** What this connection may read of [filter], or the refusal. */
         private fun served(filter: JsonObject): Pair<List<Event>?, String?> {
             val waived = SearchQuery.parse(filter["search"]?.jsonPrimitive?.content).includeSpam
+            if (authHint && !signedIn) return emptyList<Event>() to null
             if (membersOnly && !signedIn) return null to "auth-required: this relay serves its members only"
             if (gated && !waived && !signedIn) return null to "auth-required: this relay answers through a web of trust. Sign in, or ask with `include:spam`."
             if (gated && !waived) return emptyList<Event>() to null
@@ -132,7 +135,7 @@ internal class GatedPeer(
                     }
                     scope.launch {
                         for (e in answers.flatMap { it.first.orEmpty() }.distinctBy { it.id }) out.onMessage("""["EVENT","$subId",${e.toJson()}]""")
-                        out.onMessage("""["EOSE","$subId"]""")
+                        out.onMessage(if (authHint && !signedIn) """["EOSE","$subId",["auth"]]""" else """["EOSE","$subId"]""")
                     }
                 }
 

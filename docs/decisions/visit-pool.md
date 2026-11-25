@@ -359,3 +359,11 @@ every filter to a waived relay, so a stream reading through `observer:<hex>`
 went out with `include:spam` too and lost the trust floor it asked for, from a
 gate that had never refused it. A filter the store reads as naming an observer
 (`ReadShape.observer`) goes out as written.
+
+**An EOSE `auth` hint is an ask for AUTH that names no waiver.** A relay
+following NIP-67 answers an anonymous REQ, holds back what only a signed-in
+reader may see, and says so on the EOSE. The gate read only CLOSED, NEG-ERR, OK
+and NOTICE sentences, so it never opened: quartz's pager ended the walk
+`AUTH_REQUIRED` with no sentence, the pool counted `abortedAuthRequired`, and
+`StandingRefusal` made the unit unreadable for a day. The hint now signs us in
+as a refused read does, and quartz's responder and pager re-serve the page.

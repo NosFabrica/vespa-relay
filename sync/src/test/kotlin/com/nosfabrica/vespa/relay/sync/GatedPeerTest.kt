@@ -124,6 +124,18 @@ class GatedPeerTest {
             assertTrue(!router.waivers.waives(url), "no waiver was asked for")
         }
 
+    /** NIP-67: an EOSE carrying `auth` says the relay holds more for a signed-in reader, and names no waiver. */
+    @Test
+    fun `an EOSE that hints at AUTH signs in and the page is read in full`() =
+        withRouter({ GatedPeer(it, cards, gated = false, authHint = true) }) { router, peer, _ ->
+            val got = mutableListOf<Event>()
+            val walked = WaivedReads(ClientRelayReads(router.client), router.waivers).page(url, ask, 5_000) { got += it }
+            assertEquals(1, peer.auths.get(), "signed in on the hint")
+            assertEquals(cards.size, got.size, "and served what it held back")
+            assertTrue(VisitPool.readToTheEnd(walked), "the walk is not an AUTH_REQUIRED abort: ${walked.end}")
+            assertTrue(!router.waivers.waives(url), "no waiver was named")
+        }
+
     @Test
     fun `a NEG-ERR asking for AUTH signs in too`() =
         withRouter({ GatedPeer(it, cards, membersOnly = true, gated = false) }) { router, peer, _ ->
