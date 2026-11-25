@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
+import com.nosfabrica.vespa.relay.ingest.shutDownIngest
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
@@ -131,6 +132,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.system.exitProcess
 
 /**
  * The relay process: open the store, serve the NIP-50 relay and the NIP-11 doc, and block.
@@ -179,17 +181,18 @@ fun main() {
             pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
-            ingest?.closeIntake()
-            mirror?.closeIntake()
-            ingestScope.cancel()
-            ingest?.close()
-            mirror?.close()
+            if (!shutDownIngest(listOfNotNull(ingest, mirror), ingestScope, INGEST_DRAIN_MS)) {
+                System.err.println("relay: ingest was still writing ${INGEST_DRAIN_MS / 1000}s into shutdown; the rest was cancelled")
+            }
             store.close()
         },
     )
     BootClock.mark("relay: built, starting the server")
     serve(boot, relay, store, servingPressure, statsSnapshot, profile)
 }
+
+/** How long shutdown waits for the publish and mirror-lane workers to write what they hold; inside compose's stop grace. */
+private const val INGEST_DRAIN_MS = 15_000L
 
 /** Everything the process reads from its environment, parsed before anything touches the network. */
 private class Boot(
@@ -521,7 +524,8 @@ private fun startMirrorLane(
     }
     val tuning = boot.mirrorIngest
     println("relay: the mirror lane writes what the sync forwards, ${tuning.concurrency} worker(s) of up to ${tuning.batch} event(s)")
-    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane").also(IngestPipeline::start)
+    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane", onWorkerStopped = exitOnStoppedWorker("mirror lane"))
+        .also(IngestPipeline::start)
 }
 
 /** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
@@ -535,8 +539,22 @@ private fun startIngest(
         "relay: publishes write through " +
             (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s), a narrow batch waiting up to ${it.lingerMs}ms for more" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
-    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
+    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes", onWorkerStopped = exitOnStoppedWorker("publish")).also(IngestPipeline::start) }
 }
+
+/**
+ * Nothing restarts an ingest worker, and every write it would have taken waits on it unanswered, so
+ * the process ends non-zero and compose's restart policy brings it back.
+ */
+private fun exitOnStoppedWorker(lane: String): (Int, Throwable) -> Unit =
+    { worker, cause ->
+        System.err.println("relay: $lane ingest worker $worker stopped on ${cause.javaClass.simpleName}; exiting so the relay restarts")
+        cause.printStackTrace()
+        // From a thread of its own: exitProcess blocks its caller while the shutdown hook runs, and that hook
+        // waits for every worker loop to end (shutDownIngest) — this one included, whose loop ends only once
+        // the hook returns. Called inline, every worker death cost the whole drain bound before the exit.
+        Thread({ exitProcess(1) }, "relay-exit").start()
+    }
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
 private fun startPulseSite(

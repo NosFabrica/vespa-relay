@@ -57,6 +57,13 @@ tags, so the image is pinned by digest. `--enable-native-access=ALL-UNNAMED` is 
 the CDS dump: Netty loads its own native libraries, which JDK 24+ warns about at every boot without it, and
 the archive is dumped under the module options it runs with.
 
+**Every start script carries `-XX:+ExitOnOutOfMemoryError`.** An
+`OutOfMemoryError` kills only the thread it lands on, and an ingest worker that
+dies so leaves a process that serves reads and answers no publish. Exiting at
+the throw hands the restart to compose (`restart: unless-stopped`, the
+monitor's `on-failure`; the JVM exits 3). It is in the start scripts, not
+`JAVA_TOOL_OPTIONS`, so an operator's override of those cannot drop it.
+
 **The build moved to the JDK 25 toolchain.** Every module compiles and tests on 25, the LTS after 21, and
 emits 25 bytecode; the image's build stage is Temurin 25 and its runtime stays 27, which runs 25 bytecode
 unchanged. vespa-eventstore moves to 25 in step, after this: a 21 toolchain cannot read a store compiled for

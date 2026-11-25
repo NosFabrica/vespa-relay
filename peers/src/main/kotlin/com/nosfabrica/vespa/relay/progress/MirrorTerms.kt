@@ -429,7 +429,7 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "bottleneck",
             "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
-                "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
+                "in minutes, or a worker died — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
                 "full, so every download is backpressured behind it — the mirror is as fast as the store), " +
                 "`downloads` (the queue drains as fast as it fills, so the relays are the limit), `upstream` " +
                 "(nothing is arriving at all) or `mixed`. A full queue and an empty one are opposite diagnoses " +

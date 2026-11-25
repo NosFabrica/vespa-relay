@@ -119,6 +119,18 @@ An outcome loop that dies partway (only an `Error` gets past the sink's guard)
 books the outcomes it had not reached as an `ingest fault`, so
 `accepted + rejected` still meets `submitted`.
 
+**A worker an `Error` ends is fatal to the relay and reads as `wedged`.** The
+relay publishes through one worker by default, and nothing restarted a dead
+one: every publish after it waited for an OK that never came, while `wedged`
+read the dead worker's slot as idle and the relay never asked. The pipeline
+now counts such an exit (`workersStopped`), `wedged` is true while any worker
+is gone, and `onWorkerStopped` tells the owner: the relay logs and exits 1 for
+compose to restart it; the sync keeps reporting it on its health line. A store
+write still isolates any throwable as poison, so the exits left are the pass's
+own bookkeeping, and an `OutOfMemoryError` ends every process at its throw
+(`-XX:+ExitOnOutOfMemoryError` in each start script) before any catch can
+leave the JVM running without the thread it killed.
+
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store
 refusal, and the fast path exists to stop the store producing it for the
@@ -129,6 +141,30 @@ old `created_at`, stamp it with the id of an event this relay should never
 fetch, and two of those suppress that id permanently. `verifyId` closes it for
 ~1.5µs against the 48-95µs a signature costs, and the signature is not needed
 for this class because supersession is decided inside the hashed content.
+
+**Shutdown writes what ingest holds, for up to 15 seconds.** The relay's hook
+closed intake and cancelled the writers in the same breath, so a batch
+mid-commit was cut, and the events still queued were never answered, nor was
+their share of the byte budget returned. `shutDownIngest` now closes intake,
+waits up to `INGEST_DRAIN_MS` for the workers to empty the queue and exit, then
+cancels, and `close` answers whatever no worker took as shutting down. Compose
+gives the relay a 30 s `stop_grace_period`, since Docker's 10 s default would
+kill the wait. The sync's pipeline is still cancelled at once: it writes only
+to the relay, and a band is recorded only on the relay's answers, so a cut
+batch is fetched again, never lost; the monitor writes through no pipeline.
+
+**A version beaten in the batch hears `replaced:` only once its winner is
+stored.** The in-batch contest answered the older versions `replaced:` inside
+`admit`, before the newest version's own write was judged. When that write was
+refused (unstorable text, expired, deleted, or on the sync the relay's frame
+limit, which the newest follow list is likeliest to exceed) no version was
+stored, yet every older copy had been told it was replaced, and the sync's
+refusal sink records `replaced:` as permanent, so those versions were dropped
+for good. The older versions now wait on the winner's answer: stored (accepted,
+a duplicate, or itself replaced by a stored version) and they hear `replaced:`
+as before; anything else and they hear a retryable `Failed`, reported to no
+sink. A winner the relay refuses twice is suppressed at submit, so the next
+offer's contest is won by the newest version that can be stored.
 
 **The bisecting insert has a fixed write budget.** A bulk write fails as a
 unit, so one bad event cost the whole batch: 999 good events lost per bad one

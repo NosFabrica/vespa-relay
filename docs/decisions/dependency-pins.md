@@ -789,6 +789,26 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+e2acf591fb13 = vespa-eventstore main @ 2026-11-25, the merge of PR #220, over 51fa05e44fae (below), which it descends
+from; its tree is the PR head's (d08167f5), byte for byte (`git diff --quiet d08167f5 e2acf591`). Through JitPack's
+lowercase spelling, as the pins below.
+  ONE QUERY PER FEED READ (#220), the reason for this bump. A recency read whose first query plans at most
+    VESPA_ID_FIRST_MAX_DIRECT_HITS hits (default 200) is served in ONE query asking for documents, where it was an
+    ids-only query plus a hydrate; a crowded boundary second is read as ids and only the page's members of it are
+    fetched; a shape whose pages were cut before stays id-first; 0 restores the old path. Every mode serves the
+    same page. Measured through this relay (the store's benchmark/README.md, "One query or id-first, per read"):
+    REQ/s +43% (limit 10) and +55% (limit 100) hot, +17% cold, level on crowded feeds.
+  SCHEMA, deploy-only: event.sd gains a `nip01` document-summary holding the served event's fields, and full reads
+    are sent as `select *` on it (no field list for the query container to parse or filter hits by: its CPU per
+    REQ 921/835 -> 768/738 us). Deployed onto a cluster holding 108,010 events here: configChangeActions restart,
+    refeed and reindex all empty, no warning, and an event fed before the deploy read back whole through it. A
+    schema without `nip01` (AUTO_DEPLOY=false and the class not copied in) costs one refused read: the store falls
+    back to naming the fields, so nothing breaks, it only forgoes the saving (docs/migrations.md needs nothing).
+  NEW SETTING: VESPA_ID_FIRST_MAX_DIRECT_HITS, read through EngineTuning.fromEnv (configuration.md, the store's
+    settings).
+  Gated: the store's integration gate passed on d08167f5, whose tree this merge is, against vespaengine/vespa:latest
+    (8.788.13): 57 tests, 56 passed, 1 skipped, 0 failed.
+
 51fa05e44fae = vespa-eventstore main @ 2026-11-25, the merge of PR #222, over 9c3426fe552c (below), which it descends
 from; its tree is the PR head's (80e26de), byte for byte (`git diff --quiet 80e26de 51fa05e`). Through JitPack's
 lowercase spelling, as the pin below. No bundle, schema or deploy-time change, and no store source change.

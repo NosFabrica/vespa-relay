@@ -172,6 +172,17 @@ subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
 more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
 the screened replay, and fails if `openSubscription` forwards past the gate.
 
+**A search queued for its turn holds at most 1,000 live events, then is
+CLOSED.** Live events wait in `HeldLive` until the subscription's live gate is
+built, and a ranked REQ builds it only once it has the connection's
+`SearchGate` permit. Quartz forwards its own hold (1,000) ahead of EOSE, so
+while the REQ queued behind a slow search, every live match beyond that grew
+the list with no bound, and nothing bounds how long the search ahead runs.
+Sending them ungated would stream authors the lens drops, and dropping them
+silently would break the REQ, so past `MAX_HELD_LIVE` the queued REQ ends with a
+`CLOSED` that says so. Only a read that queues races the bound; the rest run
+as before.
+
 **A REQ's stored rows are served partial while a Vespa node is down.** With one
 content node offline every engine answer is `non-ideal-state` below 100%, and
 the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL
@@ -286,6 +297,15 @@ it normally, then retries forever. Past the budget, a connection is closed only
 when the writer has waited 30s on one frame, checked on every offer and once a
 second; a non-reader holds at most what arrives in that window, still under the
 8192-frame bound, and the frame bound is unchanged.
+
+**The frame bound is one whole stored page plus 8192.** A fixed 8192 closed a
+client asking one REQ the limits allow (8 filters of 5,000 rows: closed 1013
+after 3,845 events, no EOSE), because the store builds the page whole and
+emits every row into the queue at once. The bound is now `MAX_FILTERS` x
+`MAX_LIMIT` plus 8192 for live traffic (`outboundFrameCap`, on both
+transports). The page's rows are on the heap already when they are queued, so
+the bound adds no memory a REQ could not already cost; the character budget and
+the 30s stall still close a client that stopped reading.
 
 **A message the engine cannot take is answered by id, and on the native
 transport it is read without being held.** The websocket cap was the engine's

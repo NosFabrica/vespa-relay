@@ -89,13 +89,7 @@ internal fun healthLine(r: HealthReading): String =
 private fun queueClause(r: HealthReading): String =
     when (r.bottleneck) {
         "wedged" -> {
-            " FULL and NOT DRAINING — ingest is wedged, not backpressured: " +
-                "${r.inBatch}/${r.ingestWorkers} worker(s) in a batch, the oldest for ${r.oldestBatchSec}s. " +
-                "The store stopped answering; look there, not at the relays" +
-                (
-                    r.oldestStoreCall?.let { ". Longest store call: $it" }
-                        ?: ". No store call is outstanding — the workers are held somewhere other than the store"
-                )
+            if (r.ingestWorkersRunning < r.ingestWorkers) stoppedWedge(r) else heldWedge(r)
         }
 
         "ingest" -> {
@@ -114,6 +108,21 @@ private fun queueClause(r: HealthReading): String =
             ""
         }
     }
+
+/** Every worker held in one pass: the store, or whatever the pass waits on, stopped answering. */
+private fun heldWedge(r: HealthReading): String =
+    " FULL and NOT DRAINING — ingest is wedged, not backpressured: " +
+        "${r.inBatch}/${r.ingestWorkers} worker(s) in a batch, the oldest for ${r.oldestBatchSec}s. " +
+        "The store stopped answering; look there, not at the relays" +
+        (
+            r.oldestStoreCall?.let { ". Longest store call: $it" }
+                ?: ". No store call is outstanding — the workers are held somewhere other than the store"
+        )
+
+/** A worker an error ended: nothing restarts it, so the process must be. */
+private fun stoppedWedge(r: HealthReading): String =
+    " NOT DRAINING — ${r.ingestWorkers - r.ingestWorkersRunning} of ${r.ingestWorkers} worker(s) stopped on an error " +
+        "(the `ingest worker … STOPPED` line) and nothing restarts one; restart the process"
 
 private fun stoppedWorkersClause(r: HealthReading): String {
     val stopped = r.ingestWorkers - r.ingestWorkersRunning
