@@ -739,3 +739,11 @@ relay builds that session only after the NEG-OPEN's snapshot: such a value boote
 spent a full id walk on every NEG-OPEN and answered none of them, outside the handler that would
 have sent NEG-ERR. It now stops the boot and names the setting, as every other out-of-range
 setting does.
+
+**A NEG-OPEN's snapshot is taken as the caller.** Quartz 2.25.2 added a
+`sealedNegentropyStorage(ctx, …)` overload whose default drops the context, and
+`ObserverBackend` overrode only the old one, so every reconcile was answered as
+an anonymous caller and shared one cached snapshot across callers. It now
+delegates the caller's overload; the store reads the identity off
+`StoreQueryContext` as it does for a REQ.
+

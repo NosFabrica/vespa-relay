@@ -234,7 +234,10 @@ default — a reconcile hands over the ids and timestamps of everything matching
 the filter, the corpus's whole shape — but it means **an anonymous peer cannot
 mirror from this relay without declaring one.** A peer has three ways in: put
 `include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
-or ask the operator for `REQUIRE_READ_LENS=false`.
+or ask the operator for `REQUIRE_READ_LENS=false`. A signed-in reconcile is
+answered through the signer's lens, the same set that connection's REQ of the
+same filter serves (quartz takes the NEG-OPEN snapshot under the caller's
+identity and caches it per caller); `include:spam` waives the floor on both.
 
 **Turn it off** where there is nothing to gate on: a relay whose readers are
 all mirrors, or a store with no NIP-85 trust data behind it, would only be

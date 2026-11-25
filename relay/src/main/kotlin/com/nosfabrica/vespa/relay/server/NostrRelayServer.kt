@@ -378,6 +378,13 @@ internal class ObserverBackend(
         maxEntries: Int,
     ): IStorage? = inner.sealedNegentropyStorage(filters, maxEntries)
 
+    /** The NEG-OPEN path: the snapshot is taken as the caller, so a reconcile answers the set its REQ serves. */
+    override suspend fun sealedNegentropyStorage(
+        ctx: RequestContext,
+        filters: List<Filter>,
+        maxEntries: Int,
+    ): IStorage? = ranked(ctx) { inner.sealedNegentropyStorage(ctx, filters, maxEntries) }
+
     private suspend fun <T> ranked(
         ctx: RequestContext,
         block: suspend () -> T,
