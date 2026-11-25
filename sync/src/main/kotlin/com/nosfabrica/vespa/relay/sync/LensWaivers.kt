@@ -39,7 +39,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Held in memory for the process; a restart relearns each on its first refusal.
  */
 internal class LensWaivers(
-    /** Relays kept through [retain] whatever the roster says: the declared up and down urls. */
+    /** Relays whose waiver [retain] keeps whatever the roster says: the declared up and down urls. */
     private val pinned: Set<NormalizedRelayUrl> = emptySet(),
     private val log: (String) -> Unit = System.err::println,
 ) : AuthGate {
@@ -129,10 +129,13 @@ internal class LensWaivers(
         return true
     }
 
-    /** Forgets relays off [urls] and [pinned]. */
+    /**
+     * Forgets the waivers of relays off [urls] and [pinned] that never signed us in. A signed-in socket
+     * can outlive its roster entry and is read unrefused, so what such a relay taught is kept, bounded
+     * by the relays that ever asked us for AUTH.
+     */
     fun retain(urls: Set<NormalizedRelayUrl>) {
-        waiving.removeIf { it !in urls && it !in pinned }
-        signingIn.keys.removeIf { it !in urls && it !in pinned }
+        waiving.removeIf { it !in urls && it !in pinned && !signingIn.containsKey(it) }
     }
 
     companion object {

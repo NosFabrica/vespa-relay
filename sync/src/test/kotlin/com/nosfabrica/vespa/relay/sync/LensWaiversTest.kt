@@ -200,6 +200,22 @@ class LensWaiversTest {
         assertFalse(waivers.waives(strfry), "off the roster")
     }
 
+    /**
+     * A socket we signed in on can outlive the relay's roster entry, and it is read through our key's
+     * lens, unrefused: forget its sign-in or its waiver and nothing would teach either again.
+     */
+    @Test
+    fun `retain keeps what a relay we signed in on taught us`() {
+        val waivers = LensWaivers(log = {})
+        waivers.heard(paid, closed("auth-required: members only"))
+        waivers.learn(paid, lensRefusal)
+        waivers.learn(gated, lensRefusal)
+        waivers.retain(emptySet())
+        assertTrue(waivers.mayAuthenticate(paid), "still answering its challenge")
+        assertTrue(waivers.waives(paid), "and still waiving its reads")
+        assertFalse(waivers.waives(gated), "an anonymous relay's waiver is relearned from its refusal")
+    }
+
     @Test
     fun `none is a registry of its own each time`() {
         val one = LensWaivers.none()
