@@ -34,7 +34,8 @@ import java.io.File
 /**
  * Re-puts every event of [kinds] (null: all) in the background so its fed search fields are re-derived;
  * a column Vespa derives at index time needs a Vespa reindex instead (docs/migrations.md). The cursor
- * saved to [cursorFile] per page records its scope, and a mismatched scope starts over.
+ * saved to [cursorFile] per page records its scope, and a mismatched scope starts over, as does a
+ * saved cursor the store refuses ([readFtsPage]).
  */
 fun launchFtsReindex(
     scope: CoroutineScope,
@@ -67,23 +68,16 @@ fun launchFtsReindex(
         // On a resumed run `total` counts only the remainder, so no denominator is honest.
         val expected =
             if (cursor != null) null else runCatching { store.count(Filter(kinds = kinds)) }.getOrNull()?.toLong()
+        // Only the walk's first page reads a cursor this process did not just get from the store.
+        var fromSavedFile = cursor != null
         try {
             do {
-                // The same cursor is retried a few times before giving up.
-                var progress: FtsReindexProgress? = null
-                var attempt = 0
-                while (progress == null) {
-                    progress =
-                        runCatching {
-                            if (kinds == null) store.reindexFullTextSearch(cursor) else store.reindexFullTextSearch(kinds, cursor)
-                        }.onFailure { e ->
-                            // A shutdown mid-page is not a failed page.
-                            if (e is CancellationException) throw e
-                            if (++attempt > FTS_PAGE_RETRIES) throw e
-                            System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
-                        }.getOrNull()
-                    if (progress == null) delay(attempt * 5_000L)
-                }
+                val page =
+                    readFtsPage(cursor, fromSavedFile, read = { at ->
+                        if (kinds == null) store.reindexFullTextSearch(at) else store.reindexFullTextSearch(kinds, at)
+                    })
+                fromSavedFile = false
+                val progress = page.progress
                 cursor = progress.cursor
                 saver.save(kinds, cursor)
                 total += progress.processedThisBatch
@@ -121,6 +115,53 @@ fun launchFtsReindex(
                     "no page completed, so a restart starts from the beginning"
                 }
             System.err.println("fts: reindex FAILED after $total event(s): ${e.message} — $resume")
+        }
+    }
+}
+
+/** A page of the walk, and whether reading it started the walk over ([readFtsPage]). */
+internal class FtsPage(
+    val progress: FtsReindexProgress,
+    val restarted: Boolean,
+)
+
+/**
+ * One page of the walk from [cursor], retried [FTS_PAGE_RETRIES] times before giving up.
+ *
+ * A cursor read back from the cursor file ([fromSavedFile]) that the store REFUSES starts the walk
+ * over instead: an [IllegalArgumentException] on that first page means the cursor is not one this
+ * deployment can resume, not a page that failed. The store throws it for a cursor Vespa answers
+ * 400 to, and, under author sharding (vespa-eventstore `docs/author-shards.md`), for a cursor saved
+ * under another shard count or before sharding. Retrying such a cursor fails the same way on every
+ * boot, and the reindex never runs again until someone deletes the file. A walk is a re-put of
+ * every event, so starting over costs time only.
+ */
+internal suspend fun readFtsPage(
+    cursor: String?,
+    fromSavedFile: Boolean,
+    read: suspend (String?) -> FtsReindexProgress,
+    log: (String) -> Unit = System.err::println,
+    pause: suspend (Long) -> Unit = { delay(it) },
+): FtsPage {
+    var at = cursor
+    var restarted = false
+    var attempt = 0
+    while (true) {
+        try {
+            return FtsPage(read(at), restarted)
+        } catch (e: CancellationException) {
+            // A shutdown mid-page is not a failed page.
+            throw e
+        } catch (e: Exception) {
+            if (fromSavedFile && !restarted && at != null && e is IllegalArgumentException) {
+                log("fts: the store refused the saved cursor (${e.message?.take(80)}): it is not one this deployment can resume (a cluster redeployed, an author-shard change) — starting over")
+                at = null
+                restarted = true
+                continue
+            }
+            if (++attempt > FTS_PAGE_RETRIES) throw e
+            log("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
+            pause(attempt * 5_000L)
         }
     }
 }

@@ -789,6 +789,34 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+03bc72e8e459 = vespa-eventstore main @ 2026-11-25, the merge of PR #225, over e2acf591fb13 (below), which it descends
+from (`git merge-base --is-ancestor e2acf591fb13 03bc72e8e459`), through #224 and #221; its tree is the PR head's
+(539f90d), byte for byte (`git diff --quiet 539f90d 03bc72e`). Through JitPack's lowercase spelling, as the pins below;
+the runtime classpath carries the same `->` lines as on e2acf591fb13, none on the store, engine or quartz.
+  TOPICAL INTENT (#225), the reason for this bump. A ranked search first asks whether a NOTABLE entity the reader trusts
+    is named exactly its words (one quoted-phrase probe over kinds 0 and 31990 under the lens, min_rank 30, 50 deep; an
+    app handler, or a profile with 1 000+ followers). When none is, the query is topical and the `search` profile stops
+    paying the perfect-match rung to entities named the topic, keeping it on wiki (30818) and long-form (30023)
+    articles titled exactly it. Navigational queries and profiles-only reads rank as before. Measured under
+    production's probe decisions: +0.056 [+0.027, +0.088] nDCG@10 on the store's 54 cases (topical +0.123), +0.176 on
+    147 new queries whose page changed; the probe 77 ms p50 / 653 ms p95 from outside on production, cached ten
+    minutes per lens and text, failing open. The relay's NIP-01 REQ path pays it (SearchReferenceExpansionTest names it
+    as the one extra query); counts, live gates and the Open Ranking route skip it.
+  SCHEMA, deploy-only: event.sd's `search` profile gains query(topical) (default 0), reference_kind() and
+    topical_perfect_drop(). Deployed onto a cluster holding 84 events fed under e2acf591fb13's package:
+    configChangeActions restart, refeed and reindex all empty, no warning, every event read back, and a
+    topical=1 search answered with the new match-feature. An older schema ignores the input (docs/migrations.md
+    needs nothing).
+  #224: a text-free read is sent as Vespa's JSON select and names its language (query-container CPU per such read
+    -14 to -20%); a write Vespa refuses for want of disk or memory fails at once (EngineRefusesWrites) instead of
+    retrying for seconds.
+  #221: author shards (PROTOTYPE, off by default: VESPA_AUTHOR_SHARDS / VESPA_AUTHOR_BUCKETS, already documented
+    here, now in the pin) and the deploy guard. No change with the settings unset.
+  NEW SETTINGS: VESPA_INTENT_PROBE (relay only, docker-compose.yml) and VESPA_SELECT_QUERIES, read through
+    EngineTuning.fromEnv (configuration.md, the store's settings, which also gains the older VESPA_EXPIRY_SWEEP_PAGE).
+  Gated: the store's integration gate passed on 03bc72e itself against vespaengine/vespa:latest (8.788.13): 43 IT
+    classes, 65 tests, 64 passed, 1 skipped (StagingCorpusIT), 0 failed.
+
 e2acf591fb13 = vespa-eventstore main @ 2026-11-25, the merge of PR #220, over 51fa05e44fae (below), which it descends
 from; its tree is the PR head's (d08167f5), byte for byte (`git diff --quiet d08167f5 e2acf591`). Through JitPack's
 lowercase spelling, as the pins below.
