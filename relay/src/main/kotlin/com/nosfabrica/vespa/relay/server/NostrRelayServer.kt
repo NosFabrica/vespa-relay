@@ -158,7 +158,7 @@ class NostrRelayServer(
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(LiveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
+        ObserverBackend(liveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen

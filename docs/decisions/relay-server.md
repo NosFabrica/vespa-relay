@@ -780,3 +780,23 @@ quartz's extension tokenizer; it goes when the pin carries
 `ReadShape.answersEveryConnectionAlike` (vespa-eventstore 0111d9c), which the
 store asserts against its own compiled queries. `NegentropyAsCallerTest` holds
 its table.
+
+**An ordinary write keeps the NEG-OPEN snapshots it cannot change.** Quartz
+2.26.0 keeps several snapshots and drops on a write only those the write can
+change under the store rules, but for a store other than its own SQLite one it
+drops every snapshot on every write unless told which writes are filter-local,
+since such a store may gate. Ours gates on reputation cells and lenses, which a
+30382 card, a 10040 provider list, and a kind 5 or 62 that removes one change for
+authors the write never names. `isFilterLocalWrite` answers false for exactly
+those, mirroring the store's own `NostrSemanticsStore.touchesTrust` (the writes
+it takes the trust gate for), narrowed only for a kind 5 that names addresses
+alone, none of a trust kind; a kind 5 by id stays false, since the store deletes
+an `e` target whatever kind it turns out to be. Kinds the store reads only for
+search (follow lists and reports for `sort:links`, the other NIP-85 assertions
+and Trusted Lists for expansion) stay true: quartz drops every search snapshot
+on every write. At store e2acf59 a plain NEG-OPEN is walked ungated, so the
+predicate only starts to matter with 59d541d, which walks it through the
+caller's lens. Store changes made outside a publish (expiry, purges, the trust
+drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
+TTL; while every write dropped every snapshot, the next publish usually hid
+that. `FilterLocalWritesTest` holds the set and drives it through NEG-OPEN.

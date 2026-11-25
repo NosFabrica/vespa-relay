@@ -246,6 +246,19 @@ connection), or `include:spam` with no words and no other extension. Words, or a
 extension besides `include` (`sort:`, `filter:rank:`, `language:`, `nsfw:`, …),
 are taken as the caller, since a caller's lens might act on them.
 
+A cached snapshot (quartz keeps several, for up to 30 seconds each) survives an
+ordinary publish: a note, a reaction or a profile drops only the snapshots whose
+filters it could join, replace or delete from. A write the trust gate reads drops
+every snapshot, because it can change what any caller's lens admits: a NIP-85
+card (kind 30382), a provider list (10040), a request to vanish (62), and a
+deletion (5) unless it names only addresses of other kinds, since the store
+deletes an `e` target whatever its kind. A filter carrying a NIP-50 `search`,
+`include:spam` and `observer:` included, is dropped by every write: quartz
+leaves its set to the store's text engine. Changes made to the store outside a
+publish (expiry sweeps, NIP-86 and retraction-audit purges, the boot-time trust
+reconcile and score sweep, the store's background trust drain after a 10040
+names a new service) drop no snapshot and are bounded by the 30 seconds alone.
+
 A snapshot is never served partial, because a peer acts on what a reconcile
 leaves out. On a cluster missing part of its content every NEG-OPEN is a
 `NEG-ERR`, anonymous ones included, where the same REQ is served from what the
