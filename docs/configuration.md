@@ -277,8 +277,8 @@ and hold no waiver for may be reading us through a lens. So a retraction audit
 deletes nothing when the relay's reconciled set holds none of ours, under a
 tenth of ours, or under a tenth of what it held at the last audit
 (`retractionsWithheld`), and an upstream push sends nothing when the upstream's
-set fell under a tenth of what it held, or, on such a signed-in relay, under a
-tenth of ours (`pushesWithheld`). A real mass retraction lands there too, and is
+set for that stream fell under a tenth of what it held, or, on such a signed-in
+relay, under a tenth of ours (`pushesWithheld`). A real mass retraction lands there too, and is
 the operator's to apply.
 
 ## Commands over HTTP (NIP-FE)

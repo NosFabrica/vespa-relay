@@ -145,7 +145,7 @@ internal class UpstreamPush(
         local: List<IdAndTime>,
     ): Boolean {
         val held = peerHeld(up, local) ?: return false
-        if (shrink.mayPush(up.url.url, local.size, held, waivers.mayBeLensed(up.url))) return true
+        if (shrink.mayPush(ShrinkGuard.Key(up.streamName, up.url, up.filter), local.size, held, waivers.mayBeLensed(up.url))) return true
         withheld.incrementAndGet()
         System.err.println(
             "router: up ${up.url.url} holds $held of the ${local.size} event(s) we hold — too few to believe from a relay " +

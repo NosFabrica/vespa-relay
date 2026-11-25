@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.SyncUpstream
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -53,6 +54,11 @@ class UpstreamPushTest {
         error: String? = null,
         left: Int = 0,
     ) = NegentropyStoreSync.GroupResult(target.url, target.filter, need = 0, have = uploaded + left, downloaded = 0, uploaded = uploaded, deletionsSentUp = 0, deletionsAppliedDown = 0, pagedFallback = error != null, error = error, uploadsLeft = left)
+
+    private fun note(
+        n: Int,
+        kind: Int,
+    ) = Event("%064x".format(n), "a1".repeat(32), 1_700_000_000L + n, kind, emptyArray(), "", "b2".repeat(64))
 
     @Test
     fun `a slow push does not hold the snapshot gate`() =
@@ -146,6 +152,41 @@ class UpstreamPushTest {
                 assertEquals(listOf(urls[1]), outcomes.keys.toList())
                 assertEquals(5, outcomes.getValue(urls[1]).uploadsLeft, "what the budget cut is the next pass's")
                 assertEquals(2L, push.pushed.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** One [UpstreamPush] runs every up stream, so a baseline one stream set must not judge another's answer. */
+    @Test
+    fun `two up streams to one url keep their own baselines`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex())
+                (1..200).forEach { store.insert(note(it, kind = 1)) }
+                (201..205).forEach { store.insert(note(it, kind = 0)) }
+                val notes = up.copy(streamName = "notes", filter = Filter(kinds = listOf(1)))
+                val profiles = up.copy(streamName = "profiles", filter = Filter(kinds = listOf(0)))
+                val pushedFor = mutableListOf<String>()
+                val push =
+                    UpstreamPush(
+                        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+                        store = store,
+                        intervalSec = 60,
+                        streamGate = Semaphore(1),
+                        scope = scope,
+                        // The upstream holds every note of ours, and four of our five profiles.
+                        peerHeld = { target, local -> if (target.streamName == "notes") local.size else local.size - 1 },
+                        pushGroup = { target, _ ->
+                            pushedFor += target.streamName
+                            pushed(target, uploaded = 1)
+                        },
+                    )
+                push.pass(listOf(notes))
+                push.pass(listOf(profiles))
+                assertEquals(listOf("notes", "profiles"), pushedFor, "a 5-profile set is not a collapsed 200-note one")
+                assertEquals(0L, push.withheld.get())
             } finally {
                 scope.cancel()
             }

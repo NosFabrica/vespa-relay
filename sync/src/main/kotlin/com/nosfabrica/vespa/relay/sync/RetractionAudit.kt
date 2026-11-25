@@ -244,7 +244,7 @@ internal class RetractionAudit(
             )
         }
         val peerHeld = mine.size - diff.haveIds.size + diff.needIds.size
-        val shrinkKey = "${stream.name} ${url.url} ${ownedAsk.toJson()}"
+        val shrinkKey = ShrinkGuard.Key(stream.name, url, ownedAsk)
         if (diff.haveIds.isEmpty()) {
             if (compared) shrink.mayDelete(shrinkKey, mine.size, peerHeld)
             return

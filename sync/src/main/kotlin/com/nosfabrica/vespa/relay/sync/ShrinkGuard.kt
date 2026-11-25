@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -29,32 +31,41 @@ import java.util.concurrent.ConcurrentHashMap
  * answers a believable set again. A real mass retraction is then the operator's to apply.
  */
 internal class ShrinkGuard {
-    /** What each peer held at the last answer acted on, by caller key. */
-    private val held = ConcurrentHashMap<String, Int>()
+    /** Whose answer a baseline is: one stream's filter at one peer, since one guard serves every stream. */
+    data class Key(
+        val stream: String,
+        val url: NormalizedRelayUrl,
+        val shape: String,
+    ) {
+        constructor(stream: String, url: NormalizedRelayUrl, filter: Filter) : this(stream, url, filter.toJson())
+    }
+
+    /** What each peer held at the last answer acted on. */
+    private val held = ConcurrentHashMap<Key, Int>()
 
     /** Deletes on [peerHeld]: not when the peer holds none of our [mine], under a tenth of it, or under a tenth of what it held before. */
     fun mayDelete(
-        key: String,
+        key: Key,
         mine: Int,
         peerHeld: Int,
     ): Boolean = settle(key, peerHeld, suspect = mine > 0 && (peerHeld == 0 || (mine >= FLOOR && peerHeld * SHARE < mine) || shrank(key, peerHeld)))
 
     /** Pushes on [peerHeld]: not when it is under a tenth of what the peer held before, nor, where it [mayBeLensed], under a tenth of [mine]. */
     fun mayPush(
-        key: String,
+        key: Key,
         mine: Int,
         peerHeld: Int,
         mayBeLensed: Boolean,
     ): Boolean = settle(key, peerHeld, suspect = shrank(key, peerHeld) || (mayBeLensed && mine > 0 && peerHeld * SHARE < mine))
 
     private fun shrank(
-        key: String,
+        key: Key,
         peerHeld: Int,
     ): Boolean = held[key]?.let { it >= FLOOR && peerHeld * SHARE < it } == true
 
     /** A believable answer becomes the next one's baseline; a suspect one leaves the old baseline standing. */
     private fun settle(
-        key: String,
+        key: Key,
         peerHeld: Int,
         suspect: Boolean,
     ): Boolean {
