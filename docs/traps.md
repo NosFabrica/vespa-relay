@@ -442,6 +442,31 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   and `relay/tools/live-bench/fd-exhaustion.sh` floods a relay past a lowered
   limit and asks whether it still answers. **A lazy load in an error path runs at
   the worst moment: when the process is already out of something.**
+- **A websocket frame over the transport's cap ends the connection, and every
+  command in flight on it.** The cap was the engine's message length in bytes,
+  so one 1 MB follow list in a 100k bulk publish closed the socket from its
+  header: the publisher stalled ~30 s and counted ~1,500 EVENTs "disconnected
+  before OK", while smaller oversized events were refused by id as they should
+  be. Unit tests sent one frame per connection and saw a tidy 1009. The cap
+  (`MAX_FRAME_BYTES`) now sits far above the engine's length, so quartz answers
+  an oversized EVENT `OK false`; only a message past that bound closes. Raising
+  a cap that Netty's decoder enforces raises what it holds: it buffers a whole
+  frame, so the native transport reads past the engine's length without
+  holding (`InboundFrameDecoder`). **A
+  limit enforced by closing the transport costs everything multiplexed on it;
+  refuse inside the protocol wherever the protocol can say no.**
+- **Ktor's websocket session hears a pong only behind the frames ahead of
+  it.** `DefaultWebSocketSession` hands pongs to its pinger from the same loop
+  that hands data frames to the route, so once the route's queue is bounded
+  and full, a client's pong waits on the command running; a backlog longer than
+  the ping timeout closed healthy publishers 1011 "Ping timeout". The Ktor route
+  is raw (`webSocketRaw`): it reads every frame as it comes and keeps its own
+  keepalive, counting a connection whose reads it paused as heard from.
+- **A limit on a compressed message is a limit on what it inflates to.**
+  permessage-deflate lets a kilobyte on the wire become megabytes, so every
+  bound `InboundFrameDecoder` applies (held, scanned, refused) counts inflated
+  bytes, and inflating stops at `MAX_FRAME_BYTES`; the wire size is only checked
+  as well. A frame-cap check before inflation is no bound at all.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

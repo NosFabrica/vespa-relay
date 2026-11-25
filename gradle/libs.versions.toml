@@ -5,9 +5,9 @@ app = "0.1.0"
 # A release on Nostr + Blossom, through Magpie (settings.gradle.kts). Every module forces it and maps
 # quartz's JitPack group onto it (build-logic); a bump is checked with `./gradlew :relay:dependencies
 # --configuration runtimeClasspath`: one quartz module, any `com.github.vitorpamplona.quartz` line arrowed onto it.
-quartz = "2.24.0"
+quartz = "2.25.2"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
-vespaEventStore = "23843fca9b9c"
+vespaEventStore = "51fa05e44fae"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -19,7 +19,7 @@ ktlint = "1.8.0"
 [libraries]
 quartz = { module = "com.vitorpamplona.quartz:quartz", version.ref = "quartz" }
 # JitPack caches per group spelling (NosFabrica / nosfabrica): try both, then a longer hash.
-vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }

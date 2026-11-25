@@ -364,6 +364,9 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the relays that never got the newest
     ProbeGate.kt          whether either drop-probe still earns its round trip,
                           learned from what it drops
+    BatchFill.kt          how a worker fills a batch: what is waiting, then a
+                          bounded linger while arrivals keep coming (the relay's
+                          publishes only), learned from whether they did
     BisectingInsert.kt    the batch-bisecting write
     UpstreamPush.kt       dir = up: quartz's NegentropyStoreSync, up only, over one
                           gated snapshot per pass and a per-url budget

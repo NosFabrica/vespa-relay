@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
+import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayIngestFromEnv
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -100,12 +101,19 @@ class PipelinePublishTest {
         // One batch per worker may wait: the relay's publishes are buffered by their senders.
         // And a byte bound over them, since every publish may be a full frame.
         // One worker by default: a second only splits a shallow queue of publishes into narrow writes.
-        assertEquals(IngestTuning(1, 1_000, queue = 1_000, queueBytes = 512L shl 20), relayIngestFromEnv(emptyMap()).tuning)
+        // A narrow batch may wait a bounded while for more, which is what a publish's OK can be held.
+        assertEquals(IngestTuning(1, 1_000, queue = 1_000, queueBytes = 512L shl 20, lingerMs = 20), relayIngestFromEnv(emptyMap()).tuning)
         assertEquals(
-            IngestTuning(4, 4_096, queue = 16_384, queueBytes = 64L shl 20),
-            relayIngestFromEnv(mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096", "RELAY_INGEST_QUEUE_MB" to "64")).tuning,
+            IngestTuning(4, 4_096, queue = 16_384, queueBytes = 64L shl 20, lingerMs = 0),
+            relayIngestFromEnv(
+                mapOf("RELAY_INGEST_CONCURRENCY" to "4", "RELAY_INGEST_BATCH" to "4096", "RELAY_INGEST_QUEUE_MB" to "64", "RELAY_INGEST_LINGER_MS" to "0"),
+            ).tuning,
         )
         assertFailsWith<IllegalStateException> { relayIngestFromEnv(mapOf("RELAY_INGEST_QUEUE_MB" to "8")) }
+        assertFailsWith<IllegalStateException> { relayIngestFromEnv(mapOf("RELAY_INGEST_LINGER_MS" to "-1")) }
+        assertFailsWith<IllegalStateException> { relayIngestFromEnv(mapOf("RELAY_INGEST" to "queue", "RELAY_INGEST_LINGER_MS" to "soon")) }
+        // The mirror lane's queue is deep, and the sync's forwarding is its own batching: no linger there.
+        assertEquals(0L, mirrorIngestFromEnv(emptyMap()).lingerMs)
         // The store's probe width applies to the relay's pipeline as it does to the mirror's.
         assertEquals(250, relayIngestFromEnv(mapOf("VESPA_DEDUP_CHUNK" to "250")).tuning!!.dedupChunk)
         val queue = relayIngestFromEnv(mapOf("RELAY_INGEST" to "queue"))
