@@ -32,6 +32,43 @@ retraction audit and push hold back on any answer that shrank past belief.
 - `retractionsWithheld` and `pushesWithheld` count audits and push rounds held
   back on an answer too small to believe, each with its log line.
 
+## Topical searches rank articles above things named after the topic (November 2026)
+
+A search for a subject used to fill its first page with lists, sets, apps and
+calendar events NAMED the word: for `lightning` and `privacy`, sets titled
+"Lightning" and "Privacy" came before any article about them. A search is now
+read as TOPICAL when no notable profile or app the reader trusts is named
+exactly the query (vespa-eventstore #225). The perfect-match rung then stops
+paying entities named the topic, and keeps paying a wiki or long-form article
+titled exactly it. A search for one entity (`odell`, `amethyst`, `fiatjaf`) and
+a profiles-only read rank exactly as before.
+
+Measured against production's served pages under its own probe decisions:
++0.056 nDCG@10 on the store's 54 evaluation cases (topical +0.123), and +0.176
+on 147 new queries whose page changed. The one loss over 0.1 is a person with
+under 1,000 followers whose own article now outranks their profile
+(vespa-eventstore `docs/embedding-experiment.md` §9).
+
+The deciding probe is one extra engine query per ranked search, unless its
+answer is cached (ten minutes, per lens and query text): one quoted phrase over
+profiles and app handlers, 77 ms at p50 and 653 ms at p95 measured from outside
+on production, where the search itself takes 929 ms at p50. If the probe fails,
+the search ranks as before. Counts, live-feed gates and the Open Ranking route
+skip it.
+
+Nothing to do. The schema change is deploy-only (no restart, refeed or
+reindex), and the relay deploys it at boot as usual. `VESPA_INTENT_PROBE=false`
+ranks every search as before and skips the probe.
+
+Two other store changes arrive in the same bump, neither visible to a client:
+
+- **Text-free reads are sent as Vespa's JSON `select`** instead of YQL, and name
+  their language. The query container's CPU per such read fell 14–20%.
+  `VESPA_SELECT_QUERIES=false` sends YQL again.
+- **A write Vespa refuses for want of disk or memory now fails at once.**
+  Before, it retried for seconds (5 s for a burst of 100 publishes, measured),
+  so a publisher waited for a block that was not their event's fault.
+
 ## The websocket compresses for clients that ask (November 2026)
 
 The native websocket now answers a client's `permessage-deflate` offer, which
