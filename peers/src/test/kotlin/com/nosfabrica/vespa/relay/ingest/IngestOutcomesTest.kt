@@ -24,6 +24,8 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -62,6 +65,7 @@ class IngestOutcomesTest {
         preload: List<Event>,
         offer: List<Event>,
         store: (InMemoryEventIndex) -> IEventStore = { NostrSemanticsStore(it, relay = relayUrl) },
+        refusals: RefusalSink = RefusalSink.None,
     ): Map<Int, List<IEventStore.InsertOutcome>> =
         runBlocking {
             val index = InMemoryEventIndex()
@@ -82,6 +86,7 @@ class IngestOutcomesTest {
                             .groupBy { it.pubkey }
                             .mapValues { (_, docs) -> docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) } }
                     },
+                    refusals = refusals,
                 )
             val heard = ConcurrentHashMap<Int, MutableList<IEventStore.InsertOutcome>>()
             val answers = AtomicInteger()
@@ -161,6 +166,55 @@ class IngestOutcomesTest {
         assertRejected("replaced:", heard.getValue(203).single())
         assertEquals(IEventStore.InsertOutcome.Accepted, heard.getValue(204).single())
         assertRejected("replaced:", heard.getValue(205).single())
+    }
+
+    /**
+     * The newest version's own write decides what the older ones hear: told `replaced:` while nothing
+     * was stored, they would be dropped as refused for good by a sink that remembers refusals.
+     */
+    @Test
+    fun `older versions beaten in the batch are not replaced when the newest is refused`() {
+        val author = NostrSignerSync()
+        val offer = listOf(profile(author, 1_000), profile(author, 2_000), profile(author, 3_000))
+        val newest = offer.last()
+        val refusing: (InMemoryEventIndex) -> IEventStore = { index ->
+            object : IEventStore by NostrSemanticsStore(index, relay = relayUrl) {
+                override suspend fun batchInsert(events: List<Event>): List<IEventStore.InsertOutcome> = events.map { if (it.id == newest.id) IEventStore.InsertOutcome.Rejected("invalid: too large") else IEventStore.InsertOutcome.Accepted }
+            }
+        }
+        val told = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+        val sink =
+            object : RefusalSink {
+                override val tracksOrigins = false
+
+                override fun isSuppressed(event: Event) = false
+
+                override fun onRefused(
+                    event: Event,
+                    origin: IngestOrigin,
+                    reason: String,
+                ) {
+                    told.add(event.id to reason)
+                }
+            }
+        val heard = outcomes(emptyList(), offer, refusing, sink)
+
+        heard.forEach { (i, list) -> assertEquals(1, list.size, "submission $i answered ${list.size} times: $list") }
+        assertRejected("invalid:", heard.getValue(2).single())
+        for (older in 0..1) assertIs<IEventStore.InsertOutcome.Failed>(heard.getValue(older).single(), "version $older may be retried")
+        assertTrue(told.none { it.second.startsWith("replaced") }, "nothing replaced them: $told")
+    }
+
+    @Test
+    fun `older versions beaten in the batch are replaced once the newest is stored`() {
+        val author = NostrSignerSync()
+        val offer = listOf(profile(author, 1_000), profile(author, 3_000), profile(author, 2_000))
+        val heard = outcomes(emptyList(), offer)
+
+        heard.forEach { (i, list) -> assertEquals(1, list.size, "submission $i answered ${list.size} times: $list") }
+        assertEquals(IEventStore.InsertOutcome.Accepted, heard.getValue(1).single())
+        assertRejected("replaced:", heard.getValue(0).single())
+        assertRejected("replaced:", heard.getValue(2).single())
     }
 
     @Test

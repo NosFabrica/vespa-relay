@@ -59,12 +59,15 @@ import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -170,6 +173,18 @@ class NostrRelayServer(
 }
 
 /**
+ * Live events a subscription holds while its ranked read waits behind another search on the connection; past it the
+ * REQ is CLOSED, never sent ungated. A read that does not queue holds what arrives in its brief setup, unbounded as before.
+ */
+internal const val MAX_HELD_LIVE = 1_000
+
+/** A subscription that matched more live events than [MAX_HELD_LIVE] while its ranked read waited its turn. */
+internal class HeldLiveOverflow :
+    Exception(
+        "more than $MAX_HELD_LIVE live events matched while this search waited behind another on the connection; send it again",
+    )
+
+/**
  * Room for four batches before a publisher's submit suspends, and never less than quartz's own
  * queue, so the default batch keeps the default capacity.
  */
@@ -231,9 +246,11 @@ internal class ObserverBackend(
             block: suspend (eose: () -> Unit) -> Unit,
         ) = ranked(ctx) {
             timedEose(onEose) { onReplayed ->
-                gate.through(ctx, filters, onReplayed) { eose ->
-                    live.open(liveGates?.invoke(filters), currentCoroutineContext())
-                    partial(ctx, eose) { told -> block(told) }
+                live.endingOnOverflow(queues = gate.gates(filters)) {
+                    gate.through(ctx, filters, onReplayed) { eose ->
+                        live.open(liveGates?.invoke(filters), currentCoroutineContext())
+                        partial(ctx, eose) { told -> block(told) }
+                    }
                 }
             }
         }
@@ -257,6 +274,13 @@ internal class ObserverBackend(
         private var waiting: ArrayList<Pair<Event, String>>? = ArrayList()
         private var checks: CoroutineScope? = null
 
+        /** Completed when more than [MAX_HELD_LIVE] events arrived before [open] on a [bounded] read; nothing is held after it. */
+        private val overflowed = CompletableDeferred<Unit>()
+
+        /** Set by [endingOnOverflow] for a read that queues for its turn: only such a read is held to [MAX_HELD_LIVE]. */
+        @Volatile
+        private var bounded = false
+
         @Volatile
         private var admit: ((Event, String) -> Unit)? = null
 
@@ -270,7 +294,12 @@ internal class ObserverBackend(
             val decide =
                 admit ?: synchronized(lock) {
                     waiting?.let { held ->
-                        held.add(event to body)
+                        if (!bounded || held.size < MAX_HELD_LIVE) {
+                            held.add(event to body)
+                        } else {
+                            waiting = null
+                            overflowed.complete(Unit)
+                        }
                         return
                     }
                     admit
@@ -278,11 +307,35 @@ internal class ObserverBackend(
             decide(event, body)
         }
 
+        /**
+         * Runs [replay], ended by [HeldLiveOverflow] if the bound is passed before [open]: a read that [queues] for
+         * its turn could otherwise hold every live match until then. Only such a read is bounded and races, so the
+         * rest pay nothing and are never closed for it.
+         */
+        suspend fun <T> endingOnOverflow(
+            queues: Boolean,
+            replay: suspend () -> T,
+        ): T {
+            if (!queues) return replay()
+            bounded = true
+            return coroutineScope {
+                val work = async(start = CoroutineStart.UNDISPATCHED) { replay() }
+                select {
+                    work.onAwait { it }
+                    overflowed.onAwait {
+                        work.cancel()
+                        throw HeldLiveOverflow()
+                    }
+                }
+            }
+        }
+
         fun open(
             live: LiveGate?,
             context: CoroutineContext,
         ) = synchronized(lock) {
             if (closed) return
+            if (overflowed.isCompleted) throw HeldLiveOverflow()
             val decide = if (live == null) ::send else judge(live, CoroutineScope(context.minusKey(Job) + SupervisorJob()).also { checks = it })
             // Drained and switched under the lock, so a live event cannot overtake the ones held.
             waiting?.forEach { (event, body) -> decide(event, body) }

@@ -40,4 +40,5 @@ fun probedIngestPipeline(
     servingPressure: ServingPressure? = null,
     refusals: RefusalSink = RefusalSink.None,
     bootName: String? = null,
-): IngestPipeline = IngestPipeline(store, tuning, audit, servingPressure, scope, store.knownIdsProbe(), store.newestVersionsProbe(), refusals, bootName = bootName)
+    onWorkerStopped: ((worker: Int, cause: Throwable) -> Unit)? = null,
+): IngestPipeline = IngestPipeline(store, tuning, audit, servingPressure, scope, store.knownIdsProbe(), store.newestVersionsProbe(), refusals, bootName = bootName, onWorkerStopped = onWorkerStopped)

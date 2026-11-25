@@ -89,6 +89,8 @@ class IngestPipeline(
     private val bootName: String? = null,
     /** How long one drop-probe may take before the pass goes on without it; see [PROBE_TIMEOUT_MS]. */
     private val probeTimeoutMs: Long = PROBE_TIMEOUT_MS,
+    /** Told once per worker whose loop an uncaught throwable ended; nothing restarts it, so its owner decides what follows. */
+    private val onWorkerStopped: ((worker: Int, cause: Throwable) -> Unit)? = null,
 ) : EventIngest {
     private class Inbound(
         val event: Event,
@@ -189,6 +191,9 @@ class IngestPipeline(
 
     /** Worker loops still running. Below [workers] means one exited and nothing drains its share. */
     private val loopsRunning = AtomicInteger()
+
+    /** Worker loops an uncaught throwable ended, as opposed to a closed channel. */
+    private val workersStopped = AtomicInteger()
 
     fun start() {
         if (batchSize < configuredBatch) {
@@ -300,6 +305,8 @@ class IngestPipeline(
                 "router: ingest worker $worker STOPPED on ${e.javaClass.simpleName}: ${e.message} — " +
                     "${loopsRunning.get() - 1} of $workers worker(s) left to drain the queue",
             )
+            workersStopped.incrementAndGet()
+            onWorkerStopped?.let { hook -> runCatching { hook(worker, e) } }
             throw e
         } finally {
             loopsRunning.decrementAndGet()
@@ -381,7 +388,8 @@ class IngestPipeline(
         val contests = dropSuperseded(batch, placed, answers)
         if (contests.isEmpty()) return emptyList()
         val winners = ArrayList<Int>(contests.size)
-        val superseded = ArrayList<List<Int>>()
+        // Each winner's beaten versions, answered once the winner's own write is judged.
+        val superseded = ArrayList<Pair<Int, List<Int>>>()
         var badSigs = 0
         var duplicates = 0
         IngestStats.timed("verify") {
@@ -391,12 +399,12 @@ class IngestPipeline(
                 // by it. A contest still verifies, since only a verified candidate may beat another.
                 val unchecked = writer.checksSignatures && versions.size == 1 && versions[0].size == 1
                 var won = false
+                var winner = -1
                 for (copies in versions) {
                     if (won) {
-                        superseded.add(copies)
+                        superseded.add(winner to copies)
                         continue
                     }
-                    var winner = -1
                     for ((n, i) in copies.withIndex()) {
                         val msg = batch[i]
                         when {
@@ -427,7 +435,7 @@ class IngestPipeline(
         if (duplicates > 0) {
             reject(RejectionReason.DUPLICATE.take(48), duplicates.toLong())
         }
-        if (superseded.isNotEmpty()) reportSuperseded(batch, superseded, answers)
+        for ((winner, copies) in superseded) answers.supersede(winner, copies)
         winners.sort()
         return winners
     }
@@ -696,6 +704,20 @@ class IngestPipeline(
         }
     }
 
+    /** Versions beaten in the batch by one that was not stored: nothing replaced them, so each may be offered again. */
+    private fun unseated(
+        versions: List<List<Int>>,
+        answers: Answers,
+    ) {
+        for (copies in versions) copies.forEach { answers.answer(it, UNSEATED) }
+        reject(UNSEATED.reason.take(48), versions.sumOf { it.size }.toLong())
+    }
+
+    /** A verdict that leaves a version at or above this one stored, so everything it beat is replaced. */
+    private fun IEventStore.InsertOutcome.storesTheAddress(): Boolean =
+        this is IEventStore.InsertOutcome.Accepted ||
+            (this is IEventStore.InsertOutcome.Rejected && (reason.startsWith(RejectionReason.PREFIX_DUPLICATE) || reason.startsWith(RejectionReason.PREFIX_REPLACED)))
+
     /** One query per kind per chunk of authors; null if the probe failed. */
     private suspend fun readNewestVersions(
         probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
@@ -856,13 +878,17 @@ class IngestPipeline(
     /** How many workers are still looping. Below [workerCount] means a worker exited. */
     fun workersRunning(): Int = loopsRunning.get()
 
+    /** Worker loops an uncaught throwable ended; nothing restarts one, so above zero ingest is short a drain for good. */
+    fun workersStopped(): Int = workersStopped.get()
+
     /**
-     * Whether ingest has stopped: no worker is waiting on the channel, and none has started a
-     * batch within [wedgeAfterMs]. Defined by the workers, not the queue depth. Reports, never ends.
+     * Whether ingest has stopped: a worker died ([workersStopped]), or no worker is waiting on the channel and
+     * none has started a batch within [wedgeAfterMs]. Defined by the workers, not the queue depth. Reports, never ends.
      */
     fun wedged(): Boolean {
         // The loop below is vacuously true over no workers.
         if (workers == 0) return false
+        if (workersStopped.get() > 0) return true
         val now = System.currentTimeMillis()
         for (i in 0 until workers) {
             val since = busySince.get(i)
@@ -897,9 +923,27 @@ class IngestPipeline(
         inbound.close()
     }
 
-    /** Called after the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. */
+    /** After [closeIntake]: true once every worker has written what it held and exited, false at [deadlineNanos]. */
+    fun awaitDrained(deadlineNanos: Long): Boolean {
+        while (loopsRunning.get() > 0) {
+            if (System.nanoTime() - deadlineNanos >= 0) return false
+            Thread.sleep(DRAIN_POLL_MS)
+        }
+        return true
+    }
+
+    /**
+     * Called after the scope is cancelled, so a worker mid-batch is cancelled rather than stranded. What no
+     * worker took is answered as shutting down: every submission hears exactly once.
+     */
     override fun close() {
         runCatching { pool.close() }
+        while (true) {
+            val left = inbound.tryReceive().getOrNull() ?: break
+            queued.decrementAndGet()
+            intakeBudget?.release(left.weight)
+            left.onOutcome?.let { deliver(it, SHUTTING_DOWN) }
+        }
     }
 
     /**
@@ -912,6 +956,15 @@ class IngestPipeline(
     ) {
         private val answered = BooleanArray(batch.size)
         private var followers: HashMap<Int, MutableList<Int>>? = null
+        private var beaten: HashMap<Int, MutableList<List<Int>>>? = null
+
+        /** [copies] lost to [winner]'s version in this batch; they hear `replaced:` only if [winner] is stored. */
+        fun supersede(
+            winner: Int,
+            copies: List<Int>,
+        ) {
+            (beaten ?: HashMap<Int, MutableList<List<Int>>>().also { beaten = it }).getOrPut(winner) { ArrayList(1) }.add(copies)
+        }
 
         fun follow(
             copy: Int,
@@ -928,9 +981,12 @@ class IngestPipeline(
             answered[i] = true
             batch[i].onOutcome?.let { deliver(it, outcome) }
             followers?.remove(i)?.forEach { answer(it, if (outcome is IEventStore.InsertOutcome.Accepted) DUPLICATE else outcome) }
+            beaten?.remove(i)?.let { versions -> if (outcome.storesTheAddress()) reportSuperseded(batch, versions, this) else unseated(versions, this) }
         }
 
+        /** Winners first, so a version beaten in the batch is judged by its winner's answer, not by this one. */
         fun rest(outcome: IEventStore.InsertOutcome) {
+            beaten?.keys?.toList()?.forEach { answer(it, outcome) }
             for (i in batch.indices) answer(i, outcome)
         }
     }
@@ -957,8 +1013,11 @@ class IngestPipeline(
         private val BAD_SIGNATURE = IEventStore.InsertOutcome.Rejected("invalid: bad signature or id")
         private val SUPPRESSED = IEventStore.InsertOutcome.Rejected("blocked: refused twice before")
         private val SHUTTING_DOWN = IEventStore.InsertOutcome.Failed("error: relay shutting down")
+        private val UNSEATED = IEventStore.InsertOutcome.Failed("error: a newer version in the same batch was not stored")
 
         private const val MAX_INBOUND_QUEUE = 16_384
+
+        private const val DRAIN_POLL_MS = 10L
 
         /** Events a batch must expect to verify before the dedup probe is worth its round trip. */
         private const val PROBE_MIN_VERIFIABLE = 128
