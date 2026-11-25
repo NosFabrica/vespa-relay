@@ -159,6 +159,36 @@ class LensWaiversTest {
         assertFalse(waivers.waives(gated))
     }
 
+    /** Only a refusal of the field itself unlearns; a complaint about what a stream's own search says does not. */
+    @Test
+    fun `a complaint about the search's content is not a refusal of the field`() {
+        val ofTheField =
+            listOf(
+                "error: unrecognised filter item: search",
+                "error: bad req: unrecognized filter item: search",
+                "invalid: unsupported filter field 'search'",
+                "unknown filter key: search",
+                "error: search not supported",
+                "NIP-50 search is not supported here",
+            )
+        val ofTheContent =
+            listOf(
+                "invalid: unsupported search extension",
+                "invalid: unknown search extension sort:hot",
+                "error: invalid search query",
+                "unsupported search term",
+                "invalid: search extension not supported",
+            )
+        for (said in ofTheField) {
+            val waivers = LensWaivers(log = {}).also { it.learn(gated, lensRefusal) }
+            assertTrue(waivers.unlearn(gated, said), said)
+        }
+        for (said in ofTheContent) {
+            val waivers = LensWaivers(log = {}).also { it.learn(gated, lensRefusal) }
+            assertFalse(waivers.unlearn(gated, said), said)
+        }
+    }
+
     @Test
     fun `retain keeps the roster and the declared relays`() {
         val declared = RelayUrlNormalizer.normalize("wss://declared.example")

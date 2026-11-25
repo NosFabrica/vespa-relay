@@ -147,9 +147,15 @@ internal class LensWaivers(
             return (prefix == MachineReadablePrefix.AUTH_REQUIRED || prefix == MachineReadablePrefix.RESTRICTED) && said.contains(TOKEN)
         }
 
-        /** A refusal of the `search` field itself, as strfry and NIP-50-less relays word it. */
+        /**
+         * A refusal of the `search` field itself, as strfry (`unrecognised filter item: search`) and
+         * NIP-50-less relays word it; never one about what a search says (`unsupported search extension`).
+         */
         private val REFUSES_SEARCH =
-            Regex("(?i)(unrecogni[sz]ed|unknown|unsupported|invalid)[^.]{0,40}(search|filter item)|search[^.]{0,40}(not supported|unsupported)")
+            Regex(
+                "(?i)(?:unrecogni[sz]ed|unknown|unsupported|invalid)\\s+(?:filter\\s+)?(?:item|field|key)s?\\W{0,3}search\\b" +
+                    "|\\bsearch\\W{0,3}(?:is\\s+)?(?:not\\s+supported|unsupported)",
+            )
 
         /**
          * [filter] with `include:spam` among its search extensions, every term, phrase and other

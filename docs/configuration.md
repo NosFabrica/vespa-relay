@@ -271,7 +271,9 @@ any filter carrying `search` (strfry answers `unrecognised filter item: search`)
 and one with NIP-50 but not the extension may read the token as words. What a
 relay taught is held per url for the process (`waivedRelays` counts the waived
 ones) and relearned after a restart on the first refusal; a waiver is forgotten
-only when the relay refuses the `search` field itself. A gate that offers no
+only when the relay refuses the `search` field itself (`unrecognised filter item:
+search`, `search not supported`), never on a complaint about what a stream's own
+search says (`unsupported search extension`). A gate that offers no
 waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
 `abortedAuthRequired`).
 
