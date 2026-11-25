@@ -8,17 +8,17 @@ pluginManagement {
     }
 }
 
-// Quartz's crypto-kmp (com.vitorpamplona.crypto), libschnorr256k1-kotlin
-// (com.vitorpamplona.schnorr256k1) and negentropy-kmp (com.vitorpamplona.negentropy) are released on
-// Nostr + Blossom only: Magpie serves those groups, trusting only the release key vitorpamplona.com
-// names as `releases`, and gradle/magpie.lock pins that key and every resolved version's files.
-// Quartz itself is a JitPack commit (below, and build-logic), so Magpie no longer serves its group;
-// the lock keeps its old quartz lines, inert, as it keeps every release it once pinned.
+// Quartz (com.vitorpamplona.quartz) and its crypto-kmp (com.vitorpamplona.crypto),
+// libschnorr256k1-kotlin (com.vitorpamplona.schnorr256k1) and negentropy-kmp
+// (com.vitorpamplona.negentropy) are released on Nostr + Blossom only: Magpie serves those groups,
+// trusting only the release key vitorpamplona.com names as `releases`, and gradle/magpie.lock pins
+// that key and every resolved version's files, as in quartz and the store.
 plugins {
     id("com.vitorpamplona.magpie") version "0.2.3"
 }
 
 magpie {
+    group("com.vitorpamplona.quartz")
     group("com.vitorpamplona.crypto")
     group("com.vitorpamplona.schnorr256k1")
     group("com.vitorpamplona.negentropy")
@@ -28,17 +28,14 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // JitPack serves the store and quartz and nothing else, so a coordinate missing upstream
-        // cannot be substituted from it; the store's group is spelled both ways because JitPack
-        // caches per spelling. Quartz is a JitPack commit: build-logic maps the release group
-        // (com.vitorpamplona.quartz, what a store pinned to a quartz release names) onto it, so
-        // Magpie never serves quartz itself, only the crypto, schnorr256k1 and negentropy groups
-        // quartz depends on.
+        // JitPack serves the store and nothing else, so a coordinate missing upstream cannot be
+        // substituted from it; the store's group is spelled both ways because JitPack caches per
+        // spelling. A store whose POM names quartz's JitPack group is mapped onto Magpie's quartz
+        // (build-logic), so JitPack never serves quartz.
         exclusiveContent {
             forRepository { maven { url = uri("https://jitpack.io") } }
             filter {
                 includeGroupByRegex("""com\.github\.(NosFabrica|nosfabrica)\.vespa-eventstore""")
-                includeGroup("com.github.vitorpamplona.quartz")
             }
         }
     }

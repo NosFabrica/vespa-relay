@@ -55,6 +55,24 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+2.25.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.25.0 (the v2.25.0 tag 2e60d4eb9, main's head on 2026-11-24), over 4456c57f0640 (below), which it descends from: 72
+commits. Back to a release, the reverse of 671ce89: the catalog names com.vitorpamplona.quartz again, build-logic
+forces it and arrows quartz's JitPack group (what the store's POM names at 9c3426f: 4456c57f06) onto it, Magpie
+serves the quartz group again and JitPack no longer does. That also undoes 671ce89's trust trade: quartz is again
+a key-signed, hash-locked release; gradle/magpie.lock gains 2.25.0's quartz and quartz-jvm files under the release
+key it already trusts, and nothing else in it changed.
+Every module resolves one quartz, quartz:2.25.0, with every com.github.vitorpamplona.quartz line arrowed onto it.
+
+  RELAY SERVER: a cancelled COUNT frees its slot at once, and a COUNT beside a REQ skips the cap; NEG-OPEN
+    snapshot builds run on the IO pool, are cancelled with their session, capped, and never answer stale; SQLite
+    NEG-OPEN snapshots are cached for every caller (not this relay's store); FullAuthPolicy leaves the AUTH
+    signature to VerifyPolicy again (a revert).
+  ALSO IN THE RANGE: store fixes (the removal generation moves after the commit; a kind 5's id delete stays on the
+    id index), kite (text with emoji on the copy-as-is path), nip46, concord, buzz and relay-client work.
+  Gated: ./gradlew build here is green (KtorTransportTest's "closes on a message past the engine's length" failed
+    once in a full build, then passed 3 of 3 on its own: a timing flake, not the bump).
+
 4456c57f0640 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-24 (the
 quartz#151 merge), over 2.22.1 (below), which it descends from: 53 commits, through the 2.23.0 and 2.24.0 releases.
 Back on JitPack, the reverse of dd3d292: the catalog names the JitPack group, build-logic forces it and arrows the
@@ -763,6 +781,16 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+9c3426fe552c = vespa-eventstore main @ 2026-11-24, the merge of PR #219, over 23843fca9b9c (below), which it descends
+from. Through JitPack's lowercase spelling (com.github.nosfabrica.vespa-eventstore): the NosFabrica spelling's
+first build failed on JitPack's side (a 502 from Magpie fetching crypto-kmp 2.1.1) and JitPack caches that per
+spelling. No bundle, schema or deploy-time change.
+  ENGINE: a cold read of a narrow family skips the speculative attempt (c427965).
+  QUARTZ: the store now names quartz's JitPack commit 4456c57f06 instead of 2.22.1 (9297245); this relay arrows it
+    onto its quartz pin, 2.25.0 (above).
+  Gated: the store's integration gate passed on 9c3426f against vespaengine/vespa:latest (38 IT classes, 57
+    tests: 56 passed, 1 skipped, 0 failed).
+
 23843fca9b9c = vespa-eventstore main @ 2026-11-24, the merge of PR #218, over f5a026d9903a (the merge of PR #217),
 over 4c2128d258bf (below); each descends from the one before. No bundle, schema or deploy-time change.
   WRITE PATH (#218 and the commits before it): every batch wider than one event takes the bulk path (it was 16+, so
