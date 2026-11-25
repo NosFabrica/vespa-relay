@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.AcceptPartial
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.eventstore.PartialServed
+import com.nosfabrica.vespa.eventstore.ReadShape
 import com.nosfabrica.vespa.relay.pressure.ServingPressure
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
 import com.vitorpamplona.negentropy.storage.IStorage
@@ -53,6 +54,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
@@ -378,12 +380,20 @@ internal class ObserverBackend(
         maxEntries: Int,
     ): IStorage? = inner.sealedNegentropyStorage(filters, maxEntries)
 
-    /** The NEG-OPEN path: the snapshot is taken as the caller, so a reconcile answers the set its REQ serves. */
+    /**
+     * The NEG-OPEN path: the snapshot is taken as the caller, so a reconcile answers the set its REQ
+     * serves; filters whose set is every caller's share one snapshot, the one quartz caches for all.
+     */
     override suspend fun sealedNegentropyStorage(
         ctx: RequestContext,
         filters: List<Filter>,
         maxEntries: Int,
-    ): IStorage? = ranked(ctx) { inner.sealedNegentropyStorage(ctx, filters, maxEntries) }
+    ): IStorage? =
+        if (filters.all(::answersEveryCallerAlike)) {
+            inner.sealedNegentropyStorage(filters, maxEntries)
+        } else {
+            ranked(ctx) { inner.sealedNegentropyStorage(ctx, filters, maxEntries) }
+        }
 
     private suspend fun <T> ranked(
         ctx: RequestContext,
@@ -588,4 +598,14 @@ internal class ColdAuthorChecks(
 
         private const val SAY_EVERY_MS = 60_000L
     }
+}
+
+/**
+ * Whether [filter] reads the same set for every caller: it names its own lens, or it waives the floor
+ * with nothing a caller's lens could act on. Any extension beyond `include` counts as one it might.
+ * Remove when the store pin carries `ReadShape.answersEveryConnectionAlike` (vespa-eventstore 0111d9c).
+ */
+internal fun answersEveryCallerAlike(filter: Filter): Boolean {
+    val shape = ReadShape.of(filter)
+    return shape.observer != null || (shape.includeSpam && !shape.ranked && SearchQuery.parse(filter.search).extensions.keys == setOf(SearchQuery.INCLUDE))
 }

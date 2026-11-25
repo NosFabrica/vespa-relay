@@ -234,10 +234,18 @@ default — a reconcile hands over the ids and timestamps of everything matching
 the filter, the corpus's whole shape — but it means **an anonymous peer cannot
 mirror from this relay without declaring one.** A peer has three ways in: put
 `include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
-or ask the operator for `REQUIRE_READ_LENS=false`. A signed-in reconcile is
-answered through the signer's lens, the same set that connection's REQ of the
-same filter serves (quartz takes the NEG-OPEN snapshot under the caller's
-identity and caches it per caller); `include:spam` waives the floor on both.
+or ask the operator for `REQUIRE_READ_LENS=false`. From store
+59d541d (NosFabrica/vespa-eventstore, pinned once that PR merges) a signed-in
+reconcile is answered through the signer's lens, the same set that connection's
+REQ of the same filter serves (quartz takes the NEG-OPEN snapshot under the
+caller's identity and caches it per caller); `include:spam` waives the floor on
+both, and a reconcile whose filters read the same set for every caller (a named
+`observer:`, or `include:spam` with no words, `sort:` or `filter:rank:`) shares
+one cached snapshot. Before that store a signed-in reconcile is answered the
+whole set. A snapshot is never served partial: on a degraded cluster with a cold
+provider map a signed-in NEG-OPEN is a `NEG-ERR` where its REQ is served from
+what the cluster can still search, because a peer acts on what a reconcile
+leaves out.
 
 **Turn it off** where there is nothing to gate on: a relay whose readers are
 all mirrors, or a store with no NIP-85 trust data behind it, would only be

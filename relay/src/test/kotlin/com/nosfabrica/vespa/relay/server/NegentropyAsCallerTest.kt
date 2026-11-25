@@ -82,4 +82,30 @@ class NegentropyAsCallerTest {
                 ingest.close()
             }
         }
+
+    /**
+     * A reconcile whose set is the same for every caller is answered from one snapshot: a waived
+     * mirror heartbeat from several signed-in routers would otherwise evict each other from quartz's
+     * single cache slot, a full walk each. One that ranks or gates through the caller is not shared.
+     */
+    @Test
+    fun `callers whose filters answer alike share one snapshot`(): Unit =
+        runBlocking {
+            val ingest = IngestQueue(probe, SupervisorJob())
+            val backend = ObserverBackend(LiveEventStore(probe, ingest))
+            try {
+                val waived = listOf(Filter(kinds = listOf(1), search = "include:spam"))
+                backend.sealedNegentropyStorage(caller(1, "a".repeat(64)), waived, 1_000)
+                backend.sealedNegentropyStorage(caller(2, "b".repeat(64)), waived, 1_000)
+                backend.sealedNegentropyStorage(caller(3), waived, 1_000)
+                assertEquals(1, takenAs.size, "one walk for three callers: $takenAs")
+                takenAs.clear()
+                val floored = listOf(Filter(kinds = listOf(1), search = "include:spam filter:rank:gte:50"))
+                backend.sealedNegentropyStorage(caller(1, "a".repeat(64)), floored, 1_000)
+                backend.sealedNegentropyStorage(caller(2, "b".repeat(64)), floored, 1_000)
+                assertEquals(listOf("a".repeat(64), "b".repeat(64)), takenAs.toList(), "an explicit floor gates through each caller's lens")
+            } finally {
+                ingest.close()
+            }
+        }
 }
