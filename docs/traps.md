@@ -37,7 +37,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   windows were all VISITED; it never meant they were all answered.*
   `page` returns `PagedFetchResult` now, three drain sites and the final return
   are guarded on `refusedOutright`, and `negentropyRefused` counts the windows
-  that were not claimed. Both guards are mutation-checked.
+  that were not claimed. Both guards are mutation-checked. A download path of
+  our own beside quartz's owes the same: the waived by-id fetch in
+  `ClientWindowSync` once returned normally from batches nobody answered, and
+  now throws quartz's `DOWNLOADS_FAILED` when its `DownloadPace` gives up.
 
   **And the same fix has to reach every path that sends the filter.** #185 came
   back precisely because the catch-up was chunked by `FilterWidths` and the

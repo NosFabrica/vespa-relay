@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropyServerSession
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -58,6 +59,10 @@ internal class GatedPeer(
     private val membersWrite: Boolean = false,
     /** Answers an unsigned REQ with nothing and a NIP-67 `["EOSE",sub,["auth"]]`, the whole set once signed in. */
     private val authHint: Boolean = false,
+    /** False: a REQ by ids it would serve is never answered, as a relay that names ids it cannot load. */
+    private val answersIds: Boolean = true,
+    /** How long it holds a by-id answer it serves, so overlapping fetches can be seen. */
+    private val idsDelayMs: Long = 0,
 ) : WebsocketBuilder {
     /** AUTH frames received, over every connection. */
     val auths = AtomicInteger()
@@ -67,6 +72,11 @@ internal class GatedPeer(
 
     /** Every filter a read carried, in order: (command, search). */
     val reads = CopyOnWriteArrayList<Pair<String, String?>>()
+
+    private val idsInFlight = AtomicInteger()
+
+    /** The most by-id REQs (of more than one id) it was answering at once. */
+    val mostIdsAtOnce = AtomicInteger()
 
     override fun build(
         url: NormalizedRelayUrl,
@@ -133,7 +143,14 @@ internal class GatedPeer(
                         reply(JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(subId), JsonPrimitive(it))).toString())
                         return true
                     }
+                    val byIds = filters.any { (it["ids"]?.jsonArray?.size ?: 0) > 1 }
+                    if (byIds && !answersIds) return true
                     scope.launch {
+                        if (byIds) {
+                            mostIdsAtOnce.accumulateAndGet(idsInFlight.incrementAndGet(), ::maxOf)
+                            delay(idsDelayMs)
+                            idsInFlight.decrementAndGet()
+                        }
                         for (e in answers.flatMap { it.first.orEmpty() }.distinctBy { it.id }) out.onMessage("""["EVENT","$subId",${e.toJson()}]""")
                         out.onMessage(if (authHint && !signedIn) """["EOSE","$subId",["auth"]]""" else """["EOSE","$subId"]""")
                     }

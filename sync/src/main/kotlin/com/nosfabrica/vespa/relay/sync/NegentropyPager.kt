@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.DownloadPace
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
@@ -38,10 +39,31 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Ids per by-id fetch of a waived window's reconcile, quartz's own batch. */
 private const val ID_FETCH_BATCH = 500
+
+/** By-id fetches of a waived window at once, quartz's `negentropySync` default. */
+private const val BY_ID_FETCHES = 8
+
+/** Quartz's own failure for ids a relay named and would not serve. Remove when quartz makes `downloadsGaveUp` public. */
+private fun downloadsGaveUp(
+    relay: NormalizedRelayUrl,
+    filter: Filter,
+) = NegentropySyncException(
+    relay = relay,
+    window = filter,
+    reason = NegentropySyncException.Reason.UNAVAILABLE,
+    detail = "by-id downloads kept failing (DownloadPace gave up: rounds in a row dropped or went silent)",
+    failure = NegentropySyncException.Failure.DOWNLOADS_FAILED,
+)
 
 /** Sizes for the window stack, all counts of events; the pager turns them into `created_at` boundaries. */
 internal data class NegPageTuning(
@@ -172,7 +194,7 @@ internal class ClientWindowSync(
         // The NEG-OPEN, the by-id fetches and the truncation probe all read through this filter.
         val wire = waivers.onWire(url, window)
         val gate = wantIdFor(window)
-        if (wire === window || wire.search?.let { SearchQuery.parse(it).hasText } != true) {
+        if (!fetchesOwnIds(url, wire)) {
             return client.negentropySync(
                 relay = url,
                 filter = wire,
@@ -185,8 +207,6 @@ internal class ClientWindowSync(
                 onEvent = onEvent,
             )
         }
-        // Quartz fetches a reconcile's ids with its search only when that search has no words, and a
-        // gated relay answers the bare ids empty: its ids are taken here and fetched with the waiver alone.
         val named = Collections.synchronizedList(ArrayList<String>())
         val result =
             client.negentropySync(
@@ -203,15 +223,56 @@ internal class ClientWindowSync(
                 onProgress = onProgress,
                 onEvent = onEvent,
             )
+        val fetched = fetchWaived(url, window, wire, named.toList(), onEvent)
+        return NegentropySyncResult(result.needCount, result.haveCount, result.downloaded + fetched, result.windows, result.peerCap, result.skipped - named.size)
+    }
+
+    /**
+     * Quartz fetches a reconcile's ids bare when its search has words, and re-asks with the search
+     * once that is refused. A signed-in connection to a gated relay is not refused: it answers bare
+     * ids through our key's lens, empty. There the ids are fetched here, with the waiver alone.
+     */
+    private fun fetchesOwnIds(
+        url: NormalizedRelayUrl,
+        wire: Filter,
+    ): Boolean {
+        val search = SearchQuery.parse(wire.search ?: return false)
+        return search.includeSpam && search.hasText && waivers.mayAuthenticate(url)
+    }
+
+    /**
+     * [ids] by batch, [BY_ID_FETCHES] at once over one [DownloadPace], as quartz's pipeline fetches
+     * them; throws its `DOWNLOADS_FAILED` once the pace gives up, so the window is never claimed.
+     */
+    private suspend fun fetchWaived(
+        url: NormalizedRelayUrl,
+        window: Filter,
+        wire: Filter,
+        ids: List<String>,
+        onEvent: suspend (Event) -> Unit,
+    ): Int {
         val byId = window.copy(search = LensWaivers.TOKEN)
-        var fetched = 0
-        for (batch in named.toList().chunked(ID_FETCH_BATCH)) {
-            for (event in client.fetchByIds(url, batch, idleTimeoutMs, byId)) {
-                onEvent(event)
-                fetched++
+        val pace = DownloadPace()
+        val fetched = AtomicInteger()
+        // One caller's onEvent at a time, as quartz's single consumer delivers.
+        val delivering = Mutex()
+        coroutineScope {
+            val batches = Channel<List<String>>(Channel.UNLIMITED)
+            ids.chunked(ID_FETCH_BATCH).forEach(batches::trySend)
+            batches.close()
+            repeat(BY_ID_FETCHES) {
+                launch {
+                    for (batch in batches) {
+                        for (event in client.fetchByIds(url, batch, idleTimeoutMs, byId, pace)) {
+                            delivering.withLock { onEvent(event) }
+                            fetched.incrementAndGet()
+                        }
+                        if (pace.gaveUp) throw downloadsGaveUp(url, wire)
+                    }
+                }
             }
         }
-        return NegentropySyncResult(result.needCount, result.haveCount, result.downloaded + fetched, result.windows, result.peerCap, result.skipped - named.size)
+        return fetched.get()
     }
 
     /**

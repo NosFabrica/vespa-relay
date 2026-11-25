@@ -367,3 +367,15 @@ and NOTICE sentences, so it never opened: quartz's pager ended the walk
 `AUTH_REQUIRED` with no sentence, the pool counted `abortedAuthRequired`, and
 `StandingRefusal` made the unit unreadable for a day. The hint now signs us in
 as a refused read does, and quartz's responder and pager re-serve the page.
+
+**A waived reconcile fetches its own ids only where quartz's would come back
+empty, and fails as quartz's does.** Quartz fetches a reconcile's ids bare when
+its search has words, and re-asks with the search once the bare REQ is refused,
+which is what an anonymous read of a gated relay gets. Signed in, the bare REQ is
+answered through our key's lens, empty and unrefused, so only there
+(`mayAuthenticate`) does `ClientWindowSync` take the ids and fetch them with
+`include:spam` alone. That path fetched 500-id batches one at a time, each with
+a pace of its own, and returned normally whatever came back: a relay that named
+ids and served none had its window claimed, the `refusedOutright` trap again.
+It now runs eight batches at once over one `DownloadPace` and throws quartz's
+`DOWNLOADS_FAILED` once the pace gives up, as the pipeline does.

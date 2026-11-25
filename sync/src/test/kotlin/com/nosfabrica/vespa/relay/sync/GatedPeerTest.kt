@@ -35,6 +35,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
@@ -201,6 +202,52 @@ class GatedPeerTest {
             push.pass(listOf(SyncUpstream(stream.name, url, ask, trusted = true)))
             assertEquals(cards.size.toLong(), push.pushed.get(), "a new relay is seeded")
             assertEquals(0L, push.withheld.get())
+        }
+
+    /** [n] cards, enough by-id batches for quartz's DownloadPace to give up on a relay that answers none. */
+    private fun manyCards(n: Int) = (1..n).map { k -> Event("%064x".format(k + 10_000), provider, nowSeconds() - 7_200 + k % 3_600, 30382, arrayOf(arrayOf("d", k.toString(16).padStart(64, '0'))), "", "b2".repeat(64)) }
+
+    private suspend fun waivedReconcile(
+        router: Router,
+        search: String,
+        onEvent: (Event) -> Unit = {},
+    ) = ClientWindowSync(router.client, FilterWidths(), idleTimeoutMs = 300, waivers = router.waivers)
+        .reconcile(url, ask.copy(search = search), NegentropyLocalIndex.of(emptyList<IdAndTime>()), 100_000, null, {}) { onEvent(it) }
+
+    /** Signed in, waived and searching: the reconcile fetches its own ids, and must fail as quartz's pipeline does when they never come. */
+    @Test
+    fun `a waived reconcile whose ids never come claims nothing`() =
+        withRouter({ GatedPeer(it, manyCards(3_500), membersOnly = true, answersIds = false) }) { router, peer, _ ->
+            router.waivers.learn(url, "auth-required: this relay answers through a web of trust. Sign in, or ask with `include:spam`.")
+            WaivedReads(ClientRelayReads(router.client), router.waivers).page(url, ask, 5_000) {}
+            assertTrue(peer.auths.get() >= 1, "the premise: signed in")
+            val failed = runCatching { waivedReconcile(router, "bitcoin") }.exceptionOrNull()
+            assertTrue(failed is NegentropySyncException, "the window must not be claimed: got $failed")
+            assertEquals(NegentropySyncException.Failure.DOWNLOADS_FAILED, failed.failure)
+        }
+
+    @Test
+    fun `a waived reconcile fetches its ids side by side`() =
+        withRouter({ GatedPeer(it, manyCards(1_500), membersOnly = true, idsDelayMs = 100) }) { router, peer, _ ->
+            router.waivers.learn(url, "auth-required: this relay answers through a web of trust. Sign in, or ask with `include:spam`.")
+            WaivedReads(ClientRelayReads(router.client), router.waivers).page(url, ask, 5_000) {}
+            var got = 0
+            val result = waivedReconcile(router, "bitcoin") { got++ }
+            assertEquals(1_500, got)
+            assertEquals(1_500, result.downloaded)
+            assertTrue(peer.mostIdsAtOnce.get() > 1, "three batches, fetched one at a time")
+        }
+
+    /** Anonymously quartz's own fetch re-asks a refused bare-id REQ with the search, so nothing of ours is needed. */
+    @Test
+    fun `an anonymous waived reconcile of a searching stream is read in full by quartz's own fetch`() =
+        withRouter({ GatedPeer(it, cards) }) { router, peer, _ ->
+            router.waivers.learn(url, "auth-required: this relay answers through a web of trust. Sign in, or ask with `include:spam`.")
+            var got = 0
+            val result = waivedReconcile(router, "bitcoin") { got++ }
+            assertEquals(cards.size, got)
+            assertEquals(cards.size, result.downloaded)
+            assertEquals(0, peer.auths.get())
         }
 
     /**
