@@ -55,6 +55,14 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+2.25.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.25.2 (the v2.25.2 tag ddc66ff18, main's head on 2026-11-25), over 2.25.0 (below), which it descends from: 7 commits,
+through 2.25.1. Relay-client fixes only, in RelayPool: a replaced client's late close no longer disconnects its
+successor, and the pool's flows are snapshots of its state taken one at a time. No relay-server, store or event
+change; this relay's sync and peers use the relay client. gradle/magpie.lock gains 2.25.2's quartz and quartz-jvm
+files under the release key it already trusts. Every module resolves one quartz, 2.25.2.
+  Gated: ./gradlew build here is green (the pre-push check).
+
 2.25.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.25.0 (the v2.25.0 tag 2e60d4eb9, main's head on 2026-11-24), over 4456c57f0640 (below), which it descends from: 72
 commits. Back to a release, the reverse of 671ce89: the catalog names com.vitorpamplona.quartz again, build-logic
