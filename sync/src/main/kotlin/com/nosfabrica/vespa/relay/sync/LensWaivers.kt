@@ -20,98 +20,120 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip11RelayInfo.Nip11Fetcher
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Which relays this mirror reads with NIP-50's `include:spam`, the waiver a web-of-trust relay
- * answers with its whole corpus: those whose NIP-11 `nip50` names it, and those that refused us
- * naming it. Every other relay is asked exactly what the stream says, because a relay without
- * NIP-50 refuses any filter carrying `search` (strfry: `unrecognised filter item`).
+ * How this mirror reads each relay: anonymously, verbatim, until a refusal says otherwise. A
+ * refusal naming NIP-50's `include:spam` (a web-of-trust relay's lens gate) teaches the waiver,
+ * which then rides every read of that relay; any other `auth-required:` refusal signs us in there.
+ * Anonymous first because a gated relay answers a signed-in key through that key's lens, empty for
+ * ours and never refused, so only an anonymous read hears the gate. Never the waiver unasked: a
+ * relay without NIP-50 refuses any filter carrying `search` (strfry: `unrecognised filter item`).
+ * Held in memory for the process; a restart relearns each on its first refusal.
  */
 internal class LensWaivers(
-    /** The relay's NIP-11 `nip50` list; null when there is no document to read. */
-    private val nip50Of: suspend (NormalizedRelayUrl) -> List<String>?,
+    /** Relays kept through [retain] whatever the roster says: the declared up and down urls. */
+    private val pinned: Set<NormalizedRelayUrl> = emptySet(),
     private val log: (String) -> Unit = System.err::println,
-) {
-    private val learned = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /** Each relay's advertisement as last read; a missing document reads as no waiver. */
-    private val advertised = ConcurrentHashMap<NormalizedRelayUrl, Boolean>()
+) : AuthGate {
+    private val waiving = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+    private val signingIn = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
     /** How many relays are read with the waiver; published as `waivedRelays`. */
-    val waived: Int get() = (learned + advertised.filterValues { it }.keys).size
+    val waived: Int get() = waiving.size
 
     /** Whether reads of [url] carry the waiver. */
-    suspend fun waives(url: NormalizedRelayUrl): Boolean {
-        if (url in learned) return true
-        val says = nip50Of(url)?.any { it.trim() == NIP50_FEATURE } == true
-        if (advertised.put(url, says) != says && says) log("router: ${url.url} advertises `$NIP50_FEATURE` (NIP-11); reading it with the waiver")
-        return says
-    }
+    fun waives(url: NormalizedRelayUrl): Boolean = url in waiving
+
+    /**
+     * Signed in on [url] and no waiver learned there: a relay that gates by trust would answer our
+     * key through its lens, empty and unrefused. What its absences imply is not to be acted on.
+     */
+    fun mayBeLensed(url: NormalizedRelayUrl): Boolean = url in signingIn && url !in waiving
 
     /** [filter] as it goes to [url]. */
-    suspend fun onWire(
+    fun onWire(
         url: NormalizedRelayUrl,
         filter: Filter,
     ): Filter = if (waives(url)) waived(filter) else filter
 
     /** [filters] as they go to [url]. */
-    suspend fun onWire(
+    fun onWire(
         url: NormalizedRelayUrl,
         filters: List<Filter>,
     ): List<Filter> = if (waives(url)) filters.map(::waived) else filters
 
+    override fun heard(
+        url: NormalizedRelayUrl,
+        said: String,
+    ) {
+        if (learn(url, said)) return
+        if (MachineReadablePrefix.parse(said) == MachineReadablePrefix.AUTH_REQUIRED && signingIn.add(url)) {
+            log("router: ${url.url} asks us to sign in (${said.take(120)}); answering its NIP-42 challenge from here")
+        }
+    }
+
+    override fun mayAuthenticate(url: NormalizedRelayUrl): Boolean = url in signingIn
+
     /**
-     * Reads a refusal. True only when it newly teaches the waiver, the caller's signal to re-walk:
-     * an `auth-required:` or `restricted:` sentence naming `include:spam` as the way in.
+     * Reads a refusal. True when it names the waiver as the way in (an `auth-required:` or
+     * `restricted:` sentence naming `include:spam`): the caller's signal to ask again with it.
      */
     fun learn(
         url: NormalizedRelayUrl,
         said: String?,
     ): Boolean {
-        if (said == null || !namesWaiver(said) || !learned.add(url)) return false
-        log("router: ${url.url} refused us naming `include:spam`; asking with it from here")
+        if (said == null || !namesWaiver(said)) return false
+        if (waiving.add(url)) log("router: ${url.url} refused us naming `include:spam`; asking with it from here")
         return true
     }
 
+    /**
+     * Forgets the waiver once [url] rejects the `search` field itself, the one evidence that the
+     * waiver is what it refuses. True when the caller should ask again without it.
+     */
+    fun unlearn(
+        url: NormalizedRelayUrl,
+        said: String?,
+    ): Boolean {
+        if (said == null || !REFUSES_SEARCH.containsMatchIn(said) || !waiving.remove(url)) return false
+        log("router: ${url.url} refused the `search` field (${said.take(120)}); asking it verbatim from here")
+        return true
+    }
+
+    /** Forgets relays off [urls] and [pinned]. */
+    fun retain(urls: Set<NormalizedRelayUrl>) {
+        waiving.removeIf { it !in urls && it !in pinned }
+        signingIn.removeIf { it !in urls && it !in pinned }
+    }
+
     companion object {
-        /** How NIP-11 lists the waiver, in the `"<class> <token>"` spelling vespa-relay and noswhere use. */
-        const val NIP50_FEATURE = "ext include:spam"
+        /** The waiver, alone: a search with no words, which quartz keeps on every by-id fetch. */
+        const val TOKEN = "${SearchQuery.INCLUDE}:${SearchQuery.SPAM}"
 
-        /** A NIP-11 read may hold a visit's first ask this long; past it the relay is read without. */
-        const val NIP11_DEADLINE_MS = 10_000L
-
-        /** A waiver no relay advertises; for tests and probes that dial nothing. */
-        val NONE = LensWaivers({ null })
-
-        /** The NIP-11 `nip50` list off [fetcher], bounded by [NIP11_DEADLINE_MS]; null on any failure. */
-        fun nip50Off(fetcher: Nip11Fetcher): suspend (NormalizedRelayUrl) -> List<String>? =
-            { url ->
-                try {
-                    withTimeoutOrNull(NIP11_DEADLINE_MS) { fetcher.fetch(url) }?.nip50
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            }
+        /** A registry of its own each call, for tests and probes. */
+        fun none(): LensWaivers = LensWaivers()
 
         internal fun namesWaiver(said: String): Boolean {
             val prefix = MachineReadablePrefix.parse(said)
             return (prefix == MachineReadablePrefix.AUTH_REQUIRED || prefix == MachineReadablePrefix.RESTRICTED) && said.contains(TOKEN)
         }
 
+        /** A refusal of the `search` field itself, as strfry and NIP-50-less relays word it. */
+        private val REFUSES_SEARCH =
+            Regex("(?i)(unrecogni[sz]ed|unknown|unsupported|invalid)[^.]{0,40}(search|filter item)|search[^.]{0,40}(not supported|unsupported)")
+
         /**
          * [filter] with `include:spam` among its search extensions, every term, phrase and other
          * extension kept. Appended to the stream's own string where that reads back the same; a
          * string the append would change (an unclosed quote swallows it) is rebuilt canonically.
+         * `include` holds one value in quartz's grammar, the last written, so a stream's own
+         * `include:<other>` gives way to the waiver.
          */
         internal fun waived(filter: Filter): Filter {
             val search = filter.search
@@ -134,7 +156,5 @@ internal class LensWaivers(
                 now.notPhrases == was.notPhrases &&
                 now.notTerms == was.notTerms &&
                 now.extensions - SearchQuery.INCLUDE == was.extensions - SearchQuery.INCLUDE
-
-        private const val TOKEN = "${SearchQuery.INCLUDE}:${SearchQuery.SPAM}"
     }
 }

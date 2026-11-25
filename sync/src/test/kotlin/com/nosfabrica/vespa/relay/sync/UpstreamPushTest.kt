@@ -69,6 +69,7 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = gate,
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, _ ->
                             reconciling.complete(Unit)
                             release.await()
@@ -104,6 +105,7 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = Semaphore(1),
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, local ->
                             mostAtOnce = maxOf(mostAtOnce, inFlight.incrementAndGet())
                             seen += local
@@ -137,6 +139,7 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = Semaphore(1),
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, _ -> if (target == urls.first()) pushed(target, 0, error = "no NIP-77") else pushed(target, 2, left = 5) },
                     )
                 val outcomes = withTimeout(5_000) { push.pass(urls) }

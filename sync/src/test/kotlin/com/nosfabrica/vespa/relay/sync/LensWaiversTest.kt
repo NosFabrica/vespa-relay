@@ -21,54 +21,60 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip11RelayInfo.Nip11FetchException
-import com.vitorpamplona.quartz.nip11RelayInfo.Nip11Fetcher
-import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-/** Which relays are read with `include:spam`, and what the token does to a stream's own search. */
+/** Which relays are read with `include:spam` or signed in to, and what the token does to a stream's own search. */
 class LensWaiversTest {
-    private val vespa = RelayUrlNormalizer.normalize("wss://search.example")
+    private val gated = RelayUrlNormalizer.normalize("wss://search.example")
+    private val paid = RelayUrlNormalizer.normalize("wss://paid.example")
     private val strfry = RelayUrlNormalizer.normalize("wss://strfry.example")
     private val hex = "c".repeat(64)
-
-    private val documents =
-        mapOf(
-            vespa to listOf("ext include:spam", "ext observer"),
-            strfry to null,
-        )
-    private val waivers = LensWaivers({ documents[it] }, log = {})
+    private val lensRefusal = "auth-required: this relay answers through a web of trust. Sign in, or ask with `include:spam`."
 
     private fun parsed(filter: Filter) = SearchQuery.parse(filter.search)
 
     @Test
-    fun `a relay that advertises the waiver is read with it, and one that does not is asked verbatim`() =
-        runBlocking {
-            val ask = Filter(kinds = listOf(1), since = 10)
-            assertEquals("include:spam", waivers.onWire(vespa, ask).search)
-            assertSame(ask, waivers.onWire(strfry, ask), "a relay without NIP-50 refuses any filter carrying search")
-            assertEquals(1, waivers.waived)
-        }
+    fun `a relay is asked verbatim until a refusal names the waiver`() {
+        val waivers = LensWaivers(log = {})
+        val ask = Filter(kinds = listOf(1), since = 10)
+        assertSame(ask, waivers.onWire(strfry, ask), "a relay without NIP-50 refuses any filter carrying search")
+        waivers.heard(gated, lensRefusal)
+        assertEquals("include:spam", waivers.onWire(gated, ask).search)
+        assertSame(ask, waivers.onWire(strfry, ask))
+        assertEquals(1, waivers.waived)
+    }
+
+    @Test
+    fun `only a refusal that names no waiver signs us in`() {
+        val waivers = LensWaivers(log = {})
+        assertFalse(waivers.mayAuthenticate(gated), "anonymous until asked")
+        waivers.heard(gated, lensRefusal)
+        assertFalse(waivers.mayAuthenticate(gated), "the waiver is the way in, not our key")
+        waivers.heard(paid, "auth-required: members only")
+        assertTrue(waivers.mayAuthenticate(paid))
+        waivers.heard(strfry, "restricted: not on the whitelist")
+        assertFalse(waivers.mayAuthenticate(strfry), "restricted asks for no AUTH")
+    }
+
+    @Test
+    fun `a signed-in relay with no waiver may be answering through a lens`() {
+        val waivers = LensWaivers(log = {})
+        waivers.heard(paid, "auth-required: members only")
+        assertTrue(waivers.mayBeLensed(paid))
+        waivers.heard(paid, lensRefusal)
+        assertFalse(waivers.mayBeLensed(paid), "once its reads carry the waiver")
+        assertFalse(waivers.mayBeLensed(strfry), "never signed in")
+    }
 
     @Test
     fun `the waiver joins whatever the stream already searches for`() {
-        val cases =
-            listOf(
-                "bitcoin",
-                "\"exact phrase\" -spam",
-                "observer:$hex",
-                "pizza sort:rank filter:rank:gte:50",
-            )
-        for (search in cases) {
+        for (search in listOf("bitcoin", "\"exact phrase\" -spam", "observer:$hex", "pizza sort:rank filter:rank:gte:50")) {
             val before = SearchQuery.parse(search)
             val after = parsed(LensWaivers.waived(Filter(kinds = listOf(1), search = search)))
             assertTrue(after.includeSpam, search)
@@ -81,10 +87,17 @@ class LensWaiversTest {
     }
 
     @Test
+    fun `include holds one value, so a stream's own include gives way to the waiver`() {
+        val waived = parsed(LensWaivers.waived(Filter(search = "pizza include:nsfw")))
+        assertEquals(SearchQuery.SPAM, waived.extensions[SearchQuery.INCLUDE], "quartz keeps the last of a key")
+        assertEquals("pizza", waived.terms)
+        assertTrue(waived.includeSpam)
+    }
+
+    @Test
     fun `an unclosed quote is rebuilt rather than swallowing the waiver`() {
-        val waived = LensWaivers.waived(Filter(search = "\"bitcoin core"))
-        val q = parsed(waived)
-        assertTrue(q.includeSpam, waived.search)
+        val q = parsed(LensWaivers.waived(Filter(search = "\"bitcoin core")))
+        assertTrue(q.includeSpam)
         assertEquals(listOf("bitcoin core"), q.phrases)
     }
 
@@ -95,24 +108,30 @@ class LensWaiversTest {
     }
 
     @Test
-    fun `a refusal teaches the waiver only when it names it as the way in`() {
-        val gated = RelayUrlNormalizer.normalize("wss://gated.example")
-        assertFalse(waivers.learn(gated, null))
-        assertFalse(waivers.learn(gated, "blocked: include:spam is not for you"), "not a lens refusal")
-        assertFalse(waivers.learn(gated, "auth-required: we only serve authenticated users"), "a wall that offers no waiver")
-        assertTrue(waivers.learn(gated, "auth-required: sign in, name an observer, or ask with `include:spam`."))
-        assertFalse(waivers.learn(gated, "auth-required: sign in, name an observer, or ask with `include:spam`."), "learned once")
-        assertTrue(runBlocking { waivers.waives(gated) })
+    fun `a learned waiver is forgotten only when the relay refuses the search field`() {
+        val waivers = LensWaivers(log = {})
+        assertTrue(waivers.learn(gated, lensRefusal))
+        assertFalse(waivers.unlearn(gated, "auth-required: members only"), "not about the field")
+        assertFalse(waivers.unlearn(gated, "blocked: rate limited"))
+        assertTrue(waivers.unlearn(gated, "error: unrecognised filter item: search"))
+        assertFalse(waivers.waives(gated))
     }
 
     @Test
-    fun `a NIP-11 that cannot be read reads as no waiver`() =
-        runBlocking {
-            val failing =
-                object : Nip11Fetcher {
-                    override suspend fun fetch(relay: NormalizedRelayUrl): Nip11RelayInformation = throw Nip11FetchException("HTTP 404")
-                }
-            assertNull(LensWaivers.nip50Off(failing)(vespa))
-            assertFalse(LensWaivers({ LensWaivers.nip50Off(failing)(it) }, log = {}).waives(vespa))
-        }
+    fun `retain keeps the roster and the declared relays`() {
+        val declared = RelayUrlNormalizer.normalize("wss://declared.example")
+        val waivers = LensWaivers(pinned = setOf(declared), log = {})
+        listOf(gated, declared, strfry).forEach { waivers.learn(it, lensRefusal) }
+        waivers.retain(setOf(gated))
+        assertTrue(waivers.waives(gated))
+        assertTrue(waivers.waives(declared), "pinned")
+        assertFalse(waivers.waives(strfry), "off the roster")
+    }
+
+    @Test
+    fun `none is a registry of its own each time`() {
+        val one = LensWaivers.none()
+        one.learn(gated, lensRefusal)
+        assertFalse(LensWaivers.none().waives(gated), "what one learns no other default sees")
+    }
 }

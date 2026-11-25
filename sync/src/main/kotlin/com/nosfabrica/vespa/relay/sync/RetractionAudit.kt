@@ -64,7 +64,7 @@ internal interface RetractionReads {
 /** Quartz, unchanged: a by-id answer reports how it ended, so a stall never reads as an empty answer. */
 internal class ClientRetractionReads(
     private val client: NostrClient,
-    private val waivers: LensWaivers = LensWaivers.NONE,
+    private val waivers: LensWaivers = LensWaivers.none(),
 ) : RetractionReads {
     override suspend fun reconcileIds(
         url: NormalizedRelayUrl,
@@ -101,8 +101,14 @@ internal class RetractionAudit(
     /** Where the deletes go: the store, or the serving relay as signed `MirrorDelete` requests. */
     private val writer: StoreWriter = StoreWriter.local(store),
 ) {
+    /** Holds back deletes on an answer that shrank too far to believe. */
+    private val shrink = ShrinkGuard()
+
     /** Records dropped because their owning upstream stopped serving them. */
     val deleted = AtomicLong()
+
+    /** Audits whose deletes were held back because the peer's answer shrank too far to believe. */
+    val withheld = AtomicLong()
 
     /**
      * The ask's owned-kind projection, the one filter the audit clock, the reconcile and the
@@ -237,10 +243,24 @@ internal class RetractionAudit(
                     " ($inARow audit(s) in a row; the next waits longer)",
             )
         }
-        if (diff.haveIds.isEmpty()) return
+        val peerHeld = mine.size - diff.haveIds.size + diff.needIds.size
+        val shrinkKey = "${stream.name} ${url.url} ${ownedAsk.toJson()}"
+        if (diff.haveIds.isEmpty()) {
+            if (compared) shrink.mayDelete(shrinkKey, mine.size, peerHeld)
+            return
+        }
         if (!compared) {
             System.err.println(
                 "router: ${stream.name} ${url.url} reconciled 0 window(s) — nothing was compared, deleting nothing",
+            )
+            return
+        }
+        // Fail closed: a peer reading us through a trust lens answers exactly this, and refuses nothing.
+        if (!shrink.mayDelete(shrinkKey, mine.size, peerHeld)) {
+            withheld.incrementAndGet()
+            System.err.println(
+                "router: ${stream.name} ${url.url} answered $peerHeld of the ${mine.size} record(s) we hold — too few to believe; " +
+                    "deleting none of the ${diff.haveIds.size} it lacks (retractionsWithheld)",
             )
             return
         }
@@ -304,7 +324,7 @@ internal class RetractionAudit(
         mine: Int,
         diff: NegentropyIdDiff,
     ) {
-        // No size guard: a mass retraction is precisely the case that matters.
+        // A retraction past ShrinkGuard's share is held back above, and left to the operator.
         val share = diff.haveIds.size.toDouble() / mine
         if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
             System.err.println(

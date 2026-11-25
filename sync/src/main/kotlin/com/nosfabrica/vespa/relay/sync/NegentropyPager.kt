@@ -31,11 +31,17 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLoc
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchByIds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySync
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
+import java.util.Collections
+
+/** Ids per by-id fetch of a waived window's reconcile, quartz's own batch. */
+private const val ID_FETCH_BATCH = 500
 
 /** Sizes for the window stack, all counts of events; the pager turns them into `created_at` boundaries. */
 internal data class NegPageTuning(
@@ -139,7 +145,7 @@ internal class ClientWindowSync(
     /** The twice-refused ids, declined before the REQ that would fetch them. */
     private val refused: RefusedIds = RefusedIds.disabled(),
     /** Which relays take the lens waiver; the same instance the pool learns into. */
-    private val waivers: LensWaivers = LensWaivers.NONE,
+    private val waivers: LensWaivers = LensWaivers.none(),
     /** How a window is paged; quartz's own pager unless a test stands in for the relay. */
     private val reads: RelayReads = WaivedReads(ClientRelayReads(client), waivers),
 ) : WindowSync {
@@ -162,19 +168,51 @@ internal class ClientWindowSync(
         onProgress: ((Int, Int) -> Unit)?,
         onUnreconcilable: suspend (Filter) -> Unit,
         onEvent: suspend (Event) -> Unit,
-    ): NegentropySyncResult =
-        client.negentropySync(
-            relay = url,
-            // The NEG-OPEN, the by-id fetches and the truncation probe all read through this filter.
-            filter = waivers.onWire(url, window),
-            idleTimeoutMs = idleTimeoutMs,
-            localIndex = local,
-            targetWindow = targetWindow,
-            onUnreconcilableWindow = onUnreconcilable,
-            wantId = wantIdFor(window),
-            onProgress = onProgress,
-            onEvent = onEvent,
-        )
+    ): NegentropySyncResult {
+        // The NEG-OPEN, the by-id fetches and the truncation probe all read through this filter.
+        val wire = waivers.onWire(url, window)
+        val gate = wantIdFor(window)
+        if (wire === window || wire.search?.let { SearchQuery.parse(it).hasText } != true) {
+            return client.negentropySync(
+                relay = url,
+                filter = wire,
+                idleTimeoutMs = idleTimeoutMs,
+                localIndex = local,
+                targetWindow = targetWindow,
+                onUnreconcilableWindow = onUnreconcilable,
+                wantId = gate,
+                onProgress = onProgress,
+                onEvent = onEvent,
+            )
+        }
+        // Quartz fetches a reconcile's ids with its search only when that search has no words, and a
+        // gated relay answers the bare ids empty: its ids are taken here and fetched with the waiver alone.
+        val named = Collections.synchronizedList(ArrayList<String>())
+        val result =
+            client.negentropySync(
+                relay = url,
+                filter = wire,
+                idleTimeoutMs = idleTimeoutMs,
+                localIndex = local,
+                targetWindow = targetWindow,
+                onUnreconcilableWindow = onUnreconcilable,
+                wantId = { id ->
+                    if (gate?.invoke(id) != false) named += id
+                    false
+                },
+                onProgress = onProgress,
+                onEvent = onEvent,
+            )
+        val byId = window.copy(search = LensWaivers.TOKEN)
+        var fetched = 0
+        for (batch in named.toList().chunked(ID_FETCH_BATCH)) {
+            for (event in client.fetchByIds(url, batch, idleTimeoutMs, byId)) {
+                onEvent(event)
+                fetched++
+            }
+        }
+        return NegentropySyncResult(result.needCount, result.haveCount, result.downloaded + fetched, result.windows, result.peerCap, result.skipped - named.size)
+    }
 
     /**
      * Pages a window in chunks of the width this relay takes. A page here is a sub-window of a

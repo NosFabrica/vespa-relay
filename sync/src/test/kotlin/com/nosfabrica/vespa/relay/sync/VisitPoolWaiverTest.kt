@@ -40,8 +40,8 @@ import kotlin.test.assertTrue
 
 /**
  * The real [VisitPool] against a relay that gates reads by trust, as vespa-relay does with
- * `REQUIRE_READ_LENS`: every ask of a waiving relay reaches the wire with `include:spam`, a relay
- * that does not take it never sees a `search`, and a gate that offers no waiver stays a loud refusal.
+ * `REQUIRE_READ_LENS`: a relay that refused naming the waiver gets it on every later ask, a relay
+ * that never named it never sees a `search`, and a gate that offers no waiver stays a loud refusal.
  */
 class VisitPoolWaiverTest {
     private val url = RelayUrlNormalizer.normalize("wss://gated.example")
@@ -75,12 +75,12 @@ class VisitPoolWaiverTest {
     }
 
     @Test
-    fun `a relay advertising the waiver gets it on every ask and on the live tail`() =
+    fun `a relay whose waiver is known gets it on every ask and on the live tail`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
             try {
                 val fixture = PoolFixture(scope, streams, gated(lensRefusal))
-                visit(fixture, LensWaivers({ listOf(LensWaivers.NIP50_FEATURE) }, log = {}))
+                visit(fixture, LensWaivers(log = {}).also { it.learn(url, lensRefusal) })
                 assertTrue(fixture.asked.isNotEmpty())
                 assertTrue(fixture.asked.all(::waives), "every walk: ${fixture.asked.map { it.search }}")
                 assertTrue(
@@ -102,7 +102,7 @@ class VisitPoolWaiverTest {
             val scope = CoroutineScope(SupervisorJob())
             try {
                 val fixture = PoolFixture(scope, streams, gated(lensRefusal))
-                visit(fixture, LensWaivers({ null }, log = {}))
+                visit(fixture, LensWaivers(log = {}))
                 assertTrue(!waives(fixture.asked.first()), "the first ask is the stream's own")
                 assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")
                 assertTrue(fixture.tails.isNotEmpty(), "the visit finished")
@@ -113,12 +113,12 @@ class VisitPoolWaiverTest {
         }
 
     @Test
-    fun `a relay that neither advertises nor names the waiver never sees a search`() =
+    fun `a relay that never names the waiver never sees a search`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
             try {
                 val fixture = PoolFixture(scope, streams, PoolFixture.holding(corpus))
-                visit(fixture, LensWaivers({ listOf("ext observer") }, log = {}))
+                visit(fixture, LensWaivers(log = {}))
                 assertTrue(fixture.asked.isNotEmpty())
                 assertTrue(fixture.asked.all { it.search == null }, "asked verbatim: ${fixture.asked.map { it.search }}")
                 assertTrue(
@@ -137,7 +137,7 @@ class VisitPoolWaiverTest {
             val scope = CoroutineScope(SupervisorJob())
             try {
                 val fixture = PoolFixture(scope, streams, gated("auth-required: we only serve authenticated users"))
-                visit(fixture, LensWaivers({ null }, log = {}))
+                visit(fixture, LensWaivers(log = {}))
                 assertTrue(fixture.asked.none(::waives), "nothing taught us a waiver: ${fixture.asked.map { it.search }}")
                 assertTrue((fixture.counts()["abortedAuthRequired"] ?: 0L) > 0, "counted as the wall it is")
                 assertTrue(fixture.tails.isEmpty())

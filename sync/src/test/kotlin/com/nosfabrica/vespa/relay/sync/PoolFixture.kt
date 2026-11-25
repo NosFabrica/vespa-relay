@@ -125,7 +125,7 @@ internal class PoolFixture(
         workers: Int = 1,
         complaints: RelayComplaints = RelayComplaints.DEAF,
         /** Which relays the pool reads with `include:spam`; [asked] records the filters as they reach the wire. */
-        waivers: LensWaivers = LensWaivers.NONE,
+        waivers: LensWaivers = LensWaivers.none(),
     ): VisitPool {
         // Never dialled; it only satisfies the constructors.
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope)

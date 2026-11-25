@@ -319,6 +319,7 @@ class StatusVocabularyTest {
                         "negentropySkipped" to 3,
                         "negentropyRefused" to 2,
                         "retracted" to 2,
+                        "retractionsWithheld" to 1,
                         "liveEvicted" to 1,
                         "liveSilenced" to 1,
                         "poolReceived" to 4_000,
@@ -371,7 +372,7 @@ class StatusVocabularyTest {
                 lastPassSec = null,
                 nextInSec = null,
                 work = emptyList(),
-                counts = counts("queued" to 2, "dropped" to 7, "pushed" to 5),
+                counts = counts("queued" to 2, "dropped" to 7, "pushed" to 5, "pushesWithheld" to 1),
             ),
         )
 

@@ -56,7 +56,7 @@ import kotlin.test.assertTrue
 class LensWaiverWireTest {
     private val vespa = RelayUrlNormalizer.normalize("wss://vespa.example")
     private val strfry = RelayUrlNormalizer.normalize("wss://strfry.example")
-    private val waivers = LensWaivers({ if (it == vespa) listOf(LensWaivers.NIP50_FEATURE) else null }, log = {})
+    private val waivers = LensWaivers(log = {}).also { it.learn(vespa, "auth-required: this relay answers through a web of trust; ask with `include:spam`.") }
 
     /** Every filter each relay was sent, by the command that carried it. */
     private class ScriptedRelays(

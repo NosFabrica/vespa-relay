@@ -321,15 +321,24 @@ It records from the window's own floor, and never into a band that is owed
 its re-walk: a reconcile there would replace the band and restart that
 clock. The audit's own clock stays under the stream name.
 
-**A trust-gated relay is read with `include:spam`, and only a relay that says it
-takes it.** A gated vespa-relay answered the router's signed-in reads through the
-relay key's lens, empty on an unscored key, while its NEG-OPEN answered the whole
-set: every reconcile named the same below-floor ids missing and every by-id
-fetch came back empty. Sending the token everywhere was ruled out by strfry,
-which refuses any filter carrying `search`. Learning it from a refusal alone
-misses the signed-in case, which is never refused, so the NIP-11 `nip50` list
-decides, and an `auth-required:` sentence naming the token is the second way in.
-The token is added at the wire (`WaivedReads`, the pager's reconcile, the
-retraction reads, the push), never to the ask, so bands and sweep cursors keep
-their keys.
+**A trust-gated relay is read with `include:spam`, learned from its refusal, and
+read anonymously so that it can refuse.** A gated vespa-relay answered the
+router's signed-in reads through the relay key's lens, empty on an unscored key,
+while its NEG-OPEN answered the whole set: every reconcile named the same
+below-floor ids missing and every by-id fetch came back empty. Sending the token
+everywhere was ruled out by strfry, which refuses any filter carrying `search`.
+A NIP-11 `nip50` advertisement was tried first and dropped: one failed read
+dropped the waiver for an hour, and a signed-in router is never refused, so
+nothing relearned it. Reading anonymously first makes the refusal the one
+signal: quartz's responder already lets a signer decline a challenge
+(`AuthGate`), and a refusal naming no waiver is what signs us in. The token is
+added at the wire (`WaivedReads`, the pager's reconcile, the retraction reads,
+the push), never to the ask, so bands and sweep cursors keep their keys.
 
+**An answer that shrank past belief is never acted on.** The retraction audit
+used to carry no size guard, since a mass retraction is the case that matters.
+But a peer reading a signed-in key through a lens answers exactly a mass
+retraction, refusing nothing, and the audit would delete the whole ask; the
+upstream push would send everything. `ShrinkGuard` holds both back below a tenth
+of ours or of what the peer held before, and a real mass retraction is left to
+the operator.

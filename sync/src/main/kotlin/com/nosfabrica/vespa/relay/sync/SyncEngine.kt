@@ -68,8 +68,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MessageDecoder
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip11RelayInfo.CachedNip11Fetcher
-import com.vitorpamplona.quartz.nip11RelayInfo.OkHttpNip11Fetcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -122,8 +120,14 @@ class SyncEngine(
     /** The scope every subsystem runs on. [storeCalls] rides it as a context element. */
     private val scope = CoroutineScope(Dispatchers.IO + parentContext + storeCalls)
 
-    /** The websocket client, socket budget, Tor and NIP-42. */
-    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default)
+    /**
+     * How each relay is read: anonymously, with `include:spam` once a refusal names it, signed in
+     * once a refusal asks for AUTH without naming it. One instance for every read this router makes.
+     */
+    private val waivers = LensWaivers(pinned = (config.downUpstreams() + config.upUpstreams()).mapTo(HashSet()) { it.url })
+
+    /** The websocket client, socket budget, Tor and NIP-42, answered only where [waivers] lets it. */
+    private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default, authGate = waivers)
     private val client = peers.client
     private val tor = peers.tor
 
@@ -166,9 +170,6 @@ class SyncEngine(
 
     /** Per-relay kind caps, one instance for the pool and the pager alike. */
     private val widths = FilterWidths()
-
-    /** Which relays take `include:spam`, one instance for every read this router makes of a relay. */
-    private val waivers = LensWaivers(LensWaivers.nip50Off(CachedNip11Fetcher(OkHttpNip11Fetcher(peers::httpFor), errorTtlSeconds = NIP11_ERROR_TTL_SECONDS)))
 
     /** The pool's reads, carrying the waiver where a relay takes it. */
     private val reads = WaivedReads(ClientRelayReads(client), waivers)
@@ -343,7 +344,7 @@ class SyncEngine(
         if (upUpstreams.isNotEmpty()) {
             processors.of(PUSH_PROCESSOR).let { p ->
                 p.phase(Processors.RUNNING)
-                p.counts { listOf(Processors.Count("pushed", upPush.pushed.get())) }
+                p.counts { listOf(Processors.Count("pushed", upPush.pushed.get()), Processors.Count("pushesWithheld", upPush.withheld.get())) }
             }
         }
     }
@@ -517,9 +518,6 @@ class SyncEngine(
     ): List<RelayStatusReport.PrimeUnit> = visitPool.primeUnitsFor(author, relays, kinds)
 
     companion object {
-        /** A relay whose NIP-11 could not be read is asked again after this, not on every visit. */
-        const val NIP11_ERROR_TTL_SECONDS = 3_600L
-
         // Published names in the progress document; a rename breaks readers charting them.
         const val VISITS_PROCESSOR = "visits"
         const val INGEST_PROCESSOR = "ingest"

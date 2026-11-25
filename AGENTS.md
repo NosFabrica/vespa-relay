@@ -21,7 +21,7 @@ store. Six Gradle modules, JVM only (toolchain 25, run on JDK 27 in the image), 
   quartz's relay client, never Ktor.
 - `:peers` — how this deployment talks to other relays, shared by the two
   client-side processes: `PeerClient`, `RelaySockets`, `RelayWriter`,
-  `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
+  `AuthGate` (which relays its NIP-42 responder answers), `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
   (`fold/`), `RelayDiscovery`, `RouterConfig`, `IngestPipeline`, `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
   `IngestPipeline`, which writes the relay's publishes the way it writes the
   mirror's downloads (`RELAY_INGEST`).
@@ -162,7 +162,7 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
+  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42 behind AuthGate), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`; monitorFromEnv
@@ -188,7 +188,8 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
-                              LensWaivers (which relays are read with `include:spam`: NIP-11 `nip50`, or a refusal naming it),
+                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not),
+                              ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),

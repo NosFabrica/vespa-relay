@@ -422,10 +422,12 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   connection through that key's lens; the mirror's key has no 10040 and no
   scores, so every REQ, by-id fetches included, came back EMPTY with no refusal
   to read, while the NEG-OPEN of the same filter answered the whole set. Every
-  reconcile named the same below-floor ids missing, every pass. The router now
-  reads such a relay with `include:spam` (`LensWaivers`), and the store answers
-  a NEG-OPEN through the same lens as a REQ. It cannot send the token everywhere:
-  strfry refuses any filter carrying `search` with `unrecognised filter item`.
+  reconcile named the same below-floor ids missing, every pass (measured on two
+  relays in Docker: 150 missing, 0 fetched, three passes running). The router now
+  reads every relay anonymously first and learns `include:spam` from the refusal
+  (`LensWaivers`), and the store (59d541d) answers a NEG-OPEN through the same
+  lens as a REQ. It cannot send the token everywhere: strfry refuses any filter
+  carrying `search` with `unrecognised filter item`.
 - **A TTL on a tag is not a TTL on the event carrying it — unless you own every
   writer.** Kind 30166 used to have a writer we did not control: quartz's
   `RelayMonitor`, rewriting the record for every relay the client connected to,

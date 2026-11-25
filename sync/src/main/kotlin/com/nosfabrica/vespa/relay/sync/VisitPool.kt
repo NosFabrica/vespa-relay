@@ -90,7 +90,7 @@ internal class VisitPool(
      * Which relays take the lens waiver, learned here from their refusals and read by the same
      * reads that carry it to the wire.
      */
-    private val waivers: LensWaivers = LensWaivers.NONE,
+    private val waivers: LensWaivers = LensWaivers.none(),
     /** Silence between asks that ends a visit; a seam for tests. */
     private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
     /** How long, in all, one walk our ingest queue stalled may wait for it to drain; a seam for tests. */
@@ -312,6 +312,7 @@ internal class VisitPool(
         try {
             bands.retain(ownedState(built))
             pager.retain(next.keys.mapTo(HashSet()) { it.url })
+            waivers.retain(next.keys)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -567,6 +568,7 @@ internal class VisitPool(
             val flooredLeg = leg.flooredForPaging()
             try {
                 var narrowings = 0
+                var waiverFlips = 0
                 while (true) {
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
                     // A refusal of ours has no width or waiver to learn.
@@ -579,8 +581,11 @@ internal class VisitPool(
                         )
                         continue
                     }
-                    // Learned once per relay, so this re-walks a leg at most once.
-                    if (waivers.learn(url, said)) continue
+                    // The waiver changes at most twice per leg, so a relay alternating the two refusals cannot loop it.
+                    if (waiverFlips < MAX_WAIVER_FLIPS && (waivers.learn(url, said) || waivers.unlearn(url, said))) {
+                        waiverFlips++
+                        continue
+                    }
                     return refusal
                 }
             } finally {
@@ -1127,6 +1132,10 @@ internal class VisitPool(
         /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
         const val STAGE_PAGING = "catching up (paging)"
         const val STAGE_REFETCHING = "re-fetching the past (paging)"
+
+        /** How often one leg's walk may learn or forget the lens waiver inside one visit. */
+        const val MAX_WAIVER_FLIPS = 2
+
         const val STAGE_NEGENTROPY = "negentropy sync of the past"
         const val STAGE_RETRACTING = "negentropy sync of the provider's own records"
         const val STAGE_TAILING = "holding a live tail"
