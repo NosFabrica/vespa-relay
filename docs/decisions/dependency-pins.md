@@ -55,6 +55,16 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
+2.26.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.26.0 (the v2.26.0 tag a84b9b161), over 2.25.2 (below), which it descends from: 7 commits, the last two the
+release's own (VERSION_NAME, Package.swift). The NIP-77 snapshot cache (quartz#154): several slots, bounded by count and by the ids they hold, one walk shared by opens of
+one key that arrive together, and a write drops only the snapshots it can change. That last part needs the store's
+word for any store but quartz's SQLite one: LiveEventStore's new writeIsFilterLocal, which this relay passes
+(FilterLocalWrites, its own commit). Also a store fix: a filter union holding the empty filter matches everything.
+gradle/magpie.lock gains 2.26.0's quartz and quartz-jvm files under the release key it already trusts. Every
+module resolves one quartz, 2.26.0.
+  Gated: ./gradlew build here is green (the pre-push check).
+
 2.25.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.25.2 (the v2.25.2 tag ddc66ff18, main's head on 2026-11-25), over 2.25.0 (below), which it descends from: 7 commits,
 through 2.25.1. Relay-client fixes only, in RelayPool: a replaced client's late close no longer disconnects its

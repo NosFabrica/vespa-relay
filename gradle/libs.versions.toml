@@ -5,7 +5,7 @@ app = "0.1.0"
 # A release on Nostr + Blossom, through Magpie (settings.gradle.kts). Every module forces it and maps
 # quartz's JitPack group onto it (build-logic); a bump is checked with `./gradlew :relay:dependencies
 # --configuration runtimeClasspath`: one quartz module, any `com.github.vitorpamplona.quartz` line arrowed onto it.
-quartz = "2.25.2"
+quartz = "2.26.0"
 # Not done until the store's integration gate has run against this commit (AGENTS.md, Commands).
 vespaEventStore = "e2acf591fb13"
 coroutines = "1.11.0"
