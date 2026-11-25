@@ -138,10 +138,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         demand because the address is minted after we boot
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
-    FilterLocalWrites.kt which accepted writes keep quartz's cached NEG-OPEN
-                        snapshots (`writeIsFilterLocal`): every write but one
-                        the trust gate reads — a card (30382), a provider list
-                        (10040), a vanish, a kind 5 that may delete either
+                        and builds its LiveEventStore (`liveEventStore`) with
+                        the store's FilterLocality, which says which writes and
+                        searches keep quartz's cached NEG-OPEN snapshots
     LensRequiredPolicy.kt  THE RELAY'S DEFAULT BEFORE AUTH: a REQ or COUNT from
                         a connection that has not authenticated is answered only
                         if EVERY filter says whose eyes it is read through — a

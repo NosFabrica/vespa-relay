@@ -782,21 +782,22 @@ store asserts against its own compiled queries. `NegentropyAsCallerTest` holds
 its table.
 
 **An ordinary write keeps the NEG-OPEN snapshots it cannot change.** Quartz
-2.26.0 keeps several snapshots and drops on a write only those the write can
-change under the store rules, but for a store other than its own SQLite one it
-drops every snapshot on every write unless told which writes are filter-local,
-since such a store may gate. Ours gates on reputation cells and lenses, which a
-30382 card, a 10040 provider list, and a kind 5 or 62 that removes one change for
-authors the write never names. `isFilterLocalWrite` answers false for exactly
-those, mirroring the store's own `NostrSemanticsStore.touchesTrust` (the writes
-it takes the trust gate for), narrowed only for a kind 5 that names addresses
-alone, none of a trust kind; a kind 5 by id stays false, since the store deletes
-an `e` target whatever kind it turns out to be. Kinds the store reads only for
-search (follow lists and reports for `sort:links`, the other NIP-85 assertions
-and Trusted Lists for expansion) stay true: quartz drops every search snapshot
-on every write. At store e2acf59 a plain NEG-OPEN is walked ungated, so the
-predicate only starts to matter with 59d541d, which walks it through the
-caller's lens. Store changes made outside a publish (expiry, purges, the trust
+keeps several snapshots and drops on a write only those the write can change
+under the store rules, but for a store other than its own SQLite one it treats
+every write as able to change every snapshot, and every search as the text
+engine's, unless told otherwise, since such a store may gate. Ours gates on
+reputation cells and lenses, which a 30382 card, a 10040 provider list, and a
+kind 5 or 62 that removes one change for authors the write never names. The relay
+first carried its own copy of that write predicate; it now passes the store's
+`FilterLocality.writeIsFilterLocal` and `searchIsFilterLocal` as they are, since
+only the store knows what its answers read (`liveEventStore` in
+`NostrRelayServer.kt`). The search half is what lets a mirror peer reuse a
+snapshot: a termless `include:spam` or `observer:` reconcile, the shape peers
+send, read nothing a write outside its filter can move. Text cannot be made
+local: the store drops hits under a score floor built from bm25, whose IDF moves
+with every document in the corpus, so a write the filter does not match can still
+move its set. Store changes made outside a publish (expiry, purges, the trust
 drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
 TTL; while every write dropped every snapshot, the next publish usually hid
-that. `FilterLocalWritesTest` holds the set and drives it through NEG-OPEN.
+that. `NegentropySnapshotReuseTest` drives the signed-in, waived, named-observer
+and text shapes through NEG-OPEN; the store's `FilterLocalityTest` holds the sets.

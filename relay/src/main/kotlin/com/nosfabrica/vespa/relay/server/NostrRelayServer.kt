@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.eventstore.AcceptPartial
+import com.nosfabrica.vespa.eventstore.FilterLocality
 import com.nosfabrica.vespa.eventstore.LensedEventStore
 import com.nosfabrica.vespa.eventstore.LiveGate
 import com.nosfabrica.vespa.eventstore.PartialServed
@@ -191,6 +192,15 @@ internal class HeldLiveOverflow :
  * queue, so the default batch keeps the default capacity.
  */
 internal fun ingestCapacity(batch: Int): Int = (batch * 4).coerceAtLeast(IngestQueue.DEFAULT_CAPACITY)
+
+/**
+ * The relay's [LiveEventStore]: a cached NEG-OPEN snapshot survives every write and search the store
+ * says cannot change its set ([FilterLocality]), for this store gates on what some writes feed.
+ */
+internal fun liveEventStore(
+    store: IEventStore,
+    ingest: EventIngest,
+) = LiveEventStore(store, ingest, LiveEventStore.DEFAULT_MAX_HELD_BEFORE_EOSE, FilterLocality::writeIsFilterLocal, FilterLocality::searchIsFilterLocal)
 
 /**
  * The session-facing wrapper over [LiveEventStore]. Every read path is delegated, [openSubscription],

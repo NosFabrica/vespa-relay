@@ -201,7 +201,7 @@ relay/…/relay/
   server/config/              EnvSettings (`env.intOr(...)`, grep for it; the engine's limits, ALLOW_PUBKEYS and the rest
                               of the serving policy), RelaySettings (RELAY_URL + RELAY_HTTP_URL read once, NIP-11, stats
                               intervals, state files), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
-  server/                     NostrRelayServer, FilterLocalWrites (which writes keep NEG-OPEN snapshots), LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
+  server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
                               SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)

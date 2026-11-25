@@ -249,16 +249,24 @@ are taken as the caller, since a caller's lens might act on them.
 
 A cached snapshot (quartz keeps several, for up to 30 seconds each) survives an
 ordinary publish: a note, a reaction or a profile drops only the snapshots whose
-filters it could join, replace or delete from. A write the trust gate reads drops
-every snapshot, because it can change what any caller's lens admits: a NIP-85
-card (kind 30382), a provider list (10040), a request to vanish (62), and a
-deletion (5) unless it names only addresses of other kinds, since the store
-deletes an `e` target whatever its kind. A filter carrying a NIP-50 `search`,
-`include:spam` and `observer:` included, is dropped by every write: quartz
-leaves its set to the store's text engine. Changes made to the store outside a
-publish (expiry sweeps, NIP-86 and retraction-audit purges, the boot-time trust
-reconcile and score sweep, the store's background trust drain after a 10040
-names a new service) drop no snapshot and are bounded by the 30 seconds alone.
+filters it could join, replace or delete from. Which writes and which searches
+that holds for is the store's call (vespa-eventstore `FilterLocality`), and the
+relay passes it to quartz unchanged. A write the trust gate reads drops every
+snapshot, because it can change what any caller's lens admits: a NIP-85 card
+(kind 30382), a provider list (10040), a request to vanish (62), and a deletion
+(5) unless it names only addresses of other kinds, since the store deletes an `e`
+target whatever its kind. A search that only narrows by facts in each event or by
+the trust gate is judged like a plain filter, so a peer mirroring with a
+termless `include:spam` or `observer:<64-hex>` (with `filter:rank:`,
+`sort:recent` or `-word` exclusions too) reuses its snapshot across unrelated
+writes. Text never does: any words or a quoted phrase, `sort:links`, or a trust
+sort with a `limit` is dropped by every write, because the store cuts text by a
+relevance floor built from bm25, whose term statistics move with every document
+written anywhere in the corpus, and a ranked page cuts by scores other writes
+move. Changes made to the store outside a publish (expiry sweeps, NIP-86 and
+retraction-audit purges, the boot-time trust reconcile and score sweep, the
+store's background trust drain after a 10040 names a new service) drop no
+snapshot and are bounded by the 30 seconds alone.
 
 A snapshot is never served partial, because a peer acts on what a reconcile
 leaves out. On a cluster missing part of its content every NEG-OPEN is a
