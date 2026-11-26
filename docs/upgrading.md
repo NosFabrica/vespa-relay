@@ -14,7 +14,23 @@ list). No schema change, and no new setting.
   `VESPA_ACCESS_LOG` unset or blank the store now deploys the package with the
   log disabled, as `disabled` does. `.env.example` already sets `disabled`, so
   a deployment built from it sees no change. One that left the line out and
-  reads the log must set `VESPA_ACCESS_LOG=default` to keep it.
+  reads the log must set `VESPA_ACCESS_LOG=default` to keep it. The store
+  accepts `default` before and after this pin, so it can be set ahead of the
+  upgrade.
+- **The first boot redeploys the application package** wherever the log was
+  on, since the package now differs from what Vespa runs. Vespa applies it
+  live: the store measured empty `configChangeActions` (no restart, refeed or
+  reindex) and not one failed query across the switch, in either direction.
+  Under `AUTO_DEPLOY=false` nothing is deployed and nothing changes. Every
+  relay deploying to one Vespa must agree on the setting: two on different
+  store pins (a staggered upgrade), or with the variable set on only one, each
+  redeploy the other's package on every boot. The sync never deploys.
+- **The store's feed client compresses nothing unless asked:**
+  `VESPA_FEED_COMPRESSION` now defaults to `none` (it was `auto`).
+  `docker-compose.yml` already set `none`, so a compose deployment sees no
+  change. One with Vespa across a WAN that relied on `auto` sets `gzip`. It
+  only ever reached the feed client's share of the writes: batches and a lone
+  put are sent uncompressed either way.
 - **The per-event dup probe reports under `exists`, not `get`,** in the store's
   port metrics (`Insert × exists`). A dashboard comparing `get` before and
   after will see it fall away; nothing was lost.
