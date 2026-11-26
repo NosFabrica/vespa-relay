@@ -80,6 +80,21 @@ Nothing to do before the boot.
   (default `1`, as before) let a wide batch's signature checks run on several
   threads. Worth trying only where Vespa has cores of its own.
 
+## Simple reads are one engine query (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#230, which plans the common
+newest-first reads (a feed, a scroll back, a profile, a home feed) so that each
+is one small Vespa query (dependency-pins.md has the numbers). Nothing to do
+before or after the boot: no schema change, no new setting, no reindex.
+
+### What changes in behaviour
+
+- On a store whose newest event is behind the clock (quiet, archived, restored),
+  the store sends at most two small queries every 5 s to learn where its data
+  ends and starts. A store taking live writes sends neither.
+- A REQ's events and their order are unchanged: the store's probes check every
+  page against a full-scan reference.
+
 ## A REQ with no limit is served 500 events (November 2026)
 
 `DEFAULT_LIMIT` now defaults to 500, strfry's default, instead of 5,000. A
