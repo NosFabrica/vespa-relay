@@ -850,7 +850,6 @@ store. No bundle, schema or deploy-time change (no .sd, services.xml or app-pack
     the recency profile's 30-day horizon.
   Gated: the store's integration gate passed on e66b15f6, whose tree 1475ada0 is, against vespaengine/vespa:latest:
     66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
-    ./gradlew build here is green against the JitPack jars: 1,933 tests, 0 failed, 2 skipped.
     recencyStrategyProbe and recencyEdgeProbe served identical pages under every strategy on the loaded corpus.
     ./gradlew build here is green against the JitPack jars: 1,925 tests, 0 failed, 2 skipped.
 
