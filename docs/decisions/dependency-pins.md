@@ -814,6 +814,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+1475ada0c8d0 = vespa-eventstore main @ 2026-11-26, the merge of PR #230, over 6c9eef63f27b (below), which it descends
+from (`git merge-base --is-ancestor 6c9eef63f27b 1475ada0c8d0`); its tree is the PR head's (e66b15f6), byte for byte
+(`git diff --quiet e66b15f6 1475ada0`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, and the store's own request is 2.28.0, so the runtime classpath carries no `->` on quartz or the
+store. No bundle, schema or deploy-time change (no .sd, services.xml or app-package file moves); no new setting.
+  READS (#230), measured with the store's simpleReadsProbe on the nostr-relay-bench 300k corpus, 42 days behind the
+    clock, three passes in order: every common simple read is one engine query, 1.8-5.2 ms p50 on pass three (2.5-12.6 ms
+    and up to four queries on 6c9eef63); through this relay at 2ac8de97 built against the PR's second commit, with no
+    permessage-deflate, 2.3-6.0 ms. A speculative read anchors where the stored data ENDS once a read anchored at the
+    clock found every window empty, and a read whose `until` lies below where the data STARTS is one unwindowed query
+    (two `hitLimit` reads of `created_at`, at most one each per 5 s, sent only by a store that needs them: a live one
+    sends neither). A window is remembered as the span its page needed; a read its filter bounds (a profile, a contact
+    list at the default limit of 500) is one direct query, not ids then a hydrate; a recency read sizes its
+    match-phase depth to its limit only while Vespa reports one content node; narrow reads keep the count ladder past
+    the recency profile's 30-day horizon.
+  Gated: the store's integration gate passed on e66b15f6, whose tree 1475ada0 is, against vespaengine/vespa:latest:
+    66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
+    recencyStrategyProbe and recencyEdgeProbe served identical pages under every strategy on the loaded corpus.
+
 6c9eef63f27b = vespa-eventstore main @ 2026-11-25, the merge of PR #226, over b19d76c60e30 (below), which it descends
 from (`git merge-base --is-ancestor b19d76c60e30 6c9eef63f27b`); its tree is the PR head's (20486c12), byte for byte
 (`git diff --quiet 20486c12 6c9eef63`). Through JitPack's lowercase spelling, as the pins below. Every module resolves

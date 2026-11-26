@@ -4,6 +4,21 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Simple reads are one engine query (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#230, which plans the common
+newest-first reads (a feed, a scroll back, a profile, a home feed) so that each
+is one small Vespa query (dependency-pins.md has the numbers). Nothing to do
+before or after the boot: no schema change, no new setting, no reindex.
+
+### What changes in behaviour
+
+- On a store whose newest event is behind the clock (quiet, archived, restored),
+  the store sends at most two small queries every 5 s to learn where its data
+  ends and starts. A store taking live writes sends neither.
+- A REQ's events and their order are unchanged: the store's probes check every
+  page against a full-scan reference.
+
 ## A REQ with no limit is served 500 events (November 2026)
 
 `DEFAULT_LIMIT` now defaults to 500, strfry's default, instead of 5,000. A
