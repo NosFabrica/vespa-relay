@@ -229,6 +229,7 @@ internal fun <T> withRawRelay(
     soTimeoutMs: Int = 5_000,
     receiveBufferBytes: Int? = null,
     extensions: String? = null,
+    ktorFanout: KtorFanout = KtorFanout.perCore(),
     block: (RawWebSocket) -> T,
 ): T {
     val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl), relayUrl, limits = limits, ingest = ingest)
@@ -242,6 +243,7 @@ internal fun <T> withRawRelay(
             openMessageDeadlineMs = openMessageDeadlineMs,
             keepalive = keepalive,
             nativeWebSocket = native,
+            ktorFanout = ktorFanout,
             wait = false,
         )
     return try {

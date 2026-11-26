@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.config.IncludeSpam
 import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.event
 import com.nosfabrica.vespa.relay.sync.PoolFixture.Companion.stream
@@ -190,6 +191,48 @@ class VisitPoolWaiverTest {
                 assertTrue(fixture.asked.drop(1).all(::waives), "every ask after the refusal waives: ${fixture.asked.map { it.search }}")
                 assertTrue(fixture.tails.isNotEmpty(), "the visit finished")
                 assertEquals(0L, fixture.counts()["abortedAuthRequired"] ?: 0L)
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** `peers` sets the relay to `never`: the refusal that would teach the waiver is a wall, and stays one. */
+    @Test
+    fun `a relay peers sets to never is never asked with the waiver whatever it says`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val fixture = PoolFixture(scope, streams, gated(lensRefusal))
+                visit(fixture, LensWaivers(overrides = mapOf(url to IncludeSpam.NEVER), log = {}))
+                assertTrue(fixture.asked.isNotEmpty())
+                assertTrue(fixture.asked.none(::waives), "never asked with it: ${fixture.asked.map { it.search }}")
+                assertTrue((fixture.counts()["abortedAuthRequired"] ?: 0L) > 0, "a refusal it may not answer with the waiver")
+                assertEquals(0L, fixture.counts()["waivedRelays"], "and nothing learned")
+                assertEquals(1L, fixture.counts()["waiverNever"])
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** `peers` sets the relay to `always`: a refusal of the `search` field, the one unlearn signal, does not drop it. */
+    @Test
+    fun `a relay peers sets to always keeps the waiver through a refusal of the search field`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                var refused = 0
+                val fixture =
+                    PoolFixture(scope, streams, { filter, onEvent ->
+                        if (refused++ == 0) {
+                            PagedFetchResult(0, PagedFetchResult.End.CLOSED, "error: unrecognised filter item: search")
+                        } else {
+                            PoolFixture.holding(corpus)(filter, onEvent)
+                        }
+                    })
+                visit(fixture, LensWaivers(overrides = mapOf(url to IncludeSpam.ALWAYS), log = {}))
+                assertTrue(fixture.asked.isNotEmpty())
+                assertTrue(fixture.asked.all(::waives), "every ask, the first included: ${fixture.asked.map { it.search }}")
+                assertEquals(1L, fixture.counts()["waiverAlways"])
             } finally {
                 scope.cancel()
             }

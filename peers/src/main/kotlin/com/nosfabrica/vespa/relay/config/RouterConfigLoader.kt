@@ -272,7 +272,36 @@ object RouterConfigLoader {
             ingestBatch,
             monitor = monitor,
             verdictsFrom = verdictsFrom,
+            peers = if (cfg.hasPath("peers")) parsePeers(cfg.getConfigList("peers")) else emptyMap(),
         )
+    }
+
+    /** `peers = [ { url = "wss://…", includeSpam = "always" } ]`: one entry per relay, each setting something. */
+    private fun parsePeers(entries: List<Config>): Map<NormalizedRelayUrl, PeerSettings> {
+        val out = LinkedHashMap<NormalizedRelayUrl, PeerSettings>()
+        for ((at, p) in entries.withIndex()) {
+            val where = "$SYNC_CONFIG `peers` entry $at"
+            refuseUnknownKeys(p, where, PEER_KEYS)
+            require(p.hasPath("url")) { "router: $where has no `url`" }
+            val raw = p.getString("url")
+            val url = requireNotNull(RelayUrlNormalizer.normalizeOrNull(raw)) { "router: $where has url '$raw', which is not a relay url" }
+            require(PEER_SETTINGS.any { p.hasPath(it) }) {
+                "router: $where (${url.url}) sets nothing but its url — name a setting (${PEER_SETTINGS.joinToString { "`$it`" }}) or remove it"
+            }
+            val includeSpam =
+                if (p.hasPath("includeSpam")) {
+                    val said = p.getString("includeSpam")
+                    requireNotNull(IncludeSpam.parse(said)) {
+                        "router: $where (${url.url}) has includeSpam = '$said' — expected ${IncludeSpam.entries.joinToString(" / ") { "\"${it.wire}\"" }}"
+                    }
+                } else {
+                    IncludeSpam.AUTO
+                }
+            require(out.put(url, PeerSettings(includeSpam)) == null) {
+                "router: $SYNC_CONFIG `peers` names ${url.url} twice — keep one entry per relay"
+            }
+        }
+        return out
     }
 
     /** One `streams { }` entry. Retired keys are refused first, since their message says more than "unknown". */
@@ -1078,7 +1107,12 @@ object RouterConfigLoader {
                 "not a property of how one was discovered",
         )
 
-    private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor", "verdictsFrom")
+    private val ROOT_KEYS = setOf("connectionTimeout", "streams", "monitor", "verdictsFrom", "peers")
+
+    /** What a `peers` entry may set beside its `url`. */
+    private val PEER_SETTINGS = setOf("includeSpam")
+
+    private val PEER_KEYS = PEER_SETTINGS + "url"
 
     private val STREAM_KEYS =
         setOf(

@@ -188,7 +188,7 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
-                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint),
+                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint; `peers` forces it per url),
                               ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
@@ -202,7 +202,7 @@ relay/…/relay/
                               of the serving policy), RelaySettings (RELAY_URL + RELAY_HTTP_URL read once, NIP-11, stats
                               intervals, state files), RelayAddresses (RELAY_ONION_HOSTNAME_FILE)
   server/                     NostrRelayServer, LensRequiredPolicy (REQUIRE_READ_LENS), MultiAddressAuthPolicy, TrustNotice,
-                              SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
+                              SearchGate (SEARCH_CONCURRENCY_PER_CONNECTION), ReplayGate (REPLAY_CONCURRENCY, REPLAY_QUEUE), HttpServer, RelayInfo (RELAY_NAME), RelayIcon
                               (RELAY_ICON), RelayWebSocket, HttpRelayRoutes (quartz's HttpRelayHandler) + HttpRelayGate (HTTP_RELAY*: NIP-FE, a client frame POSTed to /), Nip86Route, OpenRankingRoutes (ORE_ENABLED: ORE-05 POST /search/pubkeys, the backend Brainstorm's server proxies),
                               BanListFile, ConnectionCountListener (LOG_CONNECTIONS)
   maintenance/                ExpirationSweeper, TrustReconcile (TRUST_RECONCILE_ON_START), FtsReindex (REINDEX_FTS_ON_START, REINDEX_FTS_KINDS),

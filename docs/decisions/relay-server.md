@@ -183,6 +183,29 @@ silently would break the REQ, so past `MAX_HELD_LIVE` the queued REQ ends with a
 `CLOSED` that says so. Only a read that queues races the bound; the rest run
 as before.
 
+**Plain replays take a relay-wide permit; ranked ones do not.** Nothing bounded
+how many REQ replays reached the store at once, and a reconnect wave is all of
+them: at a few thousand REQs a second EOSE took 15-60 s, and against production
+at 4,000 sockets Vespa answered `searched only 50%` and the relay closed those
+REQs, which came back as retries (live-feeds.md). `ReplayGate` admits
+`REPLAY_CONCURRENCY` plain replays at a time, FIFO, each held from the store
+call to EOSE; a queued REQ costs a coroutine and its held live events. It
+queues rather than refuses, because a refusal is a retry and a retry is the
+storm; only past `REPLAY_QUEUE` waiting is a new REQ refused, as policy, so the
+client hears `rate-limited:` with a retry-after rather than an `error:` from a
+failed replay. Ranked reads stay per connection for the reason above: a
+relay-wide permit would put one reader's slow word in front of everyone's feed.
+The permit is taken inside the connection's search lane, never before it, or a
+REQ waiting on its own lane would hold a permit the lane's holder needs. A
+replay that finds a permit free takes it before anything else and pays nothing
+more; only one that waits races `MAX_HELD_LIVE`. NEG-OPEN and COUNT are not
+held: a reconcile has its own snapshot cache and single flight, and COUNT is
+bounded per connection by quartz. Coalescing identical replays was left out: a
+joiner must register before the leader's query starts or an event committed
+between them is missed by both, and every joiner must share the observer and
+`AcceptPartial`; that wants the measurement first. The defaults (128, 8,192)
+are not measured.
+
 **A REQ's stored rows are served partial while a Vespa node is down.** With one
 content node offline every engine answer is `non-ideal-state` below 100%, and
 the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL
@@ -395,6 +418,21 @@ connection then holds its inbox and about five messages of up to the engine's
 length (one in each of Ktor's two raw queues, the frame its reader collects,
 the one its forwarder holds, the one the route joins). Ktor is the fallback
 transport (`NATIVE_WEBSOCKET=false`); it has no held-message deadline.
+
+**On Ktor, live events leave the ingest thread too.** The Ktor route declared no
+`liveExecutor`, so quartz delivered every Ktor subscription inline on the thread
+that accepted the event: the one publish worker, which spent about 3 µs per
+matching feed (live-feeds.md) before it could commit its next batch. The
+native transport's event loops never had this. `KtorFanout` gives the route the
+same shape: one single-threaded executor per core, started on first use so a
+relay that serves no Ktor socket starts none, each connection taking one in
+turn at connect and keeping it, so its live frames stay in order and quartz
+keeps one partition per thread (it warns at 256). Their queues are unbounded,
+as an event loop's are. Each subscriber's frame is still its own string
+encoded once per socket; sharing the body's bytes per thread, as the native
+loops do, was left out of a fallback path. Not measured: the native transport
+is the default, and `live-bench/compare.sh` with `NATIVE_WEBSOCKET=false`
+while `ingest-bench/bench.sh` publishes is the run that would size it.
 
 **The native websocket answers permessage-deflate.** Browsers, OkHttp and most
 Nostr clients offer it (RFC 7692), and a Nostr frame is hex ids, keys,
@@ -667,6 +705,21 @@ wrong answer. Waiting checks are bounded separately and far higher, a check
 queues up to `QUEUE_MS` for a slot instead of dropping at once, and the
 waiters on a failed read fail closed with it. The dropped counts are on
 `GET /pressure` as `liveGate`.
+
+**An id two lanes accept at once is accepted once.** The store dedups a regular
+event outside its writer lock, so two batches in flight together (the
+publishes' lane and the mirror lane, or two workers of one) may both answer
+`Accepted` for one id, and quartz's `LiveEventStore` fans out every `Accepted`:
+a note published here and to an upstream the sync tails reached every feed
+twice, the ~0.5% `dup` column in live-feeds.md. `AcceptedOnce` sits in front of
+both lanes and answers the later of two acceptances in flight together
+`duplicate:`, which is the truth (the first one wrote it) and what a resend
+after the write hears, so its OK is still `true` and it is not fanned out
+again. Only submissions in flight together are compared, so an ephemeral event
+sent again later still goes out again. Checking under the store's lock instead
+would cost a round trip per event under it. `racedAccepts` on `/pressure`
+counts them. The fix belongs in `LiveEventStore`, which already counts an id's
+submissions in flight, and goes when quartz has it.
 
 **The trust pages are public, and `explain` is bounded and cached.** The pulse
 is gated because it quotes what people searched for; every field on

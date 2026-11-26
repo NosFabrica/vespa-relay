@@ -500,6 +500,9 @@ function relayPanel(d) {
     if (row.negentropy === true) terms.appendChild(chip("neg", "live", term("negentropy")));
     if (row.negentropy === false) terms.appendChild(chip("no neg", "warn", term("negentropy")));
     if (row.kindCap != null) terms.appendChild(chip(`≤${row.kindCap} kinds`, "busy", term("kindCap")));
+    if (row.includeSpam === "learned") terms.appendChild(chip("include:spam", "busy", term("includeSpam")));
+    if (row.includeSpam === "always") terms.appendChild(chip("include:spam (always)", "busy", term("includeSpam")));
+    if (row.includeSpam === "never") terms.appendChild(chip("no include:spam (never)", "busy", term("includeSpam")));
     // Not a term the relay serves us on but the reason two of them are absent: nothing measured it.
     if (row.unwatched) terms.appendChild(chip("unwatched", "warn", term("unwatched")));
     // The relay's own sentence last, after the measured terms.

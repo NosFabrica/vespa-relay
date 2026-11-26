@@ -119,6 +119,14 @@ connectionTimeout = 20
 # monitors; [] follows nobody. See docs/router.md.
 # verdictsFrom = [ "npub1…" ]
 
+# What the operator states about single relays, overriding what the router
+# learns from them. `includeSpam` is "auto" (learned from a refusal naming the
+# waiver; the default), "always" (every read carries it from boot) or "never"
+# (no read carries it, and a refusal naming it signs us in). See docs/router.md.
+# peers = [
+#   { url = "wss://filter.example", includeSpam = "always" }
+# ]
+
 # THE POOL'S SOCKETS AND CPU ARE BUDGETED PER STREAM — see each stream below.
 # Every visit-mode stream shares one queue, one worker set and one socket per
 # relay, so what is configured is not a pool of its own but a SHARE of that

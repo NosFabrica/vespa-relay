@@ -335,6 +335,16 @@ signal: quartz's responder already lets a signer decline a challenge
 added at the wire (`WaivedReads`, the pager's reconcile, the retraction reads,
 the push), never to the ask, so bands and sweep cursors keep their keys.
 
+**An operator can force the waiver per relay.** Learning hears one wording: a
+refusal that names `include:spam` under `auth-required:` or `restricted:`. A peer
+phrasing its gate otherwise taught nothing and stayed a wall, and a gated peer we
+had to read as our own key could not be signed in to, since its refusal taught
+the waiver first. `peers` in `sync.conf` sets `includeSpam` per url: `always` is
+a waiver learned at boot that nothing unlearns, `never` one that cannot be
+learned, so the refusal falls through to the sign-in. It lives in `LensWaivers`
+beside the learned set, not in it, so `retain` never forgets it and
+`waivedRelays` still counts only what relays taught.
+
 **An answer that shrank past belief is never acted on.** The retraction audit
 used to carry no size guard, since a mass retraction is the case that matters.
 But a peer reading a signed-in key through a lens answers exactly a mass

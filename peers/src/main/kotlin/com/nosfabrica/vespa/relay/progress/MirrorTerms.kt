@@ -920,6 +920,12 @@ internal val MIRROR_TERMS: JsonObject =
                 "could never have completed one; see `narrowedRelays` for the count.",
         )
         term(
+            "includeSpam",
+            "Whether this router's reads of this relay carry NIP-50's `include:spam` lens waiver: `learned` from " +
+                "the relay's own refusal naming it, or `always` / `never` as `sync.conf`'s `peers` block forces it. " +
+                "Absent on a relay read exactly as the stream says, which is nearly all of them.",
+        )
+        term(
             "coveredFrom",
             "How far BACK the walk of this pair has reached — the oldest `created_at` any of its bands " +
                 "covers. THE number to watch on a `paging` row: unchanged between two polls means the walk " +
@@ -1002,7 +1008,20 @@ internal val MIRROR_TERMS: JsonObject =
                 "answers with its whole corpus instead of its trust-gated share. Learned from the relay's own " +
                 "refusal: this router reads anonymously, and a gated relay refuses an anonymous read naming the " +
                 "waiver. Every other relay is asked exactly what the stream says, because a relay without NIP-50 " +
-                "refuses any filter carrying `search`. Zero means no relay on this roster gates its reads by trust.",
+                "refuses any filter carrying `search`. Zero means no relay on this roster gates its reads by trust. " +
+                "Relays the operator forces in `peers` are counted under `waiverAlways` and `waiverNever` instead.",
+        )
+        term(
+            "waiverAlways",
+            "Relays `sync.conf`'s `peers` block sets to `includeSpam = \"always\"`: every read of them carries " +
+                "`include:spam` from boot, and no refusal makes this router forget it. The escape hatch for a gated " +
+                "relay whose refusal is worded so that nothing is learned from it.",
+        )
+        term(
+            "waiverNever",
+            "Relays `sync.conf`'s `peers` block sets to `includeSpam = \"never\"`: no read of them carries " +
+                "`include:spam` and none learns it, so a refusal naming the waiver signs this router in instead. " +
+                "For a gated relay this deployment must read as its own key.",
         )
         term(
             "retractionsWithheld",

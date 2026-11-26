@@ -172,6 +172,7 @@ class StatusVocabularyTest {
                 speaksNegentropy = true,
                 watched = false,
                 kindCap = 100,
+                includeSpam = "always",
                 abortReason = "the relay closed the subscription",
                 abortSaid = "error: too many kinds in filter",
                 abortAtSec = now - 900,
@@ -325,6 +326,8 @@ class StatusVocabularyTest {
                         "poolReceived" to 4_000,
                         "narrowedRelays" to 9,
                         "waivedRelays" to 1,
+                        "waiverAlways" to 1,
+                        "waiverNever" to 0,
                         "unreadableUnits" to 2,
                         "abortedVisits" to 2,
                         // Listed rather than derived from the enum, so a name that moved is noticed.

@@ -306,6 +306,9 @@ function processorFact(p) {
     if (p.narrowedRelays) add(`${fmt(p.narrowedRelays)} asked in kind chunks`, "narrowedRelays");
     // Not a fault: web-of-trust relays read whole, with the waiver they advertise.
     if (p.waivedRelays) add(`${fmt(p.waivedRelays)} read with include:spam`, "waivedRelays");
+    // The operator's word, not the relay's: `peers` forces these either way.
+    if (p.waiverAlways) add(`${fmt(p.waiverAlways)} always read with include:spam`, "waiverAlways");
+    if (p.waiverNever) add(`${fmt(p.waiverNever)} never read with include:spam`, "waiverNever");
     // Not a backlog: asks these relays refuse as policy, skipped until the verdict lapses.
     if (p.unreadableUnits) add(`${fmt(p.unreadableUnits)} refuse an ask as policy`, "unreadableUnits");
     if (p.liveEvicted) add(`${fmt(p.liveEvicted)} live subscription(s) rotated out`, "liveEvicted");

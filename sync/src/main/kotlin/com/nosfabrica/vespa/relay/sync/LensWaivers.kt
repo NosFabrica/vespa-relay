@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.ReadShape
+import com.nosfabrica.vespa.relay.config.IncludeSpam
 import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -36,32 +37,53 @@ import java.util.concurrent.ConcurrentHashMap
  * Anonymous first because a gated relay answers a signed-in key through that key's lens, empty for
  * ours and never refused, so only an anonymous read hears the gate. Never the waiver unasked: a
  * relay without NIP-50 refuses any filter carrying `search` (strfry: `unrecognised filter item`).
- * Held in memory for the process; a restart relearns each on its first refusal.
+ * Held in memory for the process; a restart relearns each on its first refusal. A relay the
+ * operator names in `peers` with `includeSpam = always` or `never` is read that way and learns nothing.
  */
 internal class LensWaivers(
     /** Relays whose waiver [retain] keeps whatever the roster says: the declared up and down urls. */
     private val pinned: Set<NormalizedRelayUrl> = emptySet(),
+    /** The operator's `peers` overrides; a relay absent here is [IncludeSpam.AUTO]. */
+    private val overrides: Map<NormalizedRelayUrl, IncludeSpam> = emptyMap(),
     private val log: (String) -> Unit = System.err::println,
 ) : AuthGate {
     private val waiving = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /** How the operator set [url]'s waiver: `auto` unless `peers` names it. */
+    fun mode(url: NormalizedRelayUrl): IncludeSpam = overrides[url] ?: IncludeSpam.AUTO
+
+    /** How many relays `peers` forces to [mode]; published as `waiverAlways` and `waiverNever`. */
+    fun forced(mode: IncludeSpam): Int = overrides.values.count { it == mode }
+
+    /** [url]'s waiver as the relay table shows it: `always` or `never` when forced, `learned`, or null when it is read verbatim by default. */
+    fun shown(url: NormalizedRelayUrl): String? =
+        when (mode(url)) {
+            IncludeSpam.AUTO -> if (url in waiving) LEARNED else null
+            else -> mode(url).wire
+        }
 
     /** Where we answer NIP-42, and whether a refused read asked for it: only that says the relay gates how it reads us. */
     private val signingIn = ConcurrentHashMap<NormalizedRelayUrl, SignIn>()
 
     private enum class SignIn { TO_WRITE, TO_READ }
 
-    /** How many relays are read with the waiver; published as `waivedRelays`. */
+    /** How many relays a refusal taught the waiver; published as `waivedRelays`. */
     val waived: Int get() = waiving.size
 
     /** Whether reads of [url] carry the waiver. */
-    fun waives(url: NormalizedRelayUrl): Boolean = url in waiving
+    fun waives(url: NormalizedRelayUrl): Boolean =
+        when (mode(url)) {
+            IncludeSpam.AUTO -> url in waiving
+            IncludeSpam.ALWAYS -> true
+            IncludeSpam.NEVER -> false
+        }
 
     /**
      * Signed in on [url] because it refused a read, and no waiver learned there: a relay that gates by
      * trust would answer our key through its lens, empty and unrefused. Its absences are not to be acted
      * on. A sign-in an EVENT's refusal asked for says nothing of how the relay reads.
      */
-    fun mayBeLensed(url: NormalizedRelayUrl): Boolean = signingIn[url] == SignIn.TO_READ && url !in waiving
+    fun mayBeLensed(url: NormalizedRelayUrl): Boolean = signingIn[url] == SignIn.TO_READ && !waives(url)
 
     /** How [url] is read now; an answer from it stands for a later decision only while this does. */
     fun stance(url: NormalizedRelayUrl): Stance = Stance(waives(url), mayAuthenticate(url), mayBeLensed(url))
@@ -106,24 +128,31 @@ internal class LensWaivers(
     /**
      * Reads a refusal. True when it names the waiver as the way in (an `auth-required:` or
      * `restricted:` sentence naming `include:spam`): the caller's signal to ask again with it.
+     * Never true where `peers` sets `never`, so such a refusal asks for AUTH like any other.
      */
     fun learn(
         url: NormalizedRelayUrl,
         said: String?,
     ): Boolean {
         if (said == null || !namesWaiver(said)) return false
-        if (waiving.add(url)) log("router: ${url.url} refused us naming `include:spam`; asking with it from here")
+        when (mode(url)) {
+            IncludeSpam.NEVER -> return false
+            IncludeSpam.ALWAYS -> return true
+            IncludeSpam.AUTO -> if (waiving.add(url)) log("router: ${url.url} refused us naming `include:spam`; asking with it from here")
+        }
         return true
     }
 
     /**
      * Forgets the waiver once [url] rejects the `search` field itself, the one evidence that the
-     * waiver is what it refuses. True when the caller should ask again without it.
+     * waiver is what it refuses. True when the caller should ask again without it; never where
+     * `peers` forces the waiver either way.
      */
     fun unlearn(
         url: NormalizedRelayUrl,
         said: String?,
     ): Boolean {
+        if (mode(url) != IncludeSpam.AUTO) return false
         if (said == null || !REFUSES_SEARCH.containsMatchIn(said) || !waiving.remove(url)) return false
         log("router: ${url.url} refused the `search` field (${said.take(120)}); asking it verbatim from here")
         return true
@@ -141,6 +170,9 @@ internal class LensWaivers(
     companion object {
         /** The waiver, alone: a search with no words, which quartz keeps on every by-id fetch. */
         const val TOKEN = "${SearchQuery.INCLUDE}:${SearchQuery.SPAM}"
+
+        /** [shown] for a waiver a refusal taught. */
+        const val LEARNED = "learned"
 
         /** A registry of its own each call, for tests and probes. */
         fun none(): LensWaivers = LensWaivers()

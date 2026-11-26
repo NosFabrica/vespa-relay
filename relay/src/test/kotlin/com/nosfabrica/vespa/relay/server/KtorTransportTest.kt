@@ -23,9 +23,16 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.server.config.messageBytes
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.server.FanoutExecutor
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import java.net.SocketTimeoutException
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /** The Ktor transport (NATIVE_WEBSOCKET=false): what it bounds, and that its bounds never starve a client's pongs. */
 class KtorTransportTest {
@@ -42,6 +49,62 @@ class KtorTransportTest {
                 assertEquals(events.size, texts.count { it.startsWith("[\"OK\"") && ",true," in it }, if (native) "native" else "ktor")
             }
         }
+    }
+
+    @Test
+    fun `a Ktor connection's live events are delivered by its fan-out thread, not by the ingest`() {
+        // The connection's one executor runs nothing until the test lets it.
+        val released = CountDownLatch(1)
+        val thread = FanoutThread("held-fanout")
+        val held =
+            object : FanoutExecutor {
+                override fun execute(task: () -> Unit) =
+                    thread.execute {
+                        released.await()
+                        task()
+                    }
+            }
+        val note = signer.sign<Event>(System.currentTimeMillis() / 1000, 1, emptyArray(), "a live note")
+        withRawRelay(native = false, ktorFanout = KtorFanout(listOf(held)), soTimeoutMs = 2_000) { ws ->
+            ws.text("""["REQ","live",{"kinds":[1],"search":"include:spam"}]""")
+            ws.textsUntil { seen -> seen.any { it.startsWith("""["EOSE","live"]""") } }
+            ws.text("""["EVENT",${note.toJson()}]""")
+            ws.textsUntil { seen -> seen.any { it.startsWith("""["OK","${note.id}",true""") } }
+            // Inline, the ingest would have written the frame before the OK's batch moved on.
+            assertFailsWith<SocketTimeoutException>("the live frame went out before its fan-out thread ran") { ws.next() }
+            released.countDown()
+            val live = ws.textsUntil { seen -> seen.any { it.startsWith("""["EVENT","live",""") } }
+            assertEquals(1, live.count { note.id in it })
+        }
+        thread.close()
+    }
+
+    @Test
+    fun `connections share the fan-out's executors, so quartz keeps one partition per thread`() {
+        val fanout = KtorFanout.perCore()
+        val given = List(1_000) { fanout.next() }
+        assertEquals(Runtime.getRuntime().availableProcessors(), given.toSet().size)
+        fanout.close()
+    }
+
+    @Test
+    fun `a fan-out thread runs its tasks in order, off the caller, and queues one it is handed from itself`() {
+        val thread = FanoutThread("ordered-fanout")
+        val ran = Collections.synchronizedList(mutableListOf<String>())
+        val done = CountDownLatch(1)
+        val caller = Thread.currentThread()
+        thread.execute {
+            assertTrue(Thread.currentThread() !== caller)
+            thread.execute {
+                ran += "queued from itself"
+                done.countDown()
+            }
+            ran += "first"
+        }
+        thread.execute { ran += "second" }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf("first", "second", "queued from itself"), ran.toList())
+        thread.close()
     }
 
     @Test

@@ -814,6 +814,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+ddc6472237a9 = vespa-eventstore main @ 2026-11-26, the merge of PR #231, over fbd2548b (the merge of #229, over
+1475ada0c8d0 (below), which it descends from); its tree is the PR head's (6d473fdf), byte for byte
+(`git diff --quiet 6d473fdf ddc64722`). This relay pinned 6d473fdf26f1 itself while #231 was open.
+Through JitPack's lowercase spelling, as the pins below. The store's own quartz request is 2.28.0, as this relay's.
+One deploy-time change rides in from main: the container's access log is off unless asked for (8e18e31c,
+`VESPA_ACCESS_LOG`; services.xml). No schema (.sd) change.
+  STORE MAIN since 1475ada0 (#228, #229): a recency read's search answer and large pages are decoded by hand
+    (808f0c34, 6be44f75); the feed client compresses nothing unless asked (536614e9); a ranked or gated COUNT fills
+    its one hit from the attribute-only `idtime` summary; the per-event dup probe asks for the id field only (16.5 ->
+    2.1 ms of writer-lock hold per duplicate 3,000-tag kind 3); an a-tag deletion reads its victims as stubs;
+    `ReadShape.answersEveryConnectionAlike` is held to the REQ and COUNT too, with no change to what it answers. The
+    by-author gated COUNT was built, measured slower than the gate everywhere and not merged (docs/gated-count.md).
+  #231: a kind 5's e-tag targets are read as stubs (new port member `EventIndex.stubs`; 30382/10040 still whole);
+    the separate write client from #229 is reverted (no read gain under BENCH_MIXED or recencyLoadProbe); the dup
+    probe is metered as `Insert x exists`, not `get` (the store's docs/upgrading.md).
+  Gated: the store's integration gate passed on 6d473fdf, whose tree ddc64722 is, against vespaengine/vespa:latest: 44 classes,
+    66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
+    ./gradlew build here is green against the JitPack jars: 1,933 tests, 0 failed, 2 skipped.
+
 1475ada0c8d0 = vespa-eventstore main @ 2026-11-26, the merge of PR #230, over 6c9eef63f27b (below), which it descends
 from (`git merge-base --is-ancestor 6c9eef63f27b 1475ada0c8d0`); its tree is the PR head's (e66b15f6), byte for byte
 (`git diff --quiet e66b15f6 1475ada0`). Through JitPack's lowercase spelling, as the pins below. Every module resolves

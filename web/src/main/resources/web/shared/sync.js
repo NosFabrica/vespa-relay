@@ -703,6 +703,8 @@ export function relayStatusOf(relays) {
       // `negentropy` is a tri-state; absent is "not measured", not false.
       negentropy: typeof r.negentropy === "boolean" ? r.negentropy : null,
       kindCap: Number.isFinite(r.kindCap) ? r.kindCap : null,
+      // `learned`, or `always`/`never` as `peers` forces it; absent is read verbatim.
+      includeSpam: ["learned", "always", "never"].includes(r.includeSpam) ? r.includeSpam : null,
       // Null rather than 0 for every clock and edge; a 1970 would read as a walk that reached the epoch.
       coveredFrom: Number.isFinite(r.coveredFrom) ? r.coveredFrom : null,
       coveredTo: Number.isFinite(r.coveredTo) ? r.coveredTo : null,

@@ -62,6 +62,8 @@ object RelayStatusReport {
         val watched: Boolean = true,
         /** The filter width learned from this relay's own refusal; null when it never complained. */
         val kindCap: Int? = null,
+        /** How reads carry `include:spam`: `always` or `never` as `peers` forces it, `learned` from a refusal, null when verbatim. */
+        val includeSpam: String? = null,
         val abortReason: String? = null,
         val abortSaid: String? = null,
         val abortAtSec: Long = 0,
@@ -145,6 +147,7 @@ object RelayStatusReport {
                             r.speaksNegentropy?.let { put("negentropy", it) }
                             r.negentropyRefusedWhy?.let { put("negentropyRefusedFor", it) }
                             r.kindCap?.let { put("kindCap", it) }
+                            r.includeSpam?.let { put("includeSpam", it) }
                             r.verifiedAt?.let { put("verifiedAgoSec", (nowSeconds - it).coerceAtLeast(0)) }
                             if (r.visiting) put("visiting", true)
                             // `tailed`, not `live`: `live` is the root's list of held tails.
@@ -171,6 +174,7 @@ object RelayStatusReport {
         val negentropyRefusedWhy: String?,
         val unwatched: Boolean,
         val kindCap: Int?,
+        val includeSpam: String?,
         val asks: Int,
         val bands: Int,
         val settled: Int,
@@ -213,6 +217,7 @@ object RelayStatusReport {
             negentropyRefusedWhy = unit.negentropyRefusedWhy,
             unwatched = !unit.watched,
             kindCap = unit.kindCap,
+            includeSpam = unit.includeSpam,
             asks = unit.askKeys.size,
             bands = band.bands,
             settled = band.settled,

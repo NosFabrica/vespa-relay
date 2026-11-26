@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
+import com.nosfabrica.vespa.relay.server.ReplayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -201,6 +202,20 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.strictInt("SEARCH_CONCURRENCY_PER_CONNECTION", 0..Int.MAX_VALUE) ?: SearchGate.DEFAULT_PERMITS
 
 /**
+ * `REPLAY_CONCURRENCY` and `REPLAY_QUEUE`: plain REQ replays the whole relay runs against the store at once, and
+ * how many may wait for a turn before a new REQ is refused `rate-limited:`; see `ReplayGate`. 0 replays turns it off.
+ */
+fun replayGateFromEnv(env: Map<String, String>): ReplayGate =
+    ReplayGate(
+        permits = env.strictInt("REPLAY_CONCURRENCY", 0..MAX_REPLAY_CONCURRENCY) ?: ReplayGate.DEFAULT_PERMITS,
+        maxWaiting = env.strictInt("REPLAY_QUEUE", 0..MAX_REPLAY_QUEUE) ?: ReplayGate.DEFAULT_WAITING,
+    )
+
+/** Past the store client's own bound on streams in flight, a replay permit admits nothing more. */
+private const val MAX_REPLAY_CONCURRENCY = 65_536
+private const val MAX_REPLAY_QUEUE = 1_000_000
+
+/**
  * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset is [default]:
  * quartz's 64 for its queue, sized for SQLite; the mirror's batch for the pipeline. Set but unparseable
  * stops the boot; see docs/decisions/relay-server.md for why a Vespa store wants more.
@@ -232,6 +247,7 @@ fun relayIngestFromEnv(
             env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
             env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536)
             env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS)
+            verifyThreadsFromEnv(env, "RELAY_INGEST_VERIFY_THREADS")
             RelayIngest(null, ingestBatchFromEnv(env))
         }
 
@@ -252,6 +268,7 @@ fun relayIngestFromEnv(
                     queue = batch * concurrency,
                     queueBytes = queueMb * 1_048_576L,
                     lingerMs = lingerMs.toLong(),
+                    verifyThreads = verifyThreadsFromEnv(env, "RELAY_INGEST_VERIFY_THREADS"),
                 ),
                 batch,
             )
@@ -273,8 +290,21 @@ fun mirrorIngestFromEnv(
     val batch = env.strictInt("RELAY_MIRROR_INGEST_BATCH", 1..20_000) ?: DEFAULT_PIPELINE_BATCH
     val concurrency = env.strictInt("RELAY_MIRROR_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
     val queueMb = env.strictInt("RELAY_MIRROR_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
-    return IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L)
+    return IngestTuning(
+        concurrency,
+        batch,
+        dedupChunk = engine.dedupWidth(),
+        queue = batch * concurrency,
+        queueBytes = queueMb * 1_048_576L,
+        verifyThreads = verifyThreadsFromEnv(env, "RELAY_MIRROR_INGEST_VERIFY_THREADS"),
+    )
 }
+
+/** How many threads one pipeline's batch may check signatures on (`1`-`64`); 1, the default, checks them on its worker. */
+private fun verifyThreadsFromEnv(
+    env: Map<String, String>,
+    key: String,
+): Int = env.strictInt(key, 1..64) ?: 1
 
 /** The store's dedup probe width, which both pipelines chunk their id probes by, since both probe one store. */
 private fun EngineTuning.dedupWidth(): Int = dedupChunk ?: EngineTuning.DEFAULT_DEDUP_CHUNK

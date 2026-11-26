@@ -641,6 +641,36 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `peers forces the lens waiver per relay, each entry naming one relay and a setting`() {
+        fun peers(block: String) = RouterConfigLoader.parse("$streamsConfig\n$block").peers
+
+        val parsed =
+            peers(
+                """
+                peers = [
+                    { url = "wss://filter.example", includeSpam = "always" }
+                    { url = "wss://members.example/", includeSpam = "never" }
+                    { url = "wss://plain.example", includeSpam = "auto" }
+                ]
+                """.trimIndent(),
+            )
+        assertEquals(IncludeSpam.ALWAYS, parsed[RelayUrlNormalizer.normalize("wss://filter.example/")]?.includeSpam, "keyed by the normalized url")
+        assertEquals(IncludeSpam.NEVER, parsed[RelayUrlNormalizer.normalize("wss://members.example")]?.includeSpam)
+        assertEquals(IncludeSpam.AUTO, parsed[RelayUrlNormalizer.normalize("wss://plain.example")]?.includeSpam)
+        assertTrue(RouterConfigLoader.parse(streamsConfig).peers.isEmpty(), "absent is auto everywhere")
+
+        val dup = assertFailsWith<IllegalArgumentException> { peers("""peers = [ { url = "wss://a.example", includeSpam = "always" }, { url = "wss://a.example/", includeSpam = "never" } ]""") }
+        assertTrue("twice" in dup.message!!, dup.message)
+        val bad = assertFailsWith<IllegalArgumentException> { peers("""peers = [ { url = "wss://a.example", includeSpam = "sometimes" } ]""") }
+        assertTrue("\"always\"" in bad.message!!, bad.message)
+        val inert = assertFailsWith<IllegalArgumentException> { peers("""peers = [ { url = "wss://a.example" } ]""") }
+        assertTrue("sets nothing" in inert.message!!, inert.message)
+        assertFailsWith<IllegalArgumentException> { peers("""peers = [ { url = "wss://a.example", includespam = "always" } ]""") }
+        assertFailsWith<IllegalArgumentException> { peers("""peers = [ { url = "not a url", includeSpam = "always" } ]""") }
+        assertFailsWith<IllegalArgumentException> { peers("""peers = [ { includeSpam = "always" } ]""") }
+    }
+
+    @Test
     fun `a stream may set its own re-walk period, refused under the floor and read per stream`() {
         fun stream(extra: String) =
             RouterConfigLoader

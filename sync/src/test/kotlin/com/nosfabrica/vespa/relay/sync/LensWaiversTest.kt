@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.config.IncludeSpam
 import com.nosfabrica.vespa.relay.peers.AuthGate
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EoseMessage
@@ -221,5 +222,44 @@ class LensWaiversTest {
         val one = LensWaivers.none()
         one.learn(gated, lensRefusal)
         assertFalse(LensWaivers.none().waives(gated), "what one learns no other default sees")
+    }
+
+    @Test
+    fun `a relay peers sets to always is waived from boot and never unlearns`() {
+        val waivers = LensWaivers(overrides = mapOf(strfry to IncludeSpam.ALWAYS), log = {})
+        val ask = Filter(kinds = listOf(1))
+        assertTrue(waivers.waives(strfry), "no refusal needed")
+        assertEquals("include:spam", waivers.onWire(strfry, ask).search)
+        assertFalse(waivers.unlearn(strfry, "error: unrecognised filter item: search"), "the operator's word outranks the relay's")
+        assertTrue(waivers.waives(strfry))
+        val own = Filter(kinds = listOf(1), search = "observer:$hex")
+        assertSame(own, waivers.onWire(strfry, own), "a filter naming its own lens is still sent as it is")
+        assertEquals("always", waivers.shown(strfry))
+        assertEquals(0, waivers.waived, "nothing was learned")
+        assertEquals(1, waivers.forced(IncludeSpam.ALWAYS))
+    }
+
+    @Test
+    fun `a relay peers sets to never learns nothing and signs in on the refusal that would have taught it`() {
+        val waivers = LensWaivers(overrides = mapOf(gated to IncludeSpam.NEVER), log = {})
+        assertFalse(waivers.learn(gated, lensRefusal), "no re-ask with a waiver it never sends")
+        waivers.heard(gated, closed(lensRefusal))
+        assertFalse(waivers.waives(gated))
+        val ask = Filter(kinds = listOf(1))
+        assertSame(ask, waivers.onWire(gated, ask))
+        assertTrue(waivers.mayAuthenticate(gated), "the refusal asked for AUTH, and the waiver is not the way in here")
+        assertTrue(waivers.mayBeLensed(gated), "so its answers are read through our key's lens")
+        assertEquals("never", waivers.shown(gated))
+        assertEquals(0, waivers.waived)
+    }
+
+    @Test
+    fun `auto is the learned stance as before`() {
+        val waivers = LensWaivers(overrides = mapOf(gated to IncludeSpam.AUTO), log = {})
+        assertEquals(null, waivers.shown(gated), "read verbatim until taught")
+        assertTrue(waivers.learn(gated, lensRefusal))
+        assertEquals("learned", waivers.shown(gated))
+        assertTrue(waivers.unlearn(gated, "error: unrecognised filter item: search"))
+        assertEquals(null, waivers.shown(gated))
     }
 }

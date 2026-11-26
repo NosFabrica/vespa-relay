@@ -1110,9 +1110,10 @@ const leg = (n, quiet, over = {}) => ({
       { relay: "wss://fresh.example/", stream: "content", syncStatus: "notStarted", behind: "nothing", fault: true },
       { relay: "wss://deep.example/", stream: "content", syncStatus: "paging", behind: "current", behindSec: 90,
         coveredFrom: 1600000000, coveredTo: 1700000000, visiting: true, asks: 40, settled: 3,
-        negentropy: false, kindCap: 8 },
+        negentropy: false, kindCap: 8, includeSpam: "always" },
       { relay: "wss://done.example/", stream: "indexers", syncStatus: "complete", behind: "current", behindSec: 5,
-        coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true, negentropy: true },
+        coveredFrom: 1500000000, coveredTo: 1700000000, verifiedAgoSec: 41200, tailed: true, negentropy: true,
+        includeSpam: "sometimes" },
     ],
     omitted: 1712,
   };
@@ -1150,6 +1151,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(t.rows[0].negentropy, null, "unmeasured is neither true nor false");
   assert.equal(t.rows[2].kindCap, 8);
   assert.equal(t.rows[3].kindCap, null);
+  assert.equal(t.rows[2].includeSpam, "always");
+  assert.equal(t.rows[3].includeSpam, null, "a stance the router never publishes is not drawn");
   ok("the terms a relay serves us on reach the row, and unmeasured stays absent");
 
   // The router's reading of which wall, and the relay's own sentence.

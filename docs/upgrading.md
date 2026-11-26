@@ -4,6 +4,100 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The store's #229 and #231 (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore main at the merge of #231,
+which carries #229 and #228 before it (docs/decisions/dependency-pins.md has the
+list). No schema change, and no new setting.
+
+- **The Vespa container's access log is off unless asked for.** With
+  `VESPA_ACCESS_LOG` unset or blank the store now deploys the package with the
+  log disabled, as `disabled` does. `.env.example` already sets `disabled`, so
+  a deployment built from it sees no change. One that left the line out and
+  reads the log must set `VESPA_ACCESS_LOG=default` to keep it.
+- **The per-event dup probe reports under `exists`, not `get`,** in the store's
+  port metrics (`Insert × exists`). A dashboard comparing `get` before and
+  after will see it fall away; nothing was lost.
+- A duplicate publish of a large replaceable (a 3,000-tag kind 3) holds the
+  store's writer lock about 2 ms instead of 16.5 ms, and a kind 5 no longer
+  reads its targets' whole documents. Answers are unchanged.
+
+## Compose passes every setting the code reads (November 2026)
+
+`docker-compose.yml` hands a container only what its service maps, and these
+settings were read by the code, documented in docs/configuration.md and never
+mapped, so under compose a value in `.env` did nothing. They now reach the
+container. **Nothing to do, but if you set any of them in `.env`, it takes
+effect on the next boot**, after however long it sat there ignored:
+
+- relay: `MAX_LIMIT`, `DEFAULT_LIMIT`, `MAX_SUBSCRIPTIONS`, `MAX_FILTERS`,
+  `MAX_SUBID_LENGTH`, `MIN_POW_DIFFICULTY`, `CREATED_AT_LOWER_LIMIT`,
+  `CREATED_AT_UPPER_LIMIT`, `NEG_FRAME_SIZE_LIMIT`, `NEG_MAX_SYNC_EVENTS`,
+  `NEG_MAX_SESSIONS_PER_CONNECTION`, `REQUIRE_READ_LENS`,
+  `SEARCH_CONCURRENCY_PER_CONNECTION`, `SEARCH_EXPAND_REFERENCES`,
+  `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`, `RELAY_HTTP_URL`,
+  `RELAY_VERSION`;
+- sync: `SYNC_NEG_PAGE_MIN`, `SYNC_NEG_PAGE_MAX`, `SYNC_STORE_SLOW_SEC`,
+  `SYNC_STORE_REWARN_SEC`, `RELAY_ICON`;
+- monitor: `RELAY_ICON`;
+- all three: `STORE_METRICS_LOG_SECONDS`.
+
+`DEFAULT_LIMIT=5000`, the way back to the old window in "A REQ with no limit
+is served 500 events" below, now actually works under compose; before this it
+left the relay at 500. Likewise `NEG_MAX_SESSIONS_PER_CONNECTION=0`, the switch
+for a malformed NIP-77 frame (docs/traps.md), now refuses every NEG-OPEN.
+
+Check a lowered limit or a switch you set long ago against what you want now:
+`REQUIRE_READ_LENS=false` serves an unauthenticated read that declares no lens, and a
+`MAX_LIMIT` below 500 lowers `DEFAULT_LIMIT` with it. A value out of range
+stops the boot and names the variable, as it always would have off compose.
+
+`.env.example` now documents every one of them, with the ones compose already
+passed but it lacked (`REJECT_FUTURE_SECONDS`, `EXPIRATION_SWEEP_SECONDS`,
+`SYNC_REFUSED_*`, `MONITOR_INGEST_URL`, `MONITOR_STATUS_INTERVAL_SECONDS`,
+`MONITOR_WIRE_LOG`), and a build check fails when the code reads a setting
+`.env.example` does not document or a process's own setting its service does
+not pass.
+
+## `peers` forces the lens waiver per relay (November 2026)
+
+Nothing to do: with no `peers` block every relay is `auto`, the learned stance
+as before. To read a relay with `include:spam` whatever it says, or never, name
+it in `sync.conf` (docs/router.md, "peers"); a misspelt key or value, a relay
+named twice, or an entry that sets nothing stops the boot.
+
+### What you will see
+
+- `router: peers sets includeSpam = always|never for <url>: …`, once per forced
+  relay at boot.
+- `waiverAlways` and `waiverNever` on the progress document, and `includeSpam`
+  (`learned`, `always`, `never`) on each `prime relays` row.
+
+## Live fan-out and stored-replay admission (November 2026)
+
+Nothing to do before the boot.
+
+### What you will see
+
+- **A publish the other lane accepted at the same moment is answered
+  `OK true "duplicate: already have this event"`**, and live feeds get that
+  event once. Before, both publishers heard a plain `OK true` and every feed
+  it matched got it twice. `/pressure` gains `racedAccepts`, how many since boot.
+- **At most `REPLAY_CONCURRENCY` (128) plain REQ replays run against the store
+  at once.** In a reconnect wave the rest wait their turn, so EOSE comes later
+  instead of the store answering from part of the corpus; with
+  `REPLAY_QUEUE` (8,192) waiting, a new REQ is `CLOSED "rate-limited: …"` with
+  a 5 s retry-after. A calm relay should never reach the bound; `/pressure`'s
+  `replays` says whether it does. `REPLAY_CONCURRENCY=0` restores the old
+  behaviour.
+- **With `NATIVE_WEBSOCKET=false`, live events are delivered by
+  `vespa-relay-fanout-N` threads**, one per core, instead of the publish
+  worker, so a large fan-out no longer holds up the next write. Nothing changes
+  on the native transport, the default.
+- **`RELAY_INGEST_VERIFY_THREADS` and `RELAY_MIRROR_INGEST_VERIFY_THREADS`**
+  (default `1`, as before) let a wide batch's signature checks run on several
+  threads. Worth trying only where Vespa has cores of its own.
+
 ## Simple reads are one engine query (November 2026)
 
 The store pin moves to NosFabrica/vespa-eventstore#230, which plans the common
