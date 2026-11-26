@@ -54,6 +54,31 @@ named twice, or an entry that sets nothing stops the boot.
 - `waiverAlways` and `waiverNever` on the progress document, and `includeSpam`
   (`learned`, `always`, `never`) on each `prime relays` row.
 
+## Live fan-out and stored-replay admission (November 2026)
+
+Nothing to do before the boot.
+
+### What you will see
+
+- **A publish the other lane accepted at the same moment is answered
+  `OK true "duplicate: already have this event"`**, and live feeds get that
+  event once. Before, both publishers heard a plain `OK true` and every feed
+  it matched got it twice. `/pressure` gains `racedAccepts`, how many since boot.
+- **At most `REPLAY_CONCURRENCY` (128) plain REQ replays run against the store
+  at once.** In a reconnect wave the rest wait their turn, so EOSE comes later
+  instead of the store answering from part of the corpus; with
+  `REPLAY_QUEUE` (8,192) waiting, a new REQ is `CLOSED "rate-limited: …"` with
+  a 5 s retry-after. A calm relay should never reach the bound; `/pressure`'s
+  `replays` says whether it does. `REPLAY_CONCURRENCY=0` restores the old
+  behaviour.
+- **With `NATIVE_WEBSOCKET=false`, live events are delivered by
+  `vespa-relay-fanout-N` threads**, one per core, instead of the publish
+  worker, so a large fan-out no longer holds up the next write. Nothing changes
+  on the native transport, the default.
+- **`RELAY_INGEST_VERIFY_THREADS` and `RELAY_MIRROR_INGEST_VERIFY_THREADS`**
+  (default `1`, as before) let a wide batch's signature checks run on several
+  threads. Worth trying only where Vespa has cores of its own.
+
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 
 Two changes that must land in order. The router now reads every relay

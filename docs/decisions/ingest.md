@@ -602,6 +602,17 @@ pieces the store leaves to its caller: a `SchemaDeployException` whose
 serves, and an unchanged package's convergence wait runs beside the next boot
 steps and is awaited before the first write.
 
+**A batch's signatures may be checked on several threads, never decided on them.**
+With one publish worker, verifying batch N+1 cannot overlap anything, and the
+checks are about 12% of a fresh batch. `RELAY_INGEST_VERIFY_THREADS` checks the
+one candidate per contest that the in-order loop always checks first (an id's
+first copy whose id hashes, a replaceable address's newest version) ahead, in
+parallel, and leaves every decision to that loop, so a later copy or an older
+version is checked only if the loop gets to it, as before, and no answer moves.
+It defaults to `1` because it is not measured, and because the turn-gate arm
+(overlapping admit with commit) measured no better than one worker on a box
+where Vespa shares the cores: the extra threads may only take Vespa's CPU.
+
 **The writer sends a whole batch at once.** Measured on the 200k slice with a batch-size histogram,
 the mirror lane's writes averaged about 290 events, not the 43 an earlier reading of the store's
 `BatchInsert` activity counter suggested: that counter counts work inside the store (about 398k

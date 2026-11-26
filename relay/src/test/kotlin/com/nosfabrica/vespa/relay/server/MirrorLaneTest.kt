@@ -163,6 +163,72 @@ class MirrorLaneTest {
         }
     }
 
+    /** Holds every outcome until [acceptAll]: a lane whose batch is still being written. */
+    private class Holding : EventIngest {
+        val pending: MutableList<(IEventStore.InsertOutcome) -> Unit> = Collections.synchronizedList(mutableListOf())
+
+        override suspend fun submit(
+            event: Event,
+            skipVerify: Boolean,
+            onComplete: (IEventStore.InsertOutcome) -> Unit,
+        ) {
+            pending += onComplete
+        }
+
+        /** Accepted, as the store answers each of two batches that both planned the id before either wrote it. */
+        fun acceptAll() = synchronized(pending) { pending.toList().also { pending.clear() } }.forEach { it(IEventStore.InsertOutcome.Accepted) }
+
+        override fun hasBacklog() = pending.isNotEmpty()
+
+        override fun close() = Unit
+    }
+
+    @Test
+    fun `an event both lanes accept at once reaches a live subscriber once`() {
+        val clients = Holding()
+        val mirror = Holding()
+        val server =
+            NostrRelayServer(
+                NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl),
+                relayUrl,
+                requireReadLens = false,
+                ingest = clients,
+                mirrorLane = MirrorLane(relayKey.pubKey, mirror),
+            )
+        try {
+            val reader = connect(server, null)
+            runBlocking { reader.first.receive("""["REQ","live",{"kinds":[1],"since":1699999999}]""") }
+            awaitMessage(reader.second) { it.startsWith("""["EOSE","live"""") }
+            val sync = connect(server, relayKey)
+            val publisher = connect(server, null)
+            // Published here and to an upstream the sync tails, so it arrives on both lanes at once.
+            val both = note(someone, "published here and upstream at once")
+            runBlocking { sync.first.receive("""["EVENT",${both.toJson()}]""") }
+            awaitHeld(mirror)
+            runBlocking { publisher.first.receive("""["EVENT",${both.toJson()}]""") }
+            awaitHeld(clients)
+            mirror.acceptAll()
+            clients.acceptAll()
+
+            val oks = listOf(sync, publisher).map { s -> awaitMessage(s.second) { it.startsWith("""["OK","${both.id}"""") } }
+            awaitMessage(reader.second) { it.startsWith("""["EVENT","live",""") && both.id in it }
+            Thread.sleep(300)
+            assertEquals(1, reader.second.count { it.startsWith("""["EVENT","live",""") }, "delivered once: ${reader.second}")
+            assertTrue(oks.all { ",true," in it }, "both publishers hear OK true: $oks")
+            assertEquals(1, oks.count { "duplicate:" in it }, "the second acceptance is the duplicate it is: $oks")
+        } finally {
+            server.close()
+        }
+    }
+
+    private fun awaitHeld(lane: Holding) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (lane.pending.isEmpty()) {
+            if (System.currentTimeMillis() > deadline) fail("the lane was never handed the event")
+            Thread.sleep(10)
+        }
+    }
+
     private fun awaitMessage(
         out: List<String>,
         match: (String) -> Boolean,

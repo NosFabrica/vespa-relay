@@ -37,6 +37,7 @@ import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.ServerReady
 import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
@@ -120,6 +121,8 @@ fun serveRelay(
     nativeWebSocket: Boolean = true,
     // permessage-deflate (RFC 7692) on the native websocket, for a client that offers it.
     websocketCompression: Boolean = true,
+    // The threads Ktor's connections take their live events on; closed with the server.
+    ktorFanout: KtorFanout = KtorFanout.perCore(),
     // Once the port is bound and connections are accepted (Ktor's ServerReady), not when this is called.
     onReady: () -> Unit = {},
     wait: Boolean = true,
@@ -149,6 +152,7 @@ fun serveRelay(
     }
     return embeddedServer(Netty, configure = engine) {
         monitor.subscribe(ServerReady) { onReady() }
+        monitor.subscribe(ApplicationStopped) { ktorFanout.close() }
         installPageDefaults()
 
         // A response hook, not a route: clients record Onion-Location off any response,
@@ -172,7 +176,7 @@ fun serveRelay(
             channels { incoming = bounded(KTOR_FRAMES_AHEAD, ChannelOverflow.SUSPEND) }
         }
         routing {
-            nostrRelay(relay, keepalive)
+            nostrRelay(relay, keepalive, ktorFanout)
             get("/") {
                 val accept = call.request.headers["Accept"] ?: ""
                 if (accept.contains("application/nostr+json")) {
@@ -202,7 +206,9 @@ fun serveRelay(
                     val samples = p.sampleCount().coerceAtMost(ServingPressure.MIN_SAMPLES.toLong())
                     call.respondText(
                         """{"meanMs":${p.meanMs()},"samples":$samples,""" +
-                            """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}}}""",
+                            """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}},""" +
+                            """"racedAccepts":${relay.racedAccepts},""" +
+                            relay.replayGate.let { r -> """"replays":{"running":${r.running},"waiting":${r.waiting},"waited":${r.waited},"refused":${r.refused}}}""" },
                         ContentType.Application.Json,
                     )
                 }

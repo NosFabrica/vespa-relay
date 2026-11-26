@@ -179,6 +179,9 @@ services:
       HTTP_RELAY: ${HTTP_RELAY:-}
       HTTP_RELAY_TOTAL: ${HTTP_RELAY_TOTAL:-}
       HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
+      # Plain REQ replays run against the store at once, and how many may wait.
+      REPLAY_CONCURRENCY: ${REPLAY_CONCURRENCY:-}
+      REPLAY_QUEUE: ${REPLAY_QUEUE:-}
       # ORE-05 search backend for Brainstorm's server, public; off by default.
       ORE_ENABLED: ${ORE_ENABLED:-}
       ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}
@@ -298,6 +301,8 @@ services:
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       RELAY_INGEST_QUEUE_MB: ${RELAY_INGEST_QUEUE_MB:-}
       RELAY_INGEST_LINGER_MS: ${RELAY_INGEST_LINGER_MS:-}
+      RELAY_INGEST_VERIFY_THREADS: ${RELAY_INGEST_VERIFY_THREADS:-}
+      RELAY_MIRROR_INGEST_VERIFY_THREADS: ${RELAY_MIRROR_INGEST_VERIFY_THREADS:-}
       # The store's feed transport: none here, where Vespa is a container on
       # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
       # when VESPA_URL is across a WAN.
