@@ -21,6 +21,10 @@ Nothing to do before the boot.
   a 5 s retry-after. A calm relay should never reach the bound; `/pressure`'s
   `replays` says whether it does. `REPLAY_CONCURRENCY=0` restores the old
   behaviour.
+- **With `NATIVE_WEBSOCKET=false`, live events are delivered by
+  `vespa-relay-fanout-N` threads**, one per core, instead of the publish
+  worker, so a large fan-out no longer holds up the next write. Nothing changes
+  on the native transport, the default.
 
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 

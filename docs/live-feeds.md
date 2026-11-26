@@ -188,7 +188,9 @@ websocket declares each socket's event loop (`liveExecutor`): the ingest thread
 hands an event once to every loop that holds a match, and the loop matches and
 writes its own sockets, flushing each once per event (since batched, see
 [One write per socket per flush](#one-write-per-socket-per-flush)). The publisher's OK no
-longer waits for the fan-out. Ktor's path declares nothing and stays inline.
+longer waits for the fan-out. Ktor's path declared nothing and stayed inline;
+since November 2026 it declares one of a fixed set of threads, one per core
+(`KtorFanout`), not measured here.
 
 At 12,000 feeds and 5 events/s, JDK 27, each build twice and alternated:
 

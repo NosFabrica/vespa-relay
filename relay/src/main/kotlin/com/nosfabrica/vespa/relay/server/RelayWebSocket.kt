@@ -21,6 +21,9 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.server.config.defaultRelayLimits
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
+import com.vitorpamplona.quartz.nip01Core.relay.server.FanoutExecutor
+import com.vitorpamplona.quartz.nip01Core.relay.server.SessionSink
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.webSocketRaw
@@ -168,11 +171,12 @@ internal object InboundReads {
  * heard however far the connection's commands are behind, and what a backlog holds back is the client's
  * next commands, through an inbox with the native transport's budgets. Ktor's own pinger is off, since
  * it hears pongs only behind the commands; [keepalive] is kept here instead. Messages are bounded by the
- * plugin's `maxFrameSize`, whole or fragmented.
+ * plugin's `maxFrameSize`, whole or fragmented. Live events are delivered on the connection's [fanout] thread.
  */
 fun Route.nostrRelay(
     server: NostrRelayServer,
     keepalive: Keepalive = Keepalive(),
+    fanout: KtorFanout,
 ) {
     webSocketRaw("/") {
         // One writer drains a bounded queue; a slow consumer is disconnected rather than having frames
@@ -221,9 +225,10 @@ fun Route.nostrRelay(
                     outgoing.send(Frame.Ping(ByteArray(0)))
                 }
             }
+        val send = { text: String -> if (!outQueue.offer(text)) disconnectSlowConsumer() }
         try {
             server.serve(
-                send = { text -> if (!outQueue.offer(text)) disconnectSlowConsumer() },
+                sink = KtorSink(send, fanout.next()),
                 incoming = { session -> inbox.forEach { session.receive(it) } },
             )
         } finally {
@@ -234,6 +239,16 @@ fun Route.nostrRelay(
             writer.cancel()
         }
     }
+}
+
+/** Every frame to [send] as wire JSON, live events from [liveExecutor] rather than from the thread that accepted them. */
+private class KtorSink(
+    private val send: (String) -> Unit,
+    override val liveExecutor: FanoutExecutor,
+) : SessionSink {
+    override fun message(message: Message) = send(message.toJson())
+
+    override fun raw(json: String) = send(json)
 }
 
 /**

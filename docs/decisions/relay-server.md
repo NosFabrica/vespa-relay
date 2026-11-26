@@ -419,6 +419,21 @@ length (one in each of Ktor's two raw queues, the frame its reader collects,
 the one its forwarder holds, the one the route joins). Ktor is the fallback
 transport (`NATIVE_WEBSOCKET=false`); it has no held-message deadline.
 
+**On Ktor, live events leave the ingest thread too.** The Ktor route declared no
+`liveExecutor`, so quartz delivered every Ktor subscription inline on the thread
+that accepted the event: the one publish worker, which spent about 3 µs per
+matching feed (live-feeds.md) before it could commit its next batch. The
+native transport's event loops never had this. `KtorFanout` gives the route the
+same shape: one single-threaded executor per core, started on first use so a
+relay that serves no Ktor socket starts none, each connection taking one in
+turn at connect and keeping it, so its live frames stay in order and quartz
+keeps one partition per thread (it warns at 256). Their queues are unbounded,
+as an event loop's are. Each subscriber's frame is still its own string
+encoded once per socket; sharing the body's bytes per thread, as the native
+loops do, was left out of a fallback path. Not measured: the native transport
+is the default, and `live-bench/compare.sh` with `NATIVE_WEBSOCKET=false`
+while `ingest-bench/bench.sh` publishes is the run that would size it.
+
 **The native websocket answers permessage-deflate.** Browsers, OkHttp and most
 Nostr clients offer it (RFC 7692), and a Nostr frame is hex ids, keys,
 signatures and repeated field names that zlib halves. On 8,000 events read off

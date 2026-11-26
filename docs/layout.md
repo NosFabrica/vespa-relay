@@ -261,6 +261,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure, ORE search
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
+    KtorFanout.kt       the Ktor route's live delivery threads, one per core,
+                        each connection keeping one: quartz's `liveExecutor`,
+                        as an event loop is for the native transport
     HttpRelayRoutes.kt  POST / (NIP-FE): one client frame, the host half of
                         quartz's HttpRelayHandler, which runs it on its own
                         session so every limit and policy the socket has
