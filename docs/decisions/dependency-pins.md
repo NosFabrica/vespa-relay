@@ -814,9 +814,9 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-6d473fdf26f1 = the head of NosFabrica/vespa-eventstore#231 @ 2026-11-26, NOT yet main: vespa-eventstore main at
-fbd2548b (the merge of #229, over 1475ada0c8d0 (below), which it descends from) merged with #231's seven commits. Move
-this pin to #231's merge commit once it lands; that commit's tree is this one's (`git diff --quiet 6d473fdf <merge>`).
+ddc6472237a9 = vespa-eventstore main @ 2026-11-26, the merge of PR #231, over fbd2548b (the merge of #229, over
+1475ada0c8d0 (below), which it descends from); its tree is the PR head's (6d473fdf), byte for byte
+(`git diff --quiet 6d473fdf ddc64722`). This relay pinned 6d473fdf26f1 itself while #231 was open.
 Through JitPack's lowercase spelling, as the pins below. The store's own quartz request is 2.28.0, as this relay's.
 One deploy-time change rides in from main: the container's access log is off unless asked for (8e18e31c,
 `VESPA_ACCESS_LOG`; services.xml). No schema (.sd) change.
@@ -829,7 +829,7 @@ One deploy-time change rides in from main: the container's access log is off unl
   #231: a kind 5's e-tag targets are read as stubs (new port member `EventIndex.stubs`; 30382/10040 still whole);
     the separate write client from #229 is reverted (no read gain under BENCH_MIXED or recencyLoadProbe); the dup
     probe is metered as `Insert x exists`, not `get` (the store's docs/upgrading.md).
-  Gated: the store's integration gate passed on 6d473fdf itself against vespaengine/vespa:latest: 44 classes,
+  Gated: the store's integration gate passed on 6d473fdf, whose tree ddc64722 is, against vespaengine/vespa:latest: 44 classes,
     66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
     ./gradlew build here is green against the JitPack jars: 1,933 tests, 0 failed, 2 skipped.
 

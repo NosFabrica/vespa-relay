@@ -6,8 +6,8 @@ about everything else an operator has to do or will see.
 
 ## The store's #229 and #231 (November 2026)
 
-The store pin moves to NosFabrica/vespa-eventstore#231's head, which carries
-#229 and #228 from the store's main (docs/decisions/dependency-pins.md has the
+The store pin moves to NosFabrica/vespa-eventstore main at the merge of #231,
+which carries #229 and #228 before it (docs/decisions/dependency-pins.md has the
 list). No schema change, and no new setting.
 
 - **The Vespa container's access log is off unless asked for.** With
