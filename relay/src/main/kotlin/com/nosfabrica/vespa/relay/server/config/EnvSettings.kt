@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
+import com.nosfabrica.vespa.relay.server.ReplayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.nosfabrica.vespa.relay.util.strictChoice
 import com.nosfabrica.vespa.relay.util.strictFlag
@@ -195,6 +196,20 @@ fun searchExpansionFromEnv(env: Map<String, String>): SearchExpansionLimits {
  * `SearchGate`. 0 turns the gate off.
  */
 fun searchConcurrencyPerConnectionFromEnv(env: Map<String, String>): Int = env.strictInt("SEARCH_CONCURRENCY_PER_CONNECTION", 0..Int.MAX_VALUE) ?: SearchGate.DEFAULT_PERMITS
+
+/**
+ * `REPLAY_CONCURRENCY` and `REPLAY_QUEUE`: plain REQ replays the whole relay runs against the store at once, and
+ * how many may wait for a turn before a new REQ is refused `rate-limited:`; see `ReplayGate`. 0 replays turns it off.
+ */
+fun replayGateFromEnv(env: Map<String, String>): ReplayGate =
+    ReplayGate(
+        permits = env.strictInt("REPLAY_CONCURRENCY", 0..MAX_REPLAY_CONCURRENCY) ?: ReplayGate.DEFAULT_PERMITS,
+        maxWaiting = env.strictInt("REPLAY_QUEUE", 0..MAX_REPLAY_QUEUE) ?: ReplayGate.DEFAULT_WAITING,
+    )
+
+/** Past the store client's own bound on streams in flight, a replay permit admits nothing more. */
+private const val MAX_REPLAY_CONCURRENCY = 65_536
+private const val MAX_REPLAY_QUEUE = 1_000_000
 
 /**
  * `RELAY_INGEST_BATCH`: how many published events one store write may take. Unset is [default]:

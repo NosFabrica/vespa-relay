@@ -61,6 +61,7 @@ import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.OpenRanking
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
+import com.nosfabrica.vespa.relay.server.ReplayGate
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
 import com.nosfabrica.vespa.relay.server.config.REMOVED_MANIFEST_SETTINGS
@@ -90,6 +91,7 @@ import com.nosfabrica.vespa.relay.server.config.relayEndpointFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayFilesFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayLimitsFromEnv
+import com.nosfabrica.vespa.relay.server.config.replayGateFromEnv
 import com.nosfabrica.vespa.relay.server.config.requireReadLensFromEnv
 import com.nosfabrica.vespa.relay.server.config.searchConcurrencyPerConnectionFromEnv
 import com.nosfabrica.vespa.relay.server.config.searchExpansionFromEnv
@@ -232,6 +234,7 @@ private class Boot(
     val kindAllow: Set<Int>,
     val kindDeny: Set<Int>,
     val searchConcurrency: Int,
+    val replays: ReplayGate,
     val ingest: RelayIngest,
     val mirrorIngest: IngestTuning,
     /** Where the mirror lane starts yielding to client reads; the sync process reads the same setting. */
@@ -355,6 +358,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         kindAllow = allowKindsFromEnv(env),
         kindDeny = denyKindsFromEnv(env),
         searchConcurrency = searchConcurrencyPerConnectionFromEnv(env),
+        replays = replayGateFromEnv(env),
         ingest = relayIngestFromEnv(env, storeTuning),
         mirrorIngest = mirrorIngestFromEnv(env, storeTuning),
         pressureThresholdMs = env.strictLong("SERVING_PRESSURE_THRESHOLD_MS", 100L..Long.MAX_VALUE) ?: ServingPressure.DEFAULT_THRESHOLD_MS,
@@ -502,6 +506,7 @@ private fun buildRelay(
         rejectFutureSeconds = boot.rejectFutureSeconds,
         requireReadLens = boot.requireReadLens,
         searchConcurrencyPerConnection = boot.searchConcurrency,
+        replays = boot.replays,
         ingestBatch = boot.ingest.batch,
         ingest = ingest,
         mirrorLane = mirror?.let { pipeline -> boot.identity?.let { MirrorLane(it.pubKey, pipeline) } },

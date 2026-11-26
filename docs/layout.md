@@ -248,6 +248,16 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         live tail. docs/search-latency.md has the whole
                         measurement, including what the page and the store
                         changed beside it
+    ReplayGate.kt       SO MANY PLAIN REPLAYS AT ONCE, RELAY-WIDE — every REQ
+                        that ranks nothing waits for one of
+                        `REPLAY_CONCURRENCY` permits, in arrival order, taken
+                        inside the connection's search lane and held to EOSE;
+                        past `REPLAY_QUEUE` waiting its policy refuses a new
+                        REQ `rate-limited:`. A reconnect wave is that many
+                        replays at once
+    AcceptedOnce.kt     one `Accepted` per id among the submissions in flight
+                        together, so an event both lanes accept is fanned out
+                        once
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure, ORE search
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route

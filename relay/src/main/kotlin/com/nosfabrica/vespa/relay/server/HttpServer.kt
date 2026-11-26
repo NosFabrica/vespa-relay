@@ -203,7 +203,8 @@ fun serveRelay(
                     call.respondText(
                         """{"meanMs":${p.meanMs()},"samples":$samples,""" +
                             """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}},""" +
-                            """"racedAccepts":${relay.racedAccepts}}""",
+                            """"racedAccepts":${relay.racedAccepts},""" +
+                            relay.replayGate.let { r -> """"replays":{"running":${r.running},"waiting":${r.waiting},"waited":${r.waited},"refused":${r.refused}}}""" },
                         ContentType.Application.Json,
                     )
                 }

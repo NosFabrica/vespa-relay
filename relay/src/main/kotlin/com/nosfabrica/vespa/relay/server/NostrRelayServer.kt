@@ -109,6 +109,8 @@ class NostrRelayServer(
     private val servingPressure: ServingPressure? = null,
     // Ranked reads one connection may run at once; 0 turns the gate off.
     searchConcurrencyPerConnection: Int = SearchGate.DEFAULT_PERMITS,
+    // Plain REQ replays the whole relay runs at once, and how many may wait; see ReplayGate.
+    private val replays: ReplayGate = ReplayGate(ReplayGate.DEFAULT_PERMITS),
     // Published events one store write may take; see ingestBatchFromEnv.
     ingestBatch: Int = IngestQueue.DEFAULT_MAX_BATCH,
     ingest: EventIngest? = null,
@@ -126,6 +128,8 @@ class NostrRelayServer(
                     if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
+                    // After the lens and auth gates, so a refused read hears why before it hears "busy".
+                    replays.policy(),
                     PartialNotice(),
                     // Last: a tag must mean every other policy accepted the event.
                     mirrorLane?.policy(),
@@ -161,10 +165,13 @@ class NostrRelayServer(
     private val coldChecks = ColdAuthorChecks()
 
     override val backend: SessionBackend =
-        ObserverBackend(liveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks)
+        ObserverBackend(liveEventStore(store, this.ingest), onObserver, servingPressure, searchGate, (store as? LensedEventStore)?.let { it::liveGate }, coldChecks, replays)
 
     /** Connections with a ranked read running or queued right now. */
     val searchLanesOpen: Int get() = searchGate.lanesOpen
+
+    /** The relay-wide bound on plain replays, for its counters. */
+    val replayGate: ReplayGate get() = replays
 
     /** Live events the gate dropped since boot: their cold-author check failed, or got no read in time. */
     val liveGateFailed: Long get() = coldChecks.failures
@@ -186,10 +193,10 @@ class NostrRelayServer(
  */
 internal const val MAX_HELD_LIVE = 1_000
 
-/** A subscription that matched more live events than [MAX_HELD_LIVE] while its ranked read waited its turn. */
+/** A subscription that matched more live events than [MAX_HELD_LIVE] while its replay waited its turn. */
 internal class HeldLiveOverflow :
     Exception(
-        "more than $MAX_HELD_LIVE live events matched while this search waited behind another on the connection; send it again",
+        "more than $MAX_HELD_LIVE live events matched while this REQ waited for its turn to read; send it again",
     )
 
 /**
@@ -230,6 +237,8 @@ internal class ObserverBackend(
     private val liveGates: (suspend (List<Filter>) -> LiveGate?)? = null,
     /** Shared by every subscription, so a burst of cold authors costs a bounded number of store reads. */
     private val coldChecks: ColdAuthorChecks = ColdAuthorChecks(),
+    /** Taken inside the connection's search lane, so a reader waiting on its own lane holds no relay-wide permit. */
+    private val replays: ReplayGate = ReplayGate(0),
 ) : LiveSubscriptionBackend {
     /** Quartz's REQ path: [inner]'s registration, its replay run like [queryRaw]'s and its live events held to the gate. */
     override fun openSubscription(
@@ -257,17 +266,27 @@ internal class ObserverBackend(
             onEose: () -> Unit,
         ) = replayGated(onEose) { eose -> registered.replay(onEach, eose) }
 
-        /** The gate is read before the stored rows, in the connection's context, as [gatedLive] reads it. */
+        /**
+         * The gate is read before the stored rows, in the connection's context, as [gatedLive] reads it. A replay
+         * that waits for a permit, on its lane or relay-wide, holds its live events to [MAX_HELD_LIVE] meanwhile.
+         */
         private suspend fun replayGated(
             onEose: () -> Unit,
             block: suspend (eose: () -> Unit) -> Unit,
         ) = ranked(ctx) {
             timedEose(onEose) { onReplayed ->
-                live.endingOnOverflow(queues = gate.gates(filters)) {
-                    gate.through(ctx, filters, onReplayed) { eose ->
-                        live.open(liveGates?.invoke(filters), currentCoroutineContext())
-                        partial(ctx, eose) { told -> block(told) }
+                val held = replays.tryEnter(filters)
+                try {
+                    live.endingOnOverflow(queues = gate.gates(filters) || (held == null && replays.gates(filters))) {
+                        gate.through(ctx, filters, onReplayed) { eose ->
+                            replays.through(filters, held, eose) { admitted ->
+                                live.open(liveGates?.invoke(filters), currentCoroutineContext())
+                                partial(ctx, admitted) { told -> block(told) }
+                            }
+                        }
                     }
+                } finally {
+                    held?.release()
                 }
             }
         }
@@ -405,7 +424,11 @@ internal class ObserverBackend(
         onEose: () -> Unit,
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
-            gate.through(ctx, filters, onReplayed) { eose -> gatedLive(filters) { admit -> partial(ctx, eose) { told -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, told) } } }
+            gate.through(ctx, filters, onReplayed) { eose ->
+                replays.through(filters, null, eose) { admitted ->
+                    gatedLive(filters) { admit -> partial(ctx, admitted) { told -> inner.query(ctx, filters, { e -> admit(e) { onEach(e) } }, told) } }
+                }
+            }
         }
     }
 
@@ -418,7 +441,9 @@ internal class ObserverBackend(
     ) = ranked(ctx) {
         timedEose(onEose) { onReplayed ->
             gate.through(ctx, filters, onReplayed) { eose ->
-                gatedLive(filters) { admit -> partial(ctx, eose) { told -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, told) } }
+                replays.through(filters, null, eose) { admitted ->
+                    gatedLive(filters) { admit -> partial(ctx, admitted) { told -> inner.queryRaw(ctx, filters, onEachStored, { e, body -> admit(e) { onEachLive(e, body) } }, told) } }
+                }
             }
         }
     }

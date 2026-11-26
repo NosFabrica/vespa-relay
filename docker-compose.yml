@@ -179,6 +179,9 @@ services:
       HTTP_RELAY: ${HTTP_RELAY:-}
       HTTP_RELAY_TOTAL: ${HTTP_RELAY_TOTAL:-}
       HTTP_RELAY_DEADLINE_SECONDS: ${HTTP_RELAY_DEADLINE_SECONDS:-}
+      # Plain REQ replays run against the store at once, and how many may wait.
+      REPLAY_CONCURRENCY: ${REPLAY_CONCURRENCY:-}
+      REPLAY_QUEUE: ${REPLAY_QUEUE:-}
       # ORE-05 search backend for Brainstorm's server, public; off by default.
       ORE_ENABLED: ${ORE_ENABLED:-}
       ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}

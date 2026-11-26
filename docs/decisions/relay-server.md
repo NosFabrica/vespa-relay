@@ -183,6 +183,29 @@ silently would break the REQ, so past `MAX_HELD_LIVE` the queued REQ ends with a
 `CLOSED` that says so. Only a read that queues races the bound; the rest run
 as before.
 
+**Plain replays take a relay-wide permit; ranked ones do not.** Nothing bounded
+how many REQ replays reached the store at once, and a reconnect wave is all of
+them: at a few thousand REQs a second EOSE took 15-60 s, and against production
+at 4,000 sockets Vespa answered `searched only 50%` and the relay closed those
+REQs, which came back as retries (live-feeds.md). `ReplayGate` admits
+`REPLAY_CONCURRENCY` plain replays at a time, FIFO, each held from the store
+call to EOSE; a queued REQ costs a coroutine and its held live events. It
+queues rather than refuses, because a refusal is a retry and a retry is the
+storm; only past `REPLAY_QUEUE` waiting is a new REQ refused, as policy, so the
+client hears `rate-limited:` with a retry-after rather than an `error:` from a
+failed replay. Ranked reads stay per connection for the reason above: a
+relay-wide permit would put one reader's slow word in front of everyone's feed.
+The permit is taken inside the connection's search lane, never before it, or a
+REQ waiting on its own lane would hold a permit the lane's holder needs. A
+replay that finds a permit free takes it before anything else and pays nothing
+more; only one that waits races `MAX_HELD_LIVE`. NEG-OPEN and COUNT are not
+held: a reconcile has its own snapshot cache and single flight, and COUNT is
+bounded per connection by quartz. Coalescing identical replays was left out: a
+joiner must register before the leader's query starts or an event committed
+between them is missed by both, and every joiner must share the observer and
+`AcceptPartial`; that wants the measurement first. The defaults (128, 8,192)
+are not measured.
+
 **A REQ's stored rows are served partial while a Vespa node is down.** With one
 content node offline every engine answer is `non-ideal-state` below 100%, and
 the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL

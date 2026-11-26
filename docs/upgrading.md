@@ -14,6 +14,13 @@ Nothing to do before the boot.
   `OK true "duplicate: already have this event"`**, and live feeds get that
   event once. Before, both publishers heard a plain `OK true` and every feed
   it matched got it twice. `/pressure` gains `racedAccepts`, how many since boot.
+- **At most `REPLAY_CONCURRENCY` (128) plain REQ replays run against the store
+  at once.** In a reconnect wave the rest wait their turn, so EOSE comes later
+  instead of the store answering from part of the corpus; with
+  `REPLAY_QUEUE` (8,192) waiting, a new REQ is `CLOSED "rate-limited: …"` with
+  a 5 s retry-after. A calm relay should never reach the bound; `/pressure`'s
+  `replays` says whether it does. `REPLAY_CONCURRENCY=0` restores the old
+  behaviour.
 
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 

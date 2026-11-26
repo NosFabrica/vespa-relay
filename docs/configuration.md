@@ -168,7 +168,9 @@ since boot because their author's trust check failed (`failed`) or got no
 store read in time (`shed`); either growing means gated live feeds are missing
 events. `racedAccepts` counts the publishes answered `duplicate:` because the
 other lane accepted the same id while both were in flight, each one a live
-delivery that would otherwise have gone out twice.
+delivery that would otherwise have gone out twice. `replays` is the
+`REPLAY_CONCURRENCY` gate: `running` and `waiting` now, and since boot how many
+replays `waited` for a permit and how many REQs were `refused` for a full queue.
 
 ## Relay identity (NIP-11)
 
@@ -434,6 +436,8 @@ NIP-50 search, on every address the relay answers at.
 | `SEARCH_EXPAND_MAX_PER_EVENT` | how many subjects one hit may bring with it | `100` |
 | `SEARCH_EXPAND_MAX_TOTAL` | how many subjects a whole REQ may collect | `1000` |
 | `SEARCH_CONCURRENCY_PER_CONNECTION` | how many ranked reads (a NIP-50 search, a `sort:` order the store recognises, or a COUNT of either; an unknown `sort:` is plain recall, as the store serves it) one connection may run at once; the rest queue behind them in arrival order. Ranked reads share the engine's match threads, so two on one socket both finish later than one — measured on staging, `bitcoin` alone 3.8s, three at once 5.0s each, six 6.8s each. Plain NIP-01 reads and lens-only (`include:spam`, `observer:`) filters are never held. `0` turns the gate off | `1` |
+| `REPLAY_CONCURRENCY` | how many plain REQ replays (every REQ that ranks nothing, lens-only ones included) the whole relay runs against the store at once; the rest wait their turn in arrival order, each holding its socket's place and nothing else, and see their stored rows and EOSE once a permit frees. A reconnect wave otherwise sends every socket's replay to Vespa together, which answers past saturation from part of the corpus (`vespa searched only 50%`) and the relay CLOSES those REQs ([live-feeds.md](live-feeds.md)). Ranked reads are left to `SEARCH_CONCURRENCY_PER_CONNECTION`, so one reader's slow word never holds anyone else's feed; NEG-OPEN and COUNT are not held. While a REQ waits, live events matching it are held for it, up to 1,000 past quartz's own 1,000, then it is CLOSED with `error: more than 1000 live events matched while this REQ waited for its turn to read; send it again`. The default is not measured: it is meant to sit above a calm relay's replays in flight and below the store client's 1,024 streams; tune it with the ramp in [live-feeds.md](live-feeds.md). `0` turns the gate off | `128` |
+| `REPLAY_QUEUE` | how many replays may wait for a `REPLAY_CONCURRENCY` permit; with none free and this many waiting, a new REQ is refused at once with `CLOSED "rate-limited: this relay is answering as many stored reads as it can; send the REQ again shortly"` and a retry-after of 5000 ms in its params. A waiting REQ the client CLOSEs, or whose socket drops, leaves the queue. `0` refuses whenever no permit is free | `8192` |
 
 Three families of event carry text that is **about something else**: a Tapestry
 Trusted List (kinds 30392-30395) is found by its `title`, a NIP-85 Trusted
@@ -836,6 +840,8 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `RELAY_PORT` | relay | `1`–`65535` |
 | `PULSE_PORT` / `SYNC_PULSE_PORT` / `SYNC_STATUS_PORT` / `MONITOR_STATUS_PORT` | relay / sync / monitor | `0`–`65535` |
 | `SEARCH_CONCURRENCY_PER_CONNECTION` / `SEARCH_EXPAND_MAX_PER_EVENT` / `SEARCH_EXPAND_MAX_TOTAL` | relay | `0` or more |
+| `REPLAY_CONCURRENCY` | relay | `0`–`65536` |
+| `REPLAY_QUEUE` | relay | `0`–`1000000` |
 | `HTTP_RELAY_TOTAL` | relay | `0` or more |
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
