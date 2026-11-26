@@ -362,9 +362,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     RosterBuilder.kt      the asks a stream makes of each relay it may dial
     RetractionAudit.kt    the deleteMissing comparison, run as a retracting
                           ask's `negentropySyncThePastSeconds` reconcile:
-                          compare both ways, and for what the provider no
-                          longer serves fetch and ingest its deletion request
-                          (absence deletes only with deleteOnAbsence)
+                          compare both ways, delete what the provider no
+                          longer serves
     NegentropyPager.kt    the windowed history sweep every reconcile runs
     NegentropyDrops.kt    why its windows failed to reconcile, per cause and
                           relay, off the sockets' own ends

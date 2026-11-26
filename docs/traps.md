@@ -431,15 +431,6 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   (`LensWaivers`), and the store (59d541d) answers a NEG-OPEN through the same
   lens as a REQ. It cannot send the token everywhere: strfry refuses any filter
   carrying `search` with `unrecognised filter item`.
-- **A peer that lacks a record has not told you it was deleted.** The retraction
-  audit deleted whatever a completed reconcile said the peer no longer served,
-  and a trust-gated peer reading our signed-in key answers through that key's
-  lens: empty, unrefused, the exact shape of a mass retraction. `ShrinkGuard`
-  caught the collapse but not a lens that hides a tenth. Deletion now needs the
-  author's own word, fetched and ingested (`RetractionAudit`, the kind 5 or 62
-  by `deletionsCovering`), and absence deletes only on a stream that says
-  `deleteOnAbsence`, behind the shrink check. **Read "not served" as "not
-  served", and look for the evidence.**
 - **A TTL on a tag is not a TTL on the event carrying it — unless you own every
   writer.** Kind 30166 used to have a writer we did not control: quartz's
   `RelayMonitor`, rewriting the record for every relay the client connected to,

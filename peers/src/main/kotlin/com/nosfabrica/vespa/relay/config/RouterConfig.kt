@@ -260,13 +260,8 @@ data class SyncStream(
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
     val discovery: RelayDiscoveryConfig? = null,
-    /** Whether a record an upstream stopped serving is checked for its deletion evidence, and that evidence applied. */
+    // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
-    /**
-     * Whether a record an upstream stopped serving is deleted with no evidence at all, under [deleteMissing]'s
-     * mode and `ShrinkGuard`. Off by default; only for an upstream that withdraws records without a kind 5.
-     */
-    val deleteOnAbsence: Boolean = false,
     /**
      * Push our newer replaceable/addressable version at a relay that served a stale one.
      * Opt-in: unlike [healRetractions], the author never asked.
@@ -303,8 +298,8 @@ data class SyncStream(
      */
     val refetchThePastSeconds: Long? = null,
     /**
-     * The kinds this stream's upstreams are the source of truth for: the only kinds the retraction
-     * audit compares. Required whenever [deleteMissing] is on.
+     * The kinds this stream's upstreams are the source of truth for: the only kinds
+     * [deleteMissing] may delete on absence. Required whenever deletion is on.
      */
     val ownedKinds: Set<Int> = emptySet(),
     /**
@@ -361,18 +356,18 @@ enum class IncludeSpam(
 }
 
 /**
- * What to do with records we hold that the upstream no longer serves: look for the evidence that
- * they were deleted (the author's kind 5 or 62, a newer version) and apply it. Absence
- * alone deletes only on a stream that also sets [SyncStream.deleteOnAbsence].
+ * What to do with records we hold that the upstream no longer serves. Only meaningful when the
+ * upstream is the source of truth for its records; absence has innocent causes, so [DRY_RUN]
+ * and the router's guardrails are the safety net.
  */
 enum class DeleteMissing {
-    /** Never look. The default. */
+    /** Never delete. The default. */
     OFF,
 
-    /** Fetch the evidence and report what it would delete, ingesting and deleting nothing. */
+    /** Report what would be deleted, delete nothing. */
     DRY_RUN,
 
-    /** Ingest the evidence, so the store's own NIP-09/62 rules delete. */
+    /** Delete. */
     ON,
 }
 

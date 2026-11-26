@@ -346,8 +346,8 @@ docker compose --profile sync restart monitor   # monitor.conf
 [`docs/router.md`](docs/router.md) is the full guide: choosing `negentropy` vs
 `fetch` per stream, how sync bands make paged relays resumable, dynamic
 `relaySource` scans and bindings (asking each relay only for what its list
-names), and `deleteMissing` — mirroring a provider's retractions on its own
-deletion requests, and on absence only where a stream opts in.
+names), and `deleteMissing` — mirroring a provider's retractions, with the
+guards that make absence trustworthy enough to act on.
 
 ## Operator pages
 

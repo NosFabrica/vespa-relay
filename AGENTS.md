@@ -189,7 +189,7 @@ sync/…/relay/
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
                               LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint; `peers` forces it per url),
-                              ShrinkGuard (no absence delete or push on a reconciled set that shrank past belief),
+                              ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
@@ -251,8 +251,7 @@ is [docs/router-internals.md](docs/router-internals.md); the config format is
   forbidden by `exclude`. A `filter { }` block is a NIP-01 filter (`ids` and
   `authors` are raw hex). No stream declares a transport; the re-check clocks
   are `negentropySyncThePastSeconds` and `refetchThePastSeconds`, and a
-  retracting stream sets `deleteMissing` scoped by `ownedKinds`: it deletes on
-  the author's evidence, and on absence only with `deleteOnAbsence`.
+  retracting stream sets `deleteMissing` scoped by `ownedKinds`.
 - **Bands.** `SyncBands` (`SYNC_STATE_FILE`) records the `created_at` span
   already walked per (stream, filter, relay), per kind, so a re-run asks only
   outside it. The arithmetic is quartz's `SyncCoverage`; fix band behaviour
@@ -428,7 +427,6 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - strfry refuses any filter carrying `search` (`unrecognised filter item`), so `include:spam` goes only to a relay that takes it (`LensWaivers`), added at the wire and never to the ask, or every band re-keys.
-- A peer lacking a record is not a deletion: the retraction audit deletes on the author's kind 5/62 (`RetractionAudit`, ingested), and on absence only where a stream sets `deleteOnAbsence`, behind `ShrinkGuard`.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
 - A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.
@@ -441,9 +439,9 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 `docker-compose.yml` runs Vespa, the relay, (`--profile sync`) the sync process
 and a client-only Tor, and (`--profile onion`) a second Tor that is the relay's
 own hidden service; one store throughout. The relay deploys the bundled Vespa
-schema at boot when it differs from what Vespa runs (`AUTO_DEPLOY`), and waits for every Vespa service to run it; the sync waits for it and never deploys. Three levers delete data,
-`SWEEP_ORPHAN_SCORES_ON_START`, a stream's `deleteMissing` (on its author's evidence)
-and its `deleteOnAbsence`; each is off by default and has a dry run. `https://search.brainstorm.world/` runs this code against a
+schema at boot when it differs from what Vespa runs (`AUTO_DEPLOY`), and waits for every Vespa service to run it; the sync waits for it and never deploys. Two levers delete data,
+`SWEEP_ORPHAN_SCORES_ON_START` and a stream's `deleteMissing`; both default to
+a dry run. `https://search.brainstorm.world/` runs this code against a
 real corpus with the router on and answers anonymously: reach for it before
 inventing a fixture; read it, never publish to it. An anonymous read there
 carries `observer:<64-hex>` or `include:spam` (a `CLOSED … auth-required:` is

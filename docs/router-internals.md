@@ -335,25 +335,6 @@ refused at parse time. A scan whose select binds
 that stays valid however many providers join. A retracting stream
 (`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
 
-**The retraction audit deletes on EVIDENCE, not on absence.** It reconciles the
-ask's owned kinds (`ownedAskOf`), downloads what the peer has and we lack, and
-for each id the peer lacks asks what says it is gone: the store itself (a newer
-version the download just superseded it with, a kind 5 or 62 it already holds),
-then the peer, through quartz's `deletionsCovering` over
-`RetractionReads.fetchMatching` — one `#e` and one `#a` kind-5 ask per hundred
-ids (`EVIDENCE_CHUNK`), the authors' kind 62 once per audit (a repeated filter is
-answered from the audit's own cache), each paged by `fetchAllPages`, waived by
-`LensWaivers`, matched and signature-checked. What the peer serves is INGESTED,
-so the store's own NIP-09/62 rules do the deleting, scoped to `store.relay`, and
-the tombstone stays; the audit then re-reads which ids are gone and counts them
-(`retractedOnEvidence`). Three short answers in a row stop the asking, and an id
-whose evidence was not asked or not answered is kept, never handed to the
-absence path. The rest is kept (`missingKept`), unless the stream sets
-`deleteOnAbsence`, where it goes to the old absence delete behind `ShrinkGuard`.
-Absence at several relays is not a quorum: relays share software, retention and
-gates, so they are not independent witnesses. Decision:
-docs/decisions/sync-engine.md, "RetractionAudit".
-
 **A visit that aborts leaves its relay UNRECONCILED, and that is why the abort
 partition exists.** One unclean ask ends the visit (`refusedOutright`), and the
 next visit re-asks from the same first ask — so a relay that refuses

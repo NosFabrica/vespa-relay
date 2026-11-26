@@ -311,44 +311,37 @@ three minutes, and with the relay down for three and a half: the line counted
 climbing means the store keeps failing, and the mirror cannot move forward until
 it is fixed.
 
-**Three levers delete data.** Each is off by default and has a dry run that
-reports and removes nothing; run that first, and read the number before
-believing it.
+**Two levers delete data.** Both default to a dry run that reports and removes
+nothing; run that first, and read the number before believing it.
 
 - `SWEEP_ORPHAN_SCORES_ON_START` — kind-30382 cards from providers no stored
   10040 delegates kind 30382 to, under any metric. On this deployment that was
   33.8M of 51.9M, and the dry run predicted the figure exactly; that count was
   taken when only `rank` and `followers` delegations counted, so run the dry run
   again before believing it now.
-- `deleteMissing` on a stream — records the upstream no longer serves, deleted
-  only on their author's evidence: the kind 5 or 62 the audit fetches from that
-  upstream and ingests, so the store applies it and keeps the tombstone, or a
-  newer version. A record with nothing saying it was deleted is kept
-  (`missingKept`). The licence is a COMPLETED reconcile: quartz throws rather than
-  falling back, so a normal return means every window was compared. It is scoped
-  by `ownedKinds` (required), and a stream should ASK for no more than it owns —
-  `assertions` is `filter.kinds == ownedKinds` now. Measured, no NIP-85 provider
-  relay serves its own key's kind 0 or 10002, so a filter carrying them earned no
-  band span and re-walked the whole past every visit (the band trap below), and
-  the reconcile's own band — stamped against the owned kinds — could never narrow
-  a wider one. There WAS a cascade taking a wholly-retracted service's kind 0 and
-  10002 down with its scores; it deleted records that arrive from the profile
-  streams, which re-mirror them over a live tail, so it never survived its own
-  next walk. Gone.
-- `deleteOnAbsence` on such a stream — the same records deleted with no evidence
-  at all, for an upstream that is the source of truth and withdraws without a
-  kind 5 (the shipped `assertions` stream sets it). `ShrinkGuard` holds it back
-  on an answer that shrank past belief (`retractionsWithheld`), which is what a
-  trust-gated peer reading our signed-in key answers.
+- `deleteMissing` on a stream — records the upstream no longer serves. The
+  licence is a COMPLETED reconcile, never a volume: quartz throws rather than
+  falling back, so a normal return means every window was compared and an empty
+  answer is the relay's answer rather than its silence. There is deliberately no
+  size guard, because a mass retraction is exactly the case that matters. It is
+  scoped by `ownedKinds` (required), and a stream should ASK for no more than it
+  owns — `assertions` is `filter.kinds == ownedKinds == [30382]` now. Measured,
+  no NIP-85 provider relay serves its own key's kind 0 or 10002, so a filter
+  carrying them earned no band span and re-walked the whole past every visit
+  (the band trap below), and the reconcile's own band — stamped against the
+  owned kinds — could never narrow a wider one. There WAS a cascade taking a
+  wholly-retracted service's kind 0 and 10002 down with its scores; it deleted
+  records that arrive from the profile streams, which re-mirror them over a live
+  tail, so it never survived its own next walk. Gone.
 
-The counterpart to the sweep and to `deleteOnAbsence`: such a deletion is not a
-tombstone. A stream that still asks by kind re-downloads whatever was freed on its
-next walk, so reclaiming space and narrowing the ask are one job.
+The counterpart to both: a deletion is not a tombstone. A stream that still asks
+by kind re-downloads whatever was freed on its next walk, so reclaiming space and
+narrowing the ask are one job.
 
-**Real retractions leave a tombstone, whichever stream brings them.**
-`contentViaOutbox` mirrors kinds 5 and 62 with the content, and `deleteMissing`
-fetches them for what it finds missing; the store enforces both at insert, so the
-erase survives the next walk, which the sweep and an absence delete cannot promise. The catch is that the store's
+**Real retractions are the third path, and the only one that leaves a
+tombstone.** `contentViaOutbox` mirrors kinds 5 and 62 with the content, and the
+store enforces them at insert — so the erase survives the next walk, which is
+exactly what the two levers above cannot promise. The catch is that the store's
 fast path caches "authors known to have a stored kind 5/62" **per instance**,
 which is exact for one writer and wrong for this deployment's two: the relay's
 copy never hears about what the router mirrored, and the router's never hears

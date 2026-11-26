@@ -41,7 +41,6 @@ class ExampleMatchesLiveConfTest {
             s.urls.map { it.url },
             s.trusted,
             s.deleteMissing,
-            s.deleteOnAbsence,
             s.discovery?.refreshSeconds,
             s.discovery
                 ?.exclude

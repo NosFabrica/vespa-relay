@@ -85,12 +85,6 @@ class RetractionAuditTest {
             asked++
             return answersInFull
         }
-
-        override suspend fun fetchMatching(
-            url: NormalizedRelayUrl,
-            filter: Filter,
-            onEvent: suspend (Event) -> Unit,
-        ) = true
     }
 
     private val period = stream.negentropySyncThePastSeconds!!
@@ -184,21 +178,13 @@ class RetractionAuditTest {
             recovered?.let { onEvent(it) }
             return true
         }
-
-        override suspend fun fetchMatching(
-            url: NormalizedRelayUrl,
-            filter: Filter,
-            onEvent: suspend (Event) -> Unit,
-        ) = true
     }
 
-    /** Records [reads] deleted on absence in one enforcing audit, through an ingest that is never started. */
+    /** Records [reads] deleted in one enforcing audit, through an ingest that is never started. */
     private fun deletedBy(reads: Retracting): Long {
         val scope = CoroutineScope(SupervisorJob())
         try {
             val store = NostrSemanticsStore(InMemoryEventIndex())
-            // The one record the relay no longer serves, held here so there is something to delete.
-            runBlocking { store.batchInsert(listOf(Event("c".repeat(64), author, nowSeconds() - 60, 30382, arrayOf(arrayOf("d", "x")), "", "d".repeat(128)))) }
             val audit =
                 RetractionAudit(
                     reads = reads,
@@ -207,7 +193,7 @@ class RetractionAuditTest {
                     ingest = IngestPipeline(store, IngestTuning(concurrency = 1, batch = 1), null, null, scope, null, null),
                     refusedIds = RefusedIds.disabled(),
                 )
-            val enforcing = stream.copy(deleteMissing = DeleteMissing.ON, deleteOnAbsence = true)
+            val enforcing = stream.copy(deleteMissing = DeleteMissing.ON)
             runBlocking { audit.reconcileAndDelete(enforcing, relay, ask, sharedAuthors = emptySet(), verdictWaitMs = 200) }
             return audit.deleted.get()
         } finally {

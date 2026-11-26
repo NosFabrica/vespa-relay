@@ -294,10 +294,7 @@ function processorFact(p) {
     if (p.negentropyRuns) add(`${fmt(p.negentropyRuns)} negentropy sync(s) of the past`, "negentropyRuns");
     // Not a fault, and not nothing: those relays are re-checked by paging or not at all.
     if (p.negentropySkipped) add(`${fmt(p.negentropySkipped)} skipped, no NIP-77`, "negentropySkipped");
-    if (p.retractedOnEvidence) add(`${fmt(p.retractedOnEvidence)} retracted on evidence`, "retractedOnEvidence");
-    if (p.retracted) add(`${fmt(p.retracted)} RETRACTED on absence`, "retracted", true);
-    // Not a fault: missing upstream with nothing saying it was deleted, so kept.
-    if (p.missingKept) add(`${fmt(p.missingKept)} missing upstream, kept`, "missingKept");
+    if (p.retracted) add(`${fmt(p.retracted)} RETRACTED upstream`, "retracted", true);
     // Whether the resync converges, as the largest single reason rather than seven chips.
     if (p.abortedVisits) {
       add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");

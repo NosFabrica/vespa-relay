@@ -77,11 +77,9 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 - **`trusted`** *(optional)* — skip signature verification for this upstream's
   events. Off by default; every mirrored event is verified and re-checked
   against the stream filter before it enters the store.
-- **`deleteMissing`** *(optional, DELETES DATA)* — for records this relay holds
-  that the upstream no longer serves, fetch the author's deletion request and
-  apply it; with **`deleteOnAbsence`** also delete those with none. Only for a
-  stream whose upstream owns the records in the ask, on the negentropy audit's
-  clock. See
+- **`deleteMissing`** *(optional, DELETES DATA)* — drop records this relay holds
+  that the upstream no longer serves. Only for a stream whose upstream owns the
+  records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
 - **`negentropySyncThePastSeconds`** *(optional)* — how
   often to reconcile the whole past over NIP-77, against the relays a verdict
@@ -104,8 +102,8 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   `refetchThePastSeconds` the way `negentropy` replaces
   `negentropySyncThePastSeconds`.
 - **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
-  the upstream is the source of truth for, and therefore the only ones the
-  retraction audit compares. See
+  the upstream is the source of truth for, and therefore the only ones absence
+  may delete. See
   [`ownedKinds`](#ownedkinds).
 - **`authorsPerLeg`** *(optional)* — how many bound `authors` go into one ask, and
   therefore into one sync band. See
@@ -824,78 +822,56 @@ Two consequences worth knowing before you add them to a running stream:
 
 ## Deleting what an upstream retracted
 
-`deleteMissing` makes a stream look into records **we** hold that the upstream
-no longer serves, and delete the ones something says were deleted:
+`deleteMissing` makes a stream drop records **we** hold that the upstream no
+longer serves:
 
 ```hocon
+sync = "negentropy"
 deleteMissing = "dryRun"        # false (default) | "dryRun" | true
 ownedKinds = [30382]            # required whenever deleteMissing is on
-deleteOnAbsence = false         # (default) true also deletes with no evidence at all
 ```
 
-**Absence is not deletion.** A relay that does not serve a record has many
-innocent reasons — a retention window, a trust lens over a signed-in read, a
-half-served reconcile, a purge of its own — and each looks exactly like "they
-retracted everything". So the audit deletes on **evidence**, and the evidence is
-the author's own:
+Only correct when that upstream is the *source of truth* for the records in the
+ask — a NIP-85 provider's own relay for its own scores. For a general mirror,
+"this relay does not have it" means nothing at all: relays hold different subsets
+by design.
 
-| evidence | how it is applied |
-|---|---|
-| a newer version of the replaceable or addressable record | the reconcile's download half ingests it and the store supersedes the old one, as on any write |
-| a NIP-09 kind 5 by the record's author naming it, by `e` id or by `a` address at or after its `created_at` | fetched from the upstream and **ingested**, so the store's own NIP-09 rule deletes and the request stays as the tombstone the next walk's re-download is refused against |
-| a NIP-62 kind 62 by the record's author whose `relay` tags name this relay (or every relay) | fetched and ingested the same way; the store vanishes the author's whole history here, not only the missing record |
-| a kind 5 or 62 the store already holds | applied by id (a second writer can let a record in after its tombstone) |
-| a NIP-40 expiry that passed | never reaches the audit: the store serves no expired event and its snapshot omits it, and `ExpirationSweeper` removes it |
+It is **absence-based**, not NIP-09. Nothing is published upstream to learn it —
+quartz's `NegentropyStoreSync` can propagate real kind:5 retractions instead, and
+that is strictly safer, but arming it means uploading your events to someone
+else's relay and reading the rejections. Pulling the retractions down — the
+section above — is safer still and costs nothing but two kinds in the filter;
+what it cannot cover is a record withdrawn *without* a kind 5, which is the case
+`deleteMissing` exists for.
 
-The evidence is fetched only for the ids the reconcile found missing, through
-quartz's `deletionsCovering` (which builds the three asks and checks the author
-and the address cutoff): a hundred records per `#e` and `#a` ask, the author's
-vanish asked once per audit, every ask paged past the relay's cap and carrying
-the relay's lens waiver like any other read, and every answer matched against
-its filter and its signature verified before it counts. Three asks in a row that
-do not drain stop the asking for that audit, and what was not asked about is
-kept. A dry run fetches the evidence and reports what it would remove, ingesting
-and deleting nothing. Nothing is published upstream to learn any of it.
-
-A record with no evidence is **kept**, counted under `missingKept` and named in
-the log. The streams that also mirror kinds 5 and 62 with their content
-([above](#mirroring-the-deletions-themselves)) get the same tombstones from the
-other direction.
-
-### `deleteOnAbsence`
-
-What evidence cannot cover is an upstream that withdraws a record *without* a
-kind 5 — a NIP-85 provider dropping a score from its own relay. For a stream
-whose upstream is the *source of truth* for the records in the ask, and only
-there, `deleteOnAbsence = true` also deletes what the upstream stopped serving
-with no evidence at all, under `deleteMissing`'s own mode (`"dryRun"` reports
-it). For a general mirror, "this relay does not have it" means nothing: relays
-hold different subsets by design. It is refused on a stream without
-`deleteMissing`, and every boot names the licence each retracting stream runs on.
-
-Absence elsewhere does not count either: the audit never deletes because
-several relays all lack a record. Relays are not independent witnesses — the
-same software, the same retention defaults, the same trust gate answering our
-key empty — and "several peers lack it" is as innocent as one. A
-source-of-truth upstream is the only absence that says anything, and that
-case is a single relay.
-
-The absence path keeps every guard it had:
+The cost of that choice is that absence has innocent causes — a retention window,
+a relay gating reads behind AUTH, a half-served reconcile — and each looks exactly
+like "they retracted everything". So:
 
 | guard | behaviour |
 |---|---|
-| the reconcile must have **completed** | quartz never silently falls back — it throws when a window cannot be reconciled over NIP-77, including "this relay does not speak it". A normal return therefore means every window was compared end to end. On a throw nothing is deleted; the catch-up has already paged the ask |
+| `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its sync band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
+| the reconcile must have **completed** | quartz never silently falls back — it throws when a window cannot be reconciled over NIP-77, including "this relay does not speak it". A normal return therefore means every window was compared end to end. On a throw the ask is paged instead (so the mirror still fills) and nothing is deleted |
 | the reconcile must have covered ≥1 window | zero windows compared zero range |
-| the evidence asks must have been answered | a record whose evidence could not be fetched is not one to judge by absence; the audit keeps it |
-| local ids | read from the *ask itself*, never a shared snapshot — entries outside the filter come back as false "have" ids |
+| local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
 | deletes | issued by id, inside the ask, so they cannot reach past what the reconcile compared |
-| only `ownedKinds` | see below — nothing outside them is ever compared, and a stream should ask for no more than it owns |
-| the author's **sole** upstream | an author found at more than one relay is never audited: one relay's silence does not retract what a sibling may still serve |
-| the answer must be **believable** (`ShrinkGuard`) | a reconciled set holding none of ours, under a tenth of ours, or under a tenth of what the relay held at the last audit deletes nothing (`retractionsWithheld`): a relay reading a signed-in key through a trust lens answers exactly a mass retraction, and refuses nothing. A real mass retraction lands there too, and is the operator's to apply |
+| only `ownedKinds` | see below — nothing outside them is ever judged by its absence, and a stream should ask for no more than it owns |
+| the author's **sole** upstream | an author this cycle found at more than one relay is mirrored and never deleted for: one relay's silence does not retract what a sibling may still serve. Measured, 3 of 266 services are bound to several relays, and two of those name general relays that will never carry their scores |
 
-An absence delete frees space and leaves nothing behind, so a stream that still
-asks for the kind re-downloads what it dropped on the next walk; evidence leaves
-the tombstone that stops it.
+**There is deliberately no size guard.** An earlier version refused when a relay
+served nothing, and again when a cycle would drop more than half an ask. Both
+fired constantly, and both protected the wrong thing: they protect *stored
+records* from a bad answer, when what needs protecting is a *reader* from a stale
+score. A provider retracts a subject when that subject turns out to be a
+scammer — precisely the score that must not survive — and a mass retraction is
+exactly when the whole set goes. A volume guard blocks the case that matters most
+while the harmless ones sail through.
+
+The consequence is accepted, not overlooked: if a 10040 names a relay that never
+carried those scores, the relay reconciles empty and we drop them. That is a
+misconfigured provider list costing a re-download, weighed against serving a
+retracted score forever. The completed reconcile is what makes "empty"
+trustworthy enough to act on.
 
 ### `ownedKinds`
 
@@ -908,7 +884,7 @@ the stream would lose its profile.
 So deletion is licensed per kind, and saying so is mandatory:
 
 ```hocon
-negentropySyncThePastSeconds = 86400
+sync = "negentropy"
 deleteMissing = "dryRun"
 ownedKinds = [30382]            # required — the parse fails without it
 filter = { "kinds": [30382] }   # ask for exactly what the upstream owns
@@ -919,7 +895,7 @@ on a filter with no `kinds` at all (the protected set would be open-ended), and
 refused on a stream that does not delete — a licence sitting unused is a trap
 for whoever turns deletion on later. It stays a separate statement from the
 filter even when the two coincide, as they do above: the filter is what to ask
-for, `ownedKinds` is what the audit may judge, and a kind added to the filter
+for, `ownedKinds` is what absence may destroy, and a kind added to the filter
 must never become deletable by having been added.
 
 **Ask for exactly the owned kinds, and nothing else.** Two things follow from a
@@ -946,10 +922,8 @@ ordinary delete too: an addressable score a provider *replaces* arrives as its
 old id retracted and a new id offered — the same "we hold ids it doesn't" shape
 as a withdrawal. `needIds` is what separates them.
 
-Deletions are counted separately on the health line, on evidence and on absence —
-the only numbers the router prints that go down — and on the progress document
-as `retractedOnEvidence`, `retracted` (on absence), `retractionEvidence` (the
-requests fetched), `missingKept` and `retractionsWithheld`.
+Deletions are counted separately on the health line — it is the only number the
+router prints that goes down.
 
 ## Binding filter fields to a relay
 

@@ -351,8 +351,7 @@ But a peer reading a signed-in key through a lens answers exactly a mass
 retraction, refusing nothing, and the audit would delete the whole ask; the
 upstream push would send everything. `ShrinkGuard` holds both back below a tenth
 of ours or of what the peer held before, and a real mass retraction is left to
-the operator. Since the audit deletes on evidence, the guard holds back only the
-opt-in absence delete (`deleteOnAbsence`) and the push. A baseline is one stream's filter at one peer: one `UpstreamPush`
+the operator. A baseline is one stream's filter at one peer: one `UpstreamPush`
 serves every up stream, and keyed by url alone a 200-note stream's baseline made
 a 5-profile stream to the same upstream read as collapsed on every pass.
 

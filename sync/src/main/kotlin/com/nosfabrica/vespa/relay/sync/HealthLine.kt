@@ -32,10 +32,7 @@ internal data class HealthReading(
     val eventsPerSec: Int,
     val connected: Int,
     val fatals: Long,
-    /** Deleted on absence alone, `deleteOnAbsence`. */
     val retracted: Long,
-    /** Gone on their author's request or a newer version, after an upstream stopped serving them. */
-    val retractedOnEvidence: Long = 0,
     /** The serving relay's pressure, already worded; null when ingest does not yield to it. */
     val pressure: String?,
     val ingestWorkers: Int,
@@ -76,8 +73,7 @@ internal fun healthLine(r: HealthReading): String =
         ", ${r.arrivingPerSec} ev/s in, ${r.eventsPerSec} ev/s out" +
         ", ${r.connected} connected" +
         (if (r.fatals > 0) ", ${r.fatals} FATAL error(s) — threads were killed" else "") +
-        (if (r.retractedOnEvidence > 0) ", ${r.retractedOnEvidence} record(s) retracted on their author's request or a newer version" else "") +
-        (if (r.retracted > 0) ", ${r.retracted} record(s) DELETED on absence upstream" else "") +
+        (if (r.retracted > 0) ", ${r.retracted} record(s) DELETED as retracted upstream" else "") +
         (r.pressure?.let { ", $it" } ?: "") +
         stoppedWorkersClause(r) +
         (

@@ -429,43 +429,6 @@ on the next verified record. It claims no coverage: the band stays unverified.
 whose hook returns true in a result list; `fetchIds` hands each event on as it
 arrives and reads only `doneReasons`, so it returns false.
 
-**Delete on evidence, not on absence.** `deleteMissing` used to delete whatever
-we held that a peer's completed reconcile lacked, reading "I cannot see it" as
-"it was deleted". A trust-gated peer reading our signed-in key answers exactly
-that, unrefused, and `ShrinkGuard` was the stopgap. The audit now asks for the
-evidence instead, about the missing ids only: the author's kind 5 (by `e`, or by
-`a` at or after the record), the author's kind 62 in this relay's scope, a newer
-version (the download half supersedes on ingest) or a request the store already
-holds (two writers' guard caches can disagree). The peer's evidence is
-ingested, not acted on by id, so the store's own NIP-09/62 rules decide and the
-tombstone refuses the next walk's re-download, which an absence delete never
-did. The matching is quartz's `deletionsCovering`, the half of
-`negentropySettleDeletions` that pulls a relay's kind 5 down; quartz leaves the
-vanish out of that pull, and this audit keeps it, because the store already
-applies a mirrored kind 62 by its `relay` tags on every other stream. NIP-40 is
-not the audit's: the store omits an expired record from the snapshot, so the
-reconcile never names one.
-
-**Absence stays an opt-in, and is never a quorum.** The `assertions` stream
-mirrors NIP-85 providers whose relay is the source of truth for their scores,
-and a provider that withdraws a score by dropping it leaves no kind 5; a
-retracted score served forever is the harm that stream exists to prevent. So
-`deleteOnAbsence = true` keeps the old delete for such a stream, under
-`deleteMissing`'s mode and behind `ShrinkGuard`, and the shipped example sets
-it there; it is refused without `deleteMissing`, and every boot names each
-retracting stream's licence. Absence at several peers was considered and
-refused: relays are not independent witnesses (one software, one retention
-default, one trust gate answering our key empty), and the one absence that
-says something, a source of truth, is a single relay.
-
-**Evidence that was not fetched decides nothing.** An evidence ask that does not
-drain leaves its records unchecked; three in a row stop the asking for that
-audit (quartz's `DownloadPace` gives up at three); and an unchecked record is
-kept, never handed to the absence path, since a peer that cannot answer the
-question has not answered the comparison either. Asks go a hundred records at a
-time, an `#a` of a hundred addressable coordinates being about 14KB, and a
-repeated filter (the authors' vanish) is asked once per audit.
-
 **No size guard on the delete.** A provider that retracts a subject usually
 does so because the subject turned out to be a scammer, exactly the score
 that must not survive; the completed reconcile is what makes an empty answer

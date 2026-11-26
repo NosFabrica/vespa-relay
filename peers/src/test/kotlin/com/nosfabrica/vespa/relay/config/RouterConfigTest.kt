@@ -614,28 +614,6 @@ class RouterConfigTest {
                 $gated""",
             ).deleteMissing,
         )
-        assertEquals(
-            false,
-            stream(
-                """ownedKinds = [30382]
-                deleteMissing = true
-                negentropySyncThePastSeconds = 86400
-                $gated""",
-            ).deleteOnAbsence,
-            "absence alone deletes nothing unless the stream says so",
-        )
-        assertEquals(
-            true,
-            stream(
-                """ownedKinds = [30382]
-                deleteMissing = true
-                deleteOnAbsence = true
-                negentropySyncThePastSeconds = 86400
-                $gated""",
-            ).deleteOnAbsence,
-        )
-        // A widening of a licence the stream never took.
-        assertFailsWith<IllegalArgumentException> { stream("deleteOnAbsence = true") }
         // No relaySource: nothing pairs the owned kinds with their owners.
         assertFailsWith<IllegalArgumentException> {
             stream(

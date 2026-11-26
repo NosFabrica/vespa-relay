@@ -422,7 +422,6 @@ class SyncEngine(
             connected = client.connectedRelaysFlow().value.size,
             fatals = fatals.get(),
             retracted = retraction.deleted.get(),
-            retractedOnEvidence = retraction.retractedOnEvidence.get(),
             pressure = pressure?.describe(),
             ingestWorkers = ingest.workerCount,
             ingestWorkersRunning = ingest.workersRunning(),
