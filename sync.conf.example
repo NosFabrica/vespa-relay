@@ -309,10 +309,18 @@ streams {
         visitConcurrency = 12
         maxLiveConcurrency = 12
         # ENFORCED: the provider's relay is the source of truth, and a score
-        # it stopped serving is deleted here after — and only after — a clean
-        # full reconcile. Start a new deployment at "dryRun" and read the
-        # would-delete lines for a few days before flipping this.
+        # it stopped serving is looked into after — and only after — a clean
+        # full reconcile: its author's kind 5 (or a kind 62 aimed at us) is
+        # fetched from that relay and ingested, so the store deletes it and
+        # keeps the tombstone. Start a new deployment at "dryRun" and read the
+        # would-remove lines for a few days before flipping this.
         deleteMissing = true
+        # A provider that withdraws a score by dropping it from its own relay
+        # leaves no kind 5 to fetch, and a retracted score served forever is
+        # the harm this stream exists to prevent. So absence alone deletes here,
+        # held back by the shrink guard whenever the relay's answer shrank too
+        # far to believe. Drop this line to retract on evidence only.
+        deleteOnAbsence = true
         # The provider's relay is the source of truth for its OWN scores, and
         # for nothing else here. All eight declaration kinds, not 30382 alone:
         # a service that computes them publishes them side by side, and a

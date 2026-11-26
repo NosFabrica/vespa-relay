@@ -4,6 +4,42 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Retractions need evidence (November 2026)
+
+**Behaviour change.** A `deleteMissing` stream no longer deletes a record
+because the upstream's reconcile lacks it. It fetches the author's deletion
+request (kind 5 by `e` id or `a` address, kind 62 aimed at this relay) for the
+missing ids from that upstream and ingests it, so the store deletes and keeps the
+tombstone; a record replaced by a newer version goes as before. A record nothing
+says was deleted is now **kept**.
+
+### Do before the first boot
+
+- **A stream whose upstream withdraws records without a kind 5** (a NIP-85
+  provider dropping a score from its own relay) needs `deleteOnAbsence = true`
+  beside `deleteMissing` to keep deleting them. The shipped `assertions` stream
+  sets it; copy that line into a live `sync.conf` built from an older example, or
+  retracted scores stay served. `ShrinkGuard` still holds it back on an answer
+  that shrank past belief. `ExampleMatchesLiveConfTest` flags a live config that
+  differs from the example here.
+- `deleteOnAbsence` without `deleteMissing` stops the boot.
+
+### What you will see
+
+- At boot, per retracting stream: `router: stream '…' retracts on evidence
+  only: …` or `… deletes on absence (deleteOnAbsence): …`.
+- Per audit that finds ids missing: `… of the N record(s) it no longer serves,
+  M are gone on evidence (…)` and `… holds no deletion request or newer version
+  for them — kept (missingKept)`; a dry run says `evidence would remove
+  …`. Absence deletes now say `on absence (deleteOnAbsence)`.
+- On the progress document: `retractionEvidence` (requests fetched),
+  `retractedOnEvidence`, `missingKept`, beside `retracted` (now absence deletes
+  only) and `retractionsWithheld`. The health line names evidence and absence
+  deletions apart.
+- More reads of each upstream on a retracting stream's audit: two kind-5 asks
+  per hundred missing records and one kind-62 ask per audit, only when the
+  reconcile found records missing.
+
 ## `peers` forces the lens waiver per relay (November 2026)
 
 Nothing to do: with no `peers` block every relay is `auto`, the learned stance

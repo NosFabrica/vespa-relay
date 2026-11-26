@@ -75,9 +75,9 @@ class HealthLineTest {
     fun `the failures that lose data or capacity are each named`() {
         val line =
             healthLine(
-                calm.copy(heapUsedMb = 3_900, fatals = 1, retracted = 7, ingestWorkersRunning = 1, lostToStore = 3, pressure = "relay reads 140ms"),
+                calm.copy(heapUsedMb = 3_900, fatals = 1, retracted = 7, retractedOnEvidence = 2, ingestWorkersRunning = 1, lostToStore = 3, pressure = "relay reads 140ms"),
             )
-        for (said in listOf("AT THE CEILING", "1 FATAL error(s)", "7 record(s) DELETED", "1 of 2 ingest worker(s) HAVE STOPPED", "3 event(s) FAILED to reach the store", "relay reads 140ms")) {
+        for (said in listOf("AT THE CEILING", "1 FATAL error(s)", "7 record(s) DELETED on absence", "2 record(s) retracted on their author's request", "1 of 2 ingest worker(s) HAVE STOPPED", "3 event(s) FAILED to reach the store", "relay reads 140ms")) {
             assertTrue(said in line, "missing '$said': $line")
         }
     }

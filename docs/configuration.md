@@ -321,10 +321,12 @@ waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
 **And it never acts on an answer it cannot believe.** A relay that signed us in
 because it refused a read, and that we hold no waiver for, may be reading us
 through a lens; one that signed us in only to take our EVENTs (an `OK false
-"auth-required: …"`) said nothing of how it reads, and is believed as before. So a retraction audit
-deletes nothing when the relay's reconciled set holds none of ours, under a
-tenth of ours, or under a tenth of what it held at the last audit
-(`retractionsWithheld`), and an upstream push sends nothing when the upstream's
+"auth-required: …"`) said nothing of how it reads, and is believed as before. A
+retraction audit deletes only on evidence (the author's kind 5 or 62, fetched and
+ingested; docs/router.md), so what a lens hides is kept; on a stream that opts
+into `deleteOnAbsence`, it deletes nothing on absence when the relay's reconciled
+set holds none of ours, under a tenth of ours, or under a tenth of what it held at
+the last audit (`retractionsWithheld`). An upstream push sends nothing when the upstream's
 set for that stream fell under a tenth of what it held, or, on such a signed-in
 relay, under a tenth of ours (`pushesWithheld`). The push reads what the upstream
 holds off the previous pass's own reconcile, so a pass costs one reconcile per

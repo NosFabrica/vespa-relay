@@ -39,7 +39,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyn
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +50,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -151,6 +155,8 @@ class GatedPeerTest {
         router: Router,
         store: NostrSemanticsStore,
         scope: CoroutineScope,
+        audited: SyncStream = stream,
+        ask: Filter = this.ask,
     ): RetractionAudit {
         val audit =
             RetractionAudit(
@@ -160,17 +166,18 @@ class GatedPeerTest {
                 IngestPipeline(store, IngestTuning(concurrency = 1, batch = 16), null, null, scope, null, null).also { it.start() },
                 RefusedIds.disabled(),
             )
-        repeat(2) { audit.reconcileAndDelete(stream, url, ask, emptySet(), verdictWaitMs = 1_000) }
+        repeat(2) { audit.reconcileAndDelete(audited, url, ask, emptySet(), verdictWaitMs = 1_000) }
         return audit
     }
 
     private suspend fun holding(events: List<Event>) = NostrSemanticsStore(InMemoryEventIndex()).also { it.batchInsert(events) }
 
+    /** The opt-in absence path, whose only guard against a lens is the shrink check. */
     @Test
     fun `a signed-in un-waived empty answer deletes nothing and pushes nothing`() =
         withRouter({ GatedPeer(it, cards, membersOnly = true) }) { router, peer, scope ->
             val store = holding(cards)
-            val audit = audit(router, store, scope)
+            val audit = audit(router, store, scope, stream.copy(deleteOnAbsence = true))
             assertTrue(peer.auths.get() >= 1, "the premise: signed in for the members-only refusal")
             assertTrue(router.waivers.mayBeLensed(url), "and no waiver was ever named")
             assertEquals(0L, audit.deleted.get(), "the peer answered our key through its lens: nothing")
@@ -184,15 +191,63 @@ class GatedPeerTest {
             assertTrue(peer.published.isEmpty())
         }
 
+    /** A lensed peer answers none of our ids; asking it for their deletion requests must stay bounded, and find none. */
     @Test
-    fun `a small retraction a waived reconcile shows is still deleted`() =
+    fun `a signed-in un-waived empty answer fetches evidence in bounded batches and deletes nothing`() {
+        val many = manyCards(1_200)
+        withRouter({ GatedPeer(it, many, membersOnly = true) }) { router, peer, scope ->
+            // A store that names its relay, so the author's vanish is in scope to be asked for.
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = RelayUrlNormalizer.normalize("wss://us.example")).also { it.batchInsert(many) }
+            val owned = Filter(kinds = listOf(30382), authors = listOf(provider))
+            audit(router, store, scope)
+            assertTrue(router.waivers.mayBeLensed(url), "the premise: signed in, no waiver")
+            assertEquals(many.size, store.query<Event>(owned).size, "nothing deleted")
+            val evidence = peer.reqFilters.filter { f -> f["kinds"]?.toString() == "[5]" && f.containsKey("#e") }
+            val batches = evidence.map { f -> f["#e"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet() }.distinct()
+            assertTrue(batches.isNotEmpty(), "the missing ids' deletion requests were asked for")
+            assertTrue(batches.all { it.size <= 100 }, "in batches: ${batches.map { it.size }}")
+            assertEquals(many.map { it.id }.toSet(), batches.flatten().toSet(), "every missing id, once")
+            assertEquals(
+                1,
+                peer.reqFilters
+                    .filter { f -> f["kinds"]?.toString() == "[62]" }
+                    .map { it.toString() }
+                    .distinct()
+                    .size,
+                "the author's vanish asked for once",
+            )
+        }
+    }
+
+    @Test
+    fun `a small retraction a waived reconcile shows is deleted on absence where the stream opts in`() =
         withRouter({ GatedPeer(it, cards.drop(1)) }) { router, peer, scope ->
             val store = holding(cards)
-            val audit = audit(router, store, scope)
+            val audit = audit(router, store, scope, stream.copy(deleteOnAbsence = true))
             assertEquals(0, peer.auths.get())
             assertEquals(1L, audit.deleted.get(), "the one card the provider retracted")
             assertEquals(cards.size - 1, store.query<Event>(ask).size)
         }
+
+    /** The evidence asks carry the waiver a gated peer taught, as every other read of it does. */
+    @Test
+    fun `a retraction a waived peer serves the deletion request for is applied and nothing else is`() {
+        val signer = NostrSignerSync(KeyPair())
+        val signed = cards.map { signer.sign<Event>(it.createdAt, it.kind, it.tags, it.content) }
+        val request = signer.sign<Event>(nowSeconds(), 5, arrayOf(arrayOf("e", signed.first().id)), "")
+        withRouter({ GatedPeer(it, signed.drop(2) + request) }) { router, peer, scope ->
+            val store = holding(signed)
+            val owned = Filter(kinds = listOf(30382), authors = listOf(signer.pubKey))
+            val audit = audit(router, store, scope, ask = owned)
+            assertTrue(router.waivers.waives(url), "the premise: read with the waiver")
+            val evidence = peer.reqFilters.filter { it["kinds"]?.toString() == "[5]" }
+            assertTrue(evidence.isNotEmpty() && evidence.all { SearchQuery.parse(it["search"]?.jsonPrimitive?.content).includeSpam }, "evidence asks too: $evidence")
+            assertEquals(signed.drop(1).map { it.id }.toSet(), store.query<Event>(owned).map { it.id }.toSet(), "the requested one gone, the unrequested one kept")
+            assertEquals(1L, audit.missingKept.get())
+            assertEquals(1L, audit.evidenceFetched.get())
+            assertEquals(0L, audit.deleted.get(), "nothing on absence")
+        }
+    }
 
     @Test
     fun `an empty upstream that reads us anonymously is pushed everything`() =

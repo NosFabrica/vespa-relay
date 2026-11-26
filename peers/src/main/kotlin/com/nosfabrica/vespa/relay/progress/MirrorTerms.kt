@@ -773,11 +773,29 @@ internal val MIRROR_TERMS: JsonObject =
         )
         term(
             "retracted",
-            "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
-                "retracted scores, and nothing else — a provider's own profile is another stream's record and " +
-                "stays. The only number in " +
-                "the router that goes DOWN, decided only by a completed negentropy comparison on the audit's " +
-                "clock; a failed reconcile deletes nothing.",
+            "Records deleted on ABSENCE alone: the upstream that owns them stopped serving them, nothing said they " +
+                "were deleted, and the stream opted in with `deleteOnAbsence`. Decided only by a completed negentropy " +
+                "comparison on the audit's clock and an answer the shrink check believes; a failed reconcile deletes " +
+                "nothing. Zero on every stream that retracts on evidence only, which is the default.",
+        )
+        term(
+            "retractionEvidence",
+            "Deletion requests (NIP-09 kind 5) and vanish requests (NIP-62 kind 62, aimed at this relay) an upstream " +
+                "served for records we hold that it no longer serves, each signed by the record's own author. Asked " +
+                "for only about the records the retraction audit found missing, a hundred at a time.",
+        )
+        term(
+            "retractedOnEvidence",
+            "Records an upstream stopped serving that are gone because something says so: their author's request, " +
+                "ingested so the store deletes them and keeps the tombstone, a request the store already held, or a " +
+                "newer version that took their place. The retractions that do not come back on the next walk.",
+        )
+        term(
+            "missingKept",
+            "Records an upstream stopped serving that nothing says were deleted, kept: absence has innocent causes " +
+                "(a retention window, a trust lens, a half-served reconcile), and no request or newer version " +
+                "was found. A stream sets `deleteOnAbsence` only for an upstream that withdraws records " +
+                "without a kind 5. Counted again at every audit that finds them missing.",
         )
         term(
             "abortedVisits",

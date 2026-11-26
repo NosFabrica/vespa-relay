@@ -73,6 +73,9 @@ internal class GatedPeer(
     /** Every filter a read carried, in order: (command, search). */
     val reads = CopyOnWriteArrayList<Pair<String, String?>>()
 
+    /** Every REQ filter, whole, in order. */
+    val reqFilters = CopyOnWriteArrayList<JsonObject>()
+
     private val idsInFlight = AtomicInteger()
 
     /** The most by-id REQs (of more than one id) it was answering at once. */
@@ -138,6 +141,7 @@ internal class GatedPeer(
                     val subId = frame[1].jsonPrimitive.content
                     val filters = frame.drop(2).map { it.jsonObject }
                     filters.forEach { reads += cmd to it["search"]?.jsonPrimitive?.content }
+                    reqFilters += filters
                     val answers = filters.map(::served)
                     answers.firstNotNullOfOrNull { it.second }?.let {
                         reply(JsonArray(listOf(JsonPrimitive("CLOSED"), JsonPrimitive(subId), JsonPrimitive(it))).toString())
@@ -200,7 +204,7 @@ internal class GatedPeer(
     }
 
     companion object {
-        /** NIP-01 matching over the fields these tests send. */
+        /** NIP-01 matching over the fields these tests send, single-letter tags included. */
         fun matches(
             f: JsonObject,
             e: Event,
@@ -211,6 +215,10 @@ internal class GatedPeer(
             strings("kinds")?.let { if (e.kind.toString() !in it) return false }
             f["since"]?.jsonPrimitive?.longOrNull?.let { if (e.createdAt < it) return false }
             f["until"]?.jsonPrimitive?.longOrNull?.let { if (e.createdAt > it) return false }
+            for (key in f.keys.filter { it.length == 2 && it[0] == '#' }) {
+                val wanted = strings(key)!!.toSet()
+                if (e.tags.none { it.size > 1 && it[0] == key.substring(1) && it[1] in wanted }) return false
+            }
             return true
         }
     }

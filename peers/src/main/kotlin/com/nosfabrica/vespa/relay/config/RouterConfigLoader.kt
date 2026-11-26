@@ -319,6 +319,11 @@ object RouterConfigLoader {
 
         val filter = parseFilter(s.getConfig("filter"))
         val deleteMissing = parseDeleteMissing(name, s)
+        val deleteOnAbsence = s.hasPath("deleteOnAbsence") && s.getBoolean("deleteOnAbsence")
+        require(!s.hasPath("deleteOnAbsence") || deleteMissing != DeleteMissing.OFF) {
+            "router: stream '$name' sets deleteOnAbsence without deleteMissing — it widens what the retraction audit " +
+                "may delete, and nothing audits a stream that does not retract. Set deleteMissing = \"dryRun\" or true, or remove it"
+        }
         val negentropySyncThePastSeconds = s.period(where, "negentropySyncThePastSeconds")
         val refetchThePastSeconds = s.period(where, "refetchThePastSeconds")
         warnRefetchInsideAudit(name, negentropySyncThePastSeconds, refetchThePastSeconds)
@@ -341,6 +346,7 @@ object RouterConfigLoader {
             trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
             discovery = discovery,
             deleteMissing = deleteMissing,
+            deleteOnAbsence = deleteOnAbsence,
             ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
             refetchThePastSeconds = refetchThePastSeconds,
             negentropyTiers = negentropyTiers,
@@ -413,9 +419,23 @@ object RouterConfigLoader {
         }
     }
 
-    /** Advisory: a kind deleted here and mirrored there is re-mirrored and re-deleted every audit. */
+    /**
+     * Advisory: a kind deleted on absence here and mirrored there is re-mirrored and re-deleted every
+     * audit, since an absence leaves no tombstone. Also says, per retracting stream, which licence it runs on.
+     */
     private fun warnRetractionOverlaps(streams: List<SyncStream>) {
         for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF }) {
+            System.err.println(
+                if (retracting.deleteOnAbsence) {
+                    "router: stream '${retracting.name}' deletes on absence (deleteOnAbsence): a record its upstream stopped " +
+                        "serving goes even with no deletion request, guarded only by the shrink check"
+                } else {
+                    "router: stream '${retracting.name}' retracts on evidence only: a record its upstream stopped serving is " +
+                        "deleted by its author's kind 5 or 62 or a newer version, and kept without one"
+                },
+            )
+        }
+        for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF && it.deleteOnAbsence }) {
             for (other in streams) {
                 if (other.name == retracting.name) continue
                 val overlap =
@@ -1121,6 +1141,7 @@ object RouterConfigLoader {
             "filter",
             "trusted",
             "deleteMissing",
+            "deleteOnAbsence",
             "ownedKinds",
             "healContent",
             "healRetractions",
