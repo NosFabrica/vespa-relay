@@ -4,6 +4,24 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## The store's #229 and #231 (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#231's head, which carries
+#229 and #228 from the store's main (docs/decisions/dependency-pins.md has the
+list). No schema change, and no new setting.
+
+- **The Vespa container's access log is off unless asked for.** With
+  `VESPA_ACCESS_LOG` unset or blank the store now deploys the package with the
+  log disabled, as `disabled` does. `.env.example` already sets `disabled`, so
+  a deployment built from it sees no change. One that left the line out and
+  reads the log must set `VESPA_ACCESS_LOG=default` to keep it.
+- **The per-event dup probe reports under `exists`, not `get`,** in the store's
+  port metrics (`Insert × exists`). A dashboard comparing `get` before and
+  after will see it fall away; nothing was lost.
+- A duplicate publish of a large replaceable (a 3,000-tag kind 3) holds the
+  store's writer lock about 2 ms instead of 16.5 ms, and a kind 5 no longer
+  reads its targets' whole documents. Answers are unchanged.
+
 ## Compose passes every setting the code reads (November 2026)
 
 `docker-compose.yml` hands a container only what its service maps, and these
