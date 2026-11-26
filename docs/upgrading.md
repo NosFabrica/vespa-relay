@@ -4,6 +4,43 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Compose passes every setting the code reads (November 2026)
+
+`docker-compose.yml` hands a container only what its service maps, and these
+settings were read by the code, documented in docs/configuration.md and never
+mapped, so under compose a value in `.env` did nothing. They now reach the
+container. **Nothing to do, but if you set any of them in `.env`, it takes
+effect on the next boot**, after however long it sat there ignored:
+
+- relay: `MAX_LIMIT`, `DEFAULT_LIMIT`, `MAX_SUBSCRIPTIONS`, `MAX_FILTERS`,
+  `MAX_SUBID_LENGTH`, `MIN_POW_DIFFICULTY`, `CREATED_AT_LOWER_LIMIT`,
+  `CREATED_AT_UPPER_LIMIT`, `NEG_FRAME_SIZE_LIMIT`, `NEG_MAX_SYNC_EVENTS`,
+  `NEG_MAX_SESSIONS_PER_CONNECTION`, `REQUIRE_READ_LENS`,
+  `SEARCH_CONCURRENCY_PER_CONNECTION`, `SEARCH_EXPAND_REFERENCES`,
+  `SEARCH_EXPAND_MAX_PER_EVENT`, `SEARCH_EXPAND_MAX_TOTAL`, `RELAY_HTTP_URL`,
+  `RELAY_VERSION`;
+- sync: `SYNC_NEG_PAGE_MIN`, `SYNC_NEG_PAGE_MAX`, `SYNC_STORE_SLOW_SEC`,
+  `SYNC_STORE_REWARN_SEC`, `RELAY_ICON`;
+- monitor: `RELAY_ICON`;
+- all three: `STORE_METRICS_LOG_SECONDS`.
+
+`DEFAULT_LIMIT=5000`, the way back to the old window in "A REQ with no limit
+is served 500 events" below, now actually works under compose; before this it
+left the relay at 500. Likewise `NEG_MAX_SESSIONS_PER_CONNECTION=0`, the switch
+for a malformed NIP-77 frame (docs/traps.md), now refuses every NEG-OPEN.
+
+Check a lowered limit or a switch you set long ago against what you want now:
+`REQUIRE_READ_LENS=false` serves an unauthenticated read that declares no lens, and a
+`MAX_LIMIT` below 500 lowers `DEFAULT_LIMIT` with it. A value out of range
+stops the boot and names the variable, as it always would have off compose.
+
+`.env.example` now documents every one of them, with the ones compose already
+passed but it lacked (`REJECT_FUTURE_SECONDS`, `EXPIRATION_SWEEP_SECONDS`,
+`SYNC_REFUSED_*`, `MONITOR_INGEST_URL`, `MONITOR_STATUS_INTERVAL_SECONDS`,
+`MONITOR_WIRE_LOG`), and a build check fails when the code reads a setting
+`.env.example` does not document or a process's own setting its service does
+not pass.
+
 ## `peers` forces the lens waiver per relay (November 2026)
 
 Nothing to do: with no `peers` block every relay is `auto`, the learned stance

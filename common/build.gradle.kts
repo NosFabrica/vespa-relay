@@ -30,7 +30,7 @@ tasks.test {
 val archTest =
     tasks.register<Test>("archTest") {
         group = "verification"
-        description = "The module graph, the package map, the browser-file rule, the probe-switch list."
+        description = "The module graph, the package map, the browser-file rule, the probe-switch list, the settings compose passes."
         testClassesDirs =
             sourceSets.test
                 .get()
@@ -43,6 +43,8 @@ val archTest =
         inputs
             .files(
                 rootProject.file("settings.gradle.kts"),
+                rootProject.file(".env.example"),
+                rootProject.file("docker-compose.yml"),
                 rootProject.fileTree(rootProject.projectDir) {
                     include("*/build.gradle.kts")
                     include("*/src/**")

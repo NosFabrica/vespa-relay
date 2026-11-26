@@ -182,11 +182,19 @@ services:
       # Plain REQ replays run against the store at once, and how many may wait.
       REPLAY_CONCURRENCY: ${REPLAY_CONCURRENCY:-}
       REPLAY_QUEUE: ${REPLAY_QUEUE:-}
+      # Ranked reads per connection, the read-lens gate, and what a search brings with it.
+      SEARCH_CONCURRENCY_PER_CONNECTION: ${SEARCH_CONCURRENCY_PER_CONNECTION:-}
+      REQUIRE_READ_LENS: ${REQUIRE_READ_LENS:-}
+      SEARCH_EXPAND_REFERENCES: ${SEARCH_EXPAND_REFERENCES:-}
+      SEARCH_EXPAND_MAX_PER_EVENT: ${SEARCH_EXPAND_MAX_PER_EVENT:-}
+      SEARCH_EXPAND_MAX_TOTAL: ${SEARCH_EXPAND_MAX_TOTAL:-}
       # ORE-05 search backend for Brainstorm's server, public; off by default.
       ORE_ENABLED: ${ORE_ENABLED:-}
       ORE_CONCURRENCY: ${ORE_CONCURRENCY:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # Where the pages are served, when not RELAY_URL with the scheme swapped.
+      RELAY_HTTP_URL: ${RELAY_HTTP_URL:-}
       # The SECOND address the same relay answers at, when the `onion` profile
       # is on: the hidden service's container mints it and writes it here, and
       # the relay reads it to accept NIP-42 from Tor clients — they sign the
@@ -213,6 +221,7 @@ services:
       RELAY_POSTING_POLICY: ${RELAY_POSTING_POLICY:-}
       RELAY_PRIVACY_POLICY: ${RELAY_PRIVACY_POLICY:-}
       RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
+      RELAY_VERSION: ${RELAY_VERSION:-}
       # Settle the trust projection after boot, in the background — the relay
       # serves immediately either way; ranked search may return thin results
       # until the reconcile finishes (12+ minutes at 36M kind-30382 events).
@@ -287,6 +296,20 @@ services:
       # The websocket frame cap in bytes; past MAX_MESSAGE_LENGTH and under it,
       # a message is refused by id rather than closing the connection.
       MAX_FRAME_BYTES: ${MAX_FRAME_BYTES:-}
+      # What one connection may ask for (NIP-11 `limitation`); a REQ naming no
+      # limit is served DEFAULT_LIMIT. Empty keeps the code defaults (.env.example).
+      MAX_LIMIT: ${MAX_LIMIT:-}
+      DEFAULT_LIMIT: ${DEFAULT_LIMIT:-}
+      MAX_SUBSCRIPTIONS: ${MAX_SUBSCRIPTIONS:-}
+      MAX_FILTERS: ${MAX_FILTERS:-}
+      MAX_SUBID_LENGTH: ${MAX_SUBID_LENGTH:-}
+      MIN_POW_DIFFICULTY: ${MIN_POW_DIFFICULTY:-}
+      CREATED_AT_LOWER_LIMIT: ${CREATED_AT_LOWER_LIMIT:-}
+      CREATED_AT_UPPER_LIMIT: ${CREATED_AT_UPPER_LIMIT:-}
+      # NIP-77 served to clients; NEG_MAX_SESSIONS_PER_CONNECTION=0 refuses every NEG-OPEN.
+      NEG_FRAME_SIZE_LIMIT: ${NEG_FRAME_SIZE_LIMIT:-}
+      NEG_MAX_SYNC_EVENTS: ${NEG_MAX_SYNC_EVENTS:-}
+      NEG_MAX_SESSIONS_PER_CONNECTION: ${NEG_MAX_SESSIONS_PER_CONNECTION:-}
       # The writer behind published EVENTs: `pipeline` (the mirror's
       # IngestPipeline, the default) or `queue` (quartz's IngestQueue), and its
       # shape. Empty keeps the code defaults (docs/configuration.md).
@@ -312,6 +335,8 @@ services:
       VESPA_FEED_BATCH: ${VESPA_FEED_BATCH:-100}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # Seconds between this process's `store-metrics` log lines; 0 logs none. Set on all three.
+      STORE_METRICS_LOG_SECONDS: ${STORE_METRICS_LOG_SECONDS:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
       # gets the same key, so upstream AUTH and the NIP-66 monitor speak as
       # the relay they feed, and the sync writes through this relay only when it
@@ -492,6 +517,8 @@ services:
       # which belongs in the volume for the same reason the band file does.
       SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
       SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
+      SYNC_NEG_PAGE_MIN: ${SYNC_NEG_PAGE_MIN:-}
+      SYNC_NEG_PAGE_MAX: ${SYNC_NEG_PAGE_MAX:-}
       SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
       # THIS SERVICE'S OWN STATUS PAGE: what each stream is doing, what the
       # background passes are measuring, and how far the walk has reached, at
@@ -515,6 +542,11 @@ services:
       SYNC_PULSE_CLIENT_DETAIL: ${SYNC_PULSE_CLIENT_DETAIL:-}
       SYNC_PULSE_SLOW_READ_MS: ${SYNC_PULSE_SLOW_READ_MS:-}
       SYNC_STATUS_INTERVAL_SECONDS: ${SYNC_STATUS_INTERVAL_SECONDS:-}
+      # The page's icon, the relay's own.
+      RELAY_ICON: ${RELAY_ICON:-}
+      # When a store call still waiting gets a `store call SLOW` line, and again.
+      SYNC_STORE_SLOW_SEC: ${SYNC_STORE_SLOW_SEC:-}
+      SYNC_STORE_REWARN_SEC: ${SYNC_STORE_REWARN_SEC:-}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.
@@ -537,6 +569,7 @@ services:
       VESPA_AUTHOR_SHARDS: ${VESPA_AUTHOR_SHARDS:-}
       VESPA_AUTHOR_BUCKETS: ${VESPA_AUTHOR_BUCKETS:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      STORE_METRICS_LOG_SECONDS: ${STORE_METRICS_LOG_SECONDS:-}
       # Same key as the relay, and required: every write goes to the relay
       # signed in as it, and upstream NIP-42 AUTH signs as the relay this
       # process feeds. Unless sync.conf sets `verdictsFrom`, it is also whose
@@ -635,7 +668,9 @@ services:
       MONITOR_STATUS_PORT: 7779
       MONITOR_STATUS_INTERVAL_SECONDS: ${MONITOR_STATUS_INTERVAL_SECONDS:-}
       MONITOR_WIRE_LOG: ${MONITOR_WIRE_LOG:-}
+      RELAY_ICON: ${RELAY_ICON:-}
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      STORE_METRICS_LOG_SECONDS: ${STORE_METRICS_LOG_SECONDS:-}
       # The same Tor as the sync, under the same names: a hidden service is
       # measured through it.
       SYNC_TOR_SOCKS: ${SYNC_TOR_SOCKS-tor:9050}

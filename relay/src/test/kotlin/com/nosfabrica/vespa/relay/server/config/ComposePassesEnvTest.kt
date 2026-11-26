@@ -34,9 +34,6 @@ class ComposePassesEnvTest {
     /** Documented settings that deliberately never reach a container, each with its reason. */
     private val exempt =
         mapOf(
-            "RELAY_HTTP_URL" to "derived from RELAY_URL; only set on a deployment that terminates TLS elsewhere",
-            "RELAY_VERSION" to "read at build time into the NIP-11 document, not at run time",
-            "VESPA_ACCESS_LOG" to "a setting for the Vespa image's own configuration, not for ours",
             "VESPA_CONFIG_URL" to "derived from VESPA_URL, which compose sets to the service name",
         )
 
@@ -64,6 +61,8 @@ class ComposePassesEnvTest {
         // An exemption for a deleted setting is a note nobody will read again.
         val stale = exempt.keys.filterNot { it in documented }.sorted()
         assertTrue(stale.isEmpty(), "exempt but no longer documented in .env.example: $stale")
+        val needless = exempt.keys.filter { it in reaching }.sorted()
+        assertTrue(needless.isEmpty(), "exempt but reaching a container after all: $needless")
     }
 
     @Test
