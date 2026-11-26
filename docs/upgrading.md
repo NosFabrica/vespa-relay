@@ -19,6 +19,31 @@ against 0.4 s for one alone.
 Nothing to do unless a client of yours pages with open filters and expects the
 old window: set `DEFAULT_LIMIT=5000` to keep it.
 
+## The store's audit fixes (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#226: an audit's 22 fixes and
+three measured performance changes (dependency-pins.md has the list). Nothing to
+do before or after the boot: no schema change, no new setting, no reindex.
+
+### What changes in behaviour
+
+- `SWEEP_ORPHAN_SCORES_ON_START` keeps the cards of a provider a 10040 names
+  for ANY 30382 metric (`hops`, `reporters`, …), which search reads; it used to
+  delete them, as only `rank` and `followers` counted. It now refuses only when
+  no 10040 delegates kind 30382 at all. Expect its dry-run count to drop.
+- A NIP-62 request to vanish erases the author's events from BEFORE its own
+  second, as quartz's rule says; an event at that very second, stored earlier,
+  now stays. New events at or before it are still refused.
+- A NIP-50 search reads its first 16 words, 8 quoted phrases and 32 exclusions.
+  Words carrying Vespa's query syntax (`-bar`, `created_at:>0`, `kind:1`) are
+  matched as plain words; before, `-bar` matched every note.
+- A NIP-86 purge, or any delete, whose filter is only search extensions
+  (`include:spam`, `observer:`) deletes nothing; before, it deleted everything.
+- The second copy of a refused event in one batch is answered with the first
+  copy's refusal, not `duplicate:`.
+- A lone publish is about 1 ms faster, and a sync stream of events already
+  stored costs one engine read per batch instead of three.
+
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 
 Two changes that must land in order. The router now reads every relay
