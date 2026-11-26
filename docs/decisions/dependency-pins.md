@@ -814,6 +814,36 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+6c9eef63f27b = vespa-eventstore main @ 2026-11-25, the merge of PR #226, over b19d76c60e30 (below), which it descends
+from (`git merge-base --is-ancestor b19d76c60e30 6c9eef63f27b`); its tree is the PR head's (20486c12), byte for byte
+(`git diff --quiet 20486c12 6c9eef63`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, and the store's own request is 2.28.0, so the runtime classpath carries no `->` on quartz or the
+store. No bundle, schema or deploy-time change (no .sd, services.xml or bundle file moves); no new setting.
+  WRITES (#226), measured through this relay (the store's benchmark/README.md): a lone publish with nothing else in
+    flight is one /document/v1 POST instead of a trip through the feed client's dispatcher (110 -> 127 /s for one
+    client, 8 -> 7 ms); a narrow batch reads its NIP-09/NIP-62 guards beside its dedup, so writes under 200-client
+    read load ran 75 -> 96 /s, and only while recent batches have something new, so a sync stream of events already
+    stored costs one engine read per batch, not three.
+  COLD READS: a quiet shape's learned tie slack floor is 3, not 8 (MIN_TIE_SLACK): a direct page reads 48 KB from
+    disk where it read 88 KB at limit 3, +16-22% cold REQ/s on unthrottled and slow disks, hot reads level.
+  AUDIT FIXES (#226), each with a test that failed first. Data loss: a delete whose filter was only search
+    extensions (include:spam, observer:) or a blank search wiped the store, now deletes nothing (no relay path sends
+    one: MirrorDelete names ids, quartz's NIP-86 purge authors, ids or kinds); SWEEP_ORPHAN_SCORES_ON_START deleted
+    the cards of providers a 10040 delegates under a 30382 metric other than rank/followers, which search reads, now
+    keeps them; a limited multi-filter delete removed more than the union. Search: words reached userInput with
+    Vespa syntax live (`-bar` and `created_at:>0` matched every note), now plain words; a search is bounded at 16
+    words, 8 quoted phrases and 32 exclusions (the heaviest allowed one is 8,617 Vespa items, under the 10,000
+    limit), the live gate reading the same words; a lone surrogate in a tag value matched notes tagged `?`, now
+    nothing. Narrower: a boundary second wider than VESPA_UNBOUNDED_HITS keeps its lowest ids; an `until` near
+    Long.MIN_VALUE serves nothing; a guard written and then failing is still flagged; the second copy of a refused
+    event in a batch gets the first copy's verdict, not `duplicate:`; a NIP-62 vanish erases strictly before its
+    second, as quartz's STORE-D07 (an earlier event at that very second now stays); the exact trust derive reads
+    each service's newest card only. Operator-visible changes: docs/upgrading.md, "The store's audit fixes".
+  Gated: the store's integration gate passed on 6c9eef63 itself against vespaengine/vespa:latest (8.788.13): 44 IT
+    classes, 66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs
+    FUZZ_VESPA_URL and passed on the PR head before main's last merge, 9,000 random filters in each read mode).
+    ./gradlew build here is green against the JitPack jars: 1,922 tests, 0 failed, 2 skipped.
+
 b19d76c60e30 = vespa-eventstore main @ 2026-11-25, the merge of PR #223, over 03bc72e8e459 (below), which it descends
 from (`git merge-base --is-ancestor 03bc72e8e459 b19d76c60e30`); its tree is the PR head's (827a1c0d), byte for byte
 (`git diff --quiet 827a1c0d b19d76c6`). Through JitPack's lowercase spelling, as the pins below. Every module resolves

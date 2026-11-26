@@ -315,8 +315,10 @@ it is fixed.
 nothing; run that first, and read the number before believing it.
 
 - `SWEEP_ORPHAN_SCORES_ON_START` — kind-30382 cards from providers no stored
-  10040 names. On this deployment that was 33.8M of 51.9M, and the dry run
-  predicted the figure exactly.
+  10040 delegates kind 30382 to, under any metric. On this deployment that was
+  33.8M of 51.9M, and the dry run predicted the figure exactly; that count was
+  taken when only `rank` and `followers` delegations counted, so run the dry run
+  again before believing it now.
 - `deleteMissing` on a stream — records the upstream no longer serves. The
   licence is a COMPLETED reconcile, never a volume: quartz throws rather than
   falling back, so a normal return means every window was compared and an empty
