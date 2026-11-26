@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.ingest
 
+import com.nosfabrica.vespa.eventstore.isStoreRefusingWrites
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CancellationException
@@ -35,7 +36,7 @@ internal suspend fun insertBisecting(
     onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
     onOutcomesFailed: (List<Event>, Throwable) -> Unit,
     onPoison: (Event, Throwable) -> Unit,
-    onGaveUp: (List<Event>, Throwable) -> Unit = { _, _ -> },
+    onGaveUp: suspend (List<Event>, Throwable) -> Unit = { _, _ -> },
 ) = Bisection(write, onOutcomes, onOutcomesFailed, onPoison, onGaveUp).run(events)
 
 private class Bisection(
@@ -43,7 +44,7 @@ private class Bisection(
     val onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
     val onOutcomesFailed: (List<Event>, Throwable) -> Unit,
     val onPoison: (Event, Throwable) -> Unit,
-    val onGaveUp: (List<Event>, Throwable) -> Unit,
+    val onGaveUp: suspend (List<Event>, Throwable) -> Unit,
 ) {
     private var budget = ISOLATION_WRITE_BUDGET
 
@@ -72,6 +73,12 @@ private class Bisection(
         events: List<Event>,
         e: Throwable,
     ) {
+        // The engine refusing EVERY write (a feed block) has no bad event to find: every half fails the
+        // same way, and splitting only multiplies the refused writes before anyone is answered.
+        if (e.isStoreRefusingWrites()) {
+            onGaveUp(events, e)
+            return
+        }
         if (events.size == 1) {
             onPoison(events.single(), e)
             return

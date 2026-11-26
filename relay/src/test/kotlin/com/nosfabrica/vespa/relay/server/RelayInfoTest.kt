@@ -56,8 +56,8 @@ class RelayInfoTest {
         assertEquals(20, limitation.getValue("max_filters").jsonPrimitive.int)
         assertEquals(50, limitation.getValue("max_subscriptions").jsonPrimitive.int)
         assertEquals(5_000, limitation.getValue("max_limit").jsonPrimitive.int)
-        // A client naming no `limit` still gets the full window, so its paging can trust the doc.
-        assertEquals(5_000, limitation.getValue("default_limit").jsonPrimitive.int)
+        // A client naming no `limit` gets this many, and the doc says so, so its paging can trust it.
+        assertEquals(500, limitation.getValue("default_limit").jsonPrimitive.int)
     }
 
     @Test

@@ -35,6 +35,13 @@ const LABEL_ASKS = [
 /** How many values go in one tag filter. */
 export const BATCH = 100;
 
+/**
+ * The ceiling on a declaration filter: one provider can hold an assertion for every subject in a
+ * batch, so a few providers outgrow the relay's 500 default. Asked by name; the relay clamps it
+ * to its `max_limit`.
+ */
+export const DECLARATION_LIMIT = 5000;
+
 /** The ceiling on an ungated read: a label filter has no `authors`, so this is its only bound. */
 export const LABEL_LIMIT = 100;
 
@@ -72,7 +79,7 @@ export function pointerFilters(targets, trusted, { labels = true, declarations =
     const values = targets[ask.from] || [];
     if (!authors.length || !values.length) continue;
     for (const batch of chunk(values, BATCH)) {
-      out.push({ kinds: [ask.kind], authors, [ask.tag]: batch });
+      out.push({ kinds: [ask.kind], authors, [ask.tag]: batch, limit: DECLARATION_LIMIT });
     }
   }
   if (!labels) return out;

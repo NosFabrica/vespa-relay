@@ -20,11 +20,41 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import io.netty.buffer.ByteBufUtil
+import io.netty.buffer.Unpooled
+import io.netty.buffer.UnpooledByteBufAllocator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** RFC 6455 violations on the native transport: each closes with its status code, and the socket ends. */
 class WebSocketProtocolTest {
+    /**
+     * The JDK's one-pass UTF-8 ([utf8]) writes the bytes Netty's `writeUtf8` wrote, for every kind of text a
+     * frame carries: ASCII, Latin-1, CJK, an emoji's surrogate pair, and an UNPAIRED surrogate, which both
+     * write as `?`. And a whole frame carries them after the same header.
+     */
+    @Test
+    fun `a text frame's bytes are the ones netty wrote`() {
+        val texts =
+            listOf(
+                "",
+                "[\"OK\",\"${"a1".repeat(32)}\",true,\"\"]",
+                "caf\u00e9 cr\u00e8me",
+                "\u65e5\u672c\u8a9e",
+                "gm \uD83D\uDE80 nostr",
+                "lone \uD800 high, lone \uDC00 low, swapped \uDC00\uD800",
+                "x".repeat(70_000),
+            )
+        for (text in texts) {
+            val netty = Unpooled.buffer().also { ByteBufUtil.writeUtf8(it, text) }
+            assertEquals(ByteBufUtil.hexDump(netty), ByteBufUtil.hexDump(Unpooled.wrappedBuffer(utf8(text))), "utf8: ${text.take(40)}")
+            val frame = encodeTextFrame(UnpooledByteBufAllocator.DEFAULT, text)
+            val body = frame.slice(frame.readableBytes() - netty.readableBytes(), netty.readableBytes())
+            assertEquals(ByteBufUtil.hexDump(netty), ByteBufUtil.hexDump(body), "frame body: ${text.take(40)}")
+            frame.release()
+        }
+    }
+
     private fun closesWith(
         code: Int,
         what: String,
