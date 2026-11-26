@@ -243,6 +243,7 @@ fun relayIngestFromEnv(
             env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
             env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536)
             env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS)
+            verifyThreadsFromEnv(env, "RELAY_INGEST_VERIFY_THREADS")
             RelayIngest(null, ingestBatchFromEnv(env))
         }
 
@@ -263,6 +264,7 @@ fun relayIngestFromEnv(
                     queue = batch * concurrency,
                     queueBytes = queueMb * 1_048_576L,
                     lingerMs = lingerMs.toLong(),
+                    verifyThreads = verifyThreadsFromEnv(env, "RELAY_INGEST_VERIFY_THREADS"),
                 ),
                 batch,
             )
@@ -284,8 +286,21 @@ fun mirrorIngestFromEnv(
     val batch = env.strictInt("RELAY_MIRROR_INGEST_BATCH", 1..20_000) ?: DEFAULT_PIPELINE_BATCH
     val concurrency = env.strictInt("RELAY_MIRROR_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PIPELINE_CONCURRENCY
     val queueMb = env.strictInt("RELAY_MIRROR_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
-    return IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L)
+    return IngestTuning(
+        concurrency,
+        batch,
+        dedupChunk = engine.dedupWidth(),
+        queue = batch * concurrency,
+        queueBytes = queueMb * 1_048_576L,
+        verifyThreads = verifyThreadsFromEnv(env, "RELAY_MIRROR_INGEST_VERIFY_THREADS"),
+    )
 }
+
+/** How many threads one pipeline's batch may check signatures on (`1`-`64`); 1, the default, checks them on its worker. */
+private fun verifyThreadsFromEnv(
+    env: Map<String, String>,
+    key: String,
+): Int = env.strictInt(key, 1..64) ?: 1
 
 /** The store's dedup probe width, which both pipelines chunk their id probes by, since both probe one store. */
 private fun EngineTuning.dedupWidth(): Int = dedupChunk ?: EngineTuning.DEFAULT_DEDUP_CHUNK

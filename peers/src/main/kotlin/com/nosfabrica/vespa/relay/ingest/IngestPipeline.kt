@@ -46,9 +46,13 @@ import com.vitorpamplona.quartz.nip09Deletions.DeletionRequestEvent
 import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -102,6 +106,7 @@ class IngestPipeline(
     )
 
     private val workers = tuning.concurrency
+    private val verifyThreads = tuning.verifyThreads
     private val configuredBatch = tuning.batch
     private val dedupChunk = tuning.dedupChunk
 
@@ -393,6 +398,7 @@ class IngestPipeline(
         var badSigs = 0
         var duplicates = 0
         IngestStats.timed("verify") {
+            val leads = verifyLeads(batch, contests)
             for (versions in contests) {
                 // One version, one copy: nothing for a check to choose between. A writer whose far
                 // side verifies (the relay) refuses a bad one itself, and nothing here is shadowed
@@ -415,8 +421,7 @@ class IngestPipeline(
                             }
 
                             // The leader's id is already checked against its content; the rest are not.
-                            msg.skipVerify || unchecked ||
-                                runCatching { if (n == 0) msg.event.verifySignature() else msg.event.verify() }.getOrDefault(false) -> {
+                            msg.skipVerify || unchecked || (leads?.get(i) ?: verifies(msg.event, idChecked = n == 0)) -> {
                                 winners.add(i)
                                 won = true
                                 winner = i
@@ -439,6 +444,41 @@ class IngestPipeline(
         winners.sort()
         return winners
     }
+
+    /**
+     * The signature check of each contest's first candidate, the copy [admit] always checks first, run across
+     * [verifyThreads] when a batch has enough of them; null leaves every check to [admit]'s loop. Nothing else is
+     * checked ahead, and [admit] still decides in batch order, so outcomes and the order they are answered in hold.
+     */
+    private suspend fun verifyLeads(
+        batch: List<Inbound>,
+        contests: List<List<List<Int>>>,
+    ): Map<Int, Boolean>? {
+        if (verifyThreads <= 1) return null
+        val leads = ArrayList<Int>(contests.size)
+        for (versions in contests) {
+            if (writer.checksSignatures && versions.size == 1 && versions[0].size == 1) continue
+            val lead = versions[0][0]
+            if (!batch[lead].skipVerify) leads.add(lead)
+        }
+        if (leads.size < PARALLEL_VERIFY_MIN) return null
+        val verified = BooleanArray(leads.size)
+        val share = (leads.size + verifyThreads - 1) / verifyThreads
+        coroutineScope {
+            val parts = leads.indices.chunked(share)
+            // The worker checks the first share itself rather than wait idle on the rest.
+            val others = parts.drop(1).map { part -> async(Dispatchers.Default) { for (k in part) verified[k] = verifies(batch[leads[k]].event, idChecked = true) } }
+            for (k in parts.first()) verified[k] = verifies(batch[leads[k]].event, idChecked = true)
+            others.awaitAll()
+        }
+        return HashMap<Int, Boolean>(leads.size * 2).apply { leads.forEachIndexed { k, i -> put(i, verified[k]) } }
+    }
+
+    /** Whether [event]'s signature checks; [idChecked] when its id was already hashed against its content. */
+    private fun verifies(
+        event: Event,
+        idChecked: Boolean,
+    ): Boolean = runCatching { if (idChecked) event.verifySignature() else event.verify() }.getOrDefault(false)
 
     private fun tallyBadSignatures(count: Int) {
         if (count == 0) return
@@ -1019,6 +1059,9 @@ class IngestPipeline(
 
         private const val DRAIN_POLL_MS = 10L
 
+        /** Signature checks a batch must have before [verifyLeads] spreads them over threads; under it, dispatch costs more than it saves. */
+        const val PARALLEL_VERIFY_MIN = 32
+
         /** Events a batch must expect to verify before the dedup probe is worth its round trip. */
         private const val PROBE_MIN_VERIFIABLE = 128
 
@@ -1086,4 +1129,9 @@ data class IngestTuning(
      * makes one narrow write each; the mirror's queue is deep enough not to need it.
      */
     val lingerMs: Long = 0,
+    /**
+     * Threads a batch's signature checks may spread over, the worker's own among them; 1 checks them on the worker,
+     * in turn. Only the first candidate of each contest is checked ahead, so no answer or outcome moves.
+     */
+    val verifyThreads: Int = 1,
 )

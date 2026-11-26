@@ -25,6 +25,9 @@ Nothing to do before the boot.
   `vespa-relay-fanout-N` threads**, one per core, instead of the publish
   worker, so a large fan-out no longer holds up the next write. Nothing changes
   on the native transport, the default.
+- **`RELAY_INGEST_VERIFY_THREADS` and `RELAY_MIRROR_INGEST_VERIFY_THREADS`**
+  (default `1`, as before) let a wide batch's signature checks run on several
+  threads. Worth trying only where Vespa has cores of its own.
 
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 
