@@ -39,7 +39,7 @@ writes, and every other value is the check that writes nothing.
 | `VESPA_FEED_URLS` | for a Vespa that runs its feed and query containers as separate clusters (vespa-eventstore's `docs/scaling.md`, "Feed and query containers"): the containers serving `<document-api />`, comma-separated (`http://feed-0:8080,http://feed-1:8080`). The store sends them every `/document/v1` request and the batch handler's: every write, but also the get by id and every visit, which are reads through the document API. Read by both processes, the same on both: the sync opens its store read-only and writes through the relay, but its get by id and its visits still go through the document API. Such a cluster runs its own application package, so it also wants `AUTO_DEPLOY=false`. A container listed here that serves no document API makes the store throw on the first request that reaches it, never answer "not stored". An entry that is not an `http(s)` URL with a host stops the boot | unset: `VESPA_URL` |
 | `VESPA_QUERY_URLS` | the other half: the containers serving `<search />`, comma-separated. Every `/search/` request goes to them: client reads, counts, the writer's own dedup and deletion checks, and the relay's stats rollup, rotated across them by the store. Read by both processes; set it the same on both | unset: `VESPA_URL` |
 | `RELAY_PORT` | port to listen on | `7777` |
-| `FTS_CURSOR_FILE` | where the reindex saves its position, so a restart resumes rather than redoing the corpus | `/var/lib/vespa-relay/fts-cursor.txt` |
+| `FTS_CURSOR_FILE` | where the reindex saves its position, so a restart resumes rather than redoing the corpus. A saved position the store refuses on the first page (one Vespa answers 400 to, or one saved under another author-shard count) starts the walk over rather than failing every boot | `/var/lib/vespa-relay/fts-cursor.txt` |
 | `REINDEX_FTS_ON_START` | re-derive every event's search fields once, in the background. Needed after a store upgrade that changes `SearchExtractors` or adds *fed* search fields — a Vespa reindex cannot produce those, only a re-put can. Walks the whole corpus, so leave it off except for the boot that performs the migration. **It is the wrong tool for a *derived* column, and the failure is silent**: a field Vespa builds at index time rather than one we feed — `search_text_gram`, the body's partial-word reach, added in store `e3be81564d` — is left empty on the whole back catalogue by the deploy that adds it, and this walk does not repair it. The store's drift check sees identical columns, re-puts nothing, and the run reports success having fixed nothing while whole-word search keeps working normally. That case needs a **Vespa reindex** or a genuine full re-feed, and the POST that requests one only queues it — a redeploy is what dispatches it. Procedure: [migrations.md](migrations.md) | `false` |
 | `REINDEX_FTS_KINDS` | scope `REINDEX_FTS_ON_START` to these kinds (comma- or space-separated), using the store's kind-scoped walk: the engine selects the kinds server-side, so every other document is never shipped, parsed or re-extracted. For a pin bump that names the kinds it moved (docs/migrations.md lists them per entry) — the unscoped walk reaches the same documents at the cost of the whole corpus. Only as complete as the list: a kind left out is not repaired. A value that is not a list of kind numbers, or that names none (`","`), **stops the boot** before the schema deploy rather than falling back to the whole corpus. The cursor file records the scope, so a saved position from a different list (or from the unscoped walk) is discarded and the walk starts over. Does nothing unless `REINDEX_FTS_ON_START=true` | unset ⇒ whole corpus |
 | `TRUST_RECONCILE_ON_START` | reconcile the trust projection at startup, in the **background** — the relay serves immediately and ranked search returns less until it finishes. `false` skips it entirely | `true` |
@@ -50,14 +50,16 @@ writes, and every other value is the check that writes nothing.
 | `VESPA_ACCESS_LOG` | `disabled` deploys the application package with the container's HTTP access log off. Read by whichever process deploys the schema (both run `AUTO_DEPLOY`), never by Vespa. The store feeds one HTTP request per document and its write path is read-heavy, so on an ingesting deployment the log is mostly this deployment talking to itself: on relay.ditto.pub's kind 3s it cost 12% of publish throughput ([ingest-benchmark.md](ingest-benchmark.md)). Leave it on where you want per-request forensics | on (Vespa's default) |
 | `VESPA_FEED_COMPRESSION` | how the store's feed client sends each document: `none`, `gzip`, or `auto`, which gzips every body over 512 bytes. Only the relay's store writes, so only it applies this; anything else stops either process's boot. On a Vespa on the same host, gzip cost the relay ~2 ms per kind 3 and Vespa the inflating, and `none` published 14-15% more events per second ([ingest-benchmark.md](ingest-benchmark.md)); across a WAN, `gzip` keeps tag-heavy bodies to ~40% | `auto` (the store's default); `none` in `docker-compose.yml` |
 | `VESPA_FEED_BATCH` | documents per HTTP request through the batch handler the store ships in its application package (deployed at every boot, as `AUTO_DEPLOY` does), instead of one per request through `/document/v1`. Measured on live-relay events, 100 per request cut Vespa's CPU per event by 28-31% and raised what three cores absorb by 40-60% (vespa-eventstore's benchmark README, "More than one document per request"); the stored documents and every search over them are identical. It pays where batches are full, so on the mirror lane above all, where the sync's backfill arrives; a publish batch holds whatever is queued, which is one event on a quiet relay and more in a burst. A container serving a package without the handler answers 404, and the store parks batching for five minutes and writes one per request meanwhile, then tries the handler again: a handler that arrives with a deploy, or a container back from a restart, is picked up without restarting this process. While parked, the store's feed line ends `batch PARKED (404 xN), retry in Ns` (the sync status card shows it as a `feed unbatched` warning) and `/pulse.json`'s `feed.batch.parked` gauge reads 1; an operator-owned package missing the store's `components/` and handler, or a query container listed in `VESPA_FEED_URLS`, keeps it there. `0` or `1` turns it off; the boot stops on anything outside `0`–`4096` | `100` (the store's default since vespa-eventstore `343926b68850`; off before); `100` in `docker-compose.yml` |
+| `VESPA_AUTHOR_SHARDS` / `VESPA_AUTHOR_BUCKETS` | **PROTOTYPE, deletes data if changed carelessly** (vespa-eventstore PR #221, in the pinned store since `03bc72e8e459`; `docs/author-shards.md`). Splits the corpus by author across that many Vespa content clusters (`1`–`256`), or by an explicit bucket map (`00-99=0,9a-ff=1`), so each node holds only its authors' events and their reputation documents instead of a full copy of every trust assertion. **Set it the same on the relay and the sync**: the deployed package and every store client must agree, and a store whose count does not match the deployment refuses its first visit or author-scoped read rather than miss documents. A cluster's selection is also what Vespa keeps, so a package that makes a cluster keep fewer buckets over existing data deletes them: the store's deploy guard refuses one (`AUTO_DEPLOY`), and a multi-node deployment with its own package builds and checks it with the store's `shardPackage` tool before deploying. Changing it on a fed corpus is a bucket move (the store's `BucketMove`), never an edit here. The relay needs no other change: its statistics are exact on any count, and a saved `FTS_CURSOR_FILE` from before a change starts the walk over | unset ⇒ one cluster, the package as built |
 | `JAVA_TOOL_OPTIONS` / `RELAY_JAVA_TOOL_OPTIONS` / `SYNC_JAVA_TOOL_OPTIONS` | each JVM's own flags, in practice its heap. The bare name reaches **both** containers under compose; the prefixed spellings override per process — the two JVMs are sized 2× apart, so an absolute `-Xmx` tuned for the sync's reconcile heap would kill the smaller relay container. For the sync process this is what decides whether a large reconcile finishes or dies with `OutOfMemoryError`. The percentage is of the container's own mem limit, because `MaxRAMPercentage` reads the cgroup. Compose adds `-XX:InitialRAMPercentage=35` to the relay's flags, after the shared ones and capped by any `-Xmx` among them: G1 left to grow a serving heap keeps it small and collects several times a second. `RELAY_JAVA_TOOL_OPTIONS` replaces both | `-XX:MaxRAMPercentage=70`, plus `-XX:InitialRAMPercentage=35` on the relay |
 | `QUARTZ_JSON_ENGINE` | **removed** with quartz 2.4.0, which has one JSON engine: Kite, quartz's own reader and writer, for every Nostr frame, event, filter and event-id preimage in both processes. A value still set is ignored. A deployment that ran the old `default` (Jackson) gets the same events, ids, answers and persisted cursors on valid input (65,050 real frames read and written identically, see dependency-pins.md); it differs only on malformed input: Kite refuses a non-string `content` or `pubkey` that Jackson coerced, and it recognizes an event key by its length and first and last characters, so an event carrying an extra key spelled like a NIP-01 one (`comment` beside `content`) reads that value as the field and fails its id check where Jackson ignored it | — |
 | `HTTP_RELAY_PER_CLIENT` / `HTTP_RELAY_CLIENT_HEADER` / `HTTP_RELAY_TRUSTED_PROXIES` | **removed**: HTTP commands have no per-address cap, since Tor, the `.onion`, carrier NAT and proxies put many people behind one address; `HTTP_RELAY_TOTAL` is the one bound. Set, the boot says they do nothing ([upgrading.md](upgrading.md)) | — |
-| `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
+| `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 delegates kind 30382 to, under any metric (a provider named only for `30382:hops` keeps its cards: search reads them) — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
 | `VERIFY_TRUST_ON_START` | audit **every** reputation document against the kind-10040 and kind-30382 records stored behind it, in the background, once the startup reconcile (`TRUST_RECONCILE_ON_START`) has finished. The reconcile only samples a few cards per named provider, so it catches a provider that was never projected but not one whose cells drifted in part: a card stored with no cell, or a cell left at an older card's score. A ranked read trusts the cell, so such a subject vanishes from every observer whose 10040 names that provider (`filter:rank:gte:1` hides it, `include:spam` shows it) while the card says otherwise. `repair` re-derives each drifted subject in place; **any other value is a check** that only reports. Both log `trust-verify:` lines: progress every 30 s, then the drift count and three drifted pubkeys with what was wrong (`missing`, `orphan`, `stale: N cell(s) differ`), each ready for `/trust/explain/{pubkey}`. It walks the subject of every stored kind 30382, named provider or not: screening takes no lock and only the suspects are re-judged under the writer lock, so the relay keeps serving, but on a corpus of tens of millions of cards it runs for hours (the store measured 280,603 subjects in 259 s on one local node). Leave it set for one boot, read the result, then unset it | unset ⇒ off |
 | `TRUST_PROVIDER_REFRESH_SECONDS` | how often **each** process rebuilds the store's kind-10040 provider pass — the cache every observer's rank lens and Trusted List gate read. The relay needs it so a list the router mirrored in applies to searches; the router needs it so cards it mirrors for a service first named on the relay's socket get projected. One read of every stored 10040 per tick. At most `86400`; a bad value stops the boot before the schema deploy. `0` restores the old behaviour, where a list another process stored applied only at this process's next restart or own 10040 write — see [Search: the subject travels with the pointer](#search-the-subject-travels-with-the-pointer) | `60` |
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
+| `WEBSOCKET_COMPRESSION` | answer permessage-deflate (RFC 7692) on the native websocket for a client that offers it, as browsers do: about half the bytes on the wire (52% less over a session of reads and a live feed on production events, [decisions/relay-server.md](decisions/relay-server.md)). A socket holds a 256 KiB compression window only while it is being answered, 512 at most across the process; live events are compressed once per event loop. A client's compressed message is inflated as it arrives and judged by its inflated size against `MAX_MESSAGE_LENGTH` and `MAX_FRAME_BYTES`, so a small message that inflates past the engine's length is answered by id and one that inflates past `MAX_FRAME_BYTES` closes the connection. `false` serves every socket uncompressed. With `NATIVE_WEBSOCKET=false` it does nothing, and the boot says so | `true` |
 | `NATIVE_WEBSOCKET` | serve the websocket on Netty directly instead of through Ktor (`NativeWebSocket.kt`): an upgrade on `/` is taken ahead of Ktor's HTTP/1.1 handler, and every page and HTTP command stays Ktor's (an upgrade on another path, or over HTTP/2, is Ktor's too). Same slow-consumer rule, ping and silence timeout as the Ktor path; measured 3–4× lower delivery latency and a third less CPU per frame at 12,000 feeds ([live-feeds.md](live-feeds.md)). `false` serves every socket through Ktor, as before November 2026 ([upgrading.md](upgrading.md)) | `true` |
 
 ## Corpus statistics (`GET /stats.json`, `/stats.html`)
@@ -180,7 +182,8 @@ events.
 
 | var | meaning | default |
 |---|---|---|
-| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block | sane defaults |
+| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block. `MAX_FILTERS` x `MAX_LIMIT` also sizes a websocket's outbound queue (one whole stored page plus 8,192 frames), so a page the limits allow never closes its client as a slow consumer. A REQ naming no `limit` is served `DEFAULT_LIMIT` events | sane defaults; `MAX_LIMIT` 5,000, `DEFAULT_LIMIT` 500 |
+| `MAX_FRAME_BYTES` | the most bytes one websocket message may carry, judged from the header of the frame that passes it (fragments count together). A message over `MAX_MESSAGE_LENGTH` but under this is answered by id the way quartz refuses an oversized one (`OK false` for an EVENT or AUTH, `CLOSED` on a REQ or COUNT sub id, else a NOTICE) and the connection carries on; on the native transport such a message is scanned as it arrives, never held. One over this closes the connection with 1009 after a NOTICE. On Ktor (`NATIVE_WEBSOCKET=false`) this setting does not apply: Ktor cannot stream a message and allocates a frame's declared length from its header, so it closes with 1009 on any message past 3 x `MAX_MESSAGE_LENGTH`, and the EVENTs in flight on that connection go unanswered. Not advertised in NIP-11, which has no field for it. See [the decision](decisions/relay-server.md) | `16777216` (16 MiB), or 3 x `MAX_MESSAGE_LENGTH` if that is more |
 | `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning. `NEG_MAX_SYNC_EVENTS` is the ONE bound on a reconciliation: how many ids it walks before answering NEG-ERR `blocked: too many query results`. `DEFAULT_LIMIT` / `MAX_LIMIT` size a REQ's page and never reach a NEG-OPEN, so keep this far above them | strfry-parity (1,000,000) |
 
 ## Access control
@@ -192,6 +195,7 @@ events.
 | `RELAY_INGEST` | how publishes reach the store. `pipeline` writes them through the mirror's `IngestPipeline`: several workers, each batch dropping what the store already holds or has a newer version of before checking a signature, each publish answered with the store's verdict. `queue` keeps quartz's single-writer `IngestQueue`, which verifies every event and commits one batch at a time. Anything else stops the boot. See [ingest-benchmark.md](ingest-benchmark.md) | `pipeline` |
 | `RELAY_INGEST_CONCURRENCY` | the pipeline's workers. The store serializes commits, so a second worker buys overlap (one plans while the other commits), not parallel writes, and that overlap needs a deep queue: publishes are mostly many clients each awaiting their OK, a shallow queue two workers only split into narrow writes that wait on each other. 20 publishers ran at 202-322 ev/s with 2 workers against 316-462 with 1, and a 100k bulk publish was level ([ingest-benchmark.md](ingest-benchmark.md)). Raise it for a relay fed by bulk importers on a box whose Vespa has CPU to spare. `1`-`64` | `1` |
 | `RELAY_INGEST_QUEUE_MB` | the most parsed publishes the pipeline may hold, waiting or in a worker's pass, in megabytes of a deliberately high estimate. A publish past it waits, which holds back that connection the way a full queue does. The count alone was no bound on memory: a 256 KB frame parses to ~476 KB, so a flood of full frames could hold ~1.9 GB, against ~0.55 GB under quartz's queue; 512 is ~840 such events, ~400 MB of real heap, and ordinary traffic meets the count first. One event larger than the whole budget is still taken, alone. `16`-`65536` | `512` |
+| `RELAY_INGEST_LINGER_MS` | how long a narrow batch of publishes may wait for more while they keep arriving, and so the most the pipeline adds to any publish's OK. A stream of publishes that arrives slower than the store writes (a compressed upload, a publisher across a WAN) otherwise goes out as one narrow write per worker pass, and each write pays the store's per-batch work whatever it carries; resends below 128 a batch also miss the dedup probe and have their signatures checked. A batch waits only when events were already queued behind its first, only while it is under half of `RELAY_INGEST_BATCH`, and only while recent waits were fed: publishers that each await their OK stop sending while a batch waits, so after a few waits that went unfed the pipeline stops waiting for them, trying one batch in 256 to notice a stream again. A lone EVENT on an idle relay is never held. `0` writes whatever is waiting at once, as before. The mirror lane does not linger. See [ingest-benchmark.md](ingest-benchmark.md). `0`-`1000` | `20` |
 | `RELAY_INGEST_BATCH` | how many published events one store write may take. Every write costs its Vespa round trips however few events it carries, and the write lock serializes them, so this is the ceiling on publishing: quartz's 64, sized for SQLite, held staging near 200-380 events/s under a bulk publish on 2026-10-13 (lock held 93-98%, batches at the cap, 170-320 ms each). With the pipeline, one batch per worker may wait in front of the workers (the queue path holds four); each waiting publish is a parsed event in the heap. `1`-`8192`; anything else stops the boot | `1000` with the pipeline, `64` with the queue |
 | `RELAY_MIRROR_INGEST_CONCURRENCY` / `RELAY_MIRROR_INGEST_BATCH` / `RELAY_MIRROR_INGEST_QUEUE_MB` | the MIRROR LANE: where the relay queues what a connection signed in (NIP-42) as its own key publishes, which is the sync process: every write it makes. Those events meet the same policies as any client's publish (bans, `ALLOW_PUBKEYS`, the kind lists, the size and tag limits) and fan out to live subscribers like any other; the lane only gives them a pipeline of their own, so a backfill filling its queue never makes a client's publish wait, and it yields to slow client reads (`SERVING_PRESSURE_THRESHOLD_MS`), so the sync's own ingest no longer does. Workers, events per store write and the parsed-event budget, as for `RELAY_INGEST_*`. Needs `RELAY_NSEC`: without an identity there is no lane and no delete hook, and the sync refuses to boot against the relay. Out of range stops the boot | `2` workers of `1000`, `512` MB: the sync's own `SYNC_INGEST_*` defaults |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
@@ -229,24 +233,102 @@ hook as a REQ, so a reconcile declares a lens exactly as a read does and a
 refusal comes back as `NEG-ERR <subid> "auth-required: …"`. That is the right
 default — a reconcile hands over the ids and timestamps of everything matching
 the filter, the corpus's whole shape — but it means **an anonymous peer cannot
-mirror from this relay.** A peer has three ways in: put `include:spam` in the
-NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH, or ask the operator
-for `REQUIRE_READ_LENS=false`.
+mirror from this relay without declaring one.** A peer has three ways in: put
+`include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
+or ask the operator for `REQUIRE_READ_LENS=false`. From store
+59d541d (NosFabrica/vespa-eventstore, pinned from b19d76c) a signed-in
+reconcile is answered through the signer's lens, the same set that connection's
+REQ of the same filter serves (quartz takes the NEG-OPEN snapshot under the
+caller's identity and caches it per caller); `include:spam` waives the floor on
+both. Before that store a signed-in reconcile is answered the whole set. A
+reconcile whose filters read the same set for every caller shares one cached
+snapshot, taken as no caller: one naming an `observer:<64-hex>` (it wins over the
+connection), or `include:spam` with no words, no `sort:` the store recognises and
+no `filter:rank:` floor. Which tokens those are is the store's call
+(`ReadShape.answersEveryConnectionAlike`): one it compiles to nothing (an unknown
+`sort:`, `language:` with no words, `nsfw:`, `domain:`) leaves the reconcile
+shared. Words, a recognised `sort:` or a floor are taken as the caller, since a
+caller's lens might act on them.
+
+A cached snapshot (quartz keeps several, for up to 30 seconds each) survives an
+ordinary publish: a note, a reaction or a profile drops only the snapshots whose
+filters it could join, replace or delete from. Which writes and which searches
+that holds for is the store's call (vespa-eventstore `FilterLocality`), and the
+relay passes it to quartz unchanged. A write the trust gate reads drops every
+snapshot, because it can change what any caller's lens admits: a NIP-85 card
+(kind 30382), a provider list (10040), a request to vanish (62), and a deletion
+(5) unless it names only addresses of other kinds, since the store deletes an `e`
+target whatever its kind. A search that only narrows by facts in each event or by
+the trust gate is judged like a plain filter, so a peer mirroring with a
+termless `include:spam` or `observer:<64-hex>` (with `filter:rank:`,
+`sort:recent` or `-word` exclusions too) reuses its snapshot across unrelated
+writes. Text never does: any words or a quoted phrase, `sort:links`, or a trust
+sort with a `limit` is dropped by every write, because the store cuts text by a
+relevance floor built from bm25, whose term statistics move with every document
+written anywhere in the corpus, and a ranked page cuts by scores other writes
+move. Changes made to the store outside a publish (expiry sweeps, NIP-86 and
+retraction-audit purges, the boot-time trust reconcile and score sweep, the
+store's background trust drain after a 10040 names a new service) drop no
+snapshot and are bounded by the 30 seconds alone.
+
+A snapshot is never served partial, because a peer acts on what a reconcile
+leaves out. On a cluster missing part of its content every NEG-OPEN is a
+`NEG-ERR`, anonymous ones included, where the same REQ is served from what the
+cluster can still search: the snapshot walk never takes a partial answer. And
+from store 604fede (likewise pinned from b19d76c), while a degraded
+cluster leaves the provider map cold, a NEG-OPEN read through a lens is a
+`NEG-ERR` as well: a signed-in caller's on its own snapshot, and a named
+`observer:`'s on the shared path, which still resolves that observer's lens. A
+termless `include:spam` reconcile on the shared path reads no lens, so the
+provider map does not stop it.
 
 **Turn it off** where there is nothing to gate on: a relay whose readers are
 all mirrors, or a store with no NIP-85 trust data behind it, would only be
 refusing every client for a lens it cannot apply. The boot log says so when you
 do.
 
-**Peering with another vespa-relay.** Its router declares nothing — neither on
-its paged REQ fetches nor in its NEG-OPEN filters — so a gated peer refuses
-both. The refusal is at least LOUD: the router reads `auth-required` as a
-refusal outright (`VisitPool.refusedOutright`) and records it, rather than
-mirroring nothing quietly. With `RELAY_NSEC` set the client answers the NIP-42
-challenge instead and is then read through *the relay key's* lens, which on a
-key nobody has scored is an empty answer rather than an error — the quieter
-failure of the two. Until the router learns to declare, peer a gated relay by
-turning the gate off there, or by giving the mirroring key a real lens.
+**Peering with another vespa-relay.** The router reads every relay anonymously
+first, even with `RELAY_NSEC` set: a gated relay reads a signed-in key through
+that key's lens, which on a key nobody has scored is an EMPTY answer and never a
+refusal, so only an anonymous read can hear the gate. It answers a relay's NIP-42
+challenge only once a refusal asks for AUTH without naming a waiver (a paid or
+whitelisted relay) or an EOSE carries NIP-67's `auth` hint (served, with more
+held back for a signed-in reader), and a refusal that names `include:spam` — this relay's
+`auth-required:` sentence does — teaches the waiver instead. From then on every
+read the router makes of that relay carries `include:spam`, merged into any
+`search` the stream's filter already holds, signed in or not (a filter that names
+its own lens, `observer:<hex>`, is sent as it is: its floor is the stream's
+choice, and the gate does not refuse it): the catch-up's
+paged REQs (re-asked at once), the live tail, every NEG-OPEN, the by-id fetches
+after a reconcile, the retraction audit and the upstream push's reconciles. Every
+other relay is asked exactly what the stream says: a relay without NIP-50 refuses
+any filter carrying `search` (strfry answers `unrecognised filter item: search`),
+and one with NIP-50 but not the extension may read the token as words. What a
+relay taught is held per url for the process (`waivedRelays` counts the waived
+ones) and relearned after a restart on the first refusal; a relay that drops off
+the roster loses its waiver, unless it ever signed us in, since a signed-in socket
+can outlive the roster entry and would no longer be refused; a waiver is forgotten
+only when the relay refuses the `search` field itself (`unrecognised filter item:
+search`, `search not supported`), never on a complaint about what a stream's own
+search says (`unsupported search extension`). A gate that offers no
+waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
+`abortedAuthRequired`).
+
+**And it never acts on an answer it cannot believe.** A relay that signed us in
+because it refused a read, and that we hold no waiver for, may be reading us
+through a lens; one that signed us in only to take our EVENTs (an `OK false
+"auth-required: …"`) said nothing of how it reads, and is believed as before. So a retraction audit
+deletes nothing when the relay's reconciled set holds none of ours, under a
+tenth of ours, or under a tenth of what it held at the last audit
+(`retractionsWithheld`), and an upstream push sends nothing when the upstream's
+set for that stream fell under a tenth of what it held, or, on such a signed-in
+relay, under a tenth of ours (`pushesWithheld`). The push reads what the upstream
+holds off the previous pass's own reconcile, so a pass costs one reconcile per
+upstream; it reconciles once more only on the first pass, after a withheld or
+failed one, or when the relay has since signed us in or taught us its waiver. A
+collapse that arrives between passes unannounced is therefore pushed into once,
+and held back from the pass after. A real mass retraction lands there too, and is
+the operator's to apply.
 
 ## Commands over HTTP (NIP-FE)
 
@@ -320,7 +402,7 @@ relay and is ignored.
 **Limits.** The per-connection search gate (`SEARCH_CONCURRENCY_PER_CONNECTION`)
 cannot hold here, because every request is its own connection; the total cap
 above stands in for it. A reader slower than the network holds the relay's
-writes, not its memory; one more than the websocket's bound (8,192 frames)
+writes, not its memory; one more than quartz's bound (8,192 frames)
 behind the store is cut off with a `CLOSED` line, and one that stops reading
 altogether is dropped five seconds past the deadline. Browsers may call it from
 any origin; the CORS rules are the ones every route on this port shares. Behind
@@ -755,7 +837,8 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `HTTP_RELAY_TOTAL` | relay | `0` or more |
 | `HTTP_RELAY_DEADLINE_SECONDS` | relay | `1`–`3600` |
 | `REJECT_FUTURE_SECONDS` | relay | `0` or more |
-| `MAX_MESSAGE_LENGTH` | relay | `512` or more |
+| `MAX_MESSAGE_LENGTH` | relay | `512`–`715827882`, so that 3 x it, the frame floor, is a whole number `MAX_FRAME_BYTES` can hold |
+| `MAX_FRAME_BYTES` | relay | 3 x `MAX_MESSAGE_LENGTH` or more (47185920 at the shipped `.env.example`'s 15728640), up to `2147483647`; the refusal names `MAX_MESSAGE_LENGTH` |
 | `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` | relay | `1` or more |
 | `DEFAULT_LIMIT` | relay | `1`–`MAX_LIMIT`; unset, it is lowered to a smaller `MAX_LIMIT` |
 | `MIN_POW_DIFFICULTY` | relay | `0`–`256` |
@@ -772,11 +855,13 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `RELAY_INGEST_CONCURRENCY` | relay | `1`–`64` |
 | `RELAY_INGEST_QUEUE_MB` | relay | `16`–`65536` |
 | `RELAY_INGEST_BATCH` | relay | `1`–`8192` |
+| `RELAY_INGEST_LINGER_MS` | relay | `0`–`1000` |
 | `RELAY_MIRROR_INGEST_CONCURRENCY` | relay | `1`–`64` |
 | `RELAY_MIRROR_INGEST_BATCH` | relay | `1`–`20000` |
 | `RELAY_MIRROR_INGEST_QUEUE_MB` | relay | `16`–`65536` |
-| the store's settings: `VESPA_FEED_BATCH`, `VESPA_FEED_CONNECTIONS`, `VESPA_FEED_COMPRESSION`, `VESPA_FEED_STREAMS`, `VESPA_FEED_INFLIGHT_FACTOR`, `VESPA_VISIT_SLICES`, `VESPA_VISIT_CONCURRENCY`, `VESPA_VISIT_STREAM`, `VESPA_QUERY_PLANNER`, `VESPA_RECENCY_STRATEGY`, `VESPA_ID_FIRST`, `VESPA_RECENCY_MEMORY`, `VESPA_BODY_EDGE`, `VESPA_ADDRESS_KEYED`, `VESPA_UNBOUNDED_HITS`, `GUARD_OWNERS_DISABLE`, `VESPA_QUERY_FANOUT`, `VESPA_PUT_FANOUT`, `VESPA_MATCH_PHASE_MAX_HITS`, `VESPA_DEDUP_CHUNK`, `VESPA_TRUST_WALK_PAGE`, `VESPA_TRUST_GATE_SLICE`, `VESPA_ACCESS_LOG` | both | the store's own ranges (vespa-eventstore's `EngineTuning.fromEnv`): `VESPA_FEED_BATCH` `0`–`4096`, `VESPA_VISIT_CONCURRENCY` `1`–`100`, every other number `1` or more; `VESPA_FEED_COMPRESSION` `auto`/`gzip`/`none`, `VESPA_RECENCY_STRATEGY` one of the store's strategies, `VESPA_ACCESS_LOG` `default`/`disabled`, the rest switches. Every bad one is named in one refusal |
+| the store's settings: `VESPA_FEED_BATCH`, `VESPA_FEED_CONNECTIONS`, `VESPA_FEED_COMPRESSION`, `VESPA_FEED_STREAMS`, `VESPA_FEED_INFLIGHT_FACTOR`, `VESPA_VISIT_SLICES`, `VESPA_VISIT_CONCURRENCY`, `VESPA_VISIT_STREAM`, `VESPA_QUERY_PLANNER`, `VESPA_RECENCY_STRATEGY`, `VESPA_ID_FIRST`, `VESPA_ID_FIRST_MAX_DIRECT_HITS`, `VESPA_RECENCY_MEMORY`, `VESPA_SELECT_QUERIES`, `VESPA_BODY_EDGE`, `VESPA_ADDRESS_KEYED`, `VESPA_UNBOUNDED_HITS`, `GUARD_OWNERS_DISABLE`, `VESPA_INTENT_PROBE`, `VESPA_QUERY_FANOUT`, `VESPA_PUT_FANOUT`, `VESPA_MATCH_PHASE_MAX_HITS`, `VESPA_DEDUP_CHUNK`, `VESPA_TRUST_WALK_PAGE`, `VESPA_TRUST_GATE_SLICE`, `VESPA_EXPIRY_SWEEP_PAGE`, `VESPA_ACCESS_LOG` | both | the store's own ranges (vespa-eventstore's `EngineTuning.fromEnv`): `VESPA_FEED_BATCH` `0`–`4096`, `VESPA_VISIT_CONCURRENCY` `1`–`100`, `VESPA_ID_FIRST_MAX_DIRECT_HITS` `0` or more (default 200: a feed read planned at most that many hits is served in one query, `0` keeps every read id-first), every other number `1` or more; `VESPA_FEED_COMPRESSION` `auto`/`gzip`/`none`, `VESPA_RECENCY_STRATEGY` one of the store's strategies, `VESPA_ACCESS_LOG` `default`/`disabled`, the rest switches (`VESPA_INTENT_PROBE=false` ranks every search as before the topical intent, and skips its probe; `VESPA_SELECT_QUERIES=false` sends text-free reads as YQL). Every bad one is named in one refusal |
 | `VESPA_FEED_URLS` / `VESPA_QUERY_URLS` | both | comma-separated `http(s)` URLs with a host, no empty entry |
+| `VESPA_AUTHOR_SHARDS` / `VESPA_AUTHOR_BUCKETS` | both | `1`–`256`; a bucket map naming every bucket `00`–`ff` exactly once, cluster `0` serving. The two must agree on the cluster count (store versions with author shards only) |
 | `SYNC_INGEST_CONCURRENCY` | sync | `1`–`64` |
 | `SYNC_INGEST_BATCH` | sync | `1`–`20000` |
 | `SYNC_NEG_PAGE_TARGET` / `SYNC_NEG_PAGE_SLACK_SECONDS` | sync | `0` or more |
@@ -790,5 +875,5 @@ anything outside the range. "Any" is a whole number of any size; a switch is
 | `PARSE_AUDIT_INTERVAL_SECONDS` | sync | `5` or more |
 | `SYNC_WIRE_LOG` | sync | `sent` or `full`, in any case |
 | `AUTO_DEPLOY` | relay | a switch |
-| `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `NATIVE_WEBSOCKET` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
+| `REQUIRE_READ_LENS` / `SEARCH_EXPAND_REFERENCES` / `HTTP_RELAY` / `RELAY_ONION_ADVERTISE` / `LOG_CONNECTIONS` / `NATIVE_WEBSOCKET` / `WEBSOCKET_COMPRESSION` / `REINDEX_FTS_ON_START` / `TRUST_RECONCILE_ON_START` / `PULSE_PUBLIC` / `PULSE_CLIENT_DETAIL` | relay | a switch |
 | `SYNC_PULSE_PUBLIC` / `SYNC_PULSE_CLIENT_DETAIL` / `SYNC_TOR_ALL` | sync | a switch |

@@ -7,7 +7,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 globalThis.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
 
-const { targetsOf, pointerFilters, BATCH, LABEL_LIMIT, trustedSigners } =
+const { targetsOf, pointerFilters, BATCH, LABEL_LIMIT, DECLARATION_LIMIT, trustedSigners } =
   await import(new URL("../../main/resources/web/shared/pointers.js", import.meta.url));
 const { delegationsOf } = await import(new URL("../../main/resources/web/shared/providers.js", import.meta.url));
 const { provenanceOf } = await import(new URL("../../main/resources/web/provenance.js", import.meta.url));
@@ -141,6 +141,10 @@ const byKind = (filters) => {
   assert.strictEqual(lists.length, 2, "over a batch is two filters, and NIP-01 ORs them inside one REQ");
   assert.strictEqual(lists[0]["#p"].length, BATCH);
   assert.strictEqual(lists[1]["#p"].length, 5);
+  // Ten providers asserting a full batch is 1,000 rows, twice the relay's default page.
+  for (const f of pointerFilters(targetsOf(many), TRUST, { labels: false, observer: READER })) {
+    assert.strictEqual(f.limit, DECLARATION_LIMIT, "a declaration filter names its limit rather than take the relay's default");
+  }
 }
 
 // A pointer the relay spliced is still in the page, so the fold sees some twice.

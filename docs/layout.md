@@ -138,6 +138,9 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         demand because the address is minted after we boot
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+                        and builds its LiveEventStore (`liveEventStore`) with
+                        the store's FilterLocality, which says which writes and
+                        searches keep quartz's cached NEG-OPEN snapshots
     LensRequiredPolicy.kt  THE RELAY'S DEFAULT BEFORE AUTH: a REQ or COUNT from
                         a connection that has not authenticated is answered only
                         if EVERY filter says whose eyes it is read through — a
@@ -364,6 +367,9 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           the relays that never got the newest
     ProbeGate.kt          whether either drop-probe still earns its round trip,
                           learned from what it drops
+    BatchFill.kt          how a worker fills a batch: what is waiting, then a
+                          bounded linger while arrivals keep coming (the relay's
+                          publishes only), learned from whether they did
     BisectingInsert.kt    the batch-bisecting write
     UpstreamPush.kt       dir = up: quartz's NegentropyStoreSync, up only, over one
                           gated snapshot per pass and a per-url budget

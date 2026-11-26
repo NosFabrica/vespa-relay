@@ -119,6 +119,18 @@ An outcome loop that dies partway (only an `Error` gets past the sink's guard)
 books the outcomes it had not reached as an `ingest fault`, so
 `accepted + rejected` still meets `submitted`.
 
+**A worker an `Error` ends is fatal to the relay and reads as `wedged`.** The
+relay publishes through one worker by default, and nothing restarted a dead
+one: every publish after it waited for an OK that never came, while `wedged`
+read the dead worker's slot as idle and the relay never asked. The pipeline
+now counts such an exit (`workersStopped`), `wedged` is true while any worker
+is gone, and `onWorkerStopped` tells the owner: the relay logs and exits 1 for
+compose to restart it; the sync keeps reporting it on its health line. A store
+write still isolates any throwable as poison, so the exits left are the pass's
+own bookkeeping, and an `OutOfMemoryError` ends every process at its throw
+(`-XX:+ExitOnOutOfMemoryError` in each start script) before any catch can
+leave the JVM running without the thread it killed.
+
 **`dropSuperseded` reports its drops to the refusal sink, after `verifyId`.**
 The refused-id filter and the healer are fed by exactly one signal, a store
 refusal, and the fast path exists to stop the store producing it for the
@@ -129,6 +141,30 @@ old `created_at`, stamp it with the id of an event this relay should never
 fetch, and two of those suppress that id permanently. `verifyId` closes it for
 ~1.5µs against the 48-95µs a signature costs, and the signature is not needed
 for this class because supersession is decided inside the hashed content.
+
+**Shutdown writes what ingest holds, for up to 15 seconds.** The relay's hook
+closed intake and cancelled the writers in the same breath, so a batch
+mid-commit was cut, and the events still queued were never answered, nor was
+their share of the byte budget returned. `shutDownIngest` now closes intake,
+waits up to `INGEST_DRAIN_MS` for the workers to empty the queue and exit, then
+cancels, and `close` answers whatever no worker took as shutting down. Compose
+gives the relay a 30 s `stop_grace_period`, since Docker's 10 s default would
+kill the wait. The sync's pipeline is still cancelled at once: it writes only
+to the relay, and a band is recorded only on the relay's answers, so a cut
+batch is fetched again, never lost; the monitor writes through no pipeline.
+
+**A version beaten in the batch hears `replaced:` only once its winner is
+stored.** The in-batch contest answered the older versions `replaced:` inside
+`admit`, before the newest version's own write was judged. When that write was
+refused (unstorable text, expired, deleted, or on the sync the relay's frame
+limit, which the newest follow list is likeliest to exceed) no version was
+stored, yet every older copy had been told it was replaced, and the sync's
+refusal sink records `replaced:` as permanent, so those versions were dropped
+for good. The older versions now wait on the winner's answer: stored (accepted,
+a duplicate, or itself replaced by a stored version) and they hear `replaced:`
+as before; anything else and they hear a retryable `Failed`, reported to no
+sink. A winner the relay refuses twice is suppressed at submit, so the next
+offer's contest is won by the newest version that can be stored.
 
 **The bisecting insert has a fixed write budget.** A bulk write fails as a
 unit, so one bad event cost the whole batch: 999 good events lost per bad one
@@ -400,6 +436,27 @@ waiting publish is a parsed event in the heap, up to the relay's 256 KiB frame
 limit each, and a publisher's own window already buffers what it sends; the
 mirror's depth rides out download bursts the relay does not have. At the
 defaults that holds 2,000 waiting plus 2,000 in two batches, against 6,096.
+
+**A narrow batch of publishes lingers, bounded and only while it is fed** (`BatchFill`,
+`RELAY_INGEST_LINGER_MS`, 20 ms). A worker took what was waiting and wrote it, so a publisher whose
+events arrive slower than the store writes got one narrow write per pass: a compressed resend
+stream (OkHttp deflating every frame on one thread, ~3,500 ev/s) made ~3,300 writes per 100k at
+~31 events each, against ~710 at ~140 uncompressed, and the relay spent ~250 µs an event against
+~130, because every write pays the store's per-batch work and a batch under the probe's 128 also
+checks every resend's signature. Now a batch that already had events queued behind its first, and
+is under half the batch size, waits up to the bound for more; a lone EVENT never waits. Two
+simpler stops were measured and dropped. A fixed silence (2 ms, then 5) ended most waits early,
+because a stream reaches the channel in clumps 3-10 ms apart: 2 ms kept ~1,700 writes. And no
+stop at all cost publishers that each await their OK 22-64%, since they stop sending while the
+batch waits: 20 such clients resending ran at ~600 ev/s against ~1,650. So the fill learns
+instead, as `ProbeGate` does: each wait is scored by how late into it events still arrived (a
+stream ~0.85, waiting publishers ~0.15), an average below one half stops the waiting, and one
+eligible batch in 256 waits anyway, so a stream that starts later is noticed. The average falls
+slowly (weight 1/8, against a stream's clumps) and rises fast from a sample (1/2). 10 ms reached
+~1,160 writes, 20 ms ~740, 50 ms ~470 for little more CPU saved. Only the relay's publishes take
+it: the mirror lane and the sync's own pipeline keep 0, since their queues are deep and the
+sync's writer already sends whole batches; neither was measured with a linger. With more than one
+worker the fill is taken in turns, or an idle worker would take the events a waiting one waits for.
 
 ## Text a Vespa string field cannot hold is refused, by design
 

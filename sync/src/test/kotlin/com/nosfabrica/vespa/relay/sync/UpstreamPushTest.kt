@@ -23,8 +23,12 @@ package com.nosfabrica.vespa.relay.sync
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.memory.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.config.SyncUpstream
+import com.nosfabrica.vespa.relay.peers.AuthGate
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
@@ -54,6 +58,11 @@ class UpstreamPushTest {
         left: Int = 0,
     ) = NegentropyStoreSync.GroupResult(target.url, target.filter, need = 0, have = uploaded + left, downloaded = 0, uploaded = uploaded, deletionsSentUp = 0, deletionsAppliedDown = 0, pagedFallback = error != null, error = error, uploadsLeft = left)
 
+    private fun note(
+        n: Int,
+        kind: Int,
+    ) = Event("%064x".format(n), "a1".repeat(32), 1_700_000_000L + n, kind, emptyArray(), "", "b2".repeat(64))
+
     @Test
     fun `a slow push does not hold the snapshot gate`() =
         runBlocking {
@@ -69,6 +78,7 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = gate,
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, _ ->
                             reconciling.complete(Unit)
                             release.await()
@@ -104,6 +114,7 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = Semaphore(1),
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, local ->
                             mostAtOnce = maxOf(mostAtOnce, inFlight.incrementAndGet())
                             seen += local
@@ -137,12 +148,177 @@ class UpstreamPushTest {
                         intervalSec = 60,
                         streamGate = Semaphore(1),
                         scope = scope,
+                        peerHeld = { _, local -> local.size },
                         pushGroup = { target, _ -> if (target == urls.first()) pushed(target, 0, error = "no NIP-77") else pushed(target, 2, left = 5) },
                     )
                 val outcomes = withTimeout(5_000) { push.pass(urls) }
                 assertEquals(listOf(urls[1]), outcomes.keys.toList())
                 assertEquals(5, outcomes.getValue(urls[1]).uploadsLeft, "what the budget cut is the next pass's")
                 assertEquals(2L, push.pushed.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** One [UpstreamPush] runs every up stream, so a baseline one stream set must not judge another's answer. */
+    @Test
+    fun `two up streams to one url keep their own baselines`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex())
+                (1..200).forEach { store.insert(note(it, kind = 1)) }
+                (201..205).forEach { store.insert(note(it, kind = 0)) }
+                val notes = up.copy(streamName = "notes", filter = Filter(kinds = listOf(1)))
+                val profiles = up.copy(streamName = "profiles", filter = Filter(kinds = listOf(0)))
+                val pushedFor = mutableListOf<String>()
+                val push =
+                    UpstreamPush(
+                        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+                        store = store,
+                        intervalSec = 60,
+                        streamGate = Semaphore(1),
+                        scope = scope,
+                        // The upstream holds every note of ours, and four of our five profiles.
+                        peerHeld = { target, local -> if (target.streamName == "notes") local.size else local.size - 1 },
+                        pushGroup = { target, _ ->
+                            pushedFor += target.streamName
+                            pushed(target, uploaded = 1)
+                        },
+                    )
+                push.pass(listOf(notes))
+                push.pass(listOf(profiles))
+                assertEquals(listOf("notes", "profiles"), pushedFor, "a 5-profile set is not a collapsed 200-note one")
+                assertEquals(0L, push.withheld.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /**
+     * An upstream that wants NIP-42 to take events signs us in on the push's first EVENT, a pass in;
+     * after that its answers are believed as before, so a backfill the budget spreads over passes goes on.
+     */
+    @Test
+    fun `an upstream that asked us to sign in to write still gets its backfill`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val store = NostrSemanticsStore(InMemoryEventIndex())
+                (1..200).forEach { store.insert(note(it, kind = 1)) }
+                val waivers = LensWaivers(log = {})
+                val writeRefusal = AuthGate.refusalIn(OkMessage("a".repeat(64), false, "auth-required: this relay takes events from its members only"))!!
+                var held = 0
+                val push =
+                    UpstreamPush(
+                        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+                        store = store,
+                        intervalSec = 60,
+                        streamGate = Semaphore(1),
+                        scope = scope,
+                        waivers = waivers,
+                        peerHeld = { _, _ -> held },
+                        // Each pass's budget takes 5 events up; the relay asks for AUTH on the first EVENT.
+                        pushGroup = { target, _ ->
+                            waivers.heard(target.url, writeRefusal)
+                            held += 5
+                            pushed(target, uploaded = 5)
+                        },
+                    )
+                repeat(5) { push.pass(listOf(up)) }
+                assertEquals(25, held, "every pass pushed")
+                assertEquals(0L, push.withheld.get())
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    private fun pushOver(
+        scope: CoroutineScope,
+        store: NostrSemanticsStore,
+        waivers: LensWaivers,
+        sized: AtomicInteger,
+        heldBySizing: Int,
+        group: (SyncUpstream) -> NegentropyStoreSync.GroupResult,
+    ) = UpstreamPush(
+        client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp3.OkHttpClient() }, scope),
+        store = store,
+        intervalSec = 60,
+        streamGate = Semaphore(1),
+        scope = scope,
+        waivers = waivers,
+        peerHeld = { _, _ ->
+            sized.incrementAndGet()
+            heldBySizing
+        },
+        pushGroup = { target, _ -> group(target) },
+    )
+
+    private suspend fun holdingNotes(n: Int) = NostrSemanticsStore(InMemoryEventIndex()).also { s -> (1..n).forEach { s.insert(note(it, kind = 1)) } }
+
+    /** The group's reconcile already says what the upstream holds, so a second one per pass only to size it is waste. */
+    @Test
+    fun `an upstream is sized by a reconcile of its own only on the first pass`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                val groups = AtomicInteger()
+                val push =
+                    pushOver(scope, holdingNotes(20), LensWaivers(log = {}), sized, heldBySizing = 20) { target ->
+                        groups.incrementAndGet()
+                        pushed(target, uploaded = 0)
+                    }
+                repeat(3) { push.pass(listOf(up)) }
+                assertEquals(3, groups.get(), "every pass pushed")
+                assertEquals(1, sized.get(), "one reconcile per pass after the first")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** Read off the pass before, a collapse is held back one pass late, and the next pass sizes it afresh. */
+    @Test
+    fun `a collapse the group's own reconcile shows withholds the next pass`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                var collapsed = false
+                val push =
+                    pushOver(scope, holdingNotes(200), LensWaivers(log = {}), sized, heldBySizing = 200) { target ->
+                        // The upstream answers as if it held none of our 200, and the budget let none up.
+                        if (collapsed) pushed(target, uploaded = 0, left = 200) else pushed(target, uploaded = 0)
+                    }
+                push.pass(listOf(up))
+                collapsed = true
+                push.pass(listOf(up))
+                assertEquals(0L, push.withheld.get(), "the collapse is first seen in this pass's own reconcile")
+                assertTrue(push.pass(listOf(up)).isEmpty(), "and the pass after it pushes nothing")
+                assertEquals(1L, push.withheld.get())
+                assertEquals(1, sized.get())
+                push.pass(listOf(up))
+                assertEquals(2, sized.get(), "a withheld pass leaves nothing to read off, so the next is sized")
+            } finally {
+                scope.cancel()
+            }
+        }
+
+    /** An answer stands for the next pass only while the gate reads the upstream as it did. */
+    @Test
+    fun `an upstream the gate reads differently since is sized again`(): Unit =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            try {
+                val sized = AtomicInteger()
+                val waivers = LensWaivers(log = {})
+                val push = pushOver(scope, holdingNotes(20), waivers, sized, heldBySizing = 20) { target -> pushed(target, uploaded = 0) }
+                push.pass(listOf(up))
+                waivers.heard(up.url, AuthGate.refusalIn(ClosedMessage("sub", "auth-required: members only"))!!)
+                push.pass(listOf(up))
+                assertEquals(2, sized.get(), "signed in since: its next answer is measured, not assumed")
+                push.pass(listOf(up))
+                assertEquals(2, sized.get())
             } finally {
                 scope.cancel()
             }

@@ -429,7 +429,7 @@ internal val MIRROR_TERMS: JsonObject =
         term(
             "bottleneck",
             "WHERE THE CONSTRAINT IS, decided by the router itself: `wedged` (no worker has started a batch " +
-                "in minutes — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
+                "in minutes, or a worker died — ingest has STOPPED, and nothing queued is being written), `ingest` (the queue is " +
                 "full, so every download is backpressured behind it — the mirror is as fast as the store), " +
                 "`downloads` (the queue drains as fast as it fills, so the relays are the limit), `upstream` " +
                 "(nothing is arriving at all) or `mixed`. A full queue and an empty one are opposite diagnoses " +
@@ -995,6 +995,27 @@ internal val MIRROR_TERMS: JsonObject =
                 "is taken at its word, one that only says the ask was too wide is halved until it is accepted " +
                 "— because relay limits differ and a static cap is either above somebody's or below " +
                 "everybody's. Zero means no relay on this roster has ever complained about filter width.",
+        )
+        term(
+            "waivedRelays",
+            "Relays read with NIP-50's `include:spam`, the waiver a web-of-trust relay (another vespa-relay) " +
+                "answers with its whole corpus instead of its trust-gated share. Learned from the relay's own " +
+                "refusal: this router reads anonymously, and a gated relay refuses an anonymous read naming the " +
+                "waiver. Every other relay is asked exactly what the stream says, because a relay without NIP-50 " +
+                "refuses any filter carrying `search`. Zero means no relay on this roster gates its reads by trust.",
+        )
+        term(
+            "retractionsWithheld",
+            "Retraction audits that deleted nothing because the relay's reconciled set was too small to believe: " +
+                "none of what we hold, under a tenth of it, or under a tenth of what it held at the last audit. A " +
+                "relay reading a signed-in key through a trust lens answers exactly that, and refuses nothing. A real " +
+                "mass retraction lands here too, and is the operator's to apply.",
+        )
+        term(
+            "pushesWithheld",
+            "Upstream push rounds that sent nothing because the upstream's set was too small to believe: under a " +
+                "tenth of what it held at the last round, or, on a relay we are signed in to with no waiver learned, " +
+                "under a tenth of ours. Pushing on such an answer would push it everything we hold.",
         )
         term(
             "unreadableUnits",

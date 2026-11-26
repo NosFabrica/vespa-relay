@@ -36,14 +36,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 
-/** What one connection may ask for. The engine enforces these and NIP-11 `limitation` is rendered from them. */
+/**
+ * What one connection may ask for. The engine enforces these and NIP-11 `limitation` is rendered from them.
+ * A REQ naming no `limit` is served 500 events, strfry's default, not the 5,000 `max_limit` allows: a client
+ * that reconnects and catches up with open filters otherwise pulls ten times the history it shows.
+ */
 fun defaultRelayLimits(): RelayLimits =
     RelayLimits(
         maxMessageLength = 262_144,
         maxSubscriptions = 50,
         maxFilters = 20,
         maxLimit = 5_000,
-        defaultLimit = 5_000,
+        defaultLimit = 500,
         maxSubidLength = 256,
         maxEventTags = 2_000,
         maxContentLength = 131_072,
@@ -70,7 +74,7 @@ fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     }
     val limits =
         RelayLimits(
-            maxMessageLength = env.intOr("MAX_MESSAGE_LENGTH", d.maxMessageLength, MIN_MESSAGE_LENGTH..Int.MAX_VALUE),
+            maxMessageLength = maxMessageLengthFromEnv(env) ?: d.maxMessageLength,
             maxSubscriptions = env.intOr("MAX_SUBSCRIPTIONS", d.maxSubscriptions, positive),
             maxFilters = env.intOr("MAX_FILTERS", d.maxFilters, positive),
             maxLimit = maxLimit,
@@ -89,6 +93,51 @@ fun relayLimitsFromEnv(env: Map<String, String>): RelayLimits {
     if (lower != null && upper != null && lower > upper) error("CREATED_AT_LOWER_LIMIT=$lower is above CREATED_AT_UPPER_LIMIT=$upper; no event could be stored.")
     return limits
 }
+
+/** The most UTF-8 bytes a message of the engine's length can take: three per character, as the HTTP body cap counts it. */
+fun messageBytes(limits: RelayLimits): Long = (limits.maxMessageLength ?: defaultRelayLimits().maxMessageLength ?: 262_144) * 3L
+
+/**
+ * The websocket's frame cap with `MAX_FRAME_BYTES` unset: [DEFAULT_MAX_FRAME_BYTES], or more when the
+ * engine admits longer messages, so the engine's length always decides first.
+ */
+fun defaultMaxFrameBytes(limits: RelayLimits): Int = maxOf(DEFAULT_MAX_FRAME_BYTES.toLong(), messageBytes(limits)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+/**
+ * `MAX_FRAME_BYTES`: the largest websocket message read, judged from the frame header before its payload is
+ * buffered. One under it but over the engine's length is refused by id; one over it closes the connection.
+ */
+fun maxFrameBytesFromEnv(
+    env: Map<String, String>,
+    limits: RelayLimits,
+): Int {
+    val set = env.strictInt("MAX_FRAME_BYTES", 1..Int.MAX_VALUE) ?: return defaultMaxFrameBytes(limits)
+    val floor = messageBytes(limits)
+    if (set < floor) {
+        error(
+            "MAX_FRAME_BYTES=$set is below $floor, three bytes for each of MAX_MESSAGE_LENGTH's ${floor / 3} characters: " +
+                "a message the engine may accept would close the connection. Raise it to $floor or more, or lower MAX_MESSAGE_LENGTH.",
+        )
+    }
+    return set
+}
+
+/**
+ * Past every real event, and a bound on what one message may make the relay read: past the engine's length
+ * the native transport streams a message without holding it, Ktor holds it whole (docs/decisions/relay-server.md).
+ */
+const val DEFAULT_MAX_FRAME_BYTES = 16 * 1_048_576
+
+/** `MAX_MESSAGE_LENGTH`, at most a third of the largest frame cap, since a message of it may take three bytes a character. */
+private fun maxMessageLengthFromEnv(env: Map<String, String>): Int? {
+    val set = env.strictInt("MAX_MESSAGE_LENGTH", MIN_MESSAGE_LENGTH..Int.MAX_VALUE) ?: return null
+    if (set > MAX_MESSAGE_LENGTH) {
+        error("MAX_MESSAGE_LENGTH=$set is above $MAX_MESSAGE_LENGTH: at three bytes a character its messages would pass the largest MAX_FRAME_BYTES, ${Int.MAX_VALUE}.")
+    }
+    return set
+}
+
+private const val MAX_MESSAGE_LENGTH = Int.MAX_VALUE / 3
 
 /** Room for the smallest EVENT frame: an event's id, pubkey and signature alone are 256 characters. */
 private const val MIN_MESSAGE_LENGTH = 512
@@ -164,7 +213,8 @@ fun ingestBatchFromEnv(
 /**
  * How publishes reach the store. `RELAY_INGEST=pipeline` (the default) writes them through the
  * mirror's [com.nosfabrica.vespa.relay.ingest.IngestPipeline], `RELAY_INGEST_CONCURRENCY` workers
- * wide, holding at most `RELAY_INGEST_QUEUE_MB` of parsed publishes; `queue` keeps quartz's
+ * wide, holding at most `RELAY_INGEST_QUEUE_MB` of parsed publishes, a narrow batch waiting up to
+ * `RELAY_INGEST_LINGER_MS` for more while publishes keep arriving; `queue` keeps quartz's
  * single-writer [IngestQueue]. Null [tuning] means the queue.
  */
 data class RelayIngest(
@@ -181,6 +231,7 @@ fun relayIngestFromEnv(
             // Read anyway: a malformed value stops the boot in either mode, like every strict setting.
             env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64)
             env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536)
+            env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS)
             RelayIngest(null, ingestBatchFromEnv(env))
         }
 
@@ -188,12 +239,20 @@ fun relayIngestFromEnv(
             val batch = ingestBatchFromEnv(env, DEFAULT_PIPELINE_BATCH)
             val concurrency = env.strictInt("RELAY_INGEST_CONCURRENCY", 1..64) ?: DEFAULT_PUBLISH_CONCURRENCY
             val queueMb = env.strictInt("RELAY_INGEST_QUEUE_MB", 16..65_536) ?: DEFAULT_PIPELINE_QUEUE_MB
+            val lingerMs = env.strictInt("RELAY_INGEST_LINGER_MS", 0..MAX_PUBLISH_LINGER_MS) ?: DEFAULT_PUBLISH_LINGER_MS
             // One batch per worker waiting: enough to keep every worker fed, and no deeper, since
             // each waiting publish is a parsed event in the heap (the mirror's floor is 4,096).
             // And a byte bound over waiting plus in-pass events, because a count is no bound on
             // bytes when every publish may be a full frame.
             RelayIngest(
-                IngestTuning(concurrency, batch, dedupChunk = engine.dedupWidth(), queue = batch * concurrency, queueBytes = queueMb * 1_048_576L),
+                IngestTuning(
+                    concurrency,
+                    batch,
+                    dedupChunk = engine.dedupWidth(),
+                    queue = batch * concurrency,
+                    queueBytes = queueMb * 1_048_576L,
+                    lingerMs = lingerMs.toLong(),
+                ),
                 batch,
             )
         }
@@ -243,6 +302,15 @@ private const val DEFAULT_PUBLISH_CONCURRENCY = 1
  * ~400 MB real; typical kind 3s (~53 KB) stay under the count cap long before this.
  */
 private const val DEFAULT_PIPELINE_QUEUE_MB = 512
+
+/**
+ * How long a narrow batch of publishes may wait for more while they keep arriving: the most the
+ * pipeline adds to any publish's OK. Why 20 and not 10 is measured in docs/ingest-benchmark.md.
+ */
+private const val DEFAULT_PUBLISH_LINGER_MS = 20
+
+/** A linger past this is a latency no publisher would accept for a wider write. */
+private const val MAX_PUBLISH_LINGER_MS = 1_000
 
 /** The largest batch docs/decisions/ingest.md measured through the store (2 x 8192). */
 private const val MAX_INGEST_BATCH = 8_192

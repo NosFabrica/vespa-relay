@@ -172,6 +172,17 @@ subscription's `cancel` ends, since nothing coroutine-shaped outlives EOSE any
 more. `LiveGateDeliveryTest` drives the registration directly, on the raw and
 the screened replay, and fails if `openSubscription` forwards past the gate.
 
+**A search queued for its turn holds at most 1,000 live events, then is
+CLOSED.** Live events wait in `HeldLive` until the subscription's live gate is
+built, and a ranked REQ builds it only once it has the connection's
+`SearchGate` permit. Quartz forwards its own hold (1,000) ahead of EOSE, so
+while the REQ queued behind a slow search, every live match beyond that grew
+the list with no bound, and nothing bounds how long the search ahead runs.
+Sending them ungated would stream authors the lens drops, and dropping them
+silently would break the REQ, so past `MAX_HELD_LIVE` the queued REQ ends with a
+`CLOSED` that says so. Only a read that queues races the bound; the rest run
+as before.
+
 **A REQ's stored rows are served partial while a Vespa node is down.** With one
 content node offline every engine answer is `non-ideal-state` below 100%, and
 the store refused them all, so every REQ and NIP-50 search closed with "PARTIAL
@@ -287,12 +298,184 @@ when the writer has waited 30s on one frame, checked on every offer and once a
 second; a non-reader holds at most what arrives in that window, still under the
 8192-frame bound, and the frame bound is unchanged.
 
-**The websocket's frame cap is the engine's message length, in bytes.** Ktor's
-default is unbounded, and it judges a frame from its header, so an anonymous
-client could declare a gigabyte and have the server try to hold it before
-quartz's character limit ever saw a message. The cap is three bytes per
-character, the same bound the HTTP body cap uses, and a refused frame closes
-with 1009.
+**The frame bound is one whole stored page plus 8192.** A fixed 8192 closed a
+client asking one REQ the limits allow (8 filters of 5,000 rows: closed 1013
+after 3,845 events, no EOSE), because the store builds the page whole and
+emits every row into the queue at once. The bound is now `MAX_FILTERS` x
+`MAX_LIMIT` plus 8192 for live traffic (`outboundFrameCap`, on both
+transports). The page's rows are on the heap already when they are queued, so
+the bound adds no memory a REQ could not already cost; the character budget and
+the 30s stall still close a client that stopped reading.
+
+**A message the engine cannot take is answered by id, and on the native
+transport it is read without being held.** The websocket cap was the engine's
+length at three bytes per character (786,432 with the default 256 KiB), and it
+closed the connection: on 2026-11-24 one real 1,014,148-byte kind 3 in a bulk
+publish dropped the socket and the ~1,500 EVENTs in flight on it, which NIP-01
+owed an OK each. Raising the cap to 4 MiB fixed that and cost memory, because
+Netty's decoder holds a whole frame before anything reads it: one 3 MB frame
+peaked at 7.2 MB of buffers (the cumulation, doubled past 4 MiB, plus its copy)
+before the decoded string, and a fragmented message held just under the cap
+with a ping every 30 s stayed pinned for good. So `InboundFrameDecoder`
+replaces Netty's decoder and aggregator: it makes the same checks with the same
+close codes, copies a frame's payload as it arrives into a buffer of its exact
+size, and once a message passes the engine's length in bytes (past which quartz
+would refuse it whatever its characters) it stops holding it and scans it a
+byte at a time for the top-level event id, as quartz's `eventIdOfFrame` reads
+it, keeping only the first 64 KiB. Quartz then gets that head padded past its
+length, so the answer (`OK false` by id, `CLOSED` on a sub id, else a NOTICE),
+its reason and its lane are quartz's own; the padding costs no more than one
+message the engine would take. A held message must finish within two minutes
+whatever pings come with it (1008), on a clock that stops while the relay has
+paused the connection's reads for its own backlog: a deadline that ran through
+the relay's pause closed publishers for the relay's slowness (150 pipelined
+EVENTs against a 300 ms store closed 1008 with 33 answered). A streamed
+message has no deadline: it holds 64 KiB, so a client trickling one costs a
+connection, as an idle one with pings does. Bytes arriving count as hearing
+from the client, so one large frame on a slow link is not reaped by the 60 s
+silence timeout, which used to wait for a whole frame. What one connection holds of its input is
+then its inbox (paused at 16M characters, below) and the one message being
+read, of at most the engine's length in bytes: those bytes, then the decoded
+string, which is as large again, or twice as large where one character falls
+outside Latin-1 and the JVM stores it in UTF-16. That is up to three times the
+engine's length in bytes, about 2.4 MB at the defaults and about 140 MB at the
+shipped `MAX_MESSAGE_LENGTH=15728640` (45 MiB of bytes), where Netty's path
+held the frame two or three times over (the cumulation, past 4 MiB grown to
+double, and its copy) before the same string: an operator who raises
+`MAX_MESSAGE_LENGTH` buys that per connection.
+
+**`MAX_FRAME_BYTES` is a bound on reading, not on memory.** On the native
+transport it ends a message that passes it (16 MiB by default, past every real
+event), with a NOTICE and 1009, judged from the header of the frame that
+passes it; before that a message costs a scan, not a buffer. Its floor is the
+engine's length in bytes, so a message the engine may take is never cut short.
+
+**A connection closed for what it sent answers what it already read, then
+half-closes.** Past `MAX_FRAME_BYTES`, or past a held message's deadline, the
+native session used to clear its outbox and close at once: the OKs owed to
+commands read just before were lost (twenty EVENTs written with the oversized
+frame got none), and a close with input still unread sends a reset, which
+discards whatever the relay had queued for the client, the NOTICE and the
+close frame included. Now input stops (reads go on, and the decoder drops what
+they bring in bulk), the NOTICE queues behind the answers, and the close frame
+goes out once the commands already read are answered or five seconds have
+passed. Answered means counted: every EVENT and AUTH read is owed an OK, paid
+off as the OK passes the session's sink, because the pipeline answers from a
+batch long after the command has run (an inbox merely drained let OKs 2.5 s
+late find the connection closed). Then the output
+side shuts, so the client gets a FIN behind the close; the socket closes on its
+EOF, or five seconds later. A client that breaks the protocol gets its close
+code at once, still half-closed. Ktor closes on its own terms.
+
+**The native inbox pauses reads on characters as well as commands.** A
+connection's reads paused at 64 queued commands, which bounded it only while a
+command was small: 64 messages at the engine's length in bytes is 50 MB. It also
+pauses at 16M queued characters (64 messages at the default engine length) and
+resumes under a quarter of that, so ordinary traffic still meets the count
+first and a run of large frames holds at most the budget and one frame.
+
+**On Ktor, a message is bounded by the engine's length, and the route reads
+its own frames.** Ktor 3 queues incoming frames without bound by default, so a
+publisher outrunning its commands had every frame read into memory (60 EVENTs
+of 600 KB all taken within two seconds while one ran every 100 ms). Bounding
+Ktor's queues to one frame fixed that and starved pongs: its session hands a
+pong to its pinger only after the frames ahead of it, which wait on the
+command running, so a backlog longer than the 60 s timeout closed a healthy
+publisher 1011 "Ping timeout" (130 EVENTs at 1 s each: closed at 90 s, 89
+answered). So the Ktor route is raw: one coroutine reads every frame as it
+comes, answers pings, hears pongs and joins messages into an inbox with the
+native transport's budgets, suspending while over them; the route pings and
+reaps silence itself, a paused connection counting as heard from, and Ktor's
+pinger is off. Ktor's reader allocates a frame's declared length from its
+header and keeps that buffer for the connection, and it cannot stream, so its
+`maxFrameSize` stays the engine's length in bytes: a message past it closes
+the connection with 1009, as before 2026-11-24, and its in-flight EVENTs go
+unanswered; the native transport, the default, answers it by id. A Ktor
+connection then holds its inbox and about five messages of up to the engine's
+length (one in each of Ktor's two raw queues, the frame its reader collects,
+the one its forwarder holds, the one the route joins). Ktor is the fallback
+transport (`NATIVE_WEBSOCKET=false`); it has no held-message deadline.
+
+**The native websocket answers permessage-deflate.** Browsers, OkHttp and most
+Nostr clients offer it (RFC 7692), and a Nostr frame is hex ids, keys,
+signatures and repeated field names that zlib halves. On 8,000 events read off
+`search.brainstorm.world` (`DeflateSavingsBench`), one client's session of four
+reads and a live feed went from 2,241 KiB on the wire to 1,070 KiB, 52% less:
+the reads 50–64%, the live feed 39%. Chromium and Firefox, run once each
+through the same session, measured 52.4% and read every frame byte for byte as
+the uncompressed relay sent it. Only the native path serves it: Ktor's
+extension holds a deflater per socket from the handshake on, and
+`WEBSOCKET_COMPRESSION` with `NATIVE_WEBSOCKET=false` says at boot that it does
+nothing.
+
+**Answers share a window per socket, held only while it is busy.** A sliding
+window lets a frame point back at the ones before it, the same author and the
+same keys, worth 55% on the corpus against 43% for a fresh window per frame.
+zlib keeps about 256 KiB per window; held by every open socket that is 3 GB at
+12,000 feeds, so a socket takes one at its first compressed answer and gives it
+back after five quiet seconds, and the process holds at most 512. Past that, or
+when the client asked for `server_no_context_takeover`, answers are compressed
+a frame at a time on the event loop's shared deflater. A burst of new sockets
+fills the cap, and glibc keeps the windows' freed memory for reuse rather than
+returning it: with 12,000 feeds opened at once the relay's RSS stayed about
+230 MB above the plain run's, with only the loops' own deflaters still live.
+
+**A live event is deflated once per event loop, and its prefix rides as a
+stored block.** The fan-out still encodes an event once: the body is compressed
+on an empty window, and each subscription's `["EVENT","<id>",` goes ahead of it
+as an uncompressed deflate block, which any inflater reads as the start of the
+same message. A server may always decline to refer back, so this holds whatever
+the client agreed. What it costs is the socket's window: the client's window now
+holds bytes that deflater never saw, so a live frame resets it.
+
+**Level 1, as strfry runs it.** Answers are compressed on the event loop, between
+other sockets' frames. On the corpus level 6 bought 2.5 points for half the
+speed (30 MB/s against 64). Through the relay's own encoder an answer frame
+costs 31 µs compressed against 5.5 µs plain, so a 500-event answer holds the
+loop about 13 ms longer; on loopback, where bytes are free, four reads reached
+their EOSE in 266 ms against 222. Behind a proxy held to 10 Mbit/s (bandwidth
+only, no added latency) the same reads took 0.88 s against 1.71, and at 2 Mbit/s
+3.4 s against 7.4.
+
+**Compression leaves the live fan-out's cost where it was.** The body is
+deflated once per event per loop (about 32 µs), and a socket's copy of half the
+bytes costs less than the plain one (1.2 µs against 1.7). Under `live-bench` the
+relay's CPU matched plain at 2,000, 6,000 and 12,000 feeds, and two raw sockets
+on one feed, one compressed, saw the same events within noise (the compressed
+one a median 4 ms first, at most 15 ms later at p99). What did change is the
+load generator's share: its Node clients inflate every frame for thousands of
+feeds at once ([live-feeds.md](../live-feeds.md#compression)).
+
+**`client_no_context_takeover` is imposed, so a socket needs an inflater only
+while a compressed message is open.** RFC 7692 lets a server require it, and
+what clients send is REQs and EVENTs, small and rarely alike. An offer that asks
+for a server window under 15 bits is declined, because the JDK's deflater cannot
+shrink its window; a client that has a fallback lists it next, and is answered
+on that.
+
+**A compressed message is inflated as it arrives, and judged by its inflated
+size.** Upstream's first cut inflated a message whole once Netty had aggregated
+it, through one inflater per loop; with `InboundFrameDecoder` reading frames
+itself, a compressed message is inflated frame by frame, so a frame spanning
+reads leaves the inflater mid-stream and one inflater cannot be shared across
+sockets. Each loop keeps a few raw inflaters and lends one to a socket from a
+compressed message's first frame to its last, given back reset (four kept idle
+per loop, the rest ended); buffering the compressed bytes to inflate at the end
+would have held up to `MAX_FRAME_BYTES` of them instead. The inflated bytes go
+where a plain message's go: held up to the engine's length in bytes, then
+scanned for the event id and dropped, so a kilobyte that inflates to megabytes
+is answered `OK false` by id like any oversized EVENT; past `MAX_FRAME_BYTES`
+on the wire or inflated, the connection closes 1009 after a NOTICE, and
+inflating stops there, so a bomb costs at most `MAX_FRAME_BYTES` of inflating
+(16 MiB against a 64 MiB bomb in the test). RSV1 is accepted only on a
+message's first data frame and only when deflate was agreed; on a continuation
+or a control frame, and RSV2 or RSV3, it is 1002. A connection's input then
+holds its inbox, one message of at most the engine's length (bytes, then its
+string), and while a compressed message is open one inflater (about 44 KB of
+zlib state); its output holds a 256 KiB window while it is being answered, 512
+at most across the process, given back when the connection ends whichever way
+it ends. A streamed compressed message keeps its inflater without a deadline,
+as a streamed plain one keeps its 64 KiB head.
 
 **A sign-in check is skipped, not queued, past `TrustNotice.MAX_IN_FLIGHT`.**
 Every AUTH by a fresh key started a store walk on the maintenance scope; a
@@ -576,3 +759,48 @@ relay builds that session only after the NEG-OPEN's snapshot: such a value boote
 spent a full id walk on every NEG-OPEN and answered none of them, outside the handler that would
 have sent NEG-ERR. It now stops the boot and names the setting, as every other out-of-range
 setting does.
+
+**A NEG-OPEN's snapshot is taken as the caller.** Quartz 2.25.2 added a
+`sealedNegentropyStorage(ctx, …)` overload whose default drops the context, and
+`ObserverBackend` overrode only the old one, so every reconcile was answered as
+an anonymous caller and shared one cached snapshot across callers. It now
+delegates the caller's overload; the store reads the identity off
+`StoreQueryContext` as it does for a REQ.
+
+**A NEG-OPEN every caller reads alike shares one snapshot.** Taking each
+reconcile as its caller made quartz key its one cached snapshot by caller, so
+signed-in mirrors sending the same waived heartbeat each paid a full walk and
+seal and evicted each other, for a set that was every caller's anyway.
+`ObserverBackend` sends a filter that reads the same set for every caller
+through the context-free overload, the one slot quartz caches for all: one that
+names an `observer:` (it wins over the connection), or `include:spam` with
+nothing a caller's lens could act on. Anything else is taken as the caller. The
+store answers which those are (`ReadShape.answersEveryConnectionAlike`, held
+against its own compiled queries). The relay's interim bridge also counted every
+extension besides `include` as one a lens might act on, so a waived reconcile
+carrying an unknown `sort:`, `language:` without words, `nsfw:`, `domain:` or
+`sort:links` was walked once per caller; the store compiles each to the same walk,
+and since the store pin carries the answer the bridge is gone. `sort:links`
+reranks a REQ by the caller's links, but the NEG-OPEN walk never applies it.
+`NegentropyAsCallerTest` drives the boundary cases through `ObserverBackend`.
+
+**An ordinary write keeps the NEG-OPEN snapshots it cannot change.** Quartz
+keeps several snapshots and drops on a write only those the write can change
+under the store rules, but for a store other than its own SQLite one it treats
+every write as able to change every snapshot, and every search as the text
+engine's, unless told otherwise, since such a store may gate. Ours gates on
+reputation cells and lenses, which a 30382 card, a 10040 provider list, and a
+kind 5 or 62 that removes one change for authors the write never names. The relay
+first carried its own copy of that write predicate; it now passes the store's
+`FilterLocality.writeIsFilterLocal` and `searchIsFilterLocal` as they are, since
+only the store knows what its answers read (`liveEventStore` in
+`NostrRelayServer.kt`). The search half is what lets a mirror peer reuse a
+snapshot: a termless `include:spam` or `observer:` reconcile, the shape peers
+send, read nothing a write outside its filter can move. Text cannot be made
+local: the store drops hits under a score floor built from bm25, whose IDF moves
+with every document in the corpus, so a write the filter does not match can still
+move its set. Store changes made outside a publish (expiry, purges, the trust
+drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
+TTL; while every write dropped every snapshot, the next publish usually hid
+that. `NegentropySnapshotReuseTest` drives the signed-in, waived, named-observer
+and text shapes through NEG-OPEN; the store's `FilterLocalityTest` holds the sets.

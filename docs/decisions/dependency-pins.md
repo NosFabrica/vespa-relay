@@ -55,32 +55,86 @@ The relay application's version (image tag / --version display).
 ## `quartz` (versions)
 
 ```text
-4456c57f06 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-24, the
-quartz#151 merge (4456c57f0), 41 commits over 2.22.1 (below), which it descends from: the 2.23.0 and 2.24.0
-releases (v2.24.0 = 45d20fe31) and 24 commits after them. A COMMIT, not a release, so the relay runs quartz's
-main before its next release; back to a Magpie release once one carries this range. build-logic now maps
-whichever quartz group is not pinned onto the pin, so a store or tool naming the release group still resolves
-this one quartz.
+2.28.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.28.0 (the v2.28.0 tag 0756eabe7), over 2.26.0 (below), which it descends from: 8 commits, through 2.27.0
+(v2.27.0, 762cf50d8).
+  2.27.0 (quartz#158): EsploraClient moves to common code behind an EsploraHttpTransport, OkHttp's on the JVM. NIP-BC
+    on-chain zaps only; nothing here calls it.
+  2.28.0 (quartz#160): LiveEventStore gains a five-argument primary constructor whose last parameter is
+    searchIsFilterLocal, for a store to say which NEG-OPEN search filters it judges by their other fields; the
+    four-argument constructor this relay calls stays, passing null, which for any store but quartz's SQLite one keeps
+    2.26.0's rule (every write drops a search snapshot). DEFAULT_MAX_HELD_BEFORE_EOSE is public, so the relay's
+    copied 1,000 goes. Quartz's SQLite EventStore keeps search snapshots by default; this relay runs none.
+    IEventStore changes only in KDoc.
+gradle/magpie.lock gains 2.28.0's quartz and quartz-jvm files under the release key it already trusts (2.27.0 is never
+resolved, so it has no lines). Every module resolves one quartz, 2.28.0.
+  Gated: ./gradlew build here is green (the pre-push check).
 
-  RELAY SERVER (RelaySession), what this relay runs:
-    - An unusable REQ, COUNT or CLOSE is answered CLOSED on its sub id; a failed REQ gives its slot back and a
-      stale failure stays quiet; nothing is sent on a parked REQ after it is closed.
-    - COUNT runs off the connection's reader, its answers sent outside any lock, capped, settled once and ordered
-      per id; CLOSE, a replacement REQ or a refusal cancels it at once, and nothing stale follows on the id; a
-      backend's own cancellation is answered; COUNT concurrency is left to the backend.
-    - RelayLogger and RelayReqStats allocate nothing per EVENT frame; RelayReqStats keeps the 1,000 most recently
-      active subscriptions.
-  SEARCH. EventSearchMatcher walks a SearchableEvent's fields once for all of a query's terms, phrases and
-    exclusions (a kind 0 parsed its JSON once per term). Same answers; no kind becomes or stops being searchable.
-  ALLOCATION. Hint providers allocate nothing for references they don't find, Kite sizes large writes once,
-    CachingEventDecoder stops copying ids twice, the EventInterner sweeps entries of collected events.
-  Also in the range: NIP-85 trust updates (one paged REQ before negentropy), Concord and Buzz classes, Kotlin/Native.
-  RUNTIME CLASSPATH (:relay, :sync): com.vitorpamplona.quartz:quartz-jvm 2.22.1 -> com.github.vitorpamplona.quartz:
-    quartz-jvm 4456c57f06, the commit the store pin (below) names, so neither group is arrowed and the Magpie group
-    is gone from the graph. settings.gradle.kts lets JitPack serve com.github.vitorpamplona.quartz, beside the
-    store; gradle/magpie.lock is unchanged (Magpie still serves crypto, schnorr256k1 and negentropy).
+2.26.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.26.0 (the v2.26.0 tag a84b9b161), over 2.25.2 (below), which it descends from: 7 commits, the last two the
+release's own (VERSION_NAME, Package.swift). The NIP-77 snapshot cache (quartz#154): several slots, bounded by count and by the ids they hold, one walk shared by opens of
+one key that arrive together, and a write drops only the snapshots it can change. That last part needs the store's
+word for any store but quartz's SQLite one: LiveEventStore's new writeIsFilterLocal, which this relay passes
+(FilterLocalWrites, its own commit). Also a store fix: a filter union holding the empty filter matches everything.
+gradle/magpie.lock gains 2.26.0's quartz and quartz-jvm files under the release key it already trusts. Every
+module resolves one quartz, 2.26.0.
+  Gated: ./gradlew build here is green (the pre-push check).
 
-Prev 2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.25.2 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.25.2 (the v2.25.2 tag ddc66ff18, main's head on 2026-11-25), over 2.25.0 (below), which it descends from: 7 commits,
+through 2.25.1. Relay-client fixes only, in RelayPool: a replaced client's late close no longer disconnects its
+successor, and the pool's flows are snapshots of its state taken one at a time. No relay-server, store or event
+change; this relay's sync and peers use the relay client. gradle/magpie.lock gains 2.25.2's quartz and quartz-jvm
+files under the release key it already trusts. Every module resolves one quartz, 2.25.2.
+  Gated: ./gradlew build here is green (the pre-push check).
+
+2.25.0 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
+2.25.0 (the v2.25.0 tag 2e60d4eb9, main's head on 2026-11-24), over 4456c57f0640 (below), which it descends from: 72
+commits. Back to a release, the reverse of 671ce89: the catalog names com.vitorpamplona.quartz again, build-logic
+forces it and arrows quartz's JitPack group (what the store's POM names at 9c3426f: 4456c57f06) onto it, Magpie
+serves the quartz group again and JitPack no longer does. That also undoes 671ce89's trust trade: quartz is again
+a key-signed, hash-locked release; gradle/magpie.lock gains 2.25.0's quartz and quartz-jvm files under the release
+key it already trusts, and nothing else in it changed.
+Every module resolves one quartz, quartz:2.25.0, with every com.github.vitorpamplona.quartz line arrowed onto it.
+
+  RELAY SERVER: a cancelled COUNT frees its slot at once, and a COUNT beside a REQ skips the cap; NEG-OPEN
+    snapshot builds run on the IO pool, are cancelled with their session, capped, and never answer stale; SQLite
+    NEG-OPEN snapshots are cached for every caller (not this relay's store); FullAuthPolicy leaves the AUTH
+    signature to VerifyPolicy again (a revert).
+  ALSO IN THE RANGE: store fixes (the removal generation moves after the commit; a kind 5's id delete stays on the
+    id index), kite (text with emoji on the copy-as-is path), nip46, concord, buzz and relay-client work.
+  Gated: ./gradlew build here is green (KtorTransportTest's "closes on a message past the engine's length" failed
+    once in a full build, then passed 3 of 3 on its own: a timing flake, not the bump).
+
+4456c57f0640 = com.github.vitorpamplona.quartz:quartz from JITPACK, vitorpamplona/quartz main @ 2026-11-24 (the
+quartz#151 merge), over 2.22.1 (below), which it descends from: 53 commits, through the 2.23.0 and 2.24.0 releases.
+Back on JitPack, the reverse of dd3d292: the catalog names the JitPack group, build-logic forces it and arrows the
+release group (com.vitorpamplona.quartz, what the store's POM still names at 2.22.1) onto it, and settings lets
+JitPack serve quartz's group. Magpie keeps serving the crypto, schnorr256k1 and negentropy groups quartz depends on.
+Every module resolves one quartz, quartz:4456c57f0640, with each com.vitorpamplona.quartz line arrowed onto it.
+
+  TRUST, traded down. A Magpie release was signed by the key vitorpamplona.com names as `releases`, and
+    gradle/magpie.lock pinned that key and each release's files by hash: a changed artifact failed the build.
+    A JitPack build is unsigned, built by JitPack from the commit, and pinned only by a 12-character commit
+    prefix in the catalog; nothing here checks the jar's bytes. That is the trust the store pin (below) has
+    always had, taken for quartz because the fixes this relay needs are on quartz main before any release.
+    Back to a release when one carries them. settings.gradle.kts no longer hands the quartz group to Magpie
+    (2026-11-24); gradle/magpie.lock keeps its quartz lines, unused, as it keeps every release it once pinned.
+
+  COUNT AND REQ ON AN ID (quartz#146 and the relay-server commits before it), the reason for this bump. A COUNT runs off the connection's command
+    loop, so a slow ranked COUNT no longer stalls the EVENT, REQ and CLOSE behind it (it waited inline before). A
+    CLOSE, a replacement (re-COUNT or re-REQ) and a refusal on an id end whatever runs there at once, COUNT and
+    REQ alike, and nothing stale follows on that id: a cancelled COUNT never answers, even from a store that
+    ignores the cancellation; a closed REQ sends no further rows, EOSE or live event. Per-id ordering is a FIFO
+    (no stack cost under a burst of CLOSEs). A failed REQ gives its max_subscriptions slot back. An unparsable
+    REQ, COUNT or CLOSE is answered with CLOSED on its sub id instead of a NOTICE. A backend Throwable (a TODO(),
+    a timeout of its own) answers CLOSED error: instead of escaping. The subscription cap runs before the policy,
+    so a refused REQ spends no rate-limit token. Concurrency stays the backend's to bound (SearchGate here).
+  NIP-85 TRUST UPDATES (up to the quartz#151 merge): the hourly catch-up is one paged REQ, REQ before negentropy, windows
+    cut by count; RelayReqStats keeps the 1,000 most recently active subscriptions.
+  Gated: ./gradlew build here is green (all modules, archTest and jsTest) against the JitPack jars.
+
+2.22.1 = com.vitorpamplona.quartz:quartz from NOSTR + BLOSSOM through Magpie, vitorpamplona/quartz's release
 2.22.1 (the v2.22.1 tag 273155b3d over the quartz#141 merge d0effdd1a), over 2.21.0 (below), which it descends
 from; 2.21.1 and 2.22.0 between them were never pinned.
 
@@ -760,53 +814,141 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
-c427965d54c8 = vespa-eventstore main @ 2026-11-24: the head of PR #219, which merged as 9c3426fe552c with this tree
-byte for byte (`git diff --quiet c427965 9c3426f`), so c427965 is on the store's main as the merge's second parent.
-Pinned here rather than the merge because JitPack's build of 9c3426f failed on a transient 502 from Magpie's proxy
-fetching crypto-kmp, and JitPack keeps a failed build; c427965's own build is the same tree. One commit over
-92972456b108 (below), which it descends from.
-  COLD NARROW READS IN ONE QUERY (c427965). A read whose exact shape the store's window memory has never seen
-    (the first #p notification read of every user, a new thread's #e) spent a windowed attempt before falling
-    back unwindowed: two Vespa queries for one REQ. NarrowPrior keeps a vote per FAMILY (the shape with its
-    values counted, not named); once 8 cold reads of a family have voted and 90% ended narrow, a cold read runs
-    the unwindowed query alone. A busy value sent that way pays the match-phase cost once and teaches its exact
-    shape a window. Same switch, VESPA_RECENCY_MEMORY; counted as recency.speculative.prior.narrow / .prior.busy.
-  QUARTZ 4456c57f06, as 92972456b108: every module resolves store:c427965d54c8 and quartz:4456c57f06 with no `->`.
-  No engine/app, bundle or schema change, no deploy-time migration.
+6c9eef63f27b = vespa-eventstore main @ 2026-11-25, the merge of PR #226, over b19d76c60e30 (below), which it descends
+from (`git merge-base --is-ancestor b19d76c60e30 6c9eef63f27b`); its tree is the PR head's (20486c12), byte for byte
+(`git diff --quiet 20486c12 6c9eef63`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, and the store's own request is 2.28.0, so the runtime classpath carries no `->` on quartz or the
+store. No bundle, schema or deploy-time change (no .sd, services.xml or bundle file moves); no new setting.
+  WRITES (#226), measured through this relay (the store's benchmark/README.md): a lone publish with nothing else in
+    flight is one /document/v1 POST instead of a trip through the feed client's dispatcher (110 -> 127 /s for one
+    client, 8 -> 7 ms); a narrow batch reads its NIP-09/NIP-62 guards beside its dedup, so writes under 200-client
+    read load ran 75 -> 96 /s, and only while recent batches have something new, so a sync stream of events already
+    stored costs one engine read per batch, not three.
+  COLD READS: a quiet shape's learned tie slack floor is 3, not 8 (MIN_TIE_SLACK): a direct page reads 48 KB from
+    disk where it read 88 KB at limit 3, +16-22% cold REQ/s on unthrottled and slow disks, hot reads level.
+  AUDIT FIXES (#226), each with a test that failed first. Data loss: a delete whose filter was only search
+    extensions (include:spam, observer:) or a blank search wiped the store, now deletes nothing (no relay path sends
+    one: MirrorDelete names ids, quartz's NIP-86 purge authors, ids or kinds); SWEEP_ORPHAN_SCORES_ON_START deleted
+    the cards of providers a 10040 delegates under a 30382 metric other than rank/followers, which search reads, now
+    keeps them; a limited multi-filter delete removed more than the union. Search: words reached userInput with
+    Vespa syntax live (`-bar` and `created_at:>0` matched every note), now plain words; a search is bounded at 16
+    words, 8 quoted phrases and 32 exclusions (the heaviest allowed one is 8,617 Vespa items, under the 10,000
+    limit), the live gate reading the same words; a lone surrogate in a tag value matched notes tagged `?`, now
+    nothing. Narrower: a boundary second wider than VESPA_UNBOUNDED_HITS keeps its lowest ids; an `until` near
+    Long.MIN_VALUE serves nothing; a guard written and then failing is still flagged; the second copy of a refused
+    event in a batch gets the first copy's verdict, not `duplicate:`; a NIP-62 vanish erases strictly before its
+    second, as quartz's STORE-D07 (an earlier event at that very second now stays); the exact trust derive reads
+    each service's newest card only. Operator-visible changes: docs/upgrading.md, "The store's audit fixes".
+  Gated: the store's integration gate passed on 6c9eef63 itself against vespaengine/vespa:latest (8.788.13): 44 IT
+    classes, 66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs
+    FUZZ_VESPA_URL and passed on the PR head before main's last merge, 9,000 random filters in each read mode).
+    ./gradlew build here is green against the JitPack jars: 1,922 tests, 0 failed, 2 skipped.
 
-GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on c427965 against
-  vespaengine/vespa 8.763.13: 31 IT classes, 57 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
-  Here, ./gradlew build against the JitPack jars is green, 0 failures.
+b19d76c60e30 = vespa-eventstore main @ 2026-11-25, the merge of PR #223, over 03bc72e8e459 (below), which it descends
+from (`git merge-base --is-ancestor 03bc72e8e459 b19d76c60e30`); its tree is the PR head's (827a1c0d), byte for byte
+(`git diff --quiet 827a1c0d b19d76c6`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, and the store's own request is 2.28.0 now, so the runtime classpath carries no `->` on quartz.
+  GATED NEG-OPEN SNAPSHOTS (59d541d), the reason for this bump. A NEG-OPEN snapshot reads through the connection's
+    lens (StoreQueryContext), so a signed-in reconcile answers the set that connection's REQ of the same filter serves;
+    before, a signed-in reconcile was answered the whole corpus. 604fede: while a degraded cluster leaves the provider
+    map cold, a NEG-OPEN read through a lens is a NEG-ERR, not a set read through an empty lens. 5e048a1: a connection's
+    lens is resolved only for a query that can read it, so a waived read never fails on the lookup.
+  READSHAPE.answersEveryConnectionAlike (0111d9c): the store's own statement of which filters read the same set for
+    every caller, held against its compiled queries; the relay's answersEveryCallerAlike bridge goes (its own commit).
+  FILTERLOCALITY (c3261450): writeIsFilterLocal and searchIsFilterLocal, the NEG-OPEN snapshot predicates quartz 2.28.0's
+    LiveEventStore takes; the relay's copy of the write half goes (its own commit). Termless include:spam and
+    observer: reconciles keep their snapshot across unrelated writes; text never does.
+  QUARTZ 2.28.0 (597fb289): the store now builds against the quartz this relay already forces.
+  #225's topical ranking reaches the store through 03bc72e8e459 (below); nothing of it changes here.
+  ROLLOUT: docs/upgrading.md, "Mirrors read gated peers whole": upgrade every router before any peer it mirrors takes
+    this store, or an old router reads a peer's lens-gated reconcile as a peer holding nothing.
+  Gated: the store's integration gate passed on 934c91d4 (827a1c0d after it is one README line): 43 IT classes, 65
+    tests, 0 failed, 1 skipped (StagingCorpusIT); VespaParityIT 156/156. ./gradlew build here is green.
 
-Prev 92972456b108 = PR #219's first commit, now on the store's main: one commit, 9297245, over the store's main @
-2026-11-24 (23843fc, the merge of PR #218), which descends from 4c2128d258bf (below): 46 commits.
-  QUARTZ 4456c57f06 (9297245, above): the store takes quartz main from JitPack as this relay does, so every
-    module resolves store:92972456b108 and quartz:4456c57f06 with no `->`.
-  STORE MAIN SINCE 4c2128d (PRs #216-#218), reads:
-    - recency planning learns its tie slack per read shape (seeded, protected, scaled with the page), keys the
-      shape by its search terms without sorting, and frames every value in the key;
-    - per-query transport and decode overhead cut; the string-decode ceiling derived from the G1 region size;
-    - a replaceable's winner and version count read off one grouping.
-  Writes:
-    - every batch wider than one event goes down the bulk path; a mixed batch writes its records and guards
-      once when nothing is erased; its preload reads stored versions as stubs;
-    - supersession reads versions without their documents and writes the winner before removing what it
-      replaces; a failed sweep is retried and owed to the address;
-    - NIP-09 guard probes count instead of reading a document; one engine-read bound per write commit.
-  Expiry and trust:
-    - NIP-40 expiry is swept a page (1,000 ids) per lock hold in one walk; admission reads the store's clock;
-    - the trust gate is taken only for the sweep's trust kinds; a stale card no longer retracts its address's
-      cell.
-  Live gate: a live event's words are read once for every gate, not per subscription (size-capped).
-  No engine/app, bundle or schema change (`git diff --quiet 4c2128d 9297245 -- engine/app bundle`), no
-  deploy-time migration.
+03bc72e8e459 = vespa-eventstore main @ 2026-11-25, the merge of PR #225, over e2acf591fb13 (below), which it descends
+from (`git merge-base --is-ancestor e2acf591fb13 03bc72e8e459`), through #224 and #221; its tree is the PR head's
+(539f90d), byte for byte (`git diff --quiet 539f90d 03bc72e`). Through JitPack's lowercase spelling, as the pins below;
+the runtime classpath carries the same `->` lines as on e2acf591fb13, none on the store, engine or quartz.
+  TOPICAL INTENT (#225), the reason for this bump. A ranked search first asks whether a NOTABLE entity the reader trusts
+    is named exactly its words (one quoted-phrase probe over kinds 0 and 31990 under the lens, min_rank 30, 50 deep; an
+    app handler, or a profile with 1 000+ followers). When none is, the query is topical and the `search` profile stops
+    paying the perfect-match rung to entities named the topic, keeping it on wiki (30818) and long-form (30023)
+    articles titled exactly it. Navigational queries and profiles-only reads rank as before. Measured under
+    production's probe decisions: +0.056 [+0.027, +0.088] nDCG@10 on the store's 54 cases (topical +0.123), +0.176 on
+    147 new queries whose page changed; the probe 77 ms p50 / 653 ms p95 from outside on production, cached ten
+    minutes per lens and text, failing open. The relay's NIP-01 REQ path pays it (SearchReferenceExpansionTest names it
+    as the one extra query); counts, live gates and the Open Ranking route skip it.
+  SCHEMA, deploy-only: event.sd's `search` profile gains query(topical) (default 0), reference_kind() and
+    topical_perfect_drop(). Deployed onto a cluster holding 84 events fed under e2acf591fb13's package:
+    configChangeActions restart, refeed and reindex all empty, no warning, every event read back, and a
+    topical=1 search answered with the new match-feature. An older schema ignores the input (docs/migrations.md
+    needs nothing).
+  #224: a text-free read is sent as Vespa's JSON select and names its language (query-container CPU per such read
+    -14 to -20%); a write Vespa refuses for want of disk or memory fails at once (EngineRefusesWrites) instead of
+    retrying for seconds.
+  #221: author shards (PROTOTYPE, off by default: VESPA_AUTHOR_SHARDS / VESPA_AUTHOR_BUCKETS, already documented
+    here, now in the pin) and the deploy guard. No change with the settings unset.
+  NEW SETTINGS: VESPA_INTENT_PROBE (relay only, docker-compose.yml) and VESPA_SELECT_QUERIES, read through
+    EngineTuning.fromEnv (configuration.md, the store's settings, which also gains the older VESPA_EXPIRY_SWEEP_PAGE).
+  Gated: the store's integration gate passed on 03bc72e itself against vespaengine/vespa:latest (8.788.13): 43 IT
+    classes, 65 tests, 64 passed, 1 skipped (StagingCorpusIT), 0 failed.
 
-GATED: the store's integration gate (`:benchmark:test -Pintegration`) passed locally on 9297245 against
-  vespaengine/vespa 8.763.13: 31 IT classes, 57 tests, 0 failures (StagingCorpusIT, skipped, needs an export).
-  Here, ./gradlew build against the JitPack jars: 1,797 tests, 0 failures, 2 skipped; :relay and :sync resolve
-  one store (92972456b108) and one quartz (com.github.vitorpamplona.quartz 4456c57f06) with no `->`.
+e2acf591fb13 = vespa-eventstore main @ 2026-11-25, the merge of PR #220, over 51fa05e44fae (below), which it descends
+from; its tree is the PR head's (d08167f5), byte for byte (`git diff --quiet d08167f5 e2acf591`). Through JitPack's
+lowercase spelling, as the pins below.
+  ONE QUERY PER FEED READ (#220), the reason for this bump. A recency read whose first query plans at most
+    VESPA_ID_FIRST_MAX_DIRECT_HITS hits (default 200) is served in ONE query asking for documents, where it was an
+    ids-only query plus a hydrate; a crowded boundary second is read as ids and only the page's members of it are
+    fetched; a shape whose pages were cut before stays id-first; 0 restores the old path. Every mode serves the
+    same page. Measured through this relay (the store's benchmark/README.md, "One query or id-first, per read"):
+    REQ/s +43% (limit 10) and +55% (limit 100) hot, +17% cold, level on crowded feeds.
+  SCHEMA, deploy-only: event.sd gains a `nip01` document-summary holding the served event's fields, and full reads
+    are sent as `select *` on it (no field list for the query container to parse or filter hits by: its CPU per
+    REQ 921/835 -> 768/738 us). Deployed onto a cluster holding 108,010 events here: configChangeActions restart,
+    refeed and reindex all empty, no warning, and an event fed before the deploy read back whole through it. A
+    schema without `nip01` (AUTO_DEPLOY=false and the class not copied in) costs one refused read: the store falls
+    back to naming the fields, so nothing breaks, it only forgoes the saving (docs/migrations.md needs nothing).
+  NEW SETTING: VESPA_ID_FIRST_MAX_DIRECT_HITS, read through EngineTuning.fromEnv (configuration.md, the store's
+    settings).
+  Gated: the store's integration gate passed on d08167f5, whose tree this merge is, against vespaengine/vespa:latest
+    (8.788.13): 57 tests, 56 passed, 1 skipped, 0 failed.
 
-Prev 4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
+51fa05e44fae = vespa-eventstore main @ 2026-11-25, the merge of PR #222, over 9c3426fe552c (below), which it descends
+from; its tree is the PR head's (80e26de), byte for byte (`git diff --quiet 80e26de 51fa05e`). Through JitPack's
+lowercase spelling, as the pin below. No bundle, schema or deploy-time change, and no store source change.
+  QUARTZ (#222): the store pins quartz's 2.25.2 release through Magpie again, instead of the JitPack commit
+    4456c57f06, so its POM names com.vitorpamplona.quartz:quartz-jvm:2.25.2, the same release this relay pins.
+    Every module resolves quartz 2.25.2 with no com.github.vitorpamplona.quartz line at all: build-logic's
+    JitPack-to-release arrow has nothing to map now, and stays for a future commit pin.
+  Gated: the store's integration gate runs on 80e26de, whose tree this merge is (the 9c3426f gate above passed on
+    the same store code, 38 IT classes, 57 tests); its result is recorded on NosFabrica/vespa-relay#337.
+
+9c3426fe552c = vespa-eventstore main @ 2026-11-24, the merge of PR #219, over 23843fca9b9c (below), which it descends
+from. Through JitPack's lowercase spelling (com.github.nosfabrica.vespa-eventstore): the NosFabrica spelling's
+first build failed on JitPack's side (a 502 from Magpie fetching crypto-kmp 2.1.1) and JitPack caches that per
+spelling. No bundle, schema or deploy-time change.
+  ENGINE: a cold read of a narrow family skips the speculative attempt (c427965).
+  QUARTZ: the store now names quartz's JitPack commit 4456c57f06 instead of 2.22.1 (9297245); this relay arrows it
+    onto its quartz pin, 2.25.0 (above).
+  Gated: the store's integration gate passed on 9c3426f against vespaengine/vespa:latest (38 IT classes, 57
+    tests: 56 passed, 1 skipped, 0 failed).
+
+23843fca9b9c = vespa-eventstore main @ 2026-11-24, the merge of PR #218, over f5a026d9903a (the merge of PR #217),
+over 4c2128d258bf (below); each descends from the one before. No bundle, schema or deploy-time change.
+  WRITE PATH (#218 and the commits before it): every batch wider than one event takes the bulk path (it was 16+, so
+    a small batch paid a GET and a put per event under the writer lock); supersession versions and a replaceable's
+    winner are read without their documents, off one grouping; the write path's independent locked reads run
+    together; NIP-09 guard probes count instead of reading a document; the mixed preload reads stubs; one write
+    for a mixed batch's records and guards when nothing is erased. Supersession fixes for address-keyed stores.
+  READ PATH: less transport and decode overhead per query, and the recency tie slack is learned per read shape.
+  #217: live NIP-50 subscriptions share one read of each event's words (13-17x less fan-out work at 100-500 open
+    search feeds), and the NIP-40 expiry sweep walks due ids once and holds the writer locks 1,000 ids at a time
+    instead of for the whole sweep (VESPA_EXPIRY_SWEEP_PAGE, new).
+  QUARTZ: the store still names quartz 2.22.1; this relay arrows it onto its quartz pin (above).
+  Gated: the store's integration gate passed on 23843fc against vespaengine/vespa:latest (38 IT classes, 57
+    tests: 56 passed, 1 skipped, 0 failed); ./gradlew build here is green against the JitPack jars.
+
+4c2128d258bf = vespa-eventstore main @ 2026-11-23, the merge of PR #215 (over 4c73195f7d3d, below), whose tree is
 the PR head's (a2bd95d), byte for byte (`git diff --quiet a2bd95d 4c2128d`), and which descends from 4c73195f7d3d.
   QUARTZ 2.22.1 (6ba412e, above), the same release this relay pins: every module resolves store:4c2128d258bf and
     quartz:2.22.1 with no `->`. This is the only change of substance: the branch's other commits (078c9de,

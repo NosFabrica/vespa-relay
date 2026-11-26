@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.identity.adminPubkeysFromEnv
 import com.nosfabrica.vespa.relay.ingest.IngestPipeline
 import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.ingest.probedIngestPipeline
+import com.nosfabrica.vespa.relay.ingest.shutDownIngest
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.RelayProfilePublisher
@@ -77,6 +78,7 @@ import com.nosfabrica.vespa.relay.server.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.httpFromWs
 import com.nosfabrica.vespa.relay.server.config.httpRelayFromEnv
 import com.nosfabrica.vespa.relay.server.config.maintenanceSwitchesFromEnv
+import com.nosfabrica.vespa.relay.server.config.maxFrameBytesFromEnv
 import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
@@ -130,6 +132,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.system.exitProcess
 
 /**
  * The relay process: open the store, serve the NIP-50 relay and the NIP-11 doc, and block.
@@ -178,17 +181,18 @@ fun main() {
             pulseSite?.stop(0, 0)
             sweeper.close()
             relay.close()
-            ingest?.closeIntake()
-            mirror?.closeIntake()
-            ingestScope.cancel()
-            ingest?.close()
-            mirror?.close()
+            if (!shutDownIngest(listOfNotNull(ingest, mirror), ingestScope, INGEST_DRAIN_MS)) {
+                System.err.println("relay: ingest was still writing ${INGEST_DRAIN_MS / 1000}s into shutdown; the rest was cancelled")
+            }
             store.close()
         },
     )
     BootClock.mark("relay: built, starting the server")
     serve(boot, relay, store, servingPressure, statsSnapshot, profile)
 }
+
+/** How long shutdown waits for the publish and mirror-lane workers to write what they hold; inside compose's stop grace. */
+private const val INGEST_DRAIN_MS = 15_000L
 
 /** Everything the process reads from its environment, parsed before anything touches the network. */
 private class Boot(
@@ -202,6 +206,7 @@ private class Boot(
     val identity: NostrSignerInternal?,
     val addresses: RelayAddresses,
     val limits: RelayLimits,
+    val maxFrameBytes: Int,
     val negentropy: NegentropySettings,
     val rejectFutureSeconds: Int,
     val providerRefreshSeconds: Long,
@@ -210,6 +215,7 @@ private class Boot(
     val openRanking: OpenRankingConfig?,
     val httpRelay: HttpRelay?,
     val nativeWebSocket: Boolean,
+    val websocketCompression: Boolean,
     val searchExpansion: SearchExpansionLimits,
     val nip11: Nip11Info,
     val adminPubkeys: Set<String>,
@@ -276,6 +282,9 @@ private fun readSettings(env: Map<String, String>): Boot {
     if (httpRelay == null) {
         env.setUnder("HTTP_RELAY_").takeIf { it.isNotEmpty() }?.let { System.err.println("relay: HTTP_RELAY=false — ${it.joinToString()} do nothing") }
     }
+    val nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: true
+    val websocketCompression = env.strictFlag("WEBSOCKET_COMPRESSION")
+    if (!nativeWebSocket && websocketCompression != null) System.err.println("relay: NATIVE_WEBSOCKET=false — WEBSOCKET_COMPRESSION does nothing")
     env
         .removedSettingsNote("relay", REMOVED_HTTP_RELAY_SETTINGS, "HTTP commands have no per-address cap, only HTTP_RELAY_TOTAL")
         ?.let(System.err::println)
@@ -305,6 +314,7 @@ private fun readSettings(env: Map<String, String>): Boot {
     }
     val files = relayFilesFromEnv(env)
     val adminPubkeys = adminPubkeysFromEnv(env)
+    val limits = relayLimitsFromEnv(env)
     storeTuning.feedBatch?.let { n ->
         System.err.println("relay: the store writes " + (if (n > 1) "$n documents per request through the batch handler" else "one document per request (VESPA_FEED_BATCH=$n)"))
     }
@@ -318,7 +328,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         endpoint = endpoint,
         identity = identity,
         addresses = addresses,
-        limits = relayLimitsFromEnv(env),
+        limits = limits,
+        maxFrameBytes = maxFrameBytesFromEnv(env, limits),
         negentropy = negentropySettingsFromEnv(env),
         rejectFutureSeconds = rejectFutureSecondsFromEnv(env),
         providerRefreshSeconds = providerRefreshSeconds(env),
@@ -326,7 +337,8 @@ private fun readSettings(env: Map<String, String>): Boot {
         requireReadLens = requireReadLens,
         openRanking = openRanking,
         httpRelay = httpRelay,
-        nativeWebSocket = env.strictFlag("NATIVE_WEBSOCKET") ?: true,
+        nativeWebSocket = nativeWebSocket,
+        websocketCompression = nativeWebSocket && websocketCompression != false,
         searchExpansion = searchExpansion,
         nip11 = nip11FromEnv(env, identity?.pubKey, endpoint.selfIconUrl),
         adminPubkeys = adminPubkeys,
@@ -512,7 +524,8 @@ private fun startMirrorLane(
     }
     val tuning = boot.mirrorIngest
     println("relay: the mirror lane writes what the sync forwards, ${tuning.concurrency} worker(s) of up to ${tuning.batch} event(s)")
-    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane").also(IngestPipeline::start)
+    return probedIngestPipeline(store, tuning, scope, servingPressure = pressure, bootName = "relay: mirror lane", onWorkerStopped = exitOnStoppedWorker("mirror lane"))
+        .also(IngestPipeline::start)
 }
 
 /** The publish path: the mirror's pipeline, or quartz's single-writer queue when `RELAY_INGEST=queue`. */
@@ -524,10 +537,24 @@ private fun startIngest(
     val tuning = boot.ingest.tuning
     println(
         "relay: publishes write through " +
-            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s)" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
+            (tuning?.let { "the ingest pipeline, ${it.concurrency} worker(s) of up to ${it.batch} event(s), a narrow batch waiting up to ${it.lingerMs}ms for more" } ?: "quartz's ingest queue, batches of up to ${boot.ingest.batch}"),
     )
-    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes").also(IngestPipeline::start) }
+    return tuning?.let { probedIngestPipeline(store, it, scope, bootName = "relay: publishes", onWorkerStopped = exitOnStoppedWorker("publish")).also(IngestPipeline::start) }
 }
+
+/**
+ * Nothing restarts an ingest worker, and every write it would have taken waits on it unanswered, so
+ * the process ends non-zero and compose's restart policy brings it back.
+ */
+private fun exitOnStoppedWorker(lane: String): (Int, Throwable) -> Unit =
+    { worker, cause ->
+        System.err.println("relay: $lane ingest worker $worker stopped on ${cause.javaClass.simpleName}; exiting so the relay restarts")
+        cause.printStackTrace()
+        // From a thread of its own: exitProcess blocks its caller while the shutdown hook runs, and that hook
+        // waits for every worker loop to end (shutDownIngest) — this one included, whose loop ends only once
+        // the hook returns. Called inline, every worker death cost the whole drain bound before the exit.
+        Thread({ exitProcess(1) }, "relay-exit").start()
+    }
 
 /** Administrators only, on its own port: the pulse names the lenses and terms driving the load. */
 private fun startPulseSite(
@@ -583,6 +610,7 @@ private fun serve(
         port = boot.port,
         nip11 = boot.nip11,
         limits = boot.limits,
+        maxFrameBytes = boot.maxFrameBytes,
         admin = admin,
         pressure = pressure,
         // The doc is the kind 0's source: a NIP-86 rewrite republishes it, clearing what the doc dropped.
@@ -600,6 +628,7 @@ private fun serve(
         selfIconUrl = boot.endpoint.selfIconUrl,
         httpRelay = boot.httpRelay,
         nativeWebSocket = boot.nativeWebSocket,
+        websocketCompression = boot.websocketCompression,
         // Once the port is bound: printed before the server started, this line claimed a port that
         // refused connections for another second or more.
         onReady = {

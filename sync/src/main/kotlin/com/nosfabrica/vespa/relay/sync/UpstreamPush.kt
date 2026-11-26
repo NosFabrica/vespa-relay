@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.progress.storeCall
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyStoreSync
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
@@ -35,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -48,11 +50,45 @@ internal class UpstreamPush(
     /** The engine-wide one-id-snapshot-at-a-time gate, held for the snapshot and released before any push. */
     private val streamGate: Semaphore,
     private val scope: CoroutineScope,
+    /**
+     * Which upstreams take the lens waiver: a web-of-trust upstream reconciles its whole corpus
+     * against ours with it, and only its gated subset without, which would push the rest every pass.
+     */
+    private val waivers: LensWaivers = LensWaivers.none(),
+    /**
+     * How many of the filter's events the upstream holds, by a reconcile against our snapshot, before
+     * anything is pushed; null when it could not be reconciled. Asked only when the pass before left no
+     * answer to read it off. A test stands in for the relay.
+     */
+    private val peerHeld: suspend (SyncUpstream, List<IdAndTime>) -> Int? = { up, local ->
+        try {
+            client.negentropyReconcileIds(up.url, waivers.onWire(up.url, up.filter), local, idleTimeoutMs = NEG_IDLE_MS).let { local.size - it.haveIds.size + it.needIds.size }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("router: up ${up.url.url} could not be reconciled to size it: ${e.message}")
+            null
+        }
+    },
     /** One url's push against the pass's snapshot; quartz's group unless a test stands in. */
     private val pushGroup: suspend (SyncUpstream, List<IdAndTime>) -> NegentropyStoreSync.GroupResult = { up, local ->
-        NegentropyStoreSync(client, BookedReads(store), upOnly(intervalSec)).syncGroup(up.url, up.filter, local)
+        NegentropyStoreSync(client, BookedReads(store), upOnly(intervalSec)).syncGroup(up.url, waivers.onWire(up.url, up.filter), local)
     },
 ) {
+    /** Holds back a push to an upstream whose set shrank too far to believe. */
+    private val shrink = ShrinkGuard()
+
+    /** What each upstream held after the last pass pushed to it, and how the gate read it then. */
+    private val heldAfter = ConcurrentHashMap<ShrinkGuard.Key, Held>()
+
+    private class Held(
+        val count: Int,
+        val stance: LensWaivers.Stance,
+    )
+
+    /** Push rounds held back because the upstream's set shrank too far to believe. */
+    val withheld = AtomicLong()
+
     /** Events an upstream accepted, its `OK` true. */
     val pushed = AtomicLong()
 
@@ -88,6 +124,9 @@ internal class UpstreamPush(
         for (up in urls) {
             if (!scope.isActive) break
             try {
+                val key = ShrinkGuard.Key(up.streamName, up.url, up.filter)
+                if (!mayPush(up, key, local)) continue
+                val stance = waivers.stance(up.url)
                 val result = pushGroup(up, local)
                 pushed.addAndGet(result.uploaded.toLong())
                 // A group reports a failed reconcile rather than throwing it.
@@ -96,6 +135,8 @@ internal class UpstreamPush(
                     System.err.println("router: up ${up.url.url} failed: $failure")
                     continue
                 }
+                // The group's reconcile sized the upstream already; the next pass reads it off this.
+                heldAfter[key] = Held(local.size - result.have + result.need + result.uploaded, stance)
                 outcomes[up] = result
                 val left = if (result.uploadsLeft > 0) ", ${result.uploadsLeft} left for the next pass" else ""
                 System.err.println("router: up ${up.url.url} pushed ${result.uploaded} event(s) upstream (${result.have} it lacked$left)")
@@ -107,6 +148,27 @@ internal class UpstreamPush(
             }
         }
         return outcomes
+    }
+
+    /**
+     * Fail closed: an upstream reading our signed-in key through a trust lens answers empty and
+     * refuses nothing, and pushing on that answer would push it everything we hold. Judged on the
+     * last pass's answer while the gate reads the upstream as it did then; else sized afresh.
+     */
+    private suspend fun mayPush(
+        up: SyncUpstream,
+        key: ShrinkGuard.Key,
+        local: List<IdAndTime>,
+    ): Boolean {
+        val lastPass = heldAfter.remove(key)?.takeIf { it.stance == waivers.stance(up.url) }
+        val held = lastPass?.count ?: peerHeld(up, local) ?: return false
+        if (shrink.mayPush(key, local.size, held, waivers.mayBeLensed(up.url))) return true
+        withheld.incrementAndGet()
+        System.err.println(
+            "router: up ${up.url.url} holds $held of the ${local.size} event(s) we hold — too few to believe from a relay " +
+                "that may read us through a trust lens; pushing nothing (pushesWithheld)",
+        )
+        return false
     }
 
     /** The store as quartz's group reads it: the by-id fetches of what an upstream lacks, booked like every other store call. */

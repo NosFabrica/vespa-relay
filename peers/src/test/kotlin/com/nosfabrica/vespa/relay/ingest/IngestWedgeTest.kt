@@ -28,12 +28,16 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -135,6 +139,49 @@ class IngestWedgeTest {
             scope.cancel()
             pipeline.close()
         }
+
+    /** Nothing restarts a worker an Error ended, so the pipeline says so to its owner and reads as stopped. */
+    @Test
+    fun `a worker an Error ends is reported to the owner and reads as wedged`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val stopped = CompletableDeferred<Pair<Int, Throwable>>()
+            val pipeline =
+                IngestPipeline(
+                    NostrSemanticsStore(InMemoryEventIndex(), relayUrl),
+                    IngestTuning(concurrency = 2, batch = 1000),
+                    audit = null,
+                    servingPressure = null,
+                    scope = scope,
+                    refusals = BreaksWorker(),
+                    onWorkerStopped = { worker, cause -> stopped.complete(worker to cause) },
+                )
+            pipeline.start()
+            val outcomes = Collections.synchronizedList(ArrayList<IEventStore.InsertOutcome>())
+            pipeline.submit(note(0), skipVerify = true) { outcomes += it }
+            val (_, cause) = withTimeout(SETTLE_TIMEOUT_MS.toLong()) { stopped.await() }
+
+            assertTrue(cause is LinkageError, "the hook hears the Error itself: $cause")
+            settle("the dead worker's loop to end") { pipeline.workersRunning() == 1 }
+            assertTrue(pipeline.wedged(), "a worker gone for good is not a healthy pipeline, even with another on the channel")
+            assertEquals(1, outcomes.size, "the batch it held still hears once: $outcomes")
+            assertTrue(outcomes.single() is IEventStore.InsertOutcome.Failed, "${outcomes.single()}")
+            scope.cancel()
+            pipeline.close()
+        }
+
+    /** A sink whose look at a batch ends its worker the way a missing class does. */
+    private class BreaksWorker : RefusalSink {
+        override val tracksOrigins: Boolean get() = throw NoClassDefFoundError("simulated")
+
+        override fun isSuppressed(event: Event) = false
+
+        override fun onRefused(
+            event: Event,
+            origin: IngestOrigin,
+            reason: String,
+        ) = Unit
+    }
 
     /** A sink whose first look at a batch overflows the stack, as a pathologically nested event can. */
     private class FailsOnce : RefusalSink {

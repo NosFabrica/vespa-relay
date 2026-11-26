@@ -21,7 +21,7 @@ store. Six Gradle modules, JVM only (toolchain 25, run on JDK 27 in the image), 
   quartz's relay client, never Ktor.
 - `:peers` — how this deployment talks to other relays, shared by the two
   client-side processes: `PeerClient`, `RelaySockets`, `RelayWriter`,
-  `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
+  `AuthGate` (which relays its NIP-42 responder answers), `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
   (`fold/`), `RelayDiscovery`, `RouterConfig`, `IngestPipeline`, `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
   `IngestPipeline`, which writes the relay's publishes the way it writes the
   mirror's downloads (`RELAY_INGEST`).
@@ -91,6 +91,7 @@ node web/src/test/browser/csp.probe.mjs          # every public page under the s
 ./gradlew :sync:test --tests '*RelayReachLiveProbe*' -DrelayReachProbe=true --rerun -i                      # can we sync each relay; -DreachNsec=nsec1… -DreachUrls='wss://a,wss://b'; -DreachNoAuth=true is the control arm
 ./gradlew :sync:test --tests '*LiveFleetProbe*' -DfleetProbe=true -DfleetUrls=prime.txt -PtestHeap=3g --rerun -i   # one live REQ held on every url at once, then sockets broken from below; -DfleetSockets=4096 -DfleetChaos='reset:1.0:3,blackhole:0.25:5' -DfleetPingSeconds=120 -DfleetDirect=true
 ./gradlew :relay:test --tests '*RelayContractIT*' -DitRelay=ws://localhost:7777 --rerun -i            # the README + NIP-11 contract on the wire, ~8k checks; WRITES — a disposable relay only (DEFAULT_LIMIT=25 MAX_LIMIT=40 + the admin npub in its KDoc)
+./gradlew :relay:test --tests '*DeflateSavingsBench*' -DdeflateBench=/tmp/corpus --rerun -i                   # what permessage-deflate saves one client's session, bytes on the wire off and on; any dir of *.jsonl events (fetch-corpus.mjs)
 ./gradlew :sync:test --tests '*UnpageableLegLiveProbe*' -DunpageableProbe=true --rerun -i                   # the mirror's catch-up leg through quartz's own pager; -DunpageableLegs='wss://a=<coveredTo>,wss://b=<coveredTo>'
 ./gradlew :sync:test --tests '*NegentropyBenchProbe*' -DnegBench=true -DnegBenchUrl=ws://127.0.0.1:7101 -PtestHeap=3g --rerun -i   # our NIP-77 sweep against one relay over a local Vespa: wall, store time, heap; -DnegBenchMode=pager|whole -DnegBenchTarget=100000; .snapshot times one whole-filter snapshot
 ./gradlew :monitor:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i                    # pins that the client has a NIP-42 responder; -DauthGatedUrl='wss://relay.example'
@@ -161,7 +162,7 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
+  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42 behind AuthGate), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`; monitorFromEnv
@@ -169,7 +170,7 @@ peers/…/relay/
   fold/                       FoldReading, RelayAliases, ServerIndex, StoredFold: the duplicate-url fold as 30166
                               records state it, read by the mirror's roster and the monitor's passes alike
   ingest/, progress/          IngestPipeline (the relay's write path, as quartz's EventIngest: its publishes and
-                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BisectingInsert, ProbeGate,
+                              the mirror lane; the sync runs one ahead of its RelayWriter, the only way it writes), StoreProbes, BatchFill, BisectingInsert, ProbeGate,
                               ProbeTrouble, ParseAudit, refused/, IngestTarget (the relay dial and its NIP-11 key
                               check, for both client processes); Processors, InFlight, StoreCalls, StatusVocabulary
                               (Shared/Mirror/MonitorTerms: the glossary per plane)
@@ -187,6 +188,8 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint),
+                              ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
@@ -423,8 +426,11 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - An idle window bounds one ask and a visit is a sequence of them; `LEG_QUIET_GIVE_UP_MS` fires on silence between asks.
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
+- strfry refuses any filter carrying `search` (`unrecognised filter item`), so `include:spam` goes only to a relay that takes it (`LensWaivers`), added at the wire and never to the ask, or every band re-keys.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
+- A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.
+- Ktor's websocket session hears a pong only behind the frames ahead of it: bounding its queues reaped backlogged publishers with "Ping timeout"; the Ktor route is raw and keeps its own keepalive.
 - Verify under load, not while idle: zero rejections in a window with no writes proves nothing.
 - Quartz/amethyst is multiplatform: no commas in backticked test names, no `java.util` in shared code.
 

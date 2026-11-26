@@ -5,22 +5,20 @@ plugins {
 
 val libs = the<VersionCatalogsExtension>().named("libs")
 
-// Quartz is pinned once, in libs.versions.toml: a release through Magpie (com.vitorpamplona.quartz)
-// or a commit JitPack builds (com.github.vitorpamplona.quartz). Forced, so no transitive request can
-// move it; and the OTHER group's coordinates for it (what a store pinned the other way names) are
-// SUBSTITUTED by it. They are different groups, so without the substitution the graph would hold
-// both modules — two copies of every quartz class, which no version conflict resolution notices —
-// rather than one quartz.
+// Quartz is a release through Magpie (com.vitorpamplona.quartz). Forced, so no transitive request
+// can move it; and JitPack's coordinates for it (com.github.vitorpamplona.quartz, what a store
+// pinned to a quartz commit names) are SUBSTITUTED by it. They are a different group, so without
+// the substitution the graph would hold both modules — two copies of every quartz class, which no
+// version conflict resolution notices — rather than one quartz.
 configurations.all {
     resolutionStrategy {
         val quartz = libs.findLibrary("quartz").get().get()
         force(quartz)
-        val other = listOf("com.vitorpamplona.quartz", "com.github.vitorpamplona.quartz").single { it != quartz.group }
         dependencySubstitution {
             for (artifact in listOf("quartz", "quartz-jvm")) {
-                substitute(module("$other:$artifact"))
-                    .using(module("${quartz.group}:$artifact:${quartz.version}"))
-                    .because("quartz is pinned once; $other is the same library")
+                substitute(module("com.github.vitorpamplona.quartz:$artifact"))
+                    .using(module("com.vitorpamplona.quartz:$artifact:${quartz.version}"))
+                    .because("quartz comes from Magpie; JitPack's group is the same library")
             }
         }
     }

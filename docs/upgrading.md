@@ -4,6 +4,128 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## A REQ with no limit is served 500 events (November 2026)
+
+`DEFAULT_LIMIT` now defaults to 500, strfry's default, instead of 5,000. A
+filter naming no `limit` gets the newest 500 matches; one that names a limit
+still gets up to `MAX_LIMIT` (5,000, unchanged). COUNT counts every match and a
+NIP-77 reconcile is bounded by `NEG_MAX_SYNC_EVENTS`, so neither moves. NIP-11 `limitation.default_limit` says 500.
+
+The reason is catch-up cost. A client that reconnects and asks with open
+filters was served 5,000 events each: in a two-hour soak, 150 subscribers
+reconnecting at once were sent 750,000 events and took 35–39 s to reach EOSE,
+against 0.4 s for one alone.
+
+Nothing to do unless a client of yours pages with open filters and expects the
+old window: set `DEFAULT_LIMIT=5000` to keep it.
+
+## The store's audit fixes (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#226: an audit's 22 fixes and
+three measured performance changes (dependency-pins.md has the list). Nothing to
+do before or after the boot: no schema change, no new setting, no reindex.
+
+### What changes in behaviour
+
+- `SWEEP_ORPHAN_SCORES_ON_START` keeps the cards of a provider a 10040 names
+  for ANY 30382 metric (`hops`, `reporters`, …), which search reads; it used to
+  delete them, as only `rank` and `followers` counted. It now refuses only when
+  no 10040 delegates kind 30382 at all. Expect its dry-run count to drop.
+- A NIP-62 request to vanish erases the author's events from BEFORE its own
+  second, as quartz's rule says; an event at that very second, stored earlier,
+  now stays. New events at or before it are still refused.
+- A NIP-50 search reads its first 16 words, 8 quoted phrases and 32 exclusions.
+  Words carrying Vespa's query syntax (`-bar`, `created_at:>0`, `kind:1`) are
+  matched as plain words; before, `-bar` matched every note.
+- A NIP-86 purge, or any delete, whose filter is only search extensions
+  (`include:spam`, `observer:`) deletes nothing; before, it deleted everything.
+- The second copy of a refused event in one batch is answered with the first
+  copy's refusal, not `duplicate:`.
+- A lone publish is about 1 ms faster, and a sync stream of events already
+  stored costs one engine read per batch instead of three.
+
+## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
+
+Two changes that must land in order. The router now reads every relay
+anonymously first, learns `include:spam` from a gated relay's refusal, and signs
+in only where a refusal asks for AUTH without naming it. The store fix behind
+the relay (NosFabrica/vespa-eventstore 59d541d, with this relay's NEG-OPEN-as-
+the-caller change) makes a signed-in NEG-OPEN answer through the signer's lens,
+as its REQ always did.
+
+### Do before the first boot
+
+**Upgrade every router before any peer it mirrors takes the store fix.** An old
+router signs in on the challenge and declares nothing; against a peer with the
+fix, its reconcile then answers through the router key's empty lens, and the old
+router reads that as a peer holding nothing: its upstream push sends the whole
+corpus every pass, and a `deleteMissing` stream would delete what the peer
+merely hid. A new router learns the waiver on its first anonymous read, and its
+retraction audit and push hold back on any answer that shrank past belief.
+
+### What you will see
+
+- `router: <url> refused us naming \`include:spam\`; asking with it from here`,
+  once per gated relay per process, and `waivedRelays` on the progress document.
+- `router: <url> asks us to sign in (…)` where a relay wants AUTH for its own
+  reasons; the router signs in there and nowhere else.
+- `retractionsWithheld` and `pushesWithheld` count audits and push rounds held
+  back on an answer too small to believe, each with its log line.
+
+## Topical searches rank articles above things named after the topic (November 2026)
+
+A search for a subject used to fill its first page with lists, sets, apps and
+calendar events NAMED the word: for `lightning` and `privacy`, sets titled
+"Lightning" and "Privacy" came before any article about them. A search is now
+read as TOPICAL when no notable profile or app the reader trusts is named
+exactly the query (vespa-eventstore #225). The perfect-match rung then stops
+paying entities named the topic, and keeps paying a wiki or long-form article
+titled exactly it. A search for one entity (`odell`, `amethyst`, `fiatjaf`) and
+a profiles-only read rank exactly as before.
+
+Measured against production's served pages under its own probe decisions:
++0.056 nDCG@10 on the store's 54 evaluation cases (topical +0.123), and +0.176
+on 147 new queries whose page changed. The one loss over 0.1 is a person with
+under 1,000 followers whose own article now outranks their profile
+(vespa-eventstore `docs/embedding-experiment.md` §9).
+
+The deciding probe is one extra engine query per ranked search, unless its
+answer is cached (ten minutes, per lens and query text): one quoted phrase over
+profiles and app handlers, 77 ms at p50 and 653 ms at p95 measured from outside
+on production, where the search itself takes 929 ms at p50. If the probe fails,
+the search ranks as before. Counts, live-feed gates and the Open Ranking route
+skip it.
+
+Nothing to do. The schema change is deploy-only (no restart, refeed or
+reindex), and the relay deploys it at boot as usual. `VESPA_INTENT_PROBE=false`
+ranks every search as before and skips the probe.
+
+Two other store changes arrive in the same bump, neither visible to a client:
+
+- **Text-free reads are sent as Vespa's JSON `select`** instead of YQL, and name
+  their language. The query container's CPU per such read fell 14–20%.
+  `VESPA_SELECT_QUERIES=false` sends YQL again.
+- **A write Vespa refuses for want of disk or memory now fails at once.**
+  Before, it retried for seconds (5 s for a burst of 100 publishes, measured),
+  so a publisher waited for a block that was not their event's fault.
+
+## The websocket compresses for clients that ask (November 2026)
+
+The native websocket now answers a client's `permessage-deflate` offer, which
+browsers and most Nostr clients make, so their sockets carry about half the
+bytes they did. A client that does not offer it is served as before. The relay
+holds up to 128 MiB of compression windows while sockets are being answered.
+
+Nothing to do. `WEBSOCKET_COMPRESSION=false` turns it off; it does nothing with
+`NATIVE_WEBSOCKET=false`, and the boot says so.
+
+A message past the engine's length (3 x `MAX_MESSAGE_LENGTH` bytes, compressed
+or not, judged inflated) is now answered `OK false` by id on the native
+websocket and the connection carries on; only one past `MAX_FRAME_BYTES`
+(16 MiB by default, new) closes it, after a NOTICE. On `NATIVE_WEBSOCKET=false`
+a message past the engine's length still closes the connection (1009), as it
+always did there.
+
 ## The websocket is served on Netty directly (November 2026)
 
 `NATIVE_WEBSOCKET` is now on by default: a websocket upgrade on `/` is answered

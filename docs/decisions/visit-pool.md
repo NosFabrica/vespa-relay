@@ -320,3 +320,74 @@ Filed under the bare stream name, a banded audit could never settle a band.
 It records from the window's own floor, and never into a band that is owed
 its re-walk: a reconcile there would replace the band and restart that
 clock. The audit's own clock stays under the stream name.
+
+**A trust-gated relay is read with `include:spam`, learned from its refusal, and
+read anonymously so that it can refuse.** A gated vespa-relay answered the
+router's signed-in reads through the relay key's lens, empty on an unscored key,
+while its NEG-OPEN answered the whole set: every reconcile named the same
+below-floor ids missing and every by-id fetch came back empty. Sending the token
+everywhere was ruled out by strfry, which refuses any filter carrying `search`.
+A NIP-11 `nip50` advertisement was tried first and dropped: one failed read
+dropped the waiver for an hour, and a signed-in router is never refused, so
+nothing relearned it. Reading anonymously first makes the refusal the one
+signal: quartz's responder already lets a signer decline a challenge
+(`AuthGate`), and a refusal naming no waiver is what signs us in. The token is
+added at the wire (`WaivedReads`, the pager's reconcile, the retraction reads,
+the push), never to the ask, so bands and sweep cursors keep their keys.
+
+**An answer that shrank past belief is never acted on.** The retraction audit
+used to carry no size guard, since a mass retraction is the case that matters.
+But a peer reading a signed-in key through a lens answers exactly a mass
+retraction, refusing nothing, and the audit would delete the whole ask; the
+upstream push would send everything. `ShrinkGuard` holds both back below a tenth
+of ours or of what the peer held before, and a real mass retraction is left to
+the operator. A baseline is one stream's filter at one peer: one `UpstreamPush`
+serves every up stream, and keyed by url alone a 200-note stream's baseline made
+a 5-profile stream to the same upstream read as collapsed on every pass.
+
+**Only a refused read makes a sign-in a possible lens.** `AuthGate` hears
+whether an `auth-required:` refused a read (CLOSED, NEG-ERR, a NOTICE) or an
+EVENT (`OK false`). An upstream that wants NIP-42 to take events signed us in
+on the push's first EVENT, and from then on read as possibly lensed, so on a
+first push spread over passes by the budget its next answer (5 of our 200) was
+under a tenth of ours and the backfill was withheld for good. A write's sign-in
+says nothing of how the relay reads; the shrink against its own last answer
+still guards it.
+
+**The waiver never joins a filter that names its own lens.** It was appended to
+every filter to a waived relay, so a stream reading through `observer:<hex>`
+went out with `include:spam` too and lost the trust floor it asked for, from a
+gate that had never refused it. A filter the store reads as naming an observer
+(`ReadShape.observer`) goes out as written.
+
+**An EOSE `auth` hint is an ask for AUTH that names no waiver.** A relay
+following NIP-67 answers an anonymous REQ, holds back what only a signed-in
+reader may see, and says so on the EOSE. The gate read only CLOSED, NEG-ERR, OK
+and NOTICE sentences, so it never opened: quartz's pager ended the walk
+`AUTH_REQUIRED` with no sentence, the pool counted `abortedAuthRequired`, and
+`StandingRefusal` made the unit unreadable for a day. The hint now signs us in
+as a refused read does, and quartz's responder and pager re-serve the page.
+
+**A waived reconcile fetches its own ids only where quartz's would come back
+empty, and fails as quartz's does.** Quartz fetches a reconcile's ids bare when
+its search has words, and re-asks with the search once the bare REQ is refused,
+which is what an anonymous read of a gated relay gets. Signed in, the bare REQ is
+answered through our key's lens, empty and unrefused, so only there
+(`mayAuthenticate`) does `ClientWindowSync` take the ids and fetch them with
+`include:spam` alone. That path fetched 500-id batches one at a time, each with
+a pace of its own, and returned normally whatever came back: a relay that named
+ids and served none had its window claimed, the `refusedOutright` trap again.
+It now runs eight batches at once over one `DownloadPace` and throws quartz's
+`DOWNLOADS_FAILED` once the pace gives up, as the pipeline does.
+
+**The push sizes an upstream off its last pass.** The guard needs the
+upstream's count before anything goes up, and `NegentropyStoreSync` offers no
+hook between its reconcile and its uploads (quartz 2.25.2), so the guard ran a
+reconcile of its own and then the group ran the same one again: two per
+upstream per pass. The group's result already says what the upstream holds
+(ours, less what it lacks, plus what it has that we do not and what it took),
+so the next pass reads that, and sizes afresh only on the first pass, after a
+withheld or failed pass, or when `LensWaivers.stance` changed since (signed in,
+or a waiver learned), which is how a lens would arrive. What it gives up is a
+collapse that arrives between passes unannounced: that pass pushes into it, and
+the next is held back. The first pass still fails closed.
