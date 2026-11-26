@@ -21,7 +21,7 @@ store. Six Gradle modules, JVM only (toolchain 25, run on JDK 27 in the image), 
   quartz's relay client, never Ktor.
 - `:peers` — how this deployment talks to other relays, shared by the two
   client-side processes: `PeerClient`, `RelaySockets`, `RelayWriter`,
-  `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
+  `AuthGate` (which relays its NIP-42 responder answers), `RelayVerdictRecord` and the `Verdict` vocabulary, the fold's read side
   (`fold/`), `RelayDiscovery`, `RouterConfig`, `IngestPipeline`, `Processors`. Sits above `:common`. `:relay` depends on it for one thing,
   `IngestPipeline`, which writes the relay's publishes the way it writes the
   mirror's downloads (`RELAY_INGEST`).
@@ -162,7 +162,7 @@ common/…/relay/
                               rule, the probe-switch list. They run in `:common:archTest`, not `test`, and
                               that task declares the whole tree as an input (`./gradlew archTest`)
 peers/…/relay/
-  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42), RelaySockets,
+  peers/                      PeerClient (websocket client, 4,096-socket dispatcher, cached bounded DNS, Tor, NIP-42 behind AuthGate), RelaySockets,
                               RelayVerdictRecord + Verdict + RelayFacts (the 30166 contract), RelayDiscovery,
                               RelayUrlCache, TorTransport (SYNC_TOR_SOCKS, SYNC_TOR_CONNECT_TIMEOUT_SECONDS), DialGate
   config/                     RouterConfig, RelaySourceConfig, RouterConfigLoader (HOCON `streams { }`; monitorFromEnv
@@ -188,6 +188,8 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
+                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint),
+                              ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/
   status/                     StreamPhases, SyncProgress, SyncStatus (the mirror's /stats.json on SYNC_STATUS_PORT),
@@ -424,6 +426,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - An idle window bounds one ask and a visit is a sequence of them; `LEG_QUIET_GIVE_UP_MS` fires on silence between asks.
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
+- strfry refuses any filter carrying `search` (`unrecognised filter item`), so `include:spam` goes only to a relay that takes it (`LensWaivers`), added at the wire and never to the ask, or every band re-keys.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
 - Out of file descriptors, Netty's first warning loaded the JDK's zone rules, failed, and killed the acceptor for good: `loadTimeZoneRules()` at boot; `live-bench/fd-exhaustion.sh` checks it.
 - A frame over the websocket cap closes the socket and loses every EVENT in flight on it; `MAX_FRAME_BYTES` stays far above `MAX_MESSAGE_LENGTH` so quartz refuses by id.

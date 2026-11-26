@@ -86,6 +86,11 @@ internal class VisitPool(
      * Shared with the pager so the audit's fallback REQs are chunked the same way.
      */
     private val widths: FilterWidths = FilterWidths(),
+    /**
+     * Which relays take the lens waiver, learned here from their refusals and read by the same
+     * reads that carry it to the wire.
+     */
+    private val waivers: LensWaivers = LensWaivers.none(),
     /** Silence between asks that ends a visit; a seam for tests. */
     private val quietGiveUpMs: Long = LEG_QUIET_GIVE_UP_MS,
     /** How long, in all, one walk our ingest queue stalled may wait for it to drain; a seam for tests. */
@@ -151,6 +156,7 @@ internal class VisitPool(
             bands = bands,
             limits = limits,
             widths = widths,
+            waivers = waivers,
             schedule = schedule,
             retraction = retraction,
             queue = queue,
@@ -306,6 +312,8 @@ internal class VisitPool(
         try {
             bands.retain(ownedState(built))
             pager.retain(next.keys.mapTo(HashSet()) { it.url })
+            waivers.retain(next.keys)
+            retraction?.retain { stream, url -> wantedBy(built, VisitKey(url, stream)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -414,7 +422,7 @@ internal class VisitPool(
                 // A refusal ends this stream's visit; the monitor's next sweep decides re-admission.
                 if (refusal != null) {
                     resumeAt[key] = at + 1
-                    val said = saidAbout(refusal, url)
+                    val said = saidAbout(refusal, url)?.let(RelayComplaints::kept)
                     aborts
                         .record(
                             key.stream,
@@ -494,7 +502,7 @@ internal class VisitPool(
         val ours: Boolean = false,
         /** The walk was read, and the store had not answered all of its events within the quiet give-up. */
         val unstored: Boolean = false,
-        /** The relay's own sentence, when the walk's result carried one. */
+        /** The relay's own sentence, whole, when the walk's result carried one. */
         val said: String? = null,
     ) {
         val reason: VisitAborts.Reason
@@ -561,18 +569,25 @@ internal class VisitPool(
             val flooredLeg = leg.flooredForPaging()
             try {
                 var narrowings = 0
+                var waiverFlips = 0
                 while (true) {
+                    val askedWaived = waivers.waives(url)
                     val refusal = walkLeg(ask, url, key, flooredLeg, floor, ongoingVisit) ?: break
-                    // A refusal of ours has no width to learn.
-                    if (!refusal.reason.ours &&
-                        narrowings < MAX_NARROWINGS &&
-                        widths.learn(url, saidAbout(refusal, url), refusal.filter.kinds?.size ?: 0)
-                    ) {
+                    // A refusal of ours has no width or waiver to learn.
+                    val said = if (refusal.reason.ours) null else saidAbout(refusal, url)
+                    if (narrowings < MAX_NARROWINGS && widths.learn(url, said, refusal.filter.kinds?.size ?: 0)) {
                         narrowings++
                         System.err.println(
                             "router: visit ${stream.name} ${url.url} — the relay refused a " +
                                 "${refusal.filter.kinds?.size}-kind filter; asking in chunks of ${widths.capFor(url)} from here",
                         )
+                        continue
+                    }
+                    // A NOTICE-only refusal reaches `said` only as its head; the gate's listener heard it whole.
+                    val learned = waivers.learn(url, said) || (!askedWaived && waivers.waives(url))
+                    // The waiver changes at most twice per leg, so a relay alternating the two refusals cannot loop it.
+                    if (waiverFlips < MAX_WAIVER_FLIPS && (learned || waivers.unlearn(url, said))) {
+                        waiverFlips++
                         continue
                     }
                     return refusal
@@ -695,7 +710,7 @@ internal class VisitPool(
                     askedAtMs,
                     pages.render(sampling, walked.downloaded),
                     ours = paged.ours,
-                    said = RelayComplaints.saidIn(walked),
+                    said = RelayComplaints.wordsIn(walked),
                 )
             }
             val verdicts = storedAll(acks, stream.name, url, ongoingVisit)
@@ -1121,6 +1136,10 @@ internal class VisitPool(
         /** The `doing` sentences. Each names what the visit is for and how, since neither implies the other. */
         const val STAGE_PAGING = "catching up (paging)"
         const val STAGE_REFETCHING = "re-fetching the past (paging)"
+
+        /** How often one leg's walk may learn or forget the lens waiver inside one visit. */
+        const val MAX_WAIVER_FLIPS = 2
+
         const val STAGE_NEGENTROPY = "negentropy sync of the past"
         const val STAGE_RETRACTING = "negentropy sync of the provider's own records"
         const val STAGE_TAILING = "holding a live tail"

@@ -59,6 +59,8 @@ class PeerClient(
     decoder: MessageDecoder = MessageDecoder.Default,
     /** The owning process's log prefix: `router` for the sync, `monitor` for the monitor. */
     private val logPrefix: String = "router",
+    /** Which relays [signer] answers challenges on; null answers every one. */
+    authGate: AuthGate? = null,
 ) : AutoCloseable {
     private val okhttp = relayHttpBuilder(connectionTimeoutSec, relayDns()).build()
 
@@ -82,11 +84,9 @@ class PeerClient(
 
     val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> httpFor(url) }, scope, decoder)
 
-    // NIP-42: an unanswered challenge looks exactly like an empty relay.
-    private val authenticator =
-        signer?.let { s ->
-            RelayAuthenticator(client, scope) { _, template, _ -> listOf(s.sign(template)) }
-        }
+    // NIP-42: an unanswered challenge looks exactly like an empty relay, unless [authGate] keeps it unanswered.
+    private val responder = signer?.let { GatedResponder(client, scope, it, authGate) }
+    private val authenticator: RelayAuthenticator? = responder?.authenticator
 
     /** Wire logging. Errors (NOTICE, CLOSED, failed sends) are always on; `sent`/`full` add more. */
     private val wireLog =
@@ -125,6 +125,7 @@ class PeerClient(
     /** Stop dialling. Called after the owner's own scopes are cancelled. */
     override fun close() {
         runCatching { authenticator?.destroy() }
+        responder?.listener?.let { runCatching { client.removeConnectionListener(it) } }
         runCatching { client.close() }
         runCatching {
             okhttp.dispatcher.executorService.shutdown()

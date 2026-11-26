@@ -997,6 +997,27 @@ internal val MIRROR_TERMS: JsonObject =
                 "everybody's. Zero means no relay on this roster has ever complained about filter width.",
         )
         term(
+            "waivedRelays",
+            "Relays read with NIP-50's `include:spam`, the waiver a web-of-trust relay (another vespa-relay) " +
+                "answers with its whole corpus instead of its trust-gated share. Learned from the relay's own " +
+                "refusal: this router reads anonymously, and a gated relay refuses an anonymous read naming the " +
+                "waiver. Every other relay is asked exactly what the stream says, because a relay without NIP-50 " +
+                "refuses any filter carrying `search`. Zero means no relay on this roster gates its reads by trust.",
+        )
+        term(
+            "retractionsWithheld",
+            "Retraction audits that deleted nothing because the relay's reconciled set was too small to believe: " +
+                "none of what we hold, under a tenth of it, or under a tenth of what it held at the last audit. A " +
+                "relay reading a signed-in key through a trust lens answers exactly that, and refuses nothing. A real " +
+                "mass retraction lands here too, and is the operator's to apply.",
+        )
+        term(
+            "pushesWithheld",
+            "Upstream push rounds that sent nothing because the upstream's set was too small to believe: under a " +
+                "tenth of what it held at the last round, or, on a relay we are signed in to with no waiver learned, " +
+                "under a tenth of ours. Pushing on such an answer would push it everything we hold.",
+        )
+        term(
             "unreadableUnits",
             "(relay, stream) pairs holding an ask the relay refused as POLICY twice since it last served it — " +
                 "`restricted:`, `blocked:`, `invalid:`, a kind it says it will not serve, or an identity its " +

@@ -37,7 +37,10 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   windows were all VISITED; it never meant they were all answered.*
   `page` returns `PagedFetchResult` now, three drain sites and the final return
   are guarded on `refusedOutright`, and `negentropyRefused` counts the windows
-  that were not claimed. Both guards are mutation-checked.
+  that were not claimed. Both guards are mutation-checked. A download path of
+  our own beside quartz's owes the same: the waived by-id fetch in
+  `ClientWindowSync` once returned normally from batches nobody answered, and
+  now throws quartz's `DOWNLOADS_FAILED` when its `DownloadPace` gives up.
 
   **And the same fix has to reach every path that sends the filter.** #185 came
   back precisely because the catch-up was chunked by `FilterWidths` and the
@@ -417,6 +420,17 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   what a silent one already cost. Do not pass the flag by hand — it was removed
   from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
   you get it wrong when the client changes.
+- **A trust-gated peer answered a signed-in mirror with nothing, and only on REQ.**
+  Another vespa-relay with `REQUIRE_READ_LENS` reads a NIP-42-authenticated
+  connection through that key's lens; the mirror's key has no 10040 and no
+  scores, so every REQ, by-id fetches included, came back EMPTY with no refusal
+  to read, while the NEG-OPEN of the same filter answered the whole set. Every
+  reconcile named the same below-floor ids missing, every pass (measured on two
+  relays in Docker: 150 missing, 0 fetched, three passes running). The router now
+  reads every relay anonymously first and learns `include:spam` from the refusal
+  (`LensWaivers`), and the store (59d541d) answers a NEG-OPEN through the same
+  lens as a REQ. It cannot send the token everywhere: strfry refuses any filter
+  carrying `search` with `unrecognised filter item`.
 - **A TTL on a tag is not a TTL on the event carrying it — unless you own every
   writer.** Kind 30166 used to have a writer we did not control: quartz's
   `RelayMonitor`, rewriting the record for every relay the client connected to,

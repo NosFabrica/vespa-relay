@@ -19,6 +19,34 @@ against 0.4 s for one alone.
 Nothing to do unless a client of yours pages with open filters and expects the
 old window: set `DEFAULT_LIMIT=5000` to keep it.
 
+## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
+
+Two changes that must land in order. The router now reads every relay
+anonymously first, learns `include:spam` from a gated relay's refusal, and signs
+in only where a refusal asks for AUTH without naming it. The store fix behind
+the relay (NosFabrica/vespa-eventstore 59d541d, with this relay's NEG-OPEN-as-
+the-caller change) makes a signed-in NEG-OPEN answer through the signer's lens,
+as its REQ always did.
+
+### Do before the first boot
+
+**Upgrade every router before any peer it mirrors takes the store fix.** An old
+router signs in on the challenge and declares nothing; against a peer with the
+fix, its reconcile then answers through the router key's empty lens, and the old
+router reads that as a peer holding nothing: its upstream push sends the whole
+corpus every pass, and a `deleteMissing` stream would delete what the peer
+merely hid. A new router learns the waiver on its first anonymous read, and its
+retraction audit and push hold back on any answer that shrank past belief.
+
+### What you will see
+
+- `router: <url> refused us naming \`include:spam\`; asking with it from here`,
+  once per gated relay per process, and `waivedRelays` on the progress document.
+- `router: <url> asks us to sign in (…)` where a relay wants AUTH for its own
+  reasons; the router signs in there and nowhere else.
+- `retractionsWithheld` and `pushesWithheld` count audits and push rounds held
+  back on an answer too small to believe, each with its log line.
+
 ## Topical searches rank articles above things named after the topic (November 2026)
 
 A search for a subject used to fill its first page with lists, sets, apps and

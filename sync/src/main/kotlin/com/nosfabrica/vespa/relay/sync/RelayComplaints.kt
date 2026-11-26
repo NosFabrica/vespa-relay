@@ -71,16 +71,16 @@ internal interface RelayComplaints {
         const val POLL_MS = 10L
 
         /**
-         * The relay's own words on [walked], trimmed and bounded as a heard sentence is. A
-         * transport error is not the relay speaking, so `CANNOT_CONNECT` carries none.
+         * The relay's own words on [walked], trimmed, whole: what a refusal teaches can sit past the
+         * part a log keeps. A transport error is not the relay speaking, so `CANNOT_CONNECT` carries none.
          */
-        fun saidIn(walked: PagedFetchResult): String? {
+        fun wordsIn(walked: PagedFetchResult): String? {
             if (walked.end == PagedFetchResult.End.CANNOT_CONNECT) return null
-            return walked.message
-                ?.trim()
-                ?.take(ClientRelayComplaints.MAX_SAID)
-                ?.ifEmpty { null }
+            return walked.message?.trim()?.ifEmpty { null }
         }
+
+        /** The head of a relay's sentence that a log line or a row keeps, bounded as a heard sentence is. */
+        fun kept(words: String): String = words.take(ClientRelayComplaints.MAX_SAID)
 
         /** Hears nothing: the probes, and any pool built without a client to listen on. */
         val DEAF: RelayComplaints =

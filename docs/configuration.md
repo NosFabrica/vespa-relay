@@ -233,24 +233,102 @@ hook as a REQ, so a reconcile declares a lens exactly as a read does and a
 refusal comes back as `NEG-ERR <subid> "auth-required: …"`. That is the right
 default — a reconcile hands over the ids and timestamps of everything matching
 the filter, the corpus's whole shape — but it means **an anonymous peer cannot
-mirror from this relay.** A peer has three ways in: put `include:spam` in the
-NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH, or ask the operator
-for `REQUIRE_READ_LENS=false`.
+mirror from this relay without declaring one.** A peer has three ways in: put
+`include:spam` in the NEG-OPEN filter (measured: admitted), sign a NIP-42 AUTH,
+or ask the operator for `REQUIRE_READ_LENS=false`. From store
+59d541d (NosFabrica/vespa-eventstore, pinned from b19d76c) a signed-in
+reconcile is answered through the signer's lens, the same set that connection's
+REQ of the same filter serves (quartz takes the NEG-OPEN snapshot under the
+caller's identity and caches it per caller); `include:spam` waives the floor on
+both. Before that store a signed-in reconcile is answered the whole set. A
+reconcile whose filters read the same set for every caller shares one cached
+snapshot, taken as no caller: one naming an `observer:<64-hex>` (it wins over the
+connection), or `include:spam` with no words, no `sort:` the store recognises and
+no `filter:rank:` floor. Which tokens those are is the store's call
+(`ReadShape.answersEveryConnectionAlike`): one it compiles to nothing (an unknown
+`sort:`, `language:` with no words, `nsfw:`, `domain:`) leaves the reconcile
+shared. Words, a recognised `sort:` or a floor are taken as the caller, since a
+caller's lens might act on them.
+
+A cached snapshot (quartz keeps several, for up to 30 seconds each) survives an
+ordinary publish: a note, a reaction or a profile drops only the snapshots whose
+filters it could join, replace or delete from. Which writes and which searches
+that holds for is the store's call (vespa-eventstore `FilterLocality`), and the
+relay passes it to quartz unchanged. A write the trust gate reads drops every
+snapshot, because it can change what any caller's lens admits: a NIP-85 card
+(kind 30382), a provider list (10040), a request to vanish (62), and a deletion
+(5) unless it names only addresses of other kinds, since the store deletes an `e`
+target whatever its kind. A search that only narrows by facts in each event or by
+the trust gate is judged like a plain filter, so a peer mirroring with a
+termless `include:spam` or `observer:<64-hex>` (with `filter:rank:`,
+`sort:recent` or `-word` exclusions too) reuses its snapshot across unrelated
+writes. Text never does: any words or a quoted phrase, `sort:links`, or a trust
+sort with a `limit` is dropped by every write, because the store cuts text by a
+relevance floor built from bm25, whose term statistics move with every document
+written anywhere in the corpus, and a ranked page cuts by scores other writes
+move. Changes made to the store outside a publish (expiry sweeps, NIP-86 and
+retraction-audit purges, the boot-time trust reconcile and score sweep, the
+store's background trust drain after a 10040 names a new service) drop no
+snapshot and are bounded by the 30 seconds alone.
+
+A snapshot is never served partial, because a peer acts on what a reconcile
+leaves out. On a cluster missing part of its content every NEG-OPEN is a
+`NEG-ERR`, anonymous ones included, where the same REQ is served from what the
+cluster can still search: the snapshot walk never takes a partial answer. And
+from store 604fede (likewise pinned from b19d76c), while a degraded
+cluster leaves the provider map cold, a NEG-OPEN read through a lens is a
+`NEG-ERR` as well: a signed-in caller's on its own snapshot, and a named
+`observer:`'s on the shared path, which still resolves that observer's lens. A
+termless `include:spam` reconcile on the shared path reads no lens, so the
+provider map does not stop it.
 
 **Turn it off** where there is nothing to gate on: a relay whose readers are
 all mirrors, or a store with no NIP-85 trust data behind it, would only be
 refusing every client for a lens it cannot apply. The boot log says so when you
 do.
 
-**Peering with another vespa-relay.** Its router declares nothing — neither on
-its paged REQ fetches nor in its NEG-OPEN filters — so a gated peer refuses
-both. The refusal is at least LOUD: the router reads `auth-required` as a
-refusal outright (`VisitPool.refusedOutright`) and records it, rather than
-mirroring nothing quietly. With `RELAY_NSEC` set the client answers the NIP-42
-challenge instead and is then read through *the relay key's* lens, which on a
-key nobody has scored is an empty answer rather than an error — the quieter
-failure of the two. Until the router learns to declare, peer a gated relay by
-turning the gate off there, or by giving the mirroring key a real lens.
+**Peering with another vespa-relay.** The router reads every relay anonymously
+first, even with `RELAY_NSEC` set: a gated relay reads a signed-in key through
+that key's lens, which on a key nobody has scored is an EMPTY answer and never a
+refusal, so only an anonymous read can hear the gate. It answers a relay's NIP-42
+challenge only once a refusal asks for AUTH without naming a waiver (a paid or
+whitelisted relay) or an EOSE carries NIP-67's `auth` hint (served, with more
+held back for a signed-in reader), and a refusal that names `include:spam` — this relay's
+`auth-required:` sentence does — teaches the waiver instead. From then on every
+read the router makes of that relay carries `include:spam`, merged into any
+`search` the stream's filter already holds, signed in or not (a filter that names
+its own lens, `observer:<hex>`, is sent as it is: its floor is the stream's
+choice, and the gate does not refuse it): the catch-up's
+paged REQs (re-asked at once), the live tail, every NEG-OPEN, the by-id fetches
+after a reconcile, the retraction audit and the upstream push's reconciles. Every
+other relay is asked exactly what the stream says: a relay without NIP-50 refuses
+any filter carrying `search` (strfry answers `unrecognised filter item: search`),
+and one with NIP-50 but not the extension may read the token as words. What a
+relay taught is held per url for the process (`waivedRelays` counts the waived
+ones) and relearned after a restart on the first refusal; a relay that drops off
+the roster loses its waiver, unless it ever signed us in, since a signed-in socket
+can outlive the roster entry and would no longer be refused; a waiver is forgotten
+only when the relay refuses the `search` field itself (`unrecognised filter item:
+search`, `search not supported`), never on a complaint about what a stream's own
+search says (`unsupported search extension`). A gate that offers no
+waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
+`abortedAuthRequired`).
+
+**And it never acts on an answer it cannot believe.** A relay that signed us in
+because it refused a read, and that we hold no waiver for, may be reading us
+through a lens; one that signed us in only to take our EVENTs (an `OK false
+"auth-required: …"`) said nothing of how it reads, and is believed as before. So a retraction audit
+deletes nothing when the relay's reconciled set holds none of ours, under a
+tenth of ours, or under a tenth of what it held at the last audit
+(`retractionsWithheld`), and an upstream push sends nothing when the upstream's
+set for that stream fell under a tenth of what it held, or, on such a signed-in
+relay, under a tenth of ours (`pushesWithheld`). The push reads what the upstream
+holds off the previous pass's own reconcile, so a pass costs one reconcile per
+upstream; it reconciles once more only on the first pass, after a withheld or
+failed one, or when the relay has since signed us in or taught us its waiver. A
+collapse that arrives between passes unannounced is therefore pushed into once,
+and held back from the pass after. A real mass retraction lands there too, and is
+the operator's to apply.
 
 ## Commands over HTTP (NIP-FE)
 
