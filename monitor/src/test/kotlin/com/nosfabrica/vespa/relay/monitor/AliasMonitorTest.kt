@@ -376,10 +376,15 @@ class AliasMonitorTest {
                 assertEquals(listOf(RunKind.SWEEP.label), ran.toList(), "a job ran beside the sweep")
 
                 release.complete(Unit)
-                delay(PERIOD_MS / 2)
+                // Both clocks are overdue when the sweep ends, so they run back to back, the lane first;
+                // each next tick is a full period after its run. The first three jobs are therefore the
+                // sweep and one of each, however late a loaded machine runs them: a clock run once per
+                // period it missed would put a second lane tick third. (It slept PERIOD_MS / 2 and read
+                // the list, which a starved JVM had not finished filling: [sweep, fast lane].)
+                withTimeout(5_000) { while (ran.size < 3) delay(5) }
                 assertEquals(
                     listOf(RunKind.SWEEP.label, RunKind.FAST_LANE.label, "retry"),
-                    ran.toList(),
+                    ran.take(3),
                     "each clock that came due ran once after the sweep, not once per period it missed",
                 )
             } finally {

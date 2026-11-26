@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip50Search.SearchQuery
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropyServerSession
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -93,18 +94,29 @@ internal class GatedPeer(
         private var signedIn = false
         private val sessions = ConcurrentHashMap<String, NegentropyServerSession>()
 
+        /**
+         * Every frame to the client, delivered in the order this connection sent it, as one socket
+         * delivers a relay's frames. Each used to go out on a coroutine of its own, so the challenge
+         * sent at connect could reach the client after the refusal of a REQ that followed it — an
+         * order no relay can produce, and one the client, never having seen a challenge, cannot sign
+         * in from (a challenge held back 50ms failed two of GatedPeerTest's sign-in premises).
+         */
+        private val outbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+        init {
+            scope.launch { for (deliver in outbox) deliver() }
+        }
+
         private fun reply(frame: String) {
-            scope.launch { out.onMessage(frame) }
+            outbox.trySend { out.onMessage(frame) }
         }
 
         override fun needsReconnect() = false
 
         override fun connect() {
             open = true
-            scope.launch {
-                out.onOpen(0, false)
-                out.onMessage("""["AUTH","challenge-1"]""")
-            }
+            outbox.trySend { out.onOpen(0, false) }
+            reply("""["AUTH","challenge-1"]""")
         }
 
         override fun disconnect() {
@@ -151,8 +163,8 @@ internal class GatedPeer(
                             delay(idsDelayMs)
                             idsInFlight.decrementAndGet()
                         }
-                        for (e in answers.flatMap { it.first.orEmpty() }.distinctBy { it.id }) out.onMessage("""["EVENT","$subId",${e.toJson()}]""")
-                        out.onMessage(if (authHint && !signedIn) """["EOSE","$subId",["auth"]]""" else """["EOSE","$subId"]""")
+                        for (e in answers.flatMap { it.first.orEmpty() }.distinctBy { it.id }) reply("""["EVENT","$subId",${e.toJson()}]""")
+                        reply(if (authHint && !signedIn) """["EOSE","$subId",["auth"]]""" else """["EOSE","$subId"]""")
                     }
                 }
 
