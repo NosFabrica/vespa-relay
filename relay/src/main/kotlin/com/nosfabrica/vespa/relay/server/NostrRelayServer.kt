@@ -151,7 +151,10 @@ class NostrRelayServer(
             )
         }
 
-    private val ingest: EventIngest = (ingest ?: ownQueue!!).let { clients -> mirrorLane?.over(clients) ?: clients }
+    // Both lanes behind one, so an id they accept together is fanned out once.
+    private val acceptedOnce = AcceptedOnce((ingest ?: ownQueue!!).let { clients -> mirrorLane?.over(clients) ?: clients })
+
+    private val ingest: EventIngest = acceptedOnce
 
     private val searchGate = SearchGate(searchConcurrencyPerConnection)
 
@@ -166,6 +169,9 @@ class NostrRelayServer(
     /** Live events the gate dropped since boot: their cold-author check failed, or got no read in time. */
     val liveGateFailed: Long get() = coldChecks.failures
     val liveGateShed: Long get() = coldChecks.shedding
+
+    /** Acceptances of an id another in-flight submission had already won, answered as duplicates and not fanned out again. */
+    val racedAccepts: Long get() = acceptedOnce.racedAccepts
 
     override fun close() {
         closeConnections()

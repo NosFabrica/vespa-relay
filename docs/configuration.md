@@ -166,7 +166,9 @@ never about clients. `/pressure` caps its `samples` field for exactly that
 reason. Beside it, `/pressure`'s `liveGate` counts the live events dropped
 since boot because their author's trust check failed (`failed`) or got no
 store read in time (`shed`); either growing means gated live feeds are missing
-events.
+events. `racedAccepts` counts the publishes answered `duplicate:` because the
+other lane accepted the same id while both were in flight, each one a live
+delivery that would otherwise have gone out twice.
 
 ## Relay identity (NIP-11)
 

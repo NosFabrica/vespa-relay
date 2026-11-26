@@ -202,7 +202,8 @@ fun serveRelay(
                     val samples = p.sampleCount().coerceAtMost(ServingPressure.MIN_SAMPLES.toLong())
                     call.respondText(
                         """{"meanMs":${p.meanMs()},"samples":$samples,""" +
-                            """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}}}""",
+                            """"liveGate":{"failed":${relay.liveGateFailed},"shed":${relay.liveGateShed}},""" +
+                            """"racedAccepts":${relay.racedAccepts}}""",
                         ContentType.Application.Json,
                     )
                 }

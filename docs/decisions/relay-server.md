@@ -668,6 +668,21 @@ queues up to `QUEUE_MS` for a slot instead of dropping at once, and the
 waiters on a failed read fail closed with it. The dropped counts are on
 `GET /pressure` as `liveGate`.
 
+**An id two lanes accept at once is accepted once.** The store dedups a regular
+event outside its writer lock, so two batches in flight together (the
+publishes' lane and the mirror lane, or two workers of one) may both answer
+`Accepted` for one id, and quartz's `LiveEventStore` fans out every `Accepted`:
+a note published here and to an upstream the sync tails reached every feed
+twice, the ~0.5% `dup` column in live-feeds.md. `AcceptedOnce` sits in front of
+both lanes and answers the later of two acceptances in flight together
+`duplicate:`, which is the truth (the first one wrote it) and what a resend
+after the write hears, so its OK is still `true` and it is not fanned out
+again. Only submissions in flight together are compared, so an ephemeral event
+sent again later still goes out again. Checking under the store's lock instead
+would cost a round trip per event under it. `racedAccepts` on `/pressure`
+counts them. The fix belongs in `LiveEventStore`, which already counts an id's
+submissions in flight, and goes when quartz has it.
+
 **The trust pages are public, and `explain` is bounded and cached.** The pulse
 is gated because it quotes what people searched for; every field on
 `/trust.html` and `/trust.json` is a count, a phase or a query shape, and

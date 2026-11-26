@@ -4,6 +4,17 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Live fan-out and stored-replay admission (November 2026)
+
+Nothing to do before the boot.
+
+### What you will see
+
+- **A publish the other lane accepted at the same moment is answered
+  `OK true "duplicate: already have this event"`**, and live feeds get that
+  event once. Before, both publishers heard a plain `OK true` and every feed
+  it matched got it twice. `/pressure` gains `racedAccepts`, how many since boot.
+
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 
 Two changes that must land in order. The router now reads every relay
