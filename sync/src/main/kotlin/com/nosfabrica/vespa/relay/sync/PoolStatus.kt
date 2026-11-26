@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.sync
 
+import com.nosfabrica.vespa.relay.config.IncludeSpam
 import com.nosfabrica.vespa.relay.config.SyncStream
 import com.nosfabrica.vespa.relay.progress.InFlight
 import com.nosfabrica.vespa.relay.progress.Processors
@@ -208,6 +209,7 @@ internal class PoolStatus(
             negentropyRefusedWhy = lookups.cannotReconcile[stream to url.url],
             watched = snapshot.watches(url, stream),
             kindCap = widths.capFor(url),
+            includeSpam = waivers.shown(url),
             abortReason = abort?.reason?.says ?: refused?.reason,
             abortSaid = abort?.said ?: refused?.said,
             abortAtSec = abort?.atSec ?: refused?.at ?: 0,
@@ -358,6 +360,8 @@ internal class PoolStatus(
             Processors.Count("poolReceived", counters.poolReceived.get()),
             Processors.Count("narrowedRelays", widths.narrowed.toLong()),
             Processors.Count("waivedRelays", waivers.waived.toLong()),
+            Processors.Count("waiverAlways", waivers.forced(IncludeSpam.ALWAYS).toLong()),
+            Processors.Count("waiverNever", waivers.forced(IncludeSpam.NEVER).toLong()),
             // A gauge, like `narrowedRelays`: a verdict lapses, so a count since boot would only grow.
             Processors.Count("unreadableUnits", bands.unreadableByUnit().size.toLong()),
         ) + aborts.counts()

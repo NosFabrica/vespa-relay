@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.sync
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import com.nosfabrica.vespa.relay.config.IncludeSpam
 import com.nosfabrica.vespa.relay.config.RouterConfig
 import com.nosfabrica.vespa.relay.fold.StoredFold
 import com.nosfabrica.vespa.relay.ingest.AddressVersion
@@ -124,7 +125,11 @@ class SyncEngine(
      * How each relay is read: anonymously, with `include:spam` once a refusal names it, signed in
      * once a refusal asks for AUTH without naming it. One instance for every read this router makes.
      */
-    private val waivers = LensWaivers(pinned = (config.downUpstreams() + config.upUpstreams()).mapTo(HashSet()) { it.url })
+    private val waivers =
+        LensWaivers(
+            pinned = (config.downUpstreams() + config.upUpstreams()).mapTo(HashSet()) { it.url },
+            overrides = config.peers.mapValues { it.value.includeSpam }.filterValues { it != IncludeSpam.AUTO },
+        ).also { announceWaiverOverrides(config) }
 
     /** The websocket client, socket budget, Tor and NIP-42, answered only where [waivers] lets it. */
     private val peers = PeerClient(scope, signer, torSettings, wireLogMode, config.connectionTimeoutSec, MessageDecoder.Default, authGate = waivers)
@@ -523,5 +528,14 @@ class SyncEngine(
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"
         const val PUSH_PROCESSOR = "upstreamPush"
+
+        /** Said once at boot per relay `peers` forces, so an override is never a silent difference from a sibling relay. */
+        private fun announceWaiverOverrides(config: RouterConfig) {
+            for ((url, settings) in config.peers) {
+                if (settings.includeSpam == IncludeSpam.AUTO) continue
+                val how = if (settings.includeSpam == IncludeSpam.ALWAYS) "every read carries `include:spam`" else "no read carries `include:spam`, and a refusal naming it signs us in"
+                System.err.println("router: peers sets includeSpam = ${settings.includeSpam.wire} for ${url.url}: $how, and nothing is learned there")
+            }
+        }
     }
 }

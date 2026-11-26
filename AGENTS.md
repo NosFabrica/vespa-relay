@@ -188,7 +188,7 @@ sync/…/relay/
                               (the mirror; TailBook its live tails, PoolStatus what the page reads of it), VisitQueue,
                               VisitAborts, RelayComplaints, RelayPages, FilterWidths, RosterBuilder, RetractionAudit,
                               NegentropyPager (SYNC_NEG_PAGE_TARGET), SweepState, SyncBands (SYNC_STATE_FILE),
-                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint),
+                              LensWaivers (read anonymously; `include:spam` learned from a refusal naming it, AUTH only on one that does not or an EOSE `auth` hint; `peers` forces it per url),
                               ShrinkGuard (no delete or push on a reconciled set that shrank past belief),
                               PersistedJsonState (the state files' durable write),
                               UpstreamPush, PressurePoller (SYNC_PRESSURE_URL), RouterTuning, PoolLimits, heal/, refused/

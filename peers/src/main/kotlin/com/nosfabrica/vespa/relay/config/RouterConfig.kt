@@ -55,6 +55,8 @@ data class RouterConfig(
      * is unset, which reads this router's own; empty reads nobody's.
      */
     val verdictsFrom: List<String>? = null,
+    /** What the operator states outright about single relays, by url; a relay not named is `auto` throughout. */
+    val peers: Map<NormalizedRelayUrl, PeerSettings> = emptyMap(),
 ) {
     companion object {
         const val DEFAULT_VISIT_CONCURRENCY = 128
@@ -327,6 +329,30 @@ data class SyncStream(
             refetchTiers.ifEmpty {
                 refetchThePastSeconds?.let { listOf(SyncTier(maxAgeSeconds = null, everySeconds = it)) } ?: emptyList()
             }
+}
+
+/** One `peers` entry: settings that override what the router would learn about that relay on its own. */
+data class PeerSettings(
+    val includeSpam: IncludeSpam = IncludeSpam.AUTO,
+)
+
+/** Whether reads of a relay carry NIP-50's `include:spam` lens waiver. */
+enum class IncludeSpam(
+    val wire: String,
+) {
+    /** Learned from a refusal naming it, forgotten when the relay refuses the `search` field. The default. */
+    AUTO("auto"),
+
+    /** On every read from boot, and never forgotten. */
+    ALWAYS("always"),
+
+    /** Never sent and never learned, so a refusal naming it signs us in instead. */
+    NEVER("never"),
+    ;
+
+    companion object {
+        fun parse(raw: String): IncludeSpam? = entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) }
+    }
 }
 
 /**

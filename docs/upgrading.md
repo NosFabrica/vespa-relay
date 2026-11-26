@@ -4,6 +4,20 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## `peers` forces the lens waiver per relay (November 2026)
+
+Nothing to do: with no `peers` block every relay is `auto`, the learned stance
+as before. To read a relay with `include:spam` whatever it says, or never, name
+it in `sync.conf` (docs/router.md, "peers"); a misspelt key or value, a relay
+named twice, or an entry that sets nothing stops the boot.
+
+### What you will see
+
+- `router: peers sets includeSpam = always|never for <url>: …`, once per forced
+  relay at boot.
+- `waiverAlways` and `waiverNever` on the progress document, and `includeSpam`
+  (`learned`, `always`, `never`) on each `prime relays` row.
+
 ## Mirrors read gated peers whole; peers answer NEG-OPEN through the lens (November 2026)
 
 Two changes that must land in order. The router now reads every relay

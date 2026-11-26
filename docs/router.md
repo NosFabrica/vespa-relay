@@ -746,6 +746,41 @@ Bare hex and nsecs stop the boot, as for every pubkey setting. Nothing here
 reads `monitor.conf`: the mirror does not need to know where the monitor runs,
 or whether one runs at all.
 
+## peers: what the operator states about one relay
+
+How the router reads a relay is learned from the relay itself — the
+`include:spam` lens waiver from a refusal naming it, a sign-in from one asking
+for AUTH (docs/configuration.md, "Reads before AUTH"). Where learning fails, a
+`peers` entry in `sync.conf` says it outright, for every stream that relay
+serves, declared or discovered:
+
+```hocon
+peers = [
+  { url = "wss://filter.example",  includeSpam = "always" }   # refuses us in words nothing learns from
+  { url = "wss://members.example", includeSpam = "never" }    # gated, and we must read it as our key
+]
+```
+
+- **`includeSpam = "auto"`** — the default for every relay not named: read
+  verbatim until a refusal names the waiver, forgotten only when the relay
+  refuses the `search` field itself.
+- **`"always"`** — every read of the relay carries `include:spam` from boot, and
+  no refusal (not even `unrecognised filter item: search`) drops it. A filter
+  that names its own lens (`observer:<hex>`) is still sent as written.
+- **`"never"`** — no read carries it and none learns it, so a refusal naming the
+  waiver signs the router in instead, like any other `auth-required:`. A
+  signed-in read of a gated relay answers through our key's lens, so the
+  retraction audit and the push treat its answers as possibly lensed
+  (`ShrinkGuard`) and act on none that shrank past belief.
+
+An entry names one relay (matched by normalized url, so `wss://a.example` and
+`wss://a.example/` are one entry, and naming it twice stops the boot) and at
+least one setting; a misspelt key or value stops the boot. Each forced relay is
+said once at boot (`router: peers sets includeSpam = … for <url>`), counted on the
+progress document (`waiverAlways`, `waiverNever`, beside the learned
+`waivedRelays`), and shown in the `prime relays` table's terms column
+(`includeSpam`: `learned`, `always` or `never`).
+
 ## Mirroring the deletions themselves
 
 Kinds **5** (NIP-09 deletion request) and **62** (NIP-62 request to vanish) are

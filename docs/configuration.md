@@ -310,7 +310,11 @@ the roster loses its waiver, unless it ever signed us in, since a signed-in sock
 can outlive the roster entry and would no longer be refused; a waiver is forgotten
 only when the relay refuses the `search` field itself (`unrecognised filter item:
 search`, `search not supported`), never on a complaint about what a stream's own
-search says (`unsupported search extension`). A gate that offers no
+search says (`unsupported search extension`). Where learning fails, `sync.conf`'s
+`peers` block forces the waiver per relay: `includeSpam = "always"` sends it on
+every read from boot and never forgets it, `"never"` never sends or learns it, so
+the refusal that would have taught it signs us in instead (docs/router.md,
+"peers"). A gate that offers no
 waiver still ends the visit loudly (`VisitPool.refusedOutright`, counted under
 `abortedAuthRequired`).
 

@@ -179,8 +179,10 @@ Up with the `sync` profile, each served by the process doing the work:
 
   Beside them, **on what terms** that relay lets us sync: whether the monitor
   measured it as speaking negentropy (without it, its history can never be
-  reconciled), the filter width its own refusal taught us, and the last thing it
-  said when it turned us away. Rows that need somebody come first, and the counts
+  reconciled), the filter width its own refusal taught us, whether our reads
+  carry `include:spam` (`learned` from its refusal, or `always` / `never` as
+  `sync.conf`'s `peers` forces it), and the last thing it said when it turned us
+  away. Rows that need somebody come first, and the counts
   above the table stay complete even when the list is cut.
 
 - **`/` on the monitor** (`MONITOR_STATUS_PORT`, 7779, served by the monitor process) — what this router has
