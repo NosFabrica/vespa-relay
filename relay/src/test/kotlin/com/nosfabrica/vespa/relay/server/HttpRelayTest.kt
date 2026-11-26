@@ -665,7 +665,7 @@ class HttpRelayTest {
         serving(gate = gate, deadlineMs = 30_000) { base ->
             for (gzip in listOf(false, true)) {
                 val lines =
-                    postStalled(base, req("""{"kinds":[1],"search":"include:spam"}"""), gzip) {
+                    postStalled(base, req("""{"kinds":[1],"limit":${big.size},"search":"include:spam"}"""), gzip) {
                         Thread.sleep(2_500)
                         // Tens of megabytes cannot fit the socket's buffers, so a relay that is still writing is waiting on it.
                         assertEquals(1, gate.inFlight, "gzip=$gzip: the relay finished an answer nobody read, so it holds it in memory")
@@ -682,7 +682,7 @@ class HttpRelayTest {
         publish(*big.toTypedArray())
         serving(deadlineMs = 1_000) { base ->
             // The socket fills, the relay's writes block, and the deadline passes during one.
-            val lines = postStalled(base, req("""{"kinds":[1],"search":"include:spam"}"""), gzip = true) { Thread.sleep(2_000) }
+            val lines = postStalled(base, req("""{"kinds":[1],"limit":${big.size},"search":"include:spam"}"""), gzip = true) { Thread.sleep(2_000) }
             assertTrue(lines.size < big.size, "the deadline must have cut the answer: ${lines.size} lines")
             assertTrue(lines.dropLast(1).all { it.startsWith("""["EVENT",""") && it.endsWith("}]") }, "every line before the last is a whole frame")
             assertTrue(lines.last().startsWith("""["CLOSED","$SUB","error: the answer ran past"""), "ended on ${lines.last().take(80)} after ${lines.size} lines")

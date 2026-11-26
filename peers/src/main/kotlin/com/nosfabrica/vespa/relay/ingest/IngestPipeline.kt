@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.EngineTuning
 import com.nosfabrica.vespa.eventstore.engine.async.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.async.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.metrics.IngestStats
+import com.nosfabrica.vespa.eventstore.isStoreRefusingWrites
 import com.nosfabrica.vespa.relay.ingest.ParseAudit
 import com.nosfabrica.vespa.relay.ingest.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.ingest.refused.RefusalSink
@@ -634,12 +635,50 @@ class IngestPipeline(
                 reject("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
                 reportPoison(event, e)
             },
-            onGaveUp = { lost, e ->
-                // Tallied apart from the isolated ones: "could not say which" is not "this event is bad".
-                reject("store ${e.javaClass.simpleName} (batch, unisolated)", lost.size.toLong())
-                lostToStore.addAndGet(lost.size.toLong())
+            onGaveUp = { gaveUp, e ->
+                var lost = gaveUp
+                if (e.isStoreRefusingWrites()) {
+                    // A feed block can begin in the middle of a write, so part of it may have landed. Those
+                    // are stored, and answered so (which also hands them to live subscriptions); the rest
+                    // hear, in words that say so, that it is the relay's storage and not their event.
+                    val stored = storedDespite(gaveUp)
+                    if (stored.isNotEmpty()) {
+                        lost = gaveUp.filter { it.id !in stored }
+                        accepted.addAndGet((gaveUp.size - lost.size).toLong())
+                    }
+                    gaveUp.forEach { event -> indexOf[event]?.let { answers.answer(it, if (event.id in stored) IEventStore.InsertOutcome.Accepted else STORE_REFUSING_WRITES) } }
+                }
+                // Anything else is answered by the pass's own catch-all. Tallied apart from the isolated
+                // ones: "could not say which" is not "this event is bad".
+                if (lost.isNotEmpty()) {
+                    reject("store ${e.javaClass.simpleName} (batch, unisolated)", lost.size.toLong())
+                    lostToStore.addAndGet(lost.size.toLong())
+                }
             },
         )
+    }
+
+    /**
+     * Which of [events] the store holds after a write it refused whole: reads still answer while the
+     * engine refuses writes, so the id probe ([knownIds]) tells. Empty without a probe, or when it fails:
+     * then every one is answered refused, as before, and a publisher's retry hears `duplicate:`.
+     */
+    private suspend fun storedDespite(events: List<Event>): Set<String> {
+        val probe = knownIds ?: return emptySet()
+        return try {
+            storeCall(StoreCalls.CALLER_INGEST_DEDUP, StoreCalls.OP_EXISTING_IDS, StoreCalls.ids(events.size)) {
+                events
+                    .map { it.id }
+                    .distinct()
+                    .chunked(dedupChunk)
+                    .flatMapTo(HashSet()) { probe(it) }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            reportBookkeepingFailure("stored-despite probe", e, "the refused batch is answered refused whole")
+            emptySet()
+        }
     }
 
     /** One permanent refusal, reported to the filter and the healer, from the store's verdict or [dropSuperseded]. */
@@ -1046,6 +1085,9 @@ class IngestPipeline(
 
     companion object {
         const val REJECTION_ROWS = 4
+
+        /** What a publisher hears while the store's engine refuses every write (a feed block): try later. */
+        val STORE_REFUSING_WRITES = IEventStore.InsertOutcome.Failed("error: the relay's storage is not accepting writes right now; try again later")
 
         // What a publisher hears, in the store's own words, for the verdicts reached before the store.
         private val DUPLICATE = IEventStore.InsertOutcome.Rejected(RejectionReason.DUPLICATE)

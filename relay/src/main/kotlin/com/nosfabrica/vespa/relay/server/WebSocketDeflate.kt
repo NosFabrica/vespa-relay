@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.server
 
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
-import io.netty.buffer.ByteBufUtil
+import io.netty.buffer.Unpooled
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.Deflater
 import java.util.zip.Inflater
@@ -193,11 +193,11 @@ internal class SocketDeflate(
         alloc: ByteBufAllocator,
         text: CharSequence,
     ): ByteBuf {
-        val length = ByteBufUtil.utf8Bytes(text)
-        if (length < DEFLATE_MIN_BYTES) return encodeTextFrame(alloc, text)
-        val plain = alloc.buffer(length)
+        val bytes = utf8(text)
+        val length = bytes.size
+        if (length < DEFLATE_MIN_BYTES) return encodeTextFrame(alloc, bytes)
+        val plain = Unpooled.wrappedBuffer(bytes)
         try {
-            ByteBufUtil.writeUtf8(plain, text)
             idleTicks = 0
             val window = window ?: openWindow()
             return encodeDeflatedFrame(alloc, length) { (window ?: loop.fresh).deflate(plain, it, keepContext = window != null) }
