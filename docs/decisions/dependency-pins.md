@@ -832,6 +832,7 @@ store. No bundle, schema or deploy-time change (no .sd, services.xml or app-pack
   Gated: the store's integration gate passed on e66b15f6, whose tree 1475ada0 is, against vespaengine/vespa:latest:
     66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
     recencyStrategyProbe and recencyEdgeProbe served identical pages under every strategy on the loaded corpus.
+    ./gradlew build here is green against the JitPack jars: 1,925 tests, 0 failed, 2 skipped.
 
 6c9eef63f27b = vespa-eventstore main @ 2026-11-25, the merge of PR #226, over b19d76c60e30 (below), which it descends
 from (`git merge-base --is-ancestor b19d76c60e30 6c9eef63f27b`); its tree is the PR head's (20486c12), byte for byte
