@@ -425,6 +425,7 @@ One line each; the evidence is in [docs/traps.md](docs/traps.md).
 - A timeout is an idle window, not a deadline; size it by the slowest single answer.
 - An idle window bounds one ask and a visit is a sequence of them; `LEG_QUIET_GIVE_UP_MS` fires on silence between asks.
 - A store query has no deadline at any layer and PINGs only catch a dead connection: bound the call (`PROBE_TIMEOUT_MS`, `IngestAcks.awaitWithin`), read `store call SLOW`.
+- A quartz `RelaySession` copies the relay's `eventCommandHandler` when it connects, and `RelayWriter` dials in its constructor: a test that changes the hook afterwards swaps a handler the relay reads per call (`RelayWriterTest.deleteHook`).
 - Every quartz read accessory waits out `auth-required:` on the AUTH's own verdict; do not pass `pendingOnAuthRequired` by hand.
 - strfry refuses any filter carrying `search` (`unrecognised filter item`), so `include:spam` goes only to a relay that takes it (`LensWaivers`), added at the wire and never to the ask, or every band re-keys.
 - A TTL on a tag is not a TTL on the event carrying it unless you own every writer.
