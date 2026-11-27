@@ -36,6 +36,8 @@ import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.DEFAULT_AUTH_GRACE_MS
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
@@ -51,6 +53,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.TimeSource
 
 /**
  * The router against a scripted gated peer, through quartz's own client and NIP-42 responder: it
@@ -115,11 +118,33 @@ class GatedPeerTest {
             assertEquals(0, peer.auths.get(), "a gated peer is read anonymously: its challenge goes unanswered")
         }
 
+    /**
+     * A page whose read sets off the NIP-42 sign-in it needs (a CLOSED `auth-required:`, an EOSE
+     * `auth` hint). quartz's walk waits one scheduling hop for that sign-in to start
+     * ([DEFAULT_AUTH_GRACE_MS], 1 s) and otherwise ends AUTH_REQUIRED, its subscription closed, and
+     * a responder that picks the refusal up after that signs nothing in: what a starved test JVM met
+     * (pre-push runs every module's tests on four cores). Such a walk, and only one that waited out
+     * the whole grace, is read once more, as a visit's next pass reads it: its refusal signs in. A
+     * walk that did not wait, or a read that never signs in, still fails. The events are the last walk's.
+     */
+    private suspend fun pageThroughSignIn(
+        router: Router,
+        peer: GatedPeer,
+    ): Pair<PagedFetchResult, List<Event>> {
+        val reads = WaivedReads(ClientRelayReads(router.client), router.waivers)
+        val got = mutableListOf<Event>()
+        val started = TimeSource.Monotonic.markNow()
+        val walked = reads.page(url, ask, 5_000) { got += it }
+        if (walked.end != PagedFetchResult.End.AUTH_REQUIRED || started.elapsedNow().inWholeMilliseconds < DEFAULT_AUTH_GRACE_MS) return walked to got
+        assertEquals(0, peer.auths.get(), "an AUTH that landed should have let the first walk read through")
+        got.clear()
+        return reads.page(url, ask, 5_000) { got += it } to got
+    }
+
     @Test
     fun `a relay that asks for AUTH without naming a waiver is signed in to`() =
         withRouter({ GatedPeer(it, cards, membersOnly = true, gated = false) }) { router, peer, _ ->
-            val got = mutableListOf<Event>()
-            WaivedReads(ClientRelayReads(router.client), router.waivers).page(url, ask, 5_000) { got += it }
+            val (_, got) = pageThroughSignIn(router, peer)
             assertEquals(1, peer.auths.get(), "signed in once, after the refusal")
             assertEquals(cards.size, got.size, "and read in full")
             assertTrue(!router.waivers.waives(url), "no waiver was asked for")
@@ -129,8 +154,7 @@ class GatedPeerTest {
     @Test
     fun `an EOSE that hints at AUTH signs in and the page is read in full`() =
         withRouter({ GatedPeer(it, cards, gated = false, authHint = true) }) { router, peer, _ ->
-            val got = mutableListOf<Event>()
-            val walked = WaivedReads(ClientRelayReads(router.client), router.waivers).page(url, ask, 5_000) { got += it }
+            val (walked, got) = pageThroughSignIn(router, peer)
             assertEquals(1, peer.auths.get(), "signed in on the hint")
             assertEquals(cards.size, got.size, "and served what it held back")
             assertTrue(VisitPool.readToTheEnd(walked), "the walk is not an AUTH_REQUIRED abort: ${walked.end}")
