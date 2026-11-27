@@ -4,6 +4,28 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## A store write under a degraded Vespa fails fast (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#235 (with #234). A commit no
+longer waits out a sick engine while it holds the store's writer lock, with every
+other publish queued behind it:
+
+- **A 5xx or a dropped connection is asked once** under the lock, not three times
+  over 3 s of back-off; a 429 (Vespa's queue full) is asked again after 50, 100 and
+  150 ms. Reads keep their retries.
+- **A batch write names a 5 s deadline** (`?timeout=5s`) and is given up on after
+  11 s plus one second per 10 MB of body, where it used to wait the handler's 30 s
+  default with no client bound. What it hands back is re-put through the feed client
+  with 5 s plus 2 ms per document (at most 30 s).
+
+### What you will see
+
+- **Under a degraded engine, more batches fail whole and sooner:** their publishes are
+  answered `OK false` `error:` and the client sends them again, where they used to
+  hold the lock for up to minutes and then succeed or fail. The store measured a
+  second writer behind a 503'd batch waiting 59 ms instead of 3,060 ms.
+- **A healthy engine sees no change.** No setting, schema or package change.
+
 ## Publishes held per connection; ephemeral events answered apart; NIP-70 enforced (November 2026)
 
 - **A connection may have 128 publishes unanswered** (`PUBLISH_IN_FLIGHT_PER_CONNECTION`). Past
