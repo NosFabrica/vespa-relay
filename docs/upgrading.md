@@ -4,6 +4,30 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Feed reads skip Vespa's text searchers (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#233. The application package
+gains a `lean` search chain, and every text-free REQ is sent through it. It skips
+federation and the searchers only a text search needs, so Vespa's query container
+spends about 18% less CPU per REQ, and the relay served 8-11% more REQ/s on one
+4-core box (dependency-pins.md has the numbers). Answers are unchanged.
+
+### What you will see
+
+- **The first boot redeploys the application package**, since it changed. Vespa
+  applies it live: no restart, refeed or reindex.
+- **Vespa's own query metrics** (`queries`, `query_latency`, `hits_per_query`
+  from the query container) stop counting these reads, because the counter
+  sits in the default chain. The relay's pulse page and the store's cost ledger
+  count them as before. A dashboard built on Vespa's metrics sets
+  `VESPA_LEAN_CHAIN=false` to keep them.
+- **Under `AUTO_DEPLOY=false`**, a package without the chain answers the first
+  such read 400; the store sends it again on the default chain and tries the
+  chain again five minutes later. Copy the `<search>` element from the store's
+  `services.xml` into your package to use it.
+- **With author shards** (`VESPA_AUTHOR_SHARDS` above 1) nothing changes: the
+  chain reads one cluster, so a sharded store never uses it.
+
 ## The store's #229 and #231 (November 2026)
 
 The store pin moves to NosFabrica/vespa-eventstore main at the merge of #231,
