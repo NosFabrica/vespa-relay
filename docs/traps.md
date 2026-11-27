@@ -481,6 +481,19 @@ Moved from AGENTS.md on 2026-09-04, unchanged. This is the long form of the AGEN
   bound `InboundFrameDecoder` applies (held, scanned, refused) counts inflated
   bytes, and inflating stops at `MAX_FRAME_BYTES`; the wire size is only checked
   as well. A frame-cap check before inflation is no bound at all.
+- **A quartz session takes the relay's event-command hook when it connects,
+  not when an event arrives.** `RelayServerBase.connect` passes
+  `eventCommandHandler` into the `RelaySession` constructor, which keeps it in a
+  final field, so setting `relay.eventCommandHandler` later reaches only the
+  sockets opened afterwards. `RelayWriter` calls `keepConnected` and `connect` in
+  its constructor, so a test that built the writer as a field and set the hook to
+  `null` in its body raced the dial: on one machine the socket opened first, kept
+  the `MirrorDelete` hook, deleted the id, and "a relay without the delete hook
+  fails the delete" saw the delete succeed. A two-second sleep before the
+  assignment reproduces it every time. `RelayWriterTest` gives the relay a hook
+  that reads `deleteHook` on each call. Production sets the hook before `serve`
+  (`RelayMain`), so no socket can come first. **A hook set after connections
+  open does not reach them; change what the hook reads instead.**
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*
