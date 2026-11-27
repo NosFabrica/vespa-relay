@@ -4,6 +4,30 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Feed reads skip Vespa's text searchers (November 2026)
+
+The store pin moves to NosFabrica/vespa-eventstore#233. The application package
+gains a `lean` search chain, and every text-free REQ is sent through it. It skips
+federation and the searchers only a text search needs, so Vespa's query container
+spends about 18% less CPU per REQ, and the relay served 8-11% more REQ/s on one
+4-core box (dependency-pins.md has the numbers). Answers are unchanged.
+
+### What you will see
+
+- **The first boot redeploys the application package**, since it changed. Vespa
+  applies it live: no restart, refeed or reindex.
+- **Vespa's own query metrics** (`queries`, `query_latency`, `hits_per_query`
+  from the query container) stop counting these reads, because the counter
+  sits in the default chain. The relay's pulse page and the store's cost ledger
+  count them as before. A dashboard built on Vespa's metrics sets
+  `VESPA_LEAN_CHAIN=false` to keep them.
+- **Under `AUTO_DEPLOY=false`**, a package without the chain answers the first
+  such read 400; the store sends it again on the default chain and tries the
+  chain again five minutes later. Copy the `<search>` element from the store's
+  `services.xml` into your package to use it.
+- **With author shards** (`VESPA_AUTHOR_SHARDS` above 1) nothing changes: the
+  chain reads one cluster, so a sharded store never uses it.
+
 ## The store's #229 and #231 (November 2026)
 
 The store pin moves to NosFabrica/vespa-eventstore main at the merge of #231,
@@ -14,7 +38,23 @@ list). No schema change, and no new setting.
   `VESPA_ACCESS_LOG` unset or blank the store now deploys the package with the
   log disabled, as `disabled` does. `.env.example` already sets `disabled`, so
   a deployment built from it sees no change. One that left the line out and
-  reads the log must set `VESPA_ACCESS_LOG=default` to keep it.
+  reads the log must set `VESPA_ACCESS_LOG=default` to keep it. The store
+  accepts `default` before and after this pin, so it can be set ahead of the
+  upgrade.
+- **The first boot redeploys the application package** wherever the log was
+  on, since the package now differs from what Vespa runs. Vespa applies it
+  live: the store measured empty `configChangeActions` (no restart, refeed or
+  reindex) and not one failed query across the switch, in either direction.
+  Under `AUTO_DEPLOY=false` nothing is deployed and nothing changes. Every
+  relay deploying to one Vespa must agree on the setting: two on different
+  store pins (a staggered upgrade), or with the variable set on only one, each
+  redeploy the other's package on every boot. The sync never deploys.
+- **The store's feed client compresses nothing unless asked:**
+  `VESPA_FEED_COMPRESSION` now defaults to `none` (it was `auto`).
+  `docker-compose.yml` already set `none`, so a compose deployment sees no
+  change. One with Vespa across a WAN that relied on `auto` sets `gzip`. It
+  only ever reached the feed client's share of the writes: batches and a lone
+  put are sent uncompressed either way.
 - **The per-event dup probe reports under `exists`, not `get`,** in the store's
   port metrics (`Insert × exists`). A dashboard comparing `get` before and
   after will see it fall away; nothing was lost.
