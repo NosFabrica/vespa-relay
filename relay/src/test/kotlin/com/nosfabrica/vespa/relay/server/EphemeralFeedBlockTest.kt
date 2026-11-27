@@ -37,7 +37,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.util.Collections
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -52,8 +51,6 @@ class EphemeralFeedBlockTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val signer = NostrSignerSync()
 
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `an ephemeral publish is answered and fanned out while the store refuses writes`() =
         runBlocking<Unit> {

@@ -36,7 +36,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -93,8 +92,6 @@ class IngestEphemeralDecouplingTest {
      * answers an all-ephemeral batch Accepted without I/O. Sharing a batch with the note must not
      * turn its answer into the note's storage error (and with it, no fan-out).
      */
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `an ephemeral event is accepted while the store refuses writes, even batched with a storable one`() =
         runBlocking<Unit> {
@@ -140,8 +137,6 @@ class IngestEphemeralDecouplingTest {
      * without waiting for it. 500 ms is a quarter of the write and two orders of magnitude above what
      * an ephemeral verdict costs (a signature check and a kind test).
      */
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `an ephemeral event's answer does not wait on a slow store write it does not need`() =
         runBlocking<Unit> {

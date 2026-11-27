@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.ingest.IngestTuning
 import com.nosfabrica.vespa.relay.server.HttpRelay
 import com.nosfabrica.vespa.relay.server.HttpRelayGate
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
+import com.nosfabrica.vespa.relay.server.PublishSlots
 import com.nosfabrica.vespa.relay.server.ReplayGate
 import com.nosfabrica.vespa.relay.server.SearchGate
 import com.nosfabrica.vespa.relay.util.strictChoice
@@ -210,6 +211,15 @@ fun replayGateFromEnv(env: Map<String, String>): ReplayGate =
         permits = env.strictInt("REPLAY_CONCURRENCY", 0..MAX_REPLAY_CONCURRENCY) ?: ReplayGate.DEFAULT_PERMITS,
         maxWaiting = env.strictInt("REPLAY_QUEUE", 0..MAX_REPLAY_QUEUE) ?: ReplayGate.DEFAULT_WAITING,
     )
+
+/**
+ * `PUBLISH_IN_FLIGHT_PER_CONNECTION`: publishes one connection may have unanswered before its reader waits for an
+ * answer, see `PublishSlots`. 0 turns the bound off.
+ */
+fun publishSlotsFromEnv(env: Map<String, String>): PublishSlots = PublishSlots(env.strictInt("PUBLISH_IN_FLIGHT_PER_CONNECTION", 0..MAX_PUBLISH_IN_FLIGHT) ?: PublishSlots.DEFAULT_PER_CONNECTION)
+
+/** Past the deepest ingest queue a pipeline builds, one connection's bound holds nothing back. */
+private const val MAX_PUBLISH_IN_FLIGHT = 16_384
 
 /** Past the store client's own bound on streams in flight, a replay permit admits nothing more. */
 private const val MAX_REPLAY_CONCURRENCY = 65_536

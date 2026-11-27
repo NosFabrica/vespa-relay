@@ -335,11 +335,14 @@ class IngestPipeline(
             var untallied = batch.size
             val answers = Answers(batch)
             try {
-                val valid = admit(batch, answers)
+                val admitted = admit(batch, answers)
+                untallied = admitted.size
+                if (admitted.isEmpty()) continue
+                // Before the batch write, where a report raised in parallel has no single event.
+                audit?.let { for (i in admitted) it.inspect(batch[i].event) }
+                val valid = if (writer.acceptsEphemeralUnwritten) acceptEphemeral(admitted, batch, answers) else admitted
                 untallied = valid.size
                 if (valid.isEmpty()) continue
-                // Before the batch write, where a report raised in parallel has no single event.
-                audit?.let { for (i in valid) it.inspect(batch[i].event) }
                 val origins =
                     if (refusals.tracksOrigins) valid.associateTo(HashMap(valid.size)) { batch[it].event.id to batch[it].origin } else emptyMap()
                 // The write tallies every event it is handed, through its own callbacks.
@@ -473,6 +476,30 @@ class IngestPipeline(
             others.awaitAll()
         }
         return HashMap<Int, Boolean>(leads.size * 2).apply { leads.forEachIndexed { k, i -> put(i, verified[k]) } }
+    }
+
+    /**
+     * Answers [admitted]'s ephemeral events Accepted, the store's verdict on them without a write, so neither their OK
+     * nor their fan-out waits on or fails with the write of the rest, which is returned.
+     */
+    private fun acceptEphemeral(
+        admitted: List<Int>,
+        batch: List<Inbound>,
+        answers: Answers,
+    ): List<Int> {
+        if (admitted.none { batch[it].event.kind.isEphemeral() }) return admitted
+        val storable = ArrayList<Int>(admitted.size)
+        for (i in admitted) {
+            if (!batch[i].event.kind.isEphemeral()) {
+                storable.add(i)
+                continue
+            }
+            // Counted before the answer, which a caller may wait on to read the count.
+            accepted.incrementAndGet()
+            bootName?.let { BootClock.once("$it: first event stored") }
+            answers.answer(i, IEventStore.InsertOutcome.Accepted)
+        }
+        return storable
     }
 
     /** Whether [event]'s signature checks; [idChecked] when its id was already hashed against its content. */

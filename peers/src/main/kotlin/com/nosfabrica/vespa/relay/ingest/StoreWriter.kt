@@ -50,6 +50,12 @@ interface StoreWriter : AutoCloseable {
      */
     val checksSignatures: Boolean get() = false
 
+    /**
+     * Whether the far side answers an ephemeral event Accepted without writing anything (quartz's STORE-W03), so the
+     * pipeline answers a verified one itself. Not a forwarding writer's: the far side fans the event out.
+     */
+    val acceptsEphemeralUnwritten: Boolean get() = false
+
     override fun close() = Unit
 
     companion object {
@@ -57,6 +63,8 @@ interface StoreWriter : AutoCloseable {
         fun local(store: IEventStore): StoreWriter =
             object : StoreWriter {
                 override val description = "straight into the store"
+
+                override val acceptsEphemeralUnwritten = true
 
                 override suspend fun batchInsert(events: List<Event>) = store.batchInsert(events)
 

@@ -116,6 +116,8 @@ class NostrRelayServer(
     ingest: EventIngest? = null,
     // The sync process's lane: what a connection signed in as this relay's own key publishes.
     private val mirrorLane: MirrorLane? = null,
+    // Publishes one connection may have unanswered on the clients' lane; see PublishSlots.
+    private val publishSlots: PublishSlots = PublishSlots(),
 ) : RelayServerBase(
         // Cheap rejections first; only the policies an operator configured are installed.
         policyBuilder = {
@@ -133,6 +135,8 @@ class NostrRelayServer(
                     PartialNotice(),
                     // Last: a tag must mean every other policy accepted the event.
                     mirrorLane?.policy(),
+                    // After the tag it reads; it refuses nothing, so a tag still means accepted.
+                    publishSlots.policy(skip = mirrorLane?.let { it::carries }),
                 ).toTypedArray<IRelayPolicy>(),
             )
         },
@@ -155,8 +159,8 @@ class NostrRelayServer(
             )
         }
 
-    // Both lanes behind one, so an id they accept together is fanned out once.
-    private val acceptedOnce = AcceptedOnce((ingest ?: ownQueue!!).let { clients -> mirrorLane?.over(clients) ?: clients })
+    // Both lanes behind one, so an id they accept together is fanned out once; only the clients' lane is held per connection.
+    private val acceptedOnce = AcceptedOnce(publishSlots.over(ingest ?: ownQueue!!).let { clients -> mirrorLane?.over(clients) ?: clients })
 
     private val ingest: EventIngest = acceptedOnce
 
@@ -172,6 +176,9 @@ class NostrRelayServer(
 
     /** The relay-wide bound on plain replays, for its counters. */
     val replayGate: ReplayGate get() = replays
+
+    /** The per-connection bound on publishes in flight, for its counters. */
+    val publishGate: PublishSlots get() = publishSlots
 
     /** Live events the gate dropped since boot: their cold-author check failed, or got no read in time. */
     val liveGateFailed: Long get() = coldChecks.failures

@@ -4,6 +4,17 @@ What a deployment notices when it moves to a release, newest first. Schema
 changes that need a reindex are in [migrations.md](migrations.md); this file is
 about everything else an operator has to do or will see.
 
+## Publishes held per connection; ephemeral events answered apart (November 2026)
+
+- **A connection may have 128 publishes unanswered** (`PUBLISH_IN_FLIGHT_PER_CONNECTION`). Past
+  that the relay stops reading that socket until one is answered; nothing is refused. A client
+  keeping 64 or fewer in flight sees no change. A single-socket bulk import keeping more (`amy
+  publish`, 2,048) is slower than before; raise the setting, or `0`, on a relay fed by one.
+  `/pressure` gains `publishes` (`held`, `waited`).
+- **An ephemeral event (a NIP-46 request) is answered and fanned out once verified,** no longer
+  after the store write of the notes batched with it, nor refused with them during a feed block.
+  The store's own admission tally on `/pulse.json` stops counting these events.
+
 ## The store's #229 and #231 (November 2026)
 
 The store pin moves to NosFabrica/vespa-eventstore main at the merge of #231,

@@ -37,7 +37,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -93,7 +92,7 @@ class PublishFloodIsolationTest {
 
     /**
      * A floods [flood] EVENTs from its own reader (sequential receives, as NativeWebSocket's one reader
-     * coroutine per connection does); once the queue is full, B sends [bEvent] (if any) then a REQ.
+     * coroutine per connection does); once A waits for room (the queue full, or A at its connection's bound), B sends [bEvent] (if any) then a REQ.
      */
     private fun measure(bSendsEvent: Boolean): Timings =
         runBlocking {
@@ -110,9 +109,10 @@ class PublishFloodIsolationTest {
             val b = relay.server.connect { bOut.add(it) }
             val aReader = launch(Dispatchers.Default) { for (e in flood) a.receive("""["EVENT",${e.toJson()}]""") }
             try {
+                // A is flooding once it waits on room: in the shared queue, or under its connection's own bound.
                 val fullBy = System.currentTimeMillis() + 10_000
-                while (!relay.pipeline.isFull()) {
-                    if (System.currentTimeMillis() > fullBy) fail("A's flood never filled the ingest queue")
+                while (!relay.pipeline.isFull() && relay.server.publishGate.held == 0) {
+                    if (System.currentTimeMillis() > fullBy) fail("A's flood never filled the ingest queue nor reached its connection's bound")
                     delay(5)
                 }
                 delay(50)
@@ -148,8 +148,6 @@ class PublishFloodIsolationTest {
             }
         }
 
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `another connection's REQ is not delayed by one connection's EVENT flood`() {
         val t = measure(bSendsEvent = true)
@@ -161,8 +159,6 @@ class PublishFloodIsolationTest {
         )
     }
 
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `another connection's EVENT is not delayed by one connection's EVENT flood`() {
         val t = measure(bSendsEvent = true)

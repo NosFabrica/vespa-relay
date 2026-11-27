@@ -67,8 +67,14 @@ class IngestBatchTest {
     ): GatedStore =
         runBlocking {
             val store = GatedStore(NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl))
+            // One connection holds all n unanswered behind the held write, so the per-connection bound is off.
+            val unbounded = PublishSlots(perConnection = 0)
             val server =
-                if (ingestBatch == null) NostrRelayServer(store, relayUrl) else NostrRelayServer(store, relayUrl, ingestBatch = ingestBatch)
+                if (ingestBatch == null) {
+                    NostrRelayServer(store, relayUrl, publishSlots = unbounded)
+                } else {
+                    NostrRelayServer(store, relayUrl, ingestBatch = ingestBatch, publishSlots = unbounded)
+                }
             val out = Collections.synchronizedList(mutableListOf<String>())
             val session = server.connect { out.add(it) }
             val events = (0 until n).map { signer.sign<Event>(1_700_000_000L + it, 1, emptyArray(), "note $it") }

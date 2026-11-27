@@ -857,3 +857,21 @@ drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
 TTL; while every write dropped every snapshot, the next publish usually hid
 that. `NegentropySnapshotReuseTest` drives the signed-in, waived, named-observer
 and text shapes through NEG-OPEN; the store's `FilterLocalityTest` holds the sets.
+
+**Each connection holds at most 128 publishes unanswered, and waits at the bound.** Every connection's
+publishes share the pipeline's queue (1,000 events, one batch per worker), and a connection's frames are
+read one at a time, so a publisher whose `EVENT` found the queue full stopped reading its own socket.
+That was the backpressure meant for it, but one flooding socket held the queue full for everyone:
+`PublishFloodIsolationTest` measured another connection's `EVENT`, and the `REQ` read after it, waiting
+behind the flood. `PublishSlots` (`PUBLISH_IN_FLIGHT_PER_CONNECTION`) bounds what one connection has in
+flight; at the bound its reader waits for an answer, so TCP still pushes back on the flooder, and only on
+it. Refusing it (`rate-limited:`) instead would have made every bulk client a retry loop for no gain.
+Quartz hands the backend's `submit` no connection, so a per-connection policy, last in the stack, marks
+each publish it lets through and the clients' lane claims the mark by id; the mirror lane's publishes are
+left unmarked, since the sync's `RelayWriter` window bounds them already. 128 is twice the 64 relay-bench
+keeps in flight per socket; the ceiling is what another connection waits behind, the batch being written
+and its own, each up to 128 events per busy connection: at 256 the test's slow store (2 ms an event) put
+the other connection's `OK` at 0.66-1.15 s, four of six runs past the test's 1 s; at 128, 0.52-0.66 s. A single-socket bulk import (`amy
+publish`'s 2,048) now writes batches at most 128 wide, unmeasured; about eight such sockets (queue / bound)
+still fill the queue.
+
