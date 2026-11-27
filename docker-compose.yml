@@ -279,8 +279,9 @@ services:
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
-      # Read by whichever process deploys the schema, never by Vespa: `disabled`
-      # stops the container logging one line per fed document (.env.example).
+      # Read by whichever process deploys the schema, never by Vespa: unset keeps
+      # the container from logging one line per fed document, `default` turns
+      # Vespa's own access log back on (.env.example).
       VESPA_ACCESS_LOG: ${VESPA_ACCESS_LOG:-}
       # PROTOTYPE author shards (docs/configuration.md): the deployed package and
       # every store must agree, so the same two lines are in the sync below.
@@ -328,9 +329,8 @@ services:
       RELAY_INGEST_LINGER_MS: ${RELAY_INGEST_LINGER_MS:-}
       RELAY_INGEST_VERIFY_THREADS: ${RELAY_INGEST_VERIFY_THREADS:-}
       RELAY_MIRROR_INGEST_VERIFY_THREADS: ${RELAY_MIRROR_INGEST_VERIFY_THREADS:-}
-      # The store's feed transport: none here, where Vespa is a container on
-      # this host (14% more publishes, docs/ingest-benchmark.md); gzip or auto
-      # when VESPA_URL is across a WAN.
+      # The store's feed transport: none, the store's default, here where Vespa
+      # is a container on this host; gzip when VESPA_URL is across a WAN.
       VESPA_FEED_COMPRESSION: ${VESPA_FEED_COMPRESSION:-none}
       # Documents per request through the store's batch handler: 28-31% less Vespa CPU per
       # event than one per request (docs/configuration.md). 0 writes one at a time.

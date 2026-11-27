@@ -814,6 +814,27 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+e08c9bd0943b = vespa-eventstore main @ 2026-11-27, the merge of PR #233, over db3b32a9df94 (below), which it descends
+from (`git merge-base --is-ancestor db3b32a9df94 e08c9bd0943b`); its tree is the PR head's (70e3a2a4), byte for byte
+(`git diff --quiet 70e3a2a4 e08c9bd0`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, as at db3b32a9df94. The PACKAGE CHANGES (services.xml gains `<search><chain id="lean">`), so the
+first boot redeploys it, live; no schema change, one new setting, `VESPA_LEAN_CHAIN` (docs/upgrading.md):
+  LEAN CHAIN: a text-free `select` read on one content cluster names the package's `lean` search chain, which inherits
+    `content`'s own chain (no federation, which copied every query to fan it out to its one source) and excludes the
+    15 searchers only query text needs. YQL and sharded stores never use it; a package without it answers 400 and the
+    store reads on the default chain, parking the chain for five minutes. Profiled under REQ load through this relay,
+    federation was 13% of the query container's CPU and those searchers ~15%. Through this relay, the same package
+    with and without the chain, alternated, two rounds, nostr-bench req --limit 10: 200 clients 2,202 / 2,164 / 1,904
+    / 2,082 -> 2,316 / 2,388 / 2,300 / 2,262 REQ/s (+11%), 1,000 clients 2,115 / 2,042 / 2,017 / 2,177 -> 2,305 /
+    2,238 / 2,251 / 2,257 (+8%), the query container's CPU per REQ 638-738 -> 541-570 us (-18%). Vespa's own query
+    metrics stop counting these reads; the relay's pulse counts them itself.
+  Gated: the store's integration gate passed on 70e3a2a4, whose tree e08c9bd0 is, against vespaengine/vespa:latest:
+    66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
+    SelectQueryIT there reads every shape on the lean and the default chain and requires the same ids in the same order.
+    ./gradlew build here is green against the JitPack jars: 1,933 tests, 0 failed, 2 skipped. A boot against a running
+    Vespa deployed the package live (config generation 18), the lean chain answered, and 50 nostr-bench readers ran
+    with no error and no chain refusal.
+
 db3b32a9df94 = vespa-eventstore main @ 2026-11-27, the merge of PR #232, over ddc6472237a9 (below), which it descends
 from (`git merge-base --is-ancestor ddc64722 db3b32a9`); its tree is the PR head's (0edc128f), byte for byte
 (`git diff --quiet 0edc128f db3b32a9`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
