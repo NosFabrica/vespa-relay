@@ -127,6 +127,8 @@ class NostrRelayServer(
                     if (pubkeyAllow.isNotEmpty() || pubkeyDeny.isNotEmpty()) PubkeyAllowDenyPolicy(pubkeyAllow, pubkeyDeny) else null,
                     if (kindAllow.isNotEmpty() || kindDeny.isNotEmpty()) KindAllowDenyPolicy(kindAllow, kindDeny) else null,
                     if (rejectFutureSeconds > 0) RejectFutureEventsPolicy(rejectFutureSeconds) else null,
+                    // After the final refusals, so `auth-required:` is heard only where signing in changes the answer.
+                    ProtectedEventPolicy(),
                     if (requireReadLens) LensRequiredPolicy() else null,
                     VerifyAuthOnlyPolicy,
                     MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),

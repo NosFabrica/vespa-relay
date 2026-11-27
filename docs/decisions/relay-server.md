@@ -875,3 +875,14 @@ the other connection's `OK` at 0.66-1.15 s, four of six runs past the test's 1 s
 publish`'s 2,048) now writes batches at most 128 wide, unmeasured; about eight such sockets (queue / bound)
 still fill the queue.
 
+**A protected event is taken from its author only.** NIP-70's `["-"]` went
+unenforced until `ProtectedEventPolicy`, so any connection could republish one.
+It sits after the bans, allowlists and the clock check, so a publish those
+refuse for good hears that, not an `auth-required:` that signing in would not
+change. An unsigned connection hears NIP-70's own `auth-required:` sentence (the
+challenge went out on connect); one signed in as another key hears
+`restricted:`, NIP-42's word for that and the one `RelayWriter` reads as final.
+The mirror signs in as the relay's own key, so a protected event it pulls from
+another relay is refused, recorded by the refusal filter as a relay-policy
+refusal, and its band still closes; `auth-required:` there would read as
+transient and hold the band open for good. `ProtectedEventTest` drives all three.

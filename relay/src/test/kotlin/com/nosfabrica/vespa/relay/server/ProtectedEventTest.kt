@@ -36,7 +36,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.AfterTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -80,8 +79,6 @@ class ProtectedEventTest {
         awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
     }
 
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `an unauthenticated connection's protected event is refused auth-required`() =
         runBlocking<Unit> {
@@ -102,8 +99,6 @@ class ProtectedEventTest {
             }
         }
 
-    // Reproduces a defect not fixed yet; fails against main 2f8ae4df. The fix removes this @Ignore.
-    @Ignore
     @Test
     fun `a protected event published by someone signed in as another key is refused`() =
         runBlocking<Unit> {

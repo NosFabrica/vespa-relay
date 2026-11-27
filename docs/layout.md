@@ -204,6 +204,10 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         also carries the LOGIN HOOK: quartz's `authorize` is
                         the one seam that sees a verified AUTH, and
                         `sendToClient` reaches that connection
+    ProtectedEventPolicy.kt  NIP-70: a `["-"]` event only from a connection
+                        signed in as its author; `auth-required:` unsigned,
+                        `restricted:` signed in as anyone else (the mirror
+                        included, which reads it as final)
     TrustNotice.kt      what a reader is told the moment they sign in: ONE
                         NOTICE naming the first link of their chain this relay
                         does not hold, and nothing when it holds them all.

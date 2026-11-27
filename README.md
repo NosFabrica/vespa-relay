@@ -65,8 +65,8 @@ unranked.
   fan-out widens as it fills. A sibling process on purpose: retune or restart
   the mirror and the relay never drops a client.
 - **A full relay, not just search** — NIP-01 filters and publishes, NIP-09
-  deletions, NIP-40 expirations, NIP-45 counts, NIP-62 right to vanish, NIP-77
-  negentropy for peers, NIP-86 runtime management.
+  deletions, NIP-40 expirations, NIP-45 counts, NIP-62 right to vanish, NIP-70
+  protected events, NIP-77 negentropy for peers, NIP-86 runtime management.
 - **Batteries included** — the Vespa schema deploys itself on boot, and the
   search UI, its [own query language](#the-search-boxs-own-language) and the
   operator pages all ship on the relay's own port.
