@@ -28,9 +28,12 @@ import com.nosfabrica.vespa.relay.ingest.RelayWriter
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.OkMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.EventCommandHandler
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -87,9 +90,22 @@ class RelayWriterTest {
             override fun close() = Unit
         }
 
+    /**
+     * The delete hook, read on every request. A session takes the relay's handler once, when it
+     * connects, and the writer dials in its constructor: setting the relay's own field in a test
+     * body leaves a socket that is already open running the old hook.
+     */
+    @Volatile private var deleteHook: EventCommandHandler? = MirrorDeleteHandler(relayKey.pubKey, purge = { filter -> store.delete(filter) })
+
     private val relay =
         NostrRelayServer(store, relayUrl, kindDeny = setOf(7), mirrorLane = MirrorLane(relayKey.pubKey, mirror)).also {
-            it.eventCommandHandler = MirrorDeleteHandler(relayKey.pubKey, purge = { filter -> store.delete(filter) })
+            it.eventCommandHandler =
+                object : EventCommandHandler {
+                    override suspend fun handle(
+                        event: Event,
+                        ctx: RequestContext,
+                    ): OkMessage? = deleteHook?.handle(event, ctx)
+                }
         }
     private val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), wait = false)
     private val port =
@@ -206,7 +222,7 @@ class RelayWriterTest {
     @Test
     fun `a relay without the delete hook fails the delete instead of answering it done`() {
         // It takes the request for an ordinary ephemeral event and answers OK true, deleting nothing.
-        relay.eventCommandHandler = null
+        deleteHook = null
         val notes = (1..2).map(::note)
         runBlocking { writer.batchInsert(notes) }
         val failure = assertFailsWith<IllegalStateException> { runBlocking { writer.delete(Filter(ids = listOf(notes[0].id))) } }
