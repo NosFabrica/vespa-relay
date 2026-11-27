@@ -814,6 +814,24 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+8929a2fd2134 = vespa-eventstore main @ 2026-11-27, the merge of PR #235, over 406b7466 (the merge of #234, over
+e08c9bd0943b (below), which it descends from: `git merge-base --is-ancestor e08c9bd0943b 8929a2fd2134`); its tree is
+the PR head's (d0382dde), byte for byte (`git diff --quiet d0382dde 8929a2fd`). Through JitPack's lowercase spelling,
+as the pins below. Every module resolves one quartz, 2.28.0, as at e08c9bd0943b, with no `->` on quartz or the store.
+No bundle, schema or deploy-time change (no .sd, services.xml or app-package file moves); no new setting. Only
+engine/client changes: VespaHttp, VespaBatchFeed, VespaEventIndex (docs/upgrading.md):
+  WRITER LOCK (#234, #235): a send under the store's writer lock (WriterLockHeld) asks once on a 5xx or a transport
+    failure, where it retried three times over 3 s with every other writer queued behind it; a 429 is asked again
+    after 50, 100 and 150 ms. A batch-feed POST under the lock names ?timeout=5s and is given up on after 11 s plus
+    one second per 10 MB of body (it named no timeout, so BatchFeedHandler waited its 30 s default, with no client
+    bound). The feed-client fallback under the lock waits 5 s plus 2 ms per document of its chunk, at most 30 s; a
+    parked or absent batch path keeps 30 s, as the feed client is then the write path. Outside the lock nothing
+    changes. Mock engine (WriterLockRetryHoldTest): a second writer behind a 503'd batch POST waited 3,060-3,067 ms
+    before, 59 ms after. Each new store test was verified to fail without its fix.
+  Gated: the store's integration gate passed on d0382dde, whose tree 8929a2fd is, against vespaengine/vespa:latest:
+    66 tests, 0 failed, 2 skipped (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
+    ./gradlew check here is green against the JitPack jars: 1,949 tests, 0 failed, 2 skipped.
+
 e08c9bd0943b = vespa-eventstore main @ 2026-11-27, the merge of PR #233, over db3b32a9df94 (below), which it descends
 from (`git merge-base --is-ancestor db3b32a9df94 e08c9bd0943b`); its tree is the PR head's (70e3a2a4), byte for byte
 (`git diff --quiet 70e3a2a4 e08c9bd0`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
