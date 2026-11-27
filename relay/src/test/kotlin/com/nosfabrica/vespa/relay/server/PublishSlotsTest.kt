@@ -30,7 +30,9 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.backend.EventIngest
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -177,6 +179,66 @@ class PublishSlotsTest {
         policy.accept(EventCmd(note(4)))
         assertEquals(1, slots.pending, "the fourth mark sweeps the three stale ones and keeps itself")
         assertEquals(3L, slots.strays)
+    }
+
+    @Test
+    fun `two connections publishing one id are each held to their own slots`() =
+        runBlocking<Unit> {
+            val slots = PublishSlots(perConnection = 1)
+            val lane = slots.over(clients)
+            val flooder = slots.policy()!!
+            val other = slots.policy()!!
+            val first = note(1)
+            flooder.accept(EventCmd(first))
+            lane.submit(first, false) {}
+            val shared = note(2)
+            val othersCopy = Event.fromJson(shared.toJson())
+            val floodersCopy = Event.fromJson(shared.toJson())
+            other.accept(EventCmd(othersCopy))
+            flooder.accept(EventCmd(floodersCopy))
+
+            assertSettles(slots, othersCopy, lane, held = false, "the other connection's copy is not held behind the flooder's bound")
+            val floods = assertSettles(slots, floodersCopy, lane, held = true, "the flooder's copy waits at its own bound")
+            assertEquals(listOf(first.id, shared.id), clients.ids())
+            clients.acceptAll()
+            withTimeout(2_000) { floods.join() }
+            assertEquals(listOf(shared.id), clients.ids(), "an answer frees the flooder's slot for its copy")
+            assertEquals(0, slots.pending, "every mark claimed by its own copy")
+        }
+
+    @Test
+    fun `an unmarked copy of a marked id takes no connection's slot`() =
+        runBlocking<Unit> {
+            val slots = PublishSlots(perConnection = 1)
+            val lane = slots.over(clients)
+            val publisher = slots.policy()!!
+            val first = note(1)
+            publisher.accept(EventCmd(first))
+            lane.submit(first, false) {}
+            val shared = note(2)
+            val publishersCopy = Event.fromJson(shared.toJson())
+            publisher.accept(EventCmd(publishersCopy))
+
+            assertSettles(slots, Event.fromJson(shared.toJson()), lane, held = false, "a copy no policy marked, as the mirror lane's, goes straight on")
+            val publishes = assertSettles(slots, publishersCopy, lane, held = true, "the publisher's copy waits at its bound")
+            clients.acceptAll()
+            withTimeout(2_000) { publishes.join() }
+            assertEquals(0, slots.pending, "the mark claimed by its own copy")
+        }
+
+    /** Submits [event] on its own coroutine, waits until it is through or held, and asserts which. */
+    private fun CoroutineScope.assertSettles(
+        slots: PublishSlots,
+        event: Event,
+        lane: EventIngest,
+        held: Boolean,
+        what: String,
+    ): Job {
+        val heldBefore = slots.held
+        val submit = launch(Dispatchers.Default) { lane.submit(event, false) {} }
+        awaitTrue("the submit is through or held") { submit.isCompleted || slots.held > heldBefore }
+        assertEquals(held, !submit.isCompleted, what)
+        return submit
     }
 
     private fun awaitTrue(

@@ -48,17 +48,22 @@ class PublishSlots(
     private val sweepEvery: Long = SWEEP_EVERY,
 ) {
     /**
-     * Each accepted publish's connection slots, by id, from the policy stage to the submit that
-     * claims it: quartz hands the backend's submit no connection, and the session submits right
-     * after its policy accepts, on the same reader. A publish that never reaches the
-     * clients' lane (its connection dropped in between, or the mirror lane took its id) leaves its
-     * entry behind, and quartz's policies hear no disconnect, so [Marker] sweeps entries older than
-     * [STALE_NANOS] every [SWEEP_EVERY] marks: a bound on what such strays can hold.
+     * Each accepted publish's connection slots, keyed by the event instance its policy saw, which quartz submits next:
+     * another connection's copy of the same id is another key. A mark nothing claims is swept by age.
      */
-    private val marked = ConcurrentHashMap<String, Mark>()
+    private val marked = ConcurrentHashMap<Sent, Mark>()
 
     /** Marks waiting to be claimed (or swept). */
     val pending: Int get() = marked.size
+
+    /** An event by reference, so two copies of one id are two marks. */
+    private class Sent(
+        val event: Event,
+    ) {
+        override fun equals(other: Any?): Boolean = other is Sent && other.event === event
+
+        override fun hashCode(): Int = System.identityHashCode(event)
+    }
 
     private class Mark(
         val slots: Semaphore,
@@ -97,7 +102,7 @@ class PublishSlots(
         override fun accept(cmd: EventCmd): PolicyResult<EventCmd> {
             if (skip?.invoke(cmd.event) != true) {
                 val now = System.nanoTime()
-                marked[cmd.event.id] = Mark(slots, now)
+                marked[Sent(cmd.event)] = Mark(slots, now)
                 if (marks.incrementAndGet() % sweepEvery == 0L) {
                     marked.entries.removeIf { (_, mark) -> (now - mark.atNanos > staleNanos).also { if (it) stray.incrementAndGet() } }
                 }
@@ -114,7 +119,7 @@ class PublishSlots(
             skipVerify: Boolean,
             onComplete: (IEventStore.InsertOutcome) -> Unit,
         ) {
-            val slots = marked.remove(event.id)?.slots ?: return clients.submit(event, skipVerify, onComplete)
+            val slots = marked.remove(Sent(event))?.slots ?: return clients.submit(event, skipVerify, onComplete)
             if (!slots.tryAcquire()) {
                 waits.incrementAndGet()
                 waiting.incrementAndGet()

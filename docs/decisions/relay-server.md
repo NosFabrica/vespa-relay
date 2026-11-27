@@ -867,7 +867,13 @@ behind the flood. `PublishSlots` (`PUBLISH_IN_FLIGHT_PER_CONNECTION`) bounds wha
 flight; at the bound its reader waits for an answer, so TCP still pushes back on the flooder, and only on
 it. Refusing it (`rate-limited:`) instead would have made every bulk client a retry loop for no gain.
 Quartz hands the backend's `submit` no connection, so a per-connection policy, last in the stack, marks
-each publish it lets through and the clients' lane claims the mark by id; the mirror lane's publishes are
+each publish it lets through and the clients' lane claims the mark. The mark is keyed by the `Event`
+instance, not its id: `RelaySession.handleEvent` submits the very event its policy stack screened. Keyed
+by id, two connections publishing one event at once crossed: the first claimed the second's slots (and
+waited behind its flood) and the second went through unbounded. A policy that rebuilt the command's
+event would leave every mark unclaimed and the bound open, which `PublishSlotsTest` would show. A mark
+nothing claims (the mirror lane took its event) stays behind, and quartz's policies hear no disconnect, so
+every 1,024 marks those older than 60 s are swept, counted as strays. The mirror lane's publishes are
 left unmarked, since the sync's `RelayWriter` window bounds them already. 128 is twice the 64 relay-bench
 keeps in flight per socket; the ceiling is what another connection waits behind, the batch being written
 and its own, each up to 128 events per busy connection: at 256 the test's slow store (2 ms an event) put
