@@ -814,6 +814,25 @@ note's count, SearchableEvent's read path, the allocation-free FilterMatcher).
 ## `vespaEventStore` (versions)
 
 ```text
+db3b32a9df94 = vespa-eventstore main @ 2026-11-27, the merge of PR #232, over ddc6472237a9 (below), which it descends
+from (`git merge-base --is-ancestor ddc64722 db3b32a9`); its tree is the PR head's (0edc128f), byte for byte
+(`git diff --quiet 0edc128f db3b32a9`). Through JitPack's lowercase spelling, as the pins below. Every module resolves
+one quartz, 2.28.0, the store's own request, so the runtime classpath carries no `->` on quartz or the store. No
+bundle, schema or deploy-time change (no .sd, services.xml or app-package file moves); no new setting.
+  READS (#232): a search answer past STRING_DECODE_MAX_BYTES (192 KB) is decoded by kotlinx's stream decoder again;
+    #228's byte-level split took every DM and Concord page here, whose events carry kilobytes of ciphertext, and ran
+    14x kotlinx's stream on 500 gift wraps (1 MB: 23.9 ms against 1.7 ms). Two bench runs each of this relay at
+    74b0082e (store ddc64722) against a13c2483 (store 1475ada0) read DM inboxes 11% slower, DM catch-up 16%, Concord
+    pages 13%, Concord paging 23%, beyond each run pair's spread. A hit's `tags` string, on the typed paths (search,
+    sync, hydrate, version reads), is read by Quartz's Kite reader instead of a kotlinx JSON tree (2-6x per hit);
+    REQs read `tags` raw and never parse it. Through this relay at 74b0082e built against #232's head, one run on
+    the same bench: DM inbox 127 -> 151 req/s, DM catch-up 194 -> 236, Concord paging 57 -> 77, and +12.7% over all
+    24 workloads (geometric mean) against 74b0082e on ddc6472237a9.
+  Gated: the store's integration gate passed on 00db331c, whose code db3b32a9 is (0edc128f, the PR's second
+    commit, adds only benchmark/README.md), against vespaengine/vespa:latest: 66 tests, 0 failed, 2 skipped
+    (StagingCorpusIT, which needs an export; FuzzParityIT, which needs FUZZ_VESPA_URL).
+    ./gradlew check here is green against the JitPack jars: 1,948 tests, 0 failed, 2 skipped.
+
 ddc6472237a9 = vespa-eventstore main @ 2026-11-26, the merge of PR #231, over fbd2548b (the merge of #229, over
 1475ada0c8d0 (below), which it descends from); its tree is the PR head's (6d473fdf), byte for byte
 (`git diff --quiet 6d473fdf ddc64722`). This relay pinned 6d473fdf26f1 itself while #231 was open.
