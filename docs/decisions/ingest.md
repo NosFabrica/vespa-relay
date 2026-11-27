@@ -624,3 +624,14 @@ which at the default 1,000-event batch sends the whole batch: lane batches avera
 the backfill ran 11% faster (177 s to 157 s, alternated A/B on fresh volumes) on 5% less CPU. The
 same runs' profile put the forwarding hop itself (websocket framing and parsing the EVENTs) at about
 12% of the relay's CPU; the rest is building and sending Vespa documents, which local writes paid too.
+
+**An ephemeral event is answered once it is verified, apart from its batch's write.** The store accepts an
+ephemeral kind with no write (`EventAdmission.localOutcome`, quartz's STORE-W03), but it skips its lock only
+for a batch with nothing else in it, so a NIP-46 request batched with one note waited for that note's
+write, and under a feed block heard its `error:` and was never fanned out
+(`IngestEphemeralDecouplingTest`, `EphemeralFeedBlockTest`). `acceptEphemeral` now answers each one
+`Accepted` after `admit` and the parse audit, with every check they apply, and hands the store only the
+rest. Only for a writer that says it answers ephemerals unwritten (`StoreWriter.acceptsEphemeralUnwritten`):
+the sync's `RelayWriter` forwards them, and the relay it writes to fans them out. The store no longer sees
+these events, so its own outcome tally (`/pulse.json`'s admission outcomes) stops counting them.
+

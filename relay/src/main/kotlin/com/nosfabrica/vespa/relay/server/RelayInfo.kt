@@ -29,7 +29,7 @@ import java.util.Properties
 private const val SOFTWARE = "https://github.com/NosFabrica/vespa-relay"
 
 /** The NIPs this relay implements. NIP-86 is appended by the composition root only with an admin key. */
-val BASE_SUPPORTED_NIPS = listOf(1, 9, 11, 40, 42, 45, 50, 62, 77)
+val BASE_SUPPORTED_NIPS = listOf(1, 9, 11, 40, 42, 45, 50, 62, 70, 77)
 
 /**
  * The NIP-50 `nip50` list, in the `"<class> <token>"` spelling. Only tokens the store parses

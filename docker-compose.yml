@@ -184,6 +184,8 @@ services:
       REPLAY_QUEUE: ${REPLAY_QUEUE:-}
       # Ranked reads per connection, the read-lens gate, and what a search brings with it.
       SEARCH_CONCURRENCY_PER_CONNECTION: ${SEARCH_CONCURRENCY_PER_CONNECTION:-}
+      # Publishes one connection may have unanswered before its socket waits.
+      PUBLISH_IN_FLIGHT_PER_CONNECTION: ${PUBLISH_IN_FLIGHT_PER_CONNECTION:-}
       REQUIRE_READ_LENS: ${REQUIRE_READ_LENS:-}
       SEARCH_EXPAND_REFERENCES: ${SEARCH_EXPAND_REFERENCES:-}
       SEARCH_EXPAND_MAX_PER_EVENT: ${SEARCH_EXPAND_MAX_PER_EVENT:-}

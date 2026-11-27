@@ -61,6 +61,7 @@ import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.OpenRanking
 import com.nosfabrica.vespa.relay.server.OpenRankingConfig
+import com.nosfabrica.vespa.relay.server.PublishSlots
 import com.nosfabrica.vespa.relay.server.ReplayGate
 import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.config.MaintenanceSwitches
@@ -84,6 +85,7 @@ import com.nosfabrica.vespa.relay.server.config.mirrorIngestFromEnv
 import com.nosfabrica.vespa.relay.server.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.server.config.nip11FromEnv
 import com.nosfabrica.vespa.relay.server.config.openRankingFromEnv
+import com.nosfabrica.vespa.relay.server.config.publishSlotsFromEnv
 import com.nosfabrica.vespa.relay.server.config.refuseSyncConfig
 import com.nosfabrica.vespa.relay.server.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.server.config.relayAddressesFromEnv
@@ -235,6 +237,7 @@ private class Boot(
     val kindDeny: Set<Int>,
     val searchConcurrency: Int,
     val replays: ReplayGate,
+    val publishSlots: PublishSlots,
     val ingest: RelayIngest,
     val mirrorIngest: IngestTuning,
     /** Where the mirror lane starts yielding to client reads; the sync process reads the same setting. */
@@ -359,6 +362,7 @@ private fun readSettings(env: Map<String, String>): Boot {
         kindDeny = denyKindsFromEnv(env),
         searchConcurrency = searchConcurrencyPerConnectionFromEnv(env),
         replays = replayGateFromEnv(env),
+        publishSlots = publishSlotsFromEnv(env),
         ingest = relayIngestFromEnv(env, storeTuning),
         mirrorIngest = mirrorIngestFromEnv(env, storeTuning),
         pressureThresholdMs = env.strictLong("SERVING_PRESSURE_THRESHOLD_MS", 100L..Long.MAX_VALUE) ?: ServingPressure.DEFAULT_THRESHOLD_MS,
@@ -510,6 +514,7 @@ private fun buildRelay(
         ingestBatch = boot.ingest.batch,
         ingest = ingest,
         mirrorLane = mirror?.let { pipeline -> boot.identity?.let { MirrorLane(it.pubKey, pipeline) } },
+        publishSlots = boot.publishSlots,
     )
 
 /**

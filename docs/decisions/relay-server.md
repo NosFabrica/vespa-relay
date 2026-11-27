@@ -857,3 +857,38 @@ drain and reconcile) reach no snapshot and are bounded by quartz's 30-second
 TTL; while every write dropped every snapshot, the next publish usually hid
 that. `NegentropySnapshotReuseTest` drives the signed-in, waived, named-observer
 and text shapes through NEG-OPEN; the store's `FilterLocalityTest` holds the sets.
+
+**Each connection holds at most 128 publishes unanswered, and waits at the bound.** Every connection's
+publishes share the pipeline's queue (1,000 events, one batch per worker), and a connection's frames are
+read one at a time, so a publisher whose `EVENT` found the queue full stopped reading its own socket.
+That was the backpressure meant for it, but one flooding socket held the queue full for everyone:
+`PublishFloodIsolationTest` measured another connection's `EVENT`, and the `REQ` read after it, waiting
+behind the flood. `PublishSlots` (`PUBLISH_IN_FLIGHT_PER_CONNECTION`) bounds what one connection has in
+flight; at the bound its reader waits for an answer, so TCP still pushes back on the flooder, and only on
+it. Refusing it (`rate-limited:`) instead would have made every bulk client a retry loop for no gain.
+Quartz hands the backend's `submit` no connection, so a per-connection policy, last in the stack, marks
+each publish it lets through and the clients' lane claims the mark. The mark is keyed by the `Event`
+instance, not its id: `RelaySession.handleEvent` submits the very event its policy stack screened. Keyed
+by id, two connections publishing one event at once crossed: the first claimed the second's slots (and
+waited behind its flood) and the second went through unbounded. A policy that rebuilt the command's
+event would leave every mark unclaimed and the bound open, which `PublishSlotsTest` would show. A mark
+nothing claims (the mirror lane took its event) stays behind, and quartz's policies hear no disconnect, so
+every 1,024 marks those older than 60 s are swept, counted as strays. The mirror lane's publishes are
+left unmarked, since the sync's `RelayWriter` window bounds them already. 128 is twice the 64 relay-bench
+keeps in flight per socket; the ceiling is what another connection waits behind, the batch being written
+and its own, each up to 128 events per busy connection: at 256 the test's slow store (2 ms an event) put
+the other connection's `OK` at 0.66-1.15 s, four of six runs past the test's 1 s; at 128, 0.52-0.66 s. A single-socket bulk import (`amy
+publish`'s 2,048) now writes batches at most 128 wide, unmeasured; about eight such sockets (queue / bound)
+still fill the queue.
+
+**A protected event is taken from its author only.** NIP-70's `["-"]` went
+unenforced until `ProtectedEventPolicy`, so any connection could republish one.
+It sits after the bans, allowlists and the clock check, so a publish those
+refuse for good hears that, not an `auth-required:` that signing in would not
+change. An unsigned connection hears NIP-70's own `auth-required:` sentence (the
+challenge went out on connect); one signed in as another key hears
+`restricted:`, NIP-42's word for that and the one `RelayWriter` reads as final.
+The mirror signs in as the relay's own key, so a protected event it pulls from
+another relay is refused, recorded by the refusal filter as a relay-policy
+refusal, and its band still closes; `auth-required:` there would read as
+transient and hold the band open for good. `ProtectedEventTest` drives all three.

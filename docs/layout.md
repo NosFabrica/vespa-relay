@@ -204,6 +204,10 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         also carries the LOGIN HOOK: quartz's `authorize` is
                         the one seam that sees a verified AUTH, and
                         `sendToClient` reaches that connection
+    ProtectedEventPolicy.kt  NIP-70: a `["-"]` event only from a connection
+                        signed in as its author; `auth-required:` unsigned,
+                        `restricted:` signed in as anyone else (the mirror
+                        included, which reads it as final)
     TrustNotice.kt      what a reader is told the moment they sign in: ONE
                         NOTICE naming the first link of their chain this relay
                         does not hold, and nothing when it holds them all.
@@ -255,6 +259,12 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         past `REPLAY_QUEUE` waiting its policy refuses a new
                         REQ `rate-limited:`. A reconnect wave is that many
                         replays at once
+    PublishSlots.kt     SO MANY PUBLISHES UNANSWERED, PER CONNECTION — at
+                        `PUBLISH_IN_FLIGHT_PER_CONNECTION` the connection's
+                        reader waits for an answer, so one flooding socket
+                        cannot fill the ingest queue every connection shares;
+                        a last policy marks each publish, the clients' lane
+                        holds it. The mirror lane is not bounded here
     AcceptedOnce.kt     one `Accepted` per id among the submissions in flight
                         together, so an event both lanes accept is fanned out
                         once

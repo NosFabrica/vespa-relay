@@ -185,7 +185,7 @@ class RelayContractIT {
                 ?.map { it.jsonPrimitive.int }
                 .orEmpty()
                 .toSet()
-        report.check("NIP-11 lists the README's NIPs", nips.containsAll(listOf(1, 9, 11, 40, 42, 45, 50, 62, 77, 86))) { "supported_nips=$nips" }
+        report.check("NIP-11 lists the README's NIPs", nips.containsAll(listOf(1, 9, 11, 40, 42, 45, 50, 62, 70, 77, 86))) { "supported_nips=$nips" }
         report.check(
             "NIP-11 auth_required is false (observer:/include:spam need no signature)",
             info["limitation"]

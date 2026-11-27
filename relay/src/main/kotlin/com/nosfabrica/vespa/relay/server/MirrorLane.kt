@@ -63,6 +63,9 @@ class MirrorLane(
     /** True once per tagged event: whether [event] goes to [ingest]. */
     internal fun claim(event: Event): Boolean = tagged.remove(event.id)
 
+    /** Whether [event] is tagged for [ingest], without claiming it. */
+    internal fun carries(event: Event): Boolean = event.id in tagged
+
     /** [ingest] for what this lane tagged, [clients] for everything else. */
     fun over(clients: EventIngest): EventIngest = LanedIngest(clients, this)
 

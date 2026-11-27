@@ -39,7 +39,7 @@ class RelayInfoTest {
         // The one field that points off the relay; nothing else fails when it rots.
         assertEquals("https://github.com/NosFabrica/vespa-relay", doc.getValue("software").jsonPrimitive.content)
         val nips = doc.getValue("supported_nips").jsonArray.map { it.jsonPrimitive.int }
-        assertEquals(listOf(1, 9, 11, 40, 42, 45, 50, 62, 77), nips)
+        assertEquals(listOf(1, 9, 11, 40, 42, 45, 50, 62, 70, 77), nips)
         // `observer:` and `include:spam` are the two ways an unauthenticated client is answered at all.
         val nip50 = doc.getValue("nip50").jsonArray.map { it.jsonPrimitive.content }
         assertTrue("ext observer" in nip50 && "ext include:spam" in nip50, "the two ways past the read gate: $nip50")
